@@ -122,6 +122,48 @@ confined tooltips and remove external image-loading paths; do not rely on HTML
 tooltips, `image://` symbols, graphic image elements, or remote resources. If a
 chart cannot render, the client displays its error and source.
 
+### Pantheo `send_chart`
+
+Pantheo agents can use the higher-level `send_chart` tool instead of composing
+ECharts fences themselves. This is a Pantheo tool contract, not an Agora
+WebSocket frame. Its current chart types are `line`, `bar`, `area`, `pie`,
+`donut`, and `scatter`.
+
+For a report containing a table and several charts, keep the Markdown table in
+`text` and put only quantitative plots in `charts`. Use exactly the two
+top-level keys shown here; do not repeat `chart_type`, `labels`, `series`, or
+axis labels at the top level:
+
+```json
+{
+  "text": "| Fund | Latest NAV |\n| --- | ---: |\n| Fund A | 250.89 |",
+  "charts": [
+    {
+      "title": "Fund A — 30-day NAV",
+      "chart_type": "line",
+      "labels": ["09-07-2026", "10-07-2026"],
+      "series": [{"name": "NAV", "values": [249.82, 250.11]}],
+      "y_axis_label": "NAV"
+    }
+  ]
+}
+```
+
+Use one entry in `charts` for each plot. Do not send a table as
+`"chart_type": "table"`; Pantheo turns the `text` field into the message prose,
+where Agora renders its pipe table natively. Data APIs often return numeric
+values as JSON strings, so convert values such as `"250.11"` to JSON numbers
+before placing them in `series[].values`. Keep `text`, titles, and labels plain:
+the validator rejects any angle bracket (`<` or `>`) and any triple-backtick
+fence inside them.
+
+When writing a prompt that asks an agent to call `send_chart`, include the
+literal argument skeleton rather than describing nesting only in prose. State
+the expected chart count and lowercase chart type, and tell the agent to read a
+validation error, correct the named field, and retry no more than twice before
+falling back to the complete Markdown report. The fallback protects delivery;
+it does not replace fixing an invalid chart specification.
+
 ## Maps
 
 Maps are structured message artifacts, not Markdown fences. A post can carry up
