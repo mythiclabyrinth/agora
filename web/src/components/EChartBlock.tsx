@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { normalizeEChart, type NormalizedEChart } from "@agora/core";
+import type { NormalizedEChart } from "@agora/core";
 import type { EChartsType } from "echarts";
 import { Icon } from "../lib/icons";
 
@@ -44,19 +44,37 @@ function ChartCanvas({ chart, source, expanded = false }: { chart: NormalizedECh
   );
 }
 
-function ChartModal({ chart, source, onClose }: { chart: NormalizedEChart; source: string; onClose: () => void }) {
+export function ChartModal({ chart, source, index, total, onPrevious, onNext, onClose }: {
+  chart: NormalizedEChart; source: string; index: number; total: number;
+  onPrevious: () => void; onNext: () => void; onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
+  const onPreviousRef = useRef(onPrevious);
+  const onNextRef = useRef(onNext);
   onCloseRef.current = onClose;
+  onPreviousRef.current = onPrevious;
+  onNextRef.current = onNext;
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     closeRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onCloseRef.current();
+      if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        if (event.key === "ArrowLeft") onPreviousRef.current();
+        if (event.key === "ArrowRight") onNextRef.current();
+      }
       if (event.key === "Tab") {
+        const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+        if (!controls.length) return;
+        const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.shiftKey
+          ? (current <= 0 ? controls.length - 1 : current - 1)
+          : (current === controls.length - 1 ? 0 : current + 1);
         event.preventDefault();
-        closeRef.current?.focus();
+        controls[next]?.focus();
       }
     };
     document.addEventListener("keydown", onKeyDown);
@@ -69,7 +87,7 @@ function ChartModal({ chart, source, onClose }: { chart: NormalizedEChart; sourc
   return createPortal(
     <div className="ago-chart-overlay" role="dialog" aria-modal="true" aria-label={chart.title}
       onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="ago-chart-modal">
+      <div ref={dialogRef} className="ago-chart-modal">
         <header>
           <strong>{chart.title}</strong>
           <button ref={closeRef} type="button" aria-label="Close chart" onClick={onClose}>
@@ -81,34 +99,40 @@ function ChartModal({ chart, source, onClose }: { chart: NormalizedEChart; sourc
             <ChartCanvas chart={chart} source={source} expanded />
           </div>
         </div>
+        {total > 1 ? (
+          <div className="ago-media-navigation ago-chart-navigation">
+            <button type="button" disabled={index === 0} aria-label="Previous chart" onClick={onPrevious}>
+              <Icon name="chevron-left" /> Previous
+            </button>
+            <span aria-live="polite" aria-atomic="true">Chart {index + 1} of {total}</span>
+            <button type="button" disabled={index === total - 1} aria-label="Next chart" onClick={onNext}>
+              Next <Icon name="chevron-right" />
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>,
     document.body,
   );
 }
 
-export function EChartBlock({ source }: { source: string }) {
-  const result = useMemo(() => {
-    try { return { chart: normalizeEChart(source), error: "" }; }
-    catch (error) { return { chart: null, error: (error as Error).message }; }
-  }, [source]);
-  const [open, setOpen] = useState(false);
-
-  if (!result.chart) {
+export function EChartBlock({ source, chart, error = "", onExpand }: {
+  source: string; chart: NormalizedEChart | null; error?: string; onExpand?: () => void;
+}) {
+  if (!chart) {
     return (
       <div className="ago-chart-error" role="alert">
         <strong>Could not render ECharts chart</strong>
-        <span>{result.error}</span>
+        <span>{error}</span>
         <pre>{source}</pre>
       </div>
     );
   }
-  const chart = result.chart;
   return (
     <div className="ago-chart-block">
       <div className="ago-chart-head">
         <span>{chart.title}</span>
-        <button type="button" onClick={() => setOpen(true)} aria-label={`Expand chart: ${chart.title}`}>
+        <button type="button" onClick={onExpand} aria-label={`Expand chart: ${chart.title}`}>
           <Icon name="maximize-2" /> expand
         </button>
       </div>
@@ -117,7 +141,6 @@ export function EChartBlock({ source }: { source: string }) {
           <ChartCanvas chart={chart} source={source} />
         </div>
       </div>
-      {open ? <ChartModal chart={chart} source={source} onClose={() => setOpen(false)} /> : null}
     </div>
   );
 }

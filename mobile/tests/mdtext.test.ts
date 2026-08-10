@@ -16,6 +16,10 @@ import { parseInline, type Span } from "@agora/core";
 
 const TABLE = "| Category | Transactions | USD |\n|---|---|---|\n| PAI ATM | 3 | $159.00 |";
 
+function labelled(root: TestRenderer.ReactTestInstance, label: string) {
+  return root.find((node) => node.props.accessibilityLabel === label);
+}
+
 function fireLayout(node: TestRenderer.ReactTestInstance, width: number) {
   act(() => {
     node.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width, height: 40 } } });
@@ -138,4 +142,26 @@ test("columns are clamped to sane bounds", () => {
   const long = "x".repeat(200);
   const [wide] = columnWidths(cells("Text"), [cells(long), cells(long), cells(long)]);
   expect(wide).toBe(260); // MAX_COL ceiling — uniform long text still caps
+});
+
+test("chart modal navigates valid charts in one message and skips invalid fences", () => {
+  const chart = (title: string) => `\`\`\`echarts\n${JSON.stringify({
+    title: { text: title }, xAxis: { data: ["A", "B"] }, yAxis: {}, series: [{ type: "bar", data: [1, 2] }],
+  })}\n\`\`\``;
+  const text = [chart("Revenue"), "```echarts\n{ invalid json\n```", chart("Retention"), chart("Activation")].join("\n\n");
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text })); });
+  expect(tree.root.findAllByProps({ children: "Could not render ECharts chart" }).length).toBeGreaterThan(0);
+  act(() => labelled(tree.root, "Expand chart: Revenue").props.onPress());
+  expect(labelled(tree.root, "Previous chart").props.accessibilityState.disabled).toBe(true);
+  expect(tree.root.findByProps({ accessibilityLiveRegion: "polite" }).props.children).toEqual(["Chart ", 1, " of ", 3]);
+  act(() => labelled(tree.root, "Next chart").props.onPress());
+  expect(tree.root.findAllByProps({ children: "Retention" }).length).toBeGreaterThan(0);
+  act(() => labelled(tree.root, "Next chart").props.onPress());
+  expect(labelled(tree.root, "Next chart").props.accessibilityState.disabled).toBe(true);
+  act(() => labelled(tree.root, "Previous chart").props.onPress());
+  expect(tree.root.findAllByProps({ children: "Retention" }).length).toBeGreaterThan(0);
+  act(() => labelled(tree.root, "Close chart").props.onPress());
+  expect(tree.root.findAll((node) => node.props.accessibilityViewIsModal === true)).toHaveLength(0);
+  act(() => tree.unmount());
 });

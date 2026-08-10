@@ -90,6 +90,7 @@ export const ImageLightbox: Story = {
     await expect(dialog).toBeVisible();
     expect(within(dialog).queryByText("responsive-layout-preview.svg")).toBeNull();
     expect(within(dialog).getByAltText("responsive-layout-preview.svg")).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: "Next image" })).not.toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
     await userEvent.click(canvas.getByRole("button", {
@@ -98,6 +99,47 @@ export const ImageLightbox: Story = {
     await expect(page.findByRole("dialog", {
       name: "Image preview: responsive-layout-preview.svg",
     })).resolves.toBeVisible();
+  },
+};
+
+export const MessageImageGalleryNavigation: Story = {
+  args: {
+    message: {
+      ...message,
+      attachments: [
+        { id: "first.svg", filename: "first-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
+        { id: "notes.pdf", filename: "notes.pdf", mime: "application/pdf", size: 2_048 },
+        { id: "second.svg", filename: "second-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
+        { id: "clip.mp4", filename: "clip.mp4", mime: "video/mp4", size: 4_096 },
+        { id: "third.svg", filename: "third-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
+      ],
+    },
+  },
+  parameters: { docs: { description: { story: "A single message with images mixed among other files. The modal navigates only its three previewable images." } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Preview first-dashboard.svg" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "Image preview: first-dashboard.svg" });
+    const firstControls = within(dialog);
+    expect(firstControls.getByText("Image 1 of 3")).toBeVisible();
+    expect(firstControls.getByRole("button", { name: "Previous image" })).toBeDisabled();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(page.findByRole("dialog", { name: "Image preview: second-dashboard.svg" })).resolves.toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Next image" }));
+    expect(page.getByText("Image 3 of 3")).toBeVisible();
+    expect(page.getByRole("button", { name: "Next image" })).toBeDisabled();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(page.getByText("Image 2 of 3")).toBeVisible();
+    await userEvent.keyboard("{Alt>}{ArrowRight}{/Alt}");
+    expect(page.getByText("Image 2 of 3")).toBeVisible();
+    const close = page.getByRole("button", { name: "Close image preview" });
+    close.focus();
+    await userEvent.keyboard("{Tab}");
+    expect(page.getByRole("button", { name: "Previous image" })).toHaveFocus();
+    await userEvent.click(close);
+    expect(canvas.getByRole("button", { name: "Preview first-dashboard.svg" })).toHaveFocus();
+    await userEvent.click(canvas.getByRole("button", { name: "Preview first-dashboard.svg" }));
   },
 };
 

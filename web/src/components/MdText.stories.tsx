@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, waitFor } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { fixtureMarkdown } from "@agora/core/testing/fixtures";
 import { MdText } from "./MdText";
 
@@ -59,8 +59,51 @@ export const EChartsMessage: Story = {
   play: async ({ canvasElement }) => {
     await waitFor(() => expect(canvasElement.querySelector(".ago-chart-block canvas")).toBeInTheDocument());
     await expect(canvasElement.querySelector(".md-echarts")).not.toBeInTheDocument();
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Expand chart: Weekly activity" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "Weekly activity" });
+    expect(within(dialog).queryByRole("button", { name: "Next chart" })).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close chart" }));
   },
   parameters: {
     docs: { description: { story: "Exercises an ECharts fence through the real markdown message renderer." } },
+  },
+};
+
+const chartFence = (title: string, data: number[]) => [
+  "```echarts",
+  JSON.stringify({ title: { text: title }, xAxis: { type: "category", data: ["A", "B", "C"] }, yAxis: { type: "value" }, series: [{ type: "bar", data }] }),
+  "```",
+].join("\n");
+
+export const MultiChartMessageNavigation: Story = {
+  args: {
+    text: [
+      "Three chart fences in one message; the invalid middle fence is not part of navigation.",
+      chartFence("Revenue", [12, 18, 24]),
+      "```echarts\n{ invalid json\n```",
+      chartFence("Retention", [72, 78, 81]),
+      chartFence("Activation", [44, 51, 63]),
+    ].join("\n\n"),
+  },
+  parameters: { docs: { description: { story: "Message-level chart gallery navigation with an invalid fence excluded from the valid chart count." } } },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelectorAll(".ago-chart-block canvas")).toHaveLength(3));
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Expand chart: Revenue" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByRole("dialog", { name: "Revenue" })).resolves.toBeVisible();
+    expect(page.getByText("Chart 1 of 3")).toBeVisible();
+    expect(page.getByRole("button", { name: "Previous chart" })).toBeDisabled();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(page.findByRole("dialog", { name: "Retention" })).resolves.toBeVisible();
+    await userEvent.keyboard("{Alt>}{ArrowRight}{/Alt}");
+    await expect(page.findByRole("dialog", { name: "Retention" })).resolves.toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Next chart" }));
+    expect(page.getByText("Chart 3 of 3")).toBeVisible();
+    expect(page.getByRole("button", { name: "Next chart" })).toBeDisabled();
+    await userEvent.click(page.getByRole("button", { name: "Previous chart" }));
+    expect(page.getByText("Chart 2 of 3")).toBeVisible();
   },
 };
