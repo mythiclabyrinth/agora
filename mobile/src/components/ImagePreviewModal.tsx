@@ -32,21 +32,25 @@ export function ImagePreviewModal({ source, filename, index, total, onPrevious, 
           <Image key={filename} source={source} style={styles.image} contentFit="contain" accessible
             accessibilityLabel={filename} />
           {gallery ? (
-            <View style={styles.navigation}>
+            <>
               <Pressable accessibilityRole="button" accessibilityLabel="Previous image"
                 accessibilityState={{ disabled: index === 0 }} disabled={index === 0}
-                style={({ pressed }) => [styles.navButton, index === 0 && styles.disabled, pressed && styles.pressed]}
+                style={({ pressed }) => [styles.navButton, styles.navPrev, { left: Math.max(10, insets.left) },
+                  index === 0 && styles.disabled, pressed && styles.pressed]}
                 onPress={onPrevious}>
-                <Icon icon={ChevronLeft} size={21} color="#fff" />
+                <Icon icon={ChevronLeft} size={24} color="#fff" />
               </Pressable>
-              <Text accessibilityLiveRegion="polite" style={styles.position}>Image {index + 1} of {total}</Text>
               <Pressable accessibilityRole="button" accessibilityLabel="Next image"
                 accessibilityState={{ disabled: index === total - 1 }} disabled={index === total - 1}
-                style={({ pressed }) => [styles.navButton, index === total - 1 && styles.disabled, pressed && styles.pressed]}
+                style={({ pressed }) => [styles.navButton, styles.navNext, { right: Math.max(10, insets.right) },
+                  index === total - 1 && styles.disabled, pressed && styles.pressed]}
                 onPress={onNext}>
-                <Icon icon={ChevronRight} size={21} color="#fff" />
+                <Icon icon={ChevronRight} size={24} color="#fff" />
               </Pressable>
-            </View>
+              <View style={[styles.counterPill, { bottom: Math.max(14, insets.bottom) }]} pointerEvents="none">
+                <Text accessibilityLiveRegion="polite" style={styles.position}>Image {index + 1} of {total}</Text>
+              </View>
+            </>
           ) : null}
         </View>
       </View>
@@ -70,8 +74,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(20,22,30,0.92)",
   },
   image: { flex: 1, width: "100%" },
-  navigation: { width: "100%", minHeight: 56, paddingTop: 8, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  navButton: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(20,22,30,0.96)" },
+  navButton: {
+    width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(20,22,30,0.82)", borderWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.25)",
+  },
+  navPrev: { position: "absolute", top: "50%", marginTop: -22, zIndex: 1 },
+  navNext: { position: "absolute", top: "50%", marginTop: -22, zIndex: 1 },
+  counterPill: {
+    position: "absolute", alignSelf: "center", paddingHorizontal: 14, paddingVertical: 6,
+    borderRadius: 999, backgroundColor: "rgba(20,22,30,0.82)",
+    borderWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.18)",
+  },
   disabled: { opacity: 0.35 },
   pressed: { opacity: 0.7 },
   position: { color: "#d1d5db", fontSize: 13, fontWeight: "600" },

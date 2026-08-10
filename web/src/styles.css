@@ -1104,15 +1104,33 @@ a.btn { text-decoration: none; }
   display: block; max-width: min(92vw, 1400px); max-height: 82vh;
   object-fit: contain; border-radius: 10px; box-shadow: 0 18px 60px rgba(0,0,0,.55);
 }
+.ago-media-arrow {
+  position: fixed; top: 50%; transform: translateY(-50%); z-index: 2;
+  display: grid; place-items: center; width: 48px; height: 48px;
+  border: 1px solid rgba(255,255,255,.16); border-radius: 50%;
+  background: rgba(20,22,30,.72); color: white; cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.ago-media-arrow.prev { left: 20px; }
+.ago-media-arrow.next { right: 20px; }
+.ago-media-arrow:hover:not(:disabled) { background: rgba(46,50,66,.92); border-color: rgba(255,255,255,.34); }
+.ago-media-arrow:disabled { opacity: .3; cursor: default; }
+.ago-media-arrow .ico { width: 22px; height: 22px; }
+.ago-media-counter {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 2;
+  padding: 6px 14px; border-radius: 999px; background: rgba(20,22,30,.82);
+  border: 1px solid rgba(255,255,255,.12); color: var(--dim); font-size: 12px; white-space: nowrap;
+}
 .ago-media-navigation {
-  display: grid; grid-template-columns: minmax(110px, 1fr) auto minmax(110px, 1fr);
-  align-items: center; gap: 12px; width: 100%; margin-top: 12px; color: var(--dim); font-size: 12px;
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: center; gap: 12px; width: 100%; color: var(--dim); font-size: 12px;
 }
 .ago-media-navigation button {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 38px;
-  padding: 7px 12px; border: 1px solid rgba(255,255,255,.2); border-radius: 8px;
+  padding: 7px 14px; border: 1px solid rgba(255,255,255,.2); border-radius: 8px;
   background: rgba(20,22,30,.92); color: white; cursor: pointer;
 }
+.ago-media-navigation button:first-child { justify-self: start; }
 .ago-media-navigation button:last-child { justify-self: end; }
 .ago-media-navigation button:disabled { opacity: .38; cursor: default; }
 .ago-media-navigation .ico { width: 15px; height: 15px; }
@@ -1120,7 +1138,11 @@ a.btn { text-decoration: none; }
   .ago-image-lightbox { padding: 12px; }
   .ago-image-lightbox-inner { width: 100%; }
   .ago-image-lightbox-inner .ago-media-frame > img { max-width: 100%; max-height: 76vh; }
-  .ago-media-navigation { grid-template-columns: 1fr auto 1fr; gap: 8px; }
+  .ago-media-arrow { width: 44px; height: 44px; }
+  .ago-media-arrow.prev { left: 10px; }
+  .ago-media-arrow.next { right: 10px; }
+  .ago-media-counter { bottom: 14px; }
+  .ago-media-navigation { gap: 8px; }
   .ago-media-navigation button { min-width: 44px; min-height: 44px; padding: 7px; font-size: 0; }
 }
 .ago-image-lightbox-close {
