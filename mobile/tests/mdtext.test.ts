@@ -165,3 +165,16 @@ test("chart modal navigates valid charts in one message and skips invalid fences
   expect(tree.root.findAll((node) => node.props.accessibilityViewIsModal === true)).toHaveLength(0);
   act(() => tree.unmount());
 });
+
+test("chart modal closes when the message text changes", () => {
+  const chart = (title: string) => `\`\`\`echarts\n${JSON.stringify({
+    title: { text: title }, xAxis: { data: ["A"] }, yAxis: {}, series: [{ type: "bar", data: [1] }],
+  })}\n\`\`\``;
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text: chart("Before") })); });
+  act(() => labelled(tree.root, "Expand chart: Before").props.onPress());
+  expect(labelled(tree.root, "Close chart")).toBeDefined();
+  act(() => tree.update(React.createElement(MdText, { text: chart("After") })));
+  expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Close chart")).toHaveLength(0);
+  act(() => tree.unmount());
+});

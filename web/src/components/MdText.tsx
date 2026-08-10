@@ -60,7 +60,6 @@ export function MdText({ text, mentions }: { text: string; mentions?: MentionInd
         : <div key={part.key} className="md-text-segment" dangerouslySetInnerHTML={{ __html: part.html }} />)}
       {activeChart !== null && validCharts[activeChart] ? (
         <ChartModal
-          key={validCharts[activeChart].key}
           chart={validCharts[activeChart].chart}
           source={validCharts[activeChart].source}
           index={activeChart}
