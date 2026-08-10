@@ -40,7 +40,10 @@ export function ChartModal({ chart, index, total, onPrevious, onNext, onClose }:
 
   return (
     <Modal animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
-      <View style={[styles.modal, { paddingTop: insets.top, paddingBottom: insets.bottom }]} accessibilityViewIsModal>
+      <View style={[styles.modal, {
+        paddingTop: insets.top, paddingBottom: insets.bottom,
+        paddingLeft: insets.left, paddingRight: insets.right,
+      }]} accessibilityViewIsModal>
         <View style={styles.modalHead}>
           <Icon icon={BarChart3} size={16} color={colors.a2} />
           <Text style={styles.modalTitle} numberOfLines={1}>{chart.title}</Text>

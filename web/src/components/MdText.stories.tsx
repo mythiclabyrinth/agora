@@ -105,5 +105,8 @@ export const MultiChartMessageNavigation: Story = {
     expect(page.getByRole("button", { name: "Next chart" })).toBeDisabled();
     await userEvent.click(page.getByRole("button", { name: "Previous chart" }));
     expect(page.getByText("Chart 2 of 3")).toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Close chart" }));
+    expect(canvas.getByRole("button", { name: "Expand chart: Revenue" })).toHaveFocus();
+    await userEvent.click(canvas.getByRole("button", { name: "Expand chart: Revenue" }));
   },
 };

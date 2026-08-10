@@ -21,7 +21,10 @@ export function ImagePreviewModal({ source, filename, index, total, onPrevious, 
       <View style={styles.root} accessibilityViewIsModal>
         <Pressable accessibilityRole="button" accessibilityLabel="Dismiss image preview"
           style={styles.backdrop} onPress={onClose} />
-        <View style={[styles.content, { paddingTop: Math.max(12, insets.top), paddingBottom: Math.max(12, insets.bottom) }]}>
+        <View style={[styles.content, {
+          paddingTop: Math.max(12, insets.top), paddingBottom: Math.max(12, insets.bottom),
+          paddingLeft: Math.max(20, insets.left), paddingRight: Math.max(20, insets.right),
+        }]}>
           <Pressable accessibilityRole="button" accessibilityLabel="Close image preview"
             style={styles.close} onPress={onClose}>
             <Icon icon={X} size={22} color="#fff" />
@@ -58,12 +61,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(4,6,10,0.92)",
   },
   content: {
-    width: "100%", height: "100%", paddingHorizontal: 20, alignItems: "center",
+    width: "100%", height: "100%", alignItems: "center",
     justifyContent: "center",
   },
   close: {
-    position: "absolute", top: 0, right: 0, zIndex: 1, width: 40, height: 40,
-    borderRadius: 20, alignItems: "center", justifyContent: "center",
+    position: "absolute", top: 0, right: 0, zIndex: 1, width: 44, height: 44,
+    borderRadius: 22, alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(20,22,30,0.92)",
   },
   image: { flex: 1, width: "100%" },

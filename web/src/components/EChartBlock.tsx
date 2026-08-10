@@ -51,11 +51,11 @@ export function ChartModal({ chart, source, index, total, onPrevious, onNext, on
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
-  const onPreviousRef = useRef(onPrevious);
-  const onNextRef = useRef(onNext);
+  const onPreviousRef = useRef<(() => void) | undefined>(onPrevious);
+  const onNextRef = useRef<(() => void) | undefined>(onNext);
   onCloseRef.current = onClose;
-  onPreviousRef.current = onPrevious;
-  onNextRef.current = onNext;
+  onPreviousRef.current = index > 0 ? onPrevious : undefined;
+  onNextRef.current = index < total - 1 ? onNext : undefined;
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -63,8 +63,14 @@ export function ChartModal({ chart, source, index, total, onPrevious, onNext, on
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onCloseRef.current();
       if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        if (event.key === "ArrowLeft") onPreviousRef.current();
-        if (event.key === "ArrowRight") onNextRef.current();
+        if (event.key === "ArrowLeft" && onPreviousRef.current) {
+          event.preventDefault();
+          onPreviousRef.current();
+        }
+        if (event.key === "ArrowRight" && onNextRef.current) {
+          event.preventDefault();
+          onNextRef.current();
+        }
       }
       if (event.key === "Tab") {
         const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
@@ -96,7 +102,7 @@ export function ChartModal({ chart, source, index, total, onPrevious, onNext, on
         </header>
         <div className="ago-chart-scroll expanded">
           <div className="ago-chart-stage" style={{ width: chart.width ?? "100%", minWidth: "100%" }}>
-            <ChartCanvas chart={chart} source={source} expanded />
+            <ChartCanvas key={source} chart={chart} source={source} expanded />
           </div>
         </div>
         {total > 1 ? (

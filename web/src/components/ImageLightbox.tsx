@@ -25,9 +25,9 @@ export function ImageLightbox({
   const onPreviousRef = useRef(onPrevious);
   const onNextRef = useRef(onNext);
   onCloseRef.current = onClose;
-  onPreviousRef.current = onPrevious;
-  onNextRef.current = onNext;
   const gallery = index !== undefined && total !== undefined && total > 1;
+  onPreviousRef.current = gallery && index > 0 ? onPrevious : undefined;
+  onNextRef.current = gallery && index < total - 1 ? onNext : undefined;
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -39,8 +39,14 @@ export function ImageLightbox({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onCloseRef.current();
       if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        if (event.key === "ArrowLeft") onPreviousRef.current?.();
-        if (event.key === "ArrowRight") onNextRef.current?.();
+        if (event.key === "ArrowLeft" && onPreviousRef.current) {
+          event.preventDefault();
+          onPreviousRef.current();
+        }
+        if (event.key === "ArrowRight" && onNextRef.current) {
+          event.preventDefault();
+          onNextRef.current();
+        }
       }
       if (event.key === "Tab") {
         const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
