@@ -4,7 +4,7 @@
 import React, { useState } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useEventListener } from "expo";
-import { Image, type ImageSource } from "expo-image";
+import { Image } from "expo-image";
 import { useVideoPlayer, VideoView } from "expo-video";
 // The legacy API is the one with documented header support on downloads.
 import * as FileSystem from "expo-file-system/legacy";
@@ -75,8 +75,13 @@ export function Attachments({
   /** Story/testing seam for deterministic inline images; production omits it. */
   imageSource?: (attachment: Attachment) => { uri: string; headers?: Record<string, string> };
 }) {
-  const [preview, setPreview] = useState<{ source: ImageSource; filename: string } | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [failedVideos, setFailedVideos] = useState<Set<string>>(new Set());
+  const images = React.useMemo(() => attachments.filter(att => att.mime.startsWith("image/")), [attachments]);
+  const previewIndex = previewId === null ? -1 : images.findIndex(image => image.id === previewId);
+  React.useEffect(() => {
+    if (previewId !== null && previewIndex < 0) setPreviewId(null);
+  }, [previewId, previewIndex]);
   if (!attachments || attachments.length === 0) return null;
   return (
     <View style={styles.wrap}>
@@ -88,7 +93,7 @@ export function Attachments({
         return att.mime.startsWith("image/") ? (
           <Pressable key={att.id} accessibilityRole="button" style={{ alignSelf: "flex-start" }}
             accessibilityLabel={`Preview ${att.filename}`}
-            onPress={() => setPreview({ source, filename: att.filename })}>
+            onPress={() => setPreviewId(att.id)}>
             <Image source={source} style={styles.image} contentFit="cover" transition={100} />
           </Pressable>
         ) : NATIVE_VIDEO.test(att.mime) && !failedVideos.has(att.id)
@@ -99,7 +104,20 @@ export function Attachments({
           <FileChip key={att.id} session={session} att={att} />
         );
       })}
-      {preview ? <ImagePreviewModal {...preview} onClose={() => setPreview(null)} /> : null}
+      {previewIndex >= 0 ? (
+        <ImagePreviewModal
+          source={imageSource?.(images[previewIndex]) ?? {
+            uri: fileUrl(session, images[previewIndex].id),
+            headers: authHeaders(session),
+          }}
+          filename={images[previewIndex].filename}
+          index={previewIndex}
+          total={images.length}
+          onPrevious={() => setPreviewId(images[Math.max(0, previewIndex - 1)].id)}
+          onNext={() => setPreviewId(images[Math.min(images.length - 1, previewIndex + 1)].id)}
+          onClose={() => setPreviewId(null)}
+        />
+      ) : null}
     </View>
   );
 }

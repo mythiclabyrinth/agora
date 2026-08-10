@@ -1,10 +1,10 @@
 import React from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { parseMd, type Span } from "@agora/core";
+import { normalizeEChart, parseMd, type NormalizedEChart, type Span } from "@agora/core";
 import { openLink } from "../lib/openLink";
 import { colors, mono } from "../lib/theme";
 import { MermaidBlock } from "./Mermaid";
-import { EChartBlock } from "./EChart";
+import { ChartModal, EChartBlock } from "./EChart";
 
 function SpanText({ span }: { span: Span }) {
   switch (span.kind) {
@@ -80,7 +80,24 @@ export function columnWidths(head: Span[][], rows: Span[][][]): number[] {
 }
 
 export function MdText({ text, onLongPress }: { text: string; onLongPress?: () => void }) {
-  const blocks = React.useMemo(() => parseMd(text), [text]);
+  const blocks = React.useMemo(() => {
+    let validIndex = 0;
+    return parseMd(text).map((block, blockIndex) => {
+      if (block.kind !== "codeblock" || block.lang !== "echarts") return { block, key: `${block.kind}-${blockIndex}` };
+      try {
+        const chart = normalizeEChart(block.text);
+        return { block, key: `chart-${blockIndex}-${chart.title}`, chart, error: "", validIndex: validIndex++ };
+      } catch (error) {
+        return { block, key: `chart-${blockIndex}-invalid`, chart: null as NormalizedEChart | null, error: (error as Error).message, validIndex: -1 };
+      }
+    });
+  }, [text]);
+  const validCharts = blocks.filter((entry): entry is typeof entry & { chart: NormalizedEChart; validIndex: number } => "chart" in entry && entry.chart !== null);
+  const [activeChart, setActiveChart] = React.useState<number | null>(null);
+  React.useEffect(() => setActiveChart(null), [text]);
+  React.useEffect(() => {
+    if (activeChart !== null && activeChart >= validCharts.length) setActiveChart(null);
+  }, [activeChart, validCharts.length]);
   // A horizontal ScrollView only scrolls when its own frame is narrower than
   // its content. Inside a shrink-to-fit bubble nothing hands it a definite
   // width, so it grows to content width and the bubble just clips it. Measure
@@ -93,14 +110,17 @@ export function MdText({ text, onLongPress }: { text: string; onLongPress?: () =
       style={styles.root}
       onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
     >
-      {blocks.map((b, i) => {
+      {blocks.map((entry, i) => {
+        const b = entry.block;
         switch (b.kind) {
           case "codeblock":
             if (b.lang === "mermaid") {
               return <MermaidBlock key={i} code={b.text} maxWidth={width} />;
             }
             if (b.lang === "echarts") {
-              return <EChartBlock key={i} code={b.text} maxWidth={width} />;
+              return <EChartBlock key={entry.key} code={b.text} chart={"chart" in entry ? entry.chart ?? null : null}
+                error={"error" in entry ? entry.error : ""} maxWidth={width}
+                onExpand={typeof entry.validIndex === "number" && entry.validIndex >= 0 ? () => setActiveChart(entry.validIndex!) : undefined} />;
             }
             return (
               <ScrollView
@@ -163,6 +183,13 @@ export function MdText({ text, onLongPress }: { text: string; onLongPress?: () =
             );
         }
       })}
+      {activeChart !== null && validCharts[activeChart] ? (
+        <ChartModal key={validCharts[activeChart].key} chart={validCharts[activeChart].chart}
+          index={activeChart} total={validCharts.length}
+          onPrevious={() => setActiveChart(current => current === null ? null : Math.max(0, current - 1))}
+          onNext={() => setActiveChart(current => current === null ? null : Math.min(validCharts.length - 1, current + 1))}
+          onClose={() => setActiveChart(null)} />
+      ) : null}
     </View>
   );
 }

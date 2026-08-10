@@ -1,15 +1,20 @@
 /* Attachment strip under a bubble: inline images and download chips. */
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Message } from "@agora/core";
 import { fileUrl, humanSize, BROWSER_IMAGE, BROWSER_VIDEO } from "../lib/files";
 import { Icon } from "../lib/icons";
 import { ImageLightbox } from "./ImageLightbox";
 
 export function Attachments({ message }: { message: Message }) {
-  const [preview, setPreview] = useState<{ url: string; filename: string } | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [failedVideos, setFailedVideos] = useState<Set<string>>(new Set());
   const files = message.attachments || [];
+  const images = useMemo(() => files.filter(f => BROWSER_IMAGE.test(f.mime || "")), [files]);
+  const previewIndex = previewId === null ? -1 : images.findIndex(image => image.id === previewId);
+  useEffect(() => {
+    if (previewId !== null && previewIndex < 0) setPreviewId(null);
+  }, [previewId, previewIndex]);
   if (!files.length) return null;
   return (
     <div className="ago-atts">
@@ -19,7 +24,7 @@ export function Attachments({ message }: { message: Message }) {
           return (
             <button key={f.id} type="button" className="ago-att-img"
               aria-label={`Preview ${f.filename}`}
-              onClick={() => setPreview({ url, filename: f.filename })}>
+              onClick={() => setPreviewId(f.id)}>
               <img src={url} alt={f.filename} loading="lazy" />
             </button>
           );
@@ -42,7 +47,17 @@ export function Attachments({ message }: { message: Message }) {
           </a>
         );
       })}
-      {preview && <ImageLightbox {...preview} onClose={() => setPreview(null)} />}
+      {previewIndex >= 0 ? (
+        <ImageLightbox
+          url={fileUrl(images[previewIndex].id)}
+          filename={images[previewIndex].filename}
+          index={previewIndex}
+          total={images.length}
+          onPrevious={() => setPreviewId(images[Math.max(0, previewIndex - 1)].id)}
+          onNext={() => setPreviewId(images[Math.min(images.length - 1, previewIndex + 1)].id)}
+          onClose={() => setPreviewId(null)}
+        />
+      ) : null}
     </div>
   );
 }

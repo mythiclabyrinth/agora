@@ -464,9 +464,54 @@ test("sent image attachments open and close the full-screen preview", () => {
   expect(modal.findAll((node) =>
     node.type === Text && node.props.children === "agent-diagram.svg"
   )).toHaveLength(0);
+  expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Next image")).toHaveLength(0);
   act(() => labelled(tree.root, "Close image preview").props.onPress());
   expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Close image preview"))
     .toHaveLength(0);
+  act(() => tree.unmount());
+});
+
+test("sent image gallery navigates only images in the same mixed attachment message", () => {
+  const attachments = [
+    { id: "first", filename: "first.png", mime: "image/png", size: 100 },
+    { id: "notes", filename: "notes.pdf", mime: "application/pdf", size: 200 },
+    { id: "second", filename: "second.png", mime: "image/png", size: 300 },
+    { id: "clip", filename: "clip.mp4", mime: "video/mp4", size: 400 },
+    { id: "third", filename: "third.png", mime: "image/png", size: 500 },
+  ];
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    tree = TestRenderer.create(React.createElement(Attachments, {
+      session: { baseUrl: "https://example.invalid", token: "test" }, attachments,
+      imageSource: (attachment: { id: string }) => ({ uri: `data:image/png,${attachment.id}` }),
+    }));
+  });
+  act(() => labelled(tree.root, "Preview first.png").props.onPress());
+  expect(labelled(tree.root, "Previous image").props.accessibilityState.disabled).toBe(true);
+  expect(tree.root.findByProps({ accessibilityLiveRegion: "polite" }).props.children).toEqual(["Image ", 1, " of ", 3]);
+  act(() => labelled(tree.root, "Next image").props.onPress());
+  expect(labelled(tree.root, "second.png")).toBeDefined();
+  act(() => labelled(tree.root, "Next image").props.onPress());
+  expect(labelled(tree.root, "third.png")).toBeDefined();
+  expect(labelled(tree.root, "Next image").props.accessibilityState.disabled).toBe(true);
+  act(() => labelled(tree.root, "Previous image").props.onPress());
+  expect(labelled(tree.root, "second.png")).toBeDefined();
+  act(() => tree.unmount());
+});
+
+test("sent image gallery closes if its active attachment is removed", () => {
+  const props = (attachments: Array<{ id: string; filename: string; mime: string; size: number }>) => React.createElement(Attachments, {
+    session: { baseUrl: "https://example.invalid", token: "test" }, attachments,
+    imageSource: (attachment: { id: string }) => ({ uri: `data:image/png,${attachment.id}` }),
+  });
+  const first = { id: "first", filename: "first.png", mime: "image/png", size: 100 };
+  const second = { id: "second", filename: "second.png", mime: "image/png", size: 100 };
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(props([first, second])); });
+  act(() => labelled(tree.root, "Preview second.png").props.onPress());
+  expect(labelled(tree.root, "Close image preview")).toBeDefined();
+  act(() => tree.update(props([first])));
+  expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Close image preview")).toHaveLength(0);
   act(() => tree.unmount());
 });
 

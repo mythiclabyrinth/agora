@@ -30,3 +30,14 @@ export const WideTable: Story = {
 export const DenseTrendReport: Story = {
   args: { text: fixtureDenseTrendMessage },
 };
+
+export const MultiChartMessageNavigation: Story = {
+  args: {
+    text: [
+      "Multiple charts in one message:",
+      "```echarts\n{\"title\":{\"text\":\"Revenue\"},\"xAxis\":{\"data\":[\"A\",\"B\"]},\"yAxis\":{},\"series\":[{\"type\":\"bar\",\"data\":[12,18]}]}\n```",
+      "```echarts\n{ invalid json\n```",
+      "```echarts\n{\"title\":{\"text\":\"Retention\"},\"xAxis\":{\"data\":[\"A\",\"B\"]},\"yAxis\":{},\"series\":[{\"type\":\"line\",\"data\":[72,81]}]}\n```",
+    ].join("\n\n"),
+  },
+};

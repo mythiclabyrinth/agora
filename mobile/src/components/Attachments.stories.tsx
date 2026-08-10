@@ -31,6 +31,18 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const ImageAndFile: Story = {};
+export const MessageImageGalleryNavigation: Story = {
+  args: {
+    session,
+    imageSource,
+    attachments: [
+      { id: "first", filename: "first-dashboard.png", mime: "image/png", size: 128_000 },
+      { id: "plan", filename: "plan.pdf", mime: "application/pdf", size: 2_842_113 },
+      { id: "second", filename: "second-dashboard.png", mime: "image/png", size: 96_000 },
+      { id: "third", filename: "third-dashboard.png", mime: "image/png", size: 88_000 },
+    ],
+  },
+};
 export const Video: Story = {
   args: {
     session,
