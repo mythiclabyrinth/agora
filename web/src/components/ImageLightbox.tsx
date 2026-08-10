@@ -87,15 +87,19 @@ export function ImageLightbox({
           <img key={url} src={url} alt={filename} />
         </div>
         {gallery ? (
-          <div className="ago-media-navigation">
-            <button type="button" disabled={index === 0} aria-label="Previous image" onClick={onPrevious}>
-              <Icon name="chevron-left" /> Previous
+          <>
+            <button type="button" className="ago-media-arrow prev" disabled={index === 0}
+              aria-label="Previous image" onClick={onPrevious}>
+              <Icon name="chevron-left" />
             </button>
-            <span aria-live="polite" aria-atomic="true">Image {index + 1} of {total}</span>
-            <button type="button" disabled={index === total - 1} aria-label="Next image" onClick={onNext}>
-              Next <Icon name="chevron-right" />
+            <button type="button" className="ago-media-arrow next" disabled={index === total - 1}
+              aria-label="Next image" onClick={onNext}>
+              <Icon name="chevron-right" />
             </button>
-          </div>
+            <span className="ago-media-counter" aria-live="polite" aria-atomic="true">
+              Image {index + 1} of {total}
+            </span>
+          </>
         ) : null}
       </div>
     </div>

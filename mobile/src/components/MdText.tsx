@@ -184,7 +184,7 @@ export function MdText({ text, onLongPress }: { text: string; onLongPress?: () =
         }
       })}
       {activeChart !== null && validCharts[activeChart] ? (
-        <ChartModal key={validCharts[activeChart].key} chart={validCharts[activeChart].chart}
+        <ChartModal chart={validCharts[activeChart].chart}
           index={activeChart} total={validCharts.length}
           onPrevious={() => setActiveChart(current => current === null ? null : Math.max(0, current - 1))}
           onNext={() => setActiveChart(current => current === null ? null : Math.min(validCharts.length - 1, current + 1))}

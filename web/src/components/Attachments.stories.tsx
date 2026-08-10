@@ -107,11 +107,11 @@ export const MessageImageGalleryNavigation: Story = {
     message: {
       ...message,
       attachments: [
-        { id: "first.svg", filename: "first-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
+        { id: "storybook-large-landscape.svg", filename: "first-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
         { id: "notes.pdf", filename: "notes.pdf", mime: "application/pdf", size: 2_048 },
-        { id: "second.svg", filename: "second-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
+        { id: "storybook-portrait.svg", filename: "second-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
         { id: "clip.mp4", filename: "clip.mp4", mime: "video/mp4", size: 4_096 },
-        { id: "third.svg", filename: "third-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
+        { id: "storybook-wide.svg", filename: "third-dashboard.svg", mime: "image/svg+xml", size: 1_024 },
       ],
     },
   },
