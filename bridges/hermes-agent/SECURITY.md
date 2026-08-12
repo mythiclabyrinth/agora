@@ -14,5 +14,7 @@ platform, so room membership and `AGORA_ALLOWED_USERS` are security boundaries.
   ambient bot from turning the plugin into an execution path.
 - Attachments are untrusted input. Agora authenticates access and applies its
   size limits; Hermes still decides how its enabled tools process their content.
+- Outbound posts are fire-and-forget. Agora rejection frames are logged, but a
+  post is not synchronously acknowledged before Hermes continues.
 - Review changes before replacing the installed plugin. Hermes plugins are not
   sandboxed from the Hermes process or its credentials.

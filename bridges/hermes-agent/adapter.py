@@ -8,13 +8,12 @@ import json
 import logging
 import mimetypes
 import os
-import ssl
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import websockets
 
@@ -31,6 +30,14 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 _MAX_ATTACHMENTS = 5
 _DEFAULT_MAX_FILE_MB = 10
 logger = logging.getLogger(__name__)
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = build_opener(_NoRedirectHandler())
 
 
 def _truthy(value: Any) -> bool:
@@ -98,13 +105,14 @@ class AgoraAdapter(BasePlatformAdapter):
         self._temp_dir: Optional[tempfile.TemporaryDirectory] = None
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
+        await self.disconnect()
         try:
             self._socket = await websockets.connect(
                 self.socket_url,
                 open_timeout=20,
                 ping_interval=20,
                 ping_timeout=20,
-                max_size=16 * 1024 * 1024,
+                max_size=64 * 1024 * 1024,
             )
             await self._write({
                 "type": "hello",
@@ -156,7 +164,8 @@ class AgoraAdapter(BasePlatformAdapter):
                             frame.get("request_id", "unknown"),
                             frame.get("error", "unknown error"),
                         )
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                except Exception as error:
+                    logger.warning("Could not process Agora frame: %s", error)
                     continue
         finally:
             self._mark_disconnected()
@@ -206,32 +215,32 @@ class AgoraAdapter(BasePlatformAdapter):
         if not self._temp_dir:
             return paths, types
         for index, attachment in enumerate((frame.get("attachments") or [])[:_MAX_ATTACHMENTS]):
-            size = int(attachment.get("size") or 0)
-            if size > self.max_file_bytes:
-                continue
-            name = Path(str(attachment.get("filename") or f"attachment-{index}")).name
-            destination = Path(self._temp_dir.name) / f"{uuid.uuid4().hex}-{name}"
-            encoded = attachment.get("data_b64")
-            if encoded:
-                try:
-                    data = base64.b64decode(encoded, validate=True)
-                except ValueError:
+            try:
+                size = int(attachment.get("size") or 0)
+                if size > self.max_file_bytes:
                     continue
-            elif attachment.get("id"):
-                url = _http_file_url(self.socket_url, str(attachment["id"]), self.agent_id)
-                data = await asyncio.to_thread(self._download, url)
-            else:
-                continue
-            if len(data) > self.max_file_bytes:
-                continue
-            destination.write_bytes(data)
-            paths.append(str(destination))
-            types.append(str(attachment.get("mime") or mimetypes.guess_type(name)[0] or "application/octet-stream"))
+                name = Path(str(attachment.get("filename") or f"attachment-{index}")).name
+                destination = Path(self._temp_dir.name) / f"{uuid.uuid4().hex}-{name}"
+                encoded = attachment.get("data_b64")
+                if encoded:
+                    data = base64.b64decode(encoded, validate=True)
+                elif attachment.get("id"):
+                    url = _http_file_url(self.socket_url, str(attachment["id"]), self.agent_id)
+                    data = await asyncio.to_thread(self._download, url)
+                else:
+                    continue
+                if len(data) > self.max_file_bytes:
+                    continue
+                destination.write_bytes(data)
+                paths.append(str(destination))
+                types.append(str(attachment.get("mime") or mimetypes.guess_type(name)[0] or "application/octet-stream"))
+            except Exception as error:
+                logger.warning("Could not localize Agora attachment %s: %s", index, error)
         return paths, types
 
     def _download(self, url: str) -> bytes:
         request = Request(url, headers={"Authorization": f"Bearer {self.token}"})
-        with urlopen(request, timeout=30, context=ssl.create_default_context()) as response:
+        with _NO_REDIRECT_OPENER.open(request, timeout=30) as response:
             return response.read(self.max_file_bytes + 1)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
@@ -291,14 +300,22 @@ class AgoraAdapter(BasePlatformAdapter):
             await self._add_reaction(event.source.chat_id, event.message_id, self._ACK_EMOJI)
 
     async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        try:
+            numeric_message_id = int(message_id)
+        except (TypeError, ValueError):
+            return False
         await self._write({"type": "reaction", "agent_id": self.agent_id,
-                           "channel_id": chat_id, "message_id": int(message_id),
+                           "channel_id": chat_id, "message_id": numeric_message_id,
                            "emoji": emoji, "action": "add"})
         return True
 
     async def _remove_reaction(self, chat_id: str, message_id: str) -> bool:
+        try:
+            numeric_message_id = int(message_id)
+        except (TypeError, ValueError):
+            return False
         await self._write({"type": "reaction", "agent_id": self.agent_id,
-                           "channel_id": chat_id, "message_id": int(message_id),
+                           "channel_id": chat_id, "message_id": numeric_message_id,
                            "emoji": self._ACK_EMOJI, "action": "remove"})
         return True
 

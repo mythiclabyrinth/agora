@@ -5,6 +5,7 @@ import os
 import sys
 import types
 import unittest
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -169,6 +170,25 @@ class AdapterTests(unittest.TestCase):
         with self.assertLogs("agora_test_adapter", level="WARNING") as logs:
             asyncio.run(adapter._read_loop())
         self.assertIn("post request post-1", logs.output[0])
+
+    def test_invalid_outbound_reaction_id_is_ignored(self):
+        adapter = self.adapter()
+        self.assertFalse(asyncio.run(adapter._add_reaction("room", "uuid", "👀")))
+        self.assertFalse(asyncio.run(adapter._remove_reaction("room", "uuid")))
+
+    def test_attachment_failure_does_not_discard_valid_sibling(self):
+        adapter = self.adapter()
+        with tempfile.TemporaryDirectory() as directory:
+            adapter._temp_dir = types.SimpleNamespace(name=directory)
+            frame = {"attachments": [
+                {"filename": "bad.png", "mime": "image/png", "data_b64": "%%%"},
+                {"filename": "good.txt", "mime": "text/plain", "data_b64": "aGk="},
+            ]}
+            with self.assertLogs("agora_test_adapter", level="WARNING"):
+                paths, media_types = asyncio.run(adapter._localize_attachments(frame))
+            self.assertEqual(len(paths), 1)
+            self.assertEqual(Path(paths[0]).read_text(), "hi")
+            self.assertEqual(media_types, ["text/plain"])
 
 
 if __name__ == "__main__":

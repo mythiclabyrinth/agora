@@ -2,7 +2,8 @@
 
 Copy this directory to `~/.hermes/plugins/agora/` to connect Hermes Agent to
 Agora as a native gateway platform. The plugin dials out to Agora, so it opens
-no listener on the Hermes machine.
+no listener on the Hermes machine. This integration was verified against
+NousResearch/hermes-agent commit `3e09adb`.
 
 ## Install
 
@@ -39,6 +40,8 @@ are ignored.
 Inbound attachments are decoded or fetched through Agora's authenticated file
 route into a process-local temporary directory. Hermes receives their local
 paths through `MessageEvent.media_urls`; the directory is removed on disconnect.
+Outbound posts are fire-and-forget; immediate write failures are retryable and
+server-side rejections are logged by request ID.
 
 See [SECURITY.md](SECURITY.md) before enabling the plugin on a machine with
 sensitive tools or files. The rendered guide is bundled into every Agora at
