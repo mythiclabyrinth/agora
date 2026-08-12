@@ -308,6 +308,25 @@ test("success state shows the supplied token and remote socket address", () => {
   act(() => tree.unmount());
 });
 
+test("Hermes success links to its platform guide", async () => {
+  const open = jest.spyOn(WebBrowser, "openBrowserAsync").mockResolvedValue({
+    type: WebBrowser.WebBrowserResultType.OPENED,
+  });
+  const tree = renderFlow(
+    new RecordingApi(),
+    React.createElement(AddAgentFlow, {
+      initialKind: "hermes",
+      initialIssued: "hermes-token",
+    }),
+  );
+  await act(async () => pressText(tree.root, "Open setup guide"));
+  expect(open).toHaveBeenCalledWith(
+    "https://agora.example/docs/agents/hermes.html",
+  );
+  open.mockRestore();
+  act(() => tree.unmount());
+});
+
 test("local success opens the origin-hosted guide without a socket address", async () => {
   const open = jest.spyOn(WebBrowser, "openBrowserAsync").mockResolvedValue({
     type: WebBrowser.WebBrowserResultType.OPENED,

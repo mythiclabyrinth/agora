@@ -66,3 +66,14 @@ export const BridgeAccessPolicy: Story = {
     await expect(canvas.findByRole("switch", { name: "Public agent direct messages" })).resolves.toHaveAttribute("aria-checked", "false");
   },
 };
+
+export const HermesSetupGuide: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("tab", { name: "Add agent" }));
+    await userEvent.click(await canvas.findByRole("button", { name: /Hermes/ }));
+    await expect(canvas.findByRole("link", { name: "Open full setup guide" }))
+      .resolves.toHaveAttribute("href", "/docs/agents/hermes.html");
+    await expect(canvas.queryByText("Runs on your computer")).not.toBeInTheDocument();
+  },
+};

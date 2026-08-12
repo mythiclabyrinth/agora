@@ -41,6 +41,7 @@ jobs:
         run: |
           node scripts/build-docs.mjs --out _site --flavor pages
           cp -a web/public/docs/coding-agents _site/coding-agents
+          cp -a web/public/docs/agents/. _site/agents/
           mkdir -p _site/storybook
           cp -a web/storybook-static/. _site/storybook/
       - name: Upload Pages site

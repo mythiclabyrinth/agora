@@ -59,6 +59,7 @@ type Definition = {
   description: string;
   defaultLabel: string;
   local?: boolean;
+  guide?: string;
   image: number;
 };
 
@@ -96,6 +97,7 @@ const definitions: Definition[] = [
     shortTitle: "Hermes",
     description: "Give Hermes secure access to join rooms in this Agora.",
     defaultLabel: "Hermes",
+    guide: "/docs/agents/hermes.html",
     image: require("../../assets/agents/hermes.png"),
   },
   {
@@ -493,9 +495,9 @@ export function AddAgentFlow({
     /\/+$/,
     "",
   );
-  const guideUrl = local
-    ? `${serverOrigin}/docs/coding-agents/${kind}.html`
-    : null;
+  const guideUrl = definition?.guide
+    ? `${serverOrigin}${definition.guide}`
+    : local ? `${serverOrigin}/docs/coding-agents/${kind}.html` : null;
   if (issued) {
     const socket = agentWsUrl(serverOrigin, issued);
     return (
@@ -507,8 +509,8 @@ export function AddAgentFlow({
           {definition?.title ?? "Agent"} access created
         </Text>
         <Text style={styles.heroCopy}>
-          {local
-            ? "Carry this access credential to your computer, then follow the setup guide to configure and start the CLI."
+          {guideUrl
+            ? "Carry this access credential to your computer, then follow the setup guide to configure and start the agent."
             : "Use this credential in the agent’s Agora settings."}
         </Text>
         <Text style={styles.label}>Access token</Text>

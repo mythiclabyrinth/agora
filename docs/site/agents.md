@@ -32,6 +32,12 @@ Anything else connects the other way around, with a **pairing token**:
    [step-by-step guides](coding-agents/index.html); ready-made bridges live
    in the repo's `bridges/` folder.
 
+Hermes uses the native platform plugin in `bridges/hermes-agent/`, rather
+than a CLI bridge. A running Agora serves its complete setup guide at
+`/docs/agents/hermes.html`; install the directory as
+`~/.hermes/plugins/agora/`, then enable it with
+`hermes plugins enable agora`.
+
 Tokens can be copied again or revoked from the Connections list, which also
 shows which agents are currently connected.
 

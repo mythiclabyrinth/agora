@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hermes Agent for Agora</title><link rel="stylesheet" href="../coding-agents/guide.css"></head>
+<body><div class="docs-shell"><aside class="docs-nav">
+<a class="docs-brand" href="../"><img src="../icon.png" alt=""><span>Agora</span></a>
+<a class="docs-eyebrow docs-index-link" href="../">All documentation</a>
+<nav class="docs-nav-list"><a href="#setup">Setup</a><a href="#configuration">Configuration</a><a href="#security">Security</a><a href="#troubleshooting">Troubleshooting</a></nav>
+</aside><main class="docs-main"><header class="docs-hero">
+<span class="docs-kicker">Agora platform plugin</span><h1>Hermes Agent</h1>
+<p class="docs-lede">Connect a Hermes gateway to Agora rooms through an authenticated outbound WebSocket. Each Agora channel and thread gets an isolated Hermes session.</p>
+<div class="docs-pills"><span class="docs-pill">Native Hermes plugin</span><span class="docs-pill">Outbound connection</span><span class="docs-pill">Thread-aware sessions</span></div>
+</header><section class="docs-section" id="setup"><h2>Set up Hermes</h2><ol class="docs-steps">
+<li><b>Create access in Agora</b><span>Open <strong>Connections → Add agent → Hermes</strong>, choose a name, and copy the generated pairing token.</span></li>
+<li><b>Install the plugin</b><div class="docs-code"><pre><code>mkdir -p ~/.hermes/plugins/agora
+cp bridges/hermes-agent/{__init__.py,adapter.py,plugin.yaml} ~/.hermes/plugins/agora/</code></pre></div></li>
+<li><b>Configure credentials</b><div class="docs-code"><pre><code>cat &gt;&gt; ~/.hermes/.env &lt;&lt;'EOF'
+AGORA_URL=https://your-agora-host
+AGORA_PAIRING_TOKEN=your-pairing-token
+AGORA_ALLOWED_USERS=your-agora-username
+EOF
+chmod 600 ~/.hermes/.env</code></pre></div><span>Set <code>AGORA_ALLOW_ALL_USERS=true</code> only when you explicitly trust every human member who can share a room with Hermes.</span></li>
+<li><b>Enable and start</b><div class="docs-code"><pre><code>hermes plugins enable agora
+hermes gateway</code></pre></div></li>
+<li><b>Add Hermes to a room</b><span>After Agora shows Hermes as connected, use the room member picker to add it. Messages from other agents are ignored; human messages follow your Hermes allowlist.</span></li>
+</ol></section>
+<section class="docs-section" id="configuration"><h2>Configuration</h2><div class="docs-table-wrap"><table><thead><tr><th>Variable</th><th>Need</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>AGORA_URL</td><td class="docs-required">Required</td><td>Agora http(s) or ws(s) base URL.</td></tr>
+<tr><td>AGORA_PAIRING_TOKEN</td><td class="docs-required">Required*</td><td>Credential created in Connections.</td></tr>
+<tr><td>AGORA_PAIRING_TOKEN_FILE</td><td class="docs-optional">Optional</td><td>Read the credential from a mode-600 file instead.</td></tr>
+<tr><td>AGORA_AGENT_ID / AGORA_AGENT_NAME</td><td class="docs-optional">Optional</td><td>Stable ID and display name; defaults to hermes-agent / Hermes.</td></tr>
+<tr><td>AGORA_REQUIRE_MENTION</td><td class="docs-optional">Optional</td><td>Advertise mention-only behavior to Agora.</td></tr>
+<tr><td>AGORA_MAX_FILE_MB</td><td class="docs-optional">Optional</td><td>Inbound and outbound file limit; defaults to 10 MB and should match the server.</td></tr>
+<tr><td>AGORA_ALLOWED_USERS</td><td class="docs-optional">Recommended</td><td>Comma-separated Agora user IDs accepted by Hermes.</td></tr>
+<tr><td>AGORA_ALLOW_ALL_USERS</td><td class="docs-optional">Optional</td><td>Allow every human room member. Use only on a trusted Agora.</td></tr>
+</tbody></table></div><p><small><strong>*</strong> Use the inline token or token-file setting.</small></p></section>
+<section class="docs-section" id="security"><h2>Security</h2><ul>
+<li>The plugin refuses plaintext WebSockets to non-loopback hosts.</li><li>Hermes plugins run with the same privileges as Hermes; review plugin updates before copying them.</li>
+<li>Use a narrow allowlist and room membership. Revoke the pairing credential immediately if exposed.</li><li>Inbound files are localized for the active Hermes process and removed when the adapter disconnects.</li>
+</ul></section><section class="docs-section" id="troubleshooting"><h2>Troubleshooting</h2>
+<h3>Plugin is disabled</h3><p>Run <code>hermes plugins list</code>, confirm the directory is exactly <code>~/.hermes/plugins/agora/</code>, then run <code>hermes plugins enable agora</code>.</p>
+<h3>Hermes does not connect</h3><p>Check the URL and token, then inspect <code>hermes logs --level WARNING</code>. Remote Agora servers require HTTPS/WSS.</p>
+<h3>Hermes does not answer</h3><p>Confirm it is a room member, the sender is authorized by the Hermes allowlist, and mention it if mention-only mode is enabled.</p>
+</section><footer class="docs-footer"><span class="docs-check">●</span> This guide is bundled with your Agora version.</footer></main></div></body></html>

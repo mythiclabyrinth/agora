@@ -211,6 +211,10 @@ const NAV_GROUPS = [
   },
   { label: "Using Agora", items: guideItems("Using Agora") },
   {
+    label: "Agent integrations",
+    items: [{ title: "Hermes Agent", href: "agents/hermes.html" }],
+  },
+  {
     label: "Coding agents",
     items: [
       { title: "Overview", href: "coding-agents/index.html" },
