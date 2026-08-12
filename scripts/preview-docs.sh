@@ -14,6 +14,7 @@ port="${1:-8000}"
 rm -rf "$out"
 node scripts/build-docs.mjs --out "$out" --flavor pages
 cp -a web/public/docs/coding-agents "$out/coding-agents"
+cp -a web/public/docs/agents/. "$out/agents/"
 
 echo "Docs preview: http://localhost:$port/  (Ctrl-C to stop)"
 python3 -m http.server "$port" --directory "$out"

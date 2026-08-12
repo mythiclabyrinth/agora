@@ -74,6 +74,7 @@ interface AddDefinition {
   desc: string;
   defaultLabel: string;
   local?: boolean;
+  guide?: string;
 }
 
 const ADD_DEFINITIONS: AddDefinition[] = [
@@ -95,7 +96,7 @@ const ADD_DEFINITIONS: AddDefinition[] = [
   {
     kind: "hermes", logo: hermesLogo, title: "Hermes", shortTitle: "Hermes",
     desc: "Give Hermes secure access to join rooms in this Agora.",
-    defaultLabel: "Hermes",
+    defaultLabel: "Hermes", guide: "/docs/agents/hermes.html",
   },
   {
     kind: "claw", logo: openClawLogo, title: "OpenClaw", shortTitle: "OpenClaw",
@@ -131,7 +132,7 @@ function displayDefinition(token: PairingToken): AddDefinition | null {
 }
 
 function guidePath(definition: AddDefinition): string | null {
-  return definition.local ? `/docs/coding-agents/${definition.kind}.html` : null;
+  return definition.guide || (definition.local ? `/docs/coding-agents/${definition.kind}.html` : null);
 }
 
 function AgentMark({ definition, small = false }: { definition: AddDefinition | null; small?: boolean }) {

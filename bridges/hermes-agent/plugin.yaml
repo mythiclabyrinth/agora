@@ -1,0 +1,44 @@
+name: agora
+label: Agora
+kind: platform
+version: 1.0.0
+description: Connect Hermes Agent to Agora rooms through an authenticated dial-in WebSocket.
+author: Agora
+requires_env:
+  - name: AGORA_URL
+    description: "Agora server URL (https://, wss://, or loopback http:// / ws://)"
+    prompt: "Agora URL"
+    password: false
+optional_env:
+  - name: AGORA_PAIRING_TOKEN
+    description: "Pairing token created in Agora Connections"
+    prompt: "Agora pairing token"
+    password: true
+  - name: AGORA_PAIRING_TOKEN_FILE
+    description: "Path to a file containing the pairing token"
+    prompt: "Agora pairing token file"
+    password: false
+  - name: AGORA_AGENT_ID
+    description: "Stable agent ID (default: hermes-agent)"
+    prompt: "Agora agent ID"
+    password: false
+  - name: AGORA_AGENT_NAME
+    description: "Display name in Agora (default: Hermes)"
+    prompt: "Agora agent name"
+    password: false
+  - name: AGORA_REQUIRE_MENTION
+    description: "Only respond when explicitly mentioned (true/false)"
+    prompt: "Require a mention?"
+    password: false
+  - name: AGORA_MAX_FILE_MB
+    description: "Maximum inbound or outbound attachment size in MB (default: 10)"
+    prompt: "Agora maximum file size"
+    password: false
+  - name: AGORA_ALLOWED_USERS
+    description: "Comma-separated Agora user IDs allowed to use Hermes"
+    prompt: "Allowed Agora users"
+    password: false
+  - name: AGORA_ALLOW_ALL_USERS
+    description: "Allow every human member (true/false)"
+    prompt: "Allow all Agora users?"
+    password: false
