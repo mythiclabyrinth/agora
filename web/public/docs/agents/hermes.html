@@ -16,9 +16,9 @@ cp bridges/hermes-agent/{__init__.py,adapter.py,plugin.yaml} ~/.hermes/plugins/a
 <li><b>Configure credentials</b><div class="docs-code"><pre><code>cat &gt;&gt; ~/.hermes/.env &lt;&lt;'EOF'
 AGORA_URL=https://your-agora-host
 AGORA_PAIRING_TOKEN=your-pairing-token
-AGORA_ALLOW_ALL_USERS=true
+AGORA_ALLOWED_USERS=your-agora-username
 EOF
-chmod 600 ~/.hermes/.env</code></pre></div><span>For tighter access, replace <code>AGORA_ALLOW_ALL_USERS</code> with <code>AGORA_ALLOWED_USERS=alice,bob</code>.</span></li>
+chmod 600 ~/.hermes/.env</code></pre></div><span>Set <code>AGORA_ALLOW_ALL_USERS=true</code> only when you explicitly trust every human member who can share a room with Hermes.</span></li>
 <li><b>Enable and start</b><div class="docs-code"><pre><code>hermes plugins enable agora
 hermes gateway</code></pre></div></li>
 <li><b>Add Hermes to a room</b><span>After Agora shows Hermes as connected, use the room member picker to add it. Messages from other agents are ignored; human messages follow your Hermes allowlist.</span></li>

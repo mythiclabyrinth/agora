@@ -44,6 +44,16 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _thread_id(metadata: Optional[Dict[str, Any]]) -> Optional[int]:
+    value = (metadata or {}).get("thread_id")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _max_file_bytes(extra: dict) -> int:
     raw = os.getenv("AGORA_MAX_FILE_MB") or extra.get("max_file_mb", _DEFAULT_MAX_FILE_MB)
     try:
@@ -103,6 +113,7 @@ class AgoraAdapter(BasePlatformAdapter):
         self._reader_task: Optional[asyncio.Task] = None
         self._send_lock = asyncio.Lock()
         self._temp_dir: Optional[tempfile.TemporaryDirectory] = None
+        self._typing: set[tuple[str, Optional[int]]] = set()
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         await self.disconnect()
@@ -127,11 +138,21 @@ class AgoraAdapter(BasePlatformAdapter):
             self._reader_task = asyncio.create_task(self._read_loop(), name="agora-platform-reader")
             self._mark_connected()
             return True
-        except Exception:
+        except Exception as error:
+            parsed = urlsplit(self.socket_url)
+            logger.warning("Could not connect to Agora at %s://%s: %s",
+                           parsed.scheme, parsed.netloc, error)
             await self.disconnect()
             return False
 
     async def disconnect(self) -> None:
+        if self._socket is not None:
+            for chat_id, thread_id in tuple(self._typing):
+                try:
+                    await self._send_typing(chat_id, thread_id, False)
+                except Exception as error:
+                    logger.warning("Could not clear Agora typing state during disconnect: %s", error)
+        self._typing.clear()
         task, self._reader_task = self._reader_task, None
         if task and task is not asyncio.current_task():
             task.cancel()
@@ -145,10 +166,11 @@ class AgoraAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def _write(self, frame: dict) -> None:
-        if self._socket is None:
-            raise RuntimeError("Agora is not connected")
         async with self._send_lock:
-            await self._socket.send(json.dumps(frame))
+            socket = self._socket
+            if socket is None:
+                raise RuntimeError("Agora is not connected")
+            await socket.send(json.dumps(frame))
 
     async def _read_loop(self) -> None:
         try:
@@ -252,7 +274,7 @@ class AgoraAdapter(BasePlatformAdapter):
                 "request_id": request_id,
                 "agent_id": self.agent_id,
                 "channel_id": chat_id,
-                "thread_id": (metadata or {}).get("thread_id"),
+                "thread_id": _thread_id(metadata),
                 "text": content,
             })
         except Exception as error:
@@ -280,7 +302,7 @@ class AgoraAdapter(BasePlatformAdapter):
         try:
             await self._write({
                 "type": "post", "request_id": request_id, "agent_id": self.agent_id,
-                "channel_id": chat_id, "thread_id": (metadata or {}).get("thread_id"),
+                "channel_id": chat_id, "thread_id": _thread_id(metadata),
                 "text": caption or "", "attachments": [{
                     "filename": path.name,
                     "mime": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
@@ -292,12 +314,31 @@ class AgoraAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=request_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        thread_id = _thread_id(metadata)
+        try:
+            await self._send_typing(chat_id, thread_id, True)
+            self._typing.add((chat_id, thread_id))
+        except Exception as error:
+            logger.warning("Could not update Agora typing state: %s", error)
+
+    async def _send_typing(self, chat_id: str, thread_id: Optional[int], active: bool) -> None:
         await self._write({"type": "typing", "agent_id": self.agent_id,
-                           "channel_id": chat_id, "active": True})
+                           "channel_id": chat_id, "thread_id": thread_id,
+                           "active": active})
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         if event.source.chat_id and event.message_id:
             await self._add_reaction(event.source.chat_id, event.message_id, self._ACK_EMOJI)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
+        thread_id = _thread_id({"thread_id": event.source.thread_id})
+        try:
+            await self._send_typing(event.source.chat_id, thread_id, False)
+        except Exception as error:
+            logger.warning("Could not clear Agora typing state: %s", error)
+        finally:
+            self._typing.discard((event.source.chat_id, thread_id))
+        await super().on_processing_complete(event, outcome)
 
     async def _add_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         try:

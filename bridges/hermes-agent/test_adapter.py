@@ -36,6 +36,8 @@ class BasePlatformAdapter:
     def _mark_connected(self): pass
     def _mark_disconnected(self): pass
     async def handle_message(self, event): self.events.append(event)
+    async def on_processing_complete(self, event, outcome):
+        self.completed = (event, outcome)
 
 
 class MessageType(Enum):
@@ -189,6 +191,31 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(len(paths), 1)
             self.assertEqual(Path(paths[0]).read_text(), "hi")
             self.assertEqual(media_types, ["text/plain"])
+
+    def test_thread_ids_are_numeric_in_posts_and_typing_lifecycle(self):
+        class Socket:
+            def __init__(self): self.frames = []
+            async def send(self, raw): self.frames.append(json.loads(raw))
+            async def close(self): pass
+        adapter = self.adapter()
+        socket = Socket()
+        adapter._socket = socket
+        result = asyncio.run(adapter.send("room", "reply", metadata={"thread_id": "42"}))
+        self.assertTrue(result.success)
+        asyncio.run(adapter.send_typing("room", metadata={"thread_id": "42"}))
+        source = SessionSource(Platform.AGORA, "room", "Main", "thread",
+                               "alice", "Alice", thread_id="42", message_id="7")
+        event = MessageEvent(source=source)
+        asyncio.run(adapter.on_processing_complete(event, "success"))
+        self.assertEqual(socket.frames[0]["thread_id"], 42)
+        self.assertEqual(socket.frames[1]["thread_id"], 42)
+        self.assertTrue(socket.frames[1]["active"])
+        self.assertEqual(socket.frames[2]["thread_id"], 42)
+        self.assertFalse(socket.frames[2]["active"])
+        self.assertEqual(adapter.completed, (event, "success"))
+
+    def test_invalid_thread_id_falls_back_to_channel_root(self):
+        self.assertIsNone(self.module._thread_id({"thread_id": "not-a-number"}))
 
 
 if __name__ == "__main__":

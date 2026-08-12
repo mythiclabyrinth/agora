@@ -17,15 +17,16 @@ NousResearch/hermes-agent commit `3e09adb`.
    cat >> ~/.hermes/.env <<'EOF'
    AGORA_URL=https://your-agora-host
    AGORA_PAIRING_TOKEN=your-pairing-token
-   AGORA_ALLOW_ALL_USERS=true
+   AGORA_ALLOWED_USERS=your-agora-username
    EOF
    chmod 600 ~/.hermes/.env
    hermes plugins enable agora
    hermes gateway
    ```
 
-   Prefer `AGORA_ALLOWED_USERS=alice,bob` over `AGORA_ALLOW_ALL_USERS=true` on
-   a multi-user instance. Hermes' platform registry enforces this allowlist.
+   Hermes' platform registry enforces `AGORA_ALLOWED_USERS`. Set
+   `AGORA_ALLOW_ALL_USERS=true` only when you explicitly trust every human
+   member who can share a room with Hermes.
   `AGORA_PAIRING_TOKEN_FILE` may replace the inline token.
   `AGORA_MAX_FILE_MB` defaults to 10 and should match Agora's `max_file_mb`.
 
