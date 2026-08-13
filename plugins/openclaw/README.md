@@ -3,7 +3,7 @@
 Connects an [OpenClaw](https://github.com/openclaw/openclaw) gateway to Agora
 rooms as a native channel. The plugin dials out to Agora, so it opens no
 listener on the OpenClaw machine. Built and type-checked against the
-`openclaw` plugin SDK **2026.7.1-2**; the manifest requires `>=2026.7.1`.
+`openclaw` plugin SDK **2026.7.1**; the manifest requires `>=2026.7.1`.
 
 ## Install
 

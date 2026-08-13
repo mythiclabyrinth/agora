@@ -151,6 +151,9 @@ export async function startAgoraAccount(
     }
     await client.setTyping(route.channelId, route.threadId, true);
 
+    // Concurrent turns in one conversation share provider typing/reaction
+    // state. Proper overlap handling needs per-conversation reference counts;
+    // until then a finishing turn may clear another turn's indicators early.
     const clearIndicators = async () => {
       await client.setTyping(route.channelId, route.threadId, false);
       if (messageId !== null) {
@@ -221,13 +224,14 @@ export async function startAgoraAccount(
     }
   }
 
-  registerConnection(accountId, { client, account });
+  const connection = { client, account };
+  registerConnection(accountId, connection);
   client.start();
 
   await new Promise<void>(resolve => {
     const finish = () => {
       void (async () => {
-        unregisterConnection(accountId);
+        unregisterConnection(accountId, connection);
         await client.stop();
         await removeAttachmentDirectory(directory);
         resolve();

@@ -33,6 +33,15 @@ class FakeSocket extends EventEmitter {
   }
 }
 
+class DeferredSendSocket extends FakeSocket {
+  sendCallback?: (error?: Error) => void;
+
+  override send(payload: string, callback?: (error?: Error) => void): void {
+    this.sent.push(JSON.parse(payload) as Record<string, unknown>);
+    this.sendCallback = callback;
+  }
+}
+
 function createClient(over: Partial<ConstructorParameters<typeof AgoraClient>[0]> = {}) {
   const sockets: FakeSocket[] = [];
   const inbound: AgoraInboundFrame[] = [];
@@ -164,6 +173,31 @@ describe("AgoraClient", () => {
     sockets[0]!.emit("close", 1006, Buffer.from(""));
     await expect(pending).rejects.toThrow(/closed/);
     await client.stop();
+  });
+
+  it("does not leak an unhandled rejection when close wins the send race", async () => {
+    const socket = new DeferredSendSocket();
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    const { client } = createClient({
+      ackGraceMs: 5_000,
+      createSocket: () => socket as unknown as WebSocket,
+    });
+    try {
+      client.start();
+      socket.emitOpen();
+      socket.sendCallback?.(); // complete hello
+      const pending = client.post({ channelId: "c1", threadId: null, text: "hi" });
+      socket.emit("close", 1006, Buffer.from(""));
+      socket.sendCallback?.(new Error("send failed after close"));
+      await expect(pending).rejects.toThrow(/send failed after close/);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+      await client.stop();
+    }
   });
 
   it("refuses to send while disconnected", async () => {

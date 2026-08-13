@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { resolveTarget } from "./outbound.ts";
+import { vi } from "vitest";
+import { registerConnection, unregisterConnection } from "./clients.ts";
+import { resolveTarget, sendAgoraMedia } from "./outbound.ts";
 
 describe("resolveTarget", () => {
   it("accepts the shapes core hands back", () => {
@@ -19,5 +21,23 @@ describe("resolveTarget", () => {
 
   it("falls back to the channel root when the thread id is unusable", () => {
     expect(resolveTarget("c1", "not-a-number")).toEqual({ channelId: "c1", threadId: null });
+  });
+});
+
+describe("sendAgoraMedia", () => {
+  it("rejects a non-image before reading the file", async () => {
+    const readFile = vi.fn(async () => Buffer.from("pdf"));
+    const connection = {
+      client: { post: vi.fn() },
+      account: { maxFileBytes: 1024 },
+    } as never;
+    registerConnection("default", connection);
+    try {
+      await expect(sendAgoraMedia({ to: "c1", mediaUrl: "/tmp/report.pdf", readFile }))
+        .rejects.toThrow(/image attachments only/);
+      expect(readFile).not.toHaveBeenCalled();
+    } finally {
+      unregisterConnection("default", connection);
+    }
   });
 });

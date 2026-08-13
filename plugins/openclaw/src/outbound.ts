@@ -41,6 +41,7 @@ export async function sendAgoraText(params: {
     threadId: target.threadId,
     text: params.text,
   });
+  // This is Agora's correlated request id, not the stored message id.
   return { messageId };
 }
 
@@ -91,5 +92,6 @@ export async function sendAgoraMedia(params: {
     text: params.text ?? "",
     attachments: [attachment],
   });
+  // This is Agora's correlated request id, not the stored message id.
   return { messageId };
 }

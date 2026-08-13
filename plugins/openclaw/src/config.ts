@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { resolveSocketUrl } from "./url.ts";
 
 export const CHANNEL_ID = "agora";
@@ -101,7 +103,12 @@ export function readToken(
   if (direct) return direct;
   const file = section.pairingTokenFile?.trim() || env[ENV_TOKEN_FILE]?.trim();
   if (!file) return "";
-  return readFileSync(file, "utf8").trim();
+  const expanded = expandHomePath(file);
+  return readFileSync(expanded, "utf8").trim();
+}
+
+export function expandHomePath(file: string, home = homedir()): string {
+  return file === "~" ? home : file.startsWith("~/") ? join(home, file.slice(2)) : file;
 }
 
 export function resolveMaxFileBytes(section: AgoraAccountConfig): number {

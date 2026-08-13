@@ -44,7 +44,11 @@ export function resolveSocketUrl(baseUrl: string, token: string): string {
 export function resolveFileUrl(socketUrl: string, fileId: string, agentId: string): string {
   const parsed = new URL(socketUrl);
   parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
-  parsed.pathname = `/agent/files/${encodeURIComponent(fileId)}`;
+  const socketPath = parsed.pathname.replace(/\/+$/, "");
+  const prefix = socketPath.endsWith("/agent/ws")
+    ? socketPath.slice(0, -"/agent/ws".length)
+    : socketPath;
+  parsed.pathname = `${prefix}/agent/files/${encodeURIComponent(fileId)}`;
   parsed.search = "";
   parsed.searchParams.set("agent_id", agentId);
   return parsed.toString();

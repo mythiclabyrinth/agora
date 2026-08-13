@@ -17,13 +17,19 @@ export function registerConnection(accountId: string, connection: LiveAgoraConne
   connections.set(accountId, connection);
 }
 
-export function unregisterConnection(accountId: string): void {
-  connections.delete(accountId);
+export function unregisterConnection(accountId: string, connection: LiveAgoraConnection): void {
+  if (connections.get(accountId) === connection) connections.delete(accountId);
 }
 
 export function getConnection(accountId?: string | null): LiveAgoraConnection {
   const key = accountId ?? DEFAULT_ACCOUNT_ID;
-  const connection = connections.get(key) ?? (accountId ? undefined : [...connections.values()][0]);
+  let connection = connections.get(key);
+  if (!connection && !accountId) {
+    if (connections.size > 1) {
+      throw new Error("agora: accountId is required when multiple accounts are connected");
+    }
+    connection = connections.values().next().value;
+  }
   if (!connection) {
     throw new Error(`agora: account "${key}" is not connected`);
   }

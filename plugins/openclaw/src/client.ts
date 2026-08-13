@@ -35,7 +35,7 @@ export type AgoraClientOptions = {
 const DEFAULT_ACK_GRACE_MS = 600;
 const BASE_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
-/** Matches the hub's own 64 MB wire cap; a larger frame kills the connection. */
+/** Conservative client cap; the hub derives its actual wire cap from max_file_mb. */
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 
 type PendingPost = {
@@ -217,6 +217,10 @@ export class AgoraClient {
       timer.unref?.();
       this.pending.set(requestId, { resolve, reject, timer });
     });
+    // A close can reject this before socket.send reports its own error. Mark
+    // that rejection handled while the send is pending; it is still surfaced
+    // by the explicit await below when send succeeds.
+    void settled.catch(() => {});
     try {
       await this.send({
         type: "post",
@@ -237,6 +241,8 @@ export class AgoraClient {
       throw error;
     }
     await settled;
+    // Agora has no success ack, so this is the client request id, not a stored
+    // Agora message id and must not be used as a reaction target.
     return requestId;
   }
 

@@ -50,6 +50,13 @@ describe("resolveFileUrl", () => {
       "http://localhost:8080/agent/files/7?agent_id=openclaw",
     );
   });
+
+  it("keeps a reverse-proxy path prefix", () => {
+    const socket = resolveSocketUrl("https://example.com/agora/", "tok");
+    expect(resolveFileUrl(socket, "42", "openclaw")).toBe(
+      "https://example.com/agora/agent/files/42?agent_id=openclaw",
+    );
+  });
 });
 
 describe("redactSocketUrl", () => {

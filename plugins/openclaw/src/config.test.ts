@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   inspectAgoraAccount,
+  expandHomePath,
   isSenderAllowed,
   listAccountIds,
   resolveAgoraAccount,
@@ -58,6 +59,13 @@ describe("resolveAgoraAccount", () => {
       noEnv,
     );
     expect(account.token).toBe("file-token");
+  });
+
+  it("expands a home-relative token file path", () => {
+    expect(expandHomePath("~/.openclaw/agora-token", "/home/alice")).toBe(
+      "/home/alice/.openclaw/agora-token",
+    );
+    expect(expandHomePath("/secure/token", "/home/alice")).toBe("/secure/token");
   });
 
   it("refuses to start without a url or token", () => {
