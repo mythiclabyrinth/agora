@@ -139,6 +139,35 @@ async function main() {
     await page.locator(".ago-chan", { hasText: "general" }).first().click();
     await page.waitForSelector(".ago-chan.active", { timeout: 5000 });
     await page.waitForSelector("#ago-log .bubble", { timeout: 5000 });
+
+    const channel = page.locator(".ago-chan", { hasText: "general" }).first();
+    const caret = channel.locator(".ago-chan-caret");
+    const channelThreads = page.locator(`#ago-channel-threads-${SEED.channel} .ago-side-thread`);
+    await channelThreads.first().waitFor({ timeout: 5000 });
+    await caret.click();
+    if (!(await channel.evaluate(el => el.classList.contains("active")))) {
+      throw new Error("thread disclosure navigated away from the active channel");
+    }
+    if (await channelThreads.count()) throw new Error("collapsed channel still shows threads");
+    await page.reload();
+    await page.waitForSelector(".ago-chan.active", { timeout: 10000 });
+    if (await page.locator(`#ago-channel-threads-${SEED.channel} .ago-side-thread`).count()) {
+      throw new Error("collapsed channel state did not survive reload");
+    }
+    const restoredChannel = page.locator(".ago-chan", { hasText: "general" }).first();
+    await restoredChannel.locator(".ago-chan-caret").click();
+    await page.locator(`#ago-channel-threads-${SEED.channel} .ago-side-thread`).first().waitFor({ timeout: 5000 });
+
+    // The sidebar surfaces at most 5 threads, newest first.
+    const sideThread = page.locator(`#ago-channel-threads-${SEED.channel} .ago-side-thread`).first();
+    await sideThread.hover();
+    await sideThread.locator('button[title="Rename this thread"]').click();
+    const rename = page.getByRole("dialog", { name: "Rename thread" });
+    // Saving blank exercises the mutation while preserving the seed name for
+    // later inbox checks (blank resets the alias to the root's first line).
+    await rename.getByLabel("Thread name").fill("");
+    await rename.getByRole("button", { name: "Save" }).click();
+    await rename.waitFor({ state: "detached" });
   });
 
   await check("agent DMs: admin publishes an agent, opens a private conversation, and posts", async () => {

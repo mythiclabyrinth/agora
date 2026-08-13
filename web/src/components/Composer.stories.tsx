@@ -59,6 +59,32 @@ type Story = StoryObj<typeof meta>;
 
 export const Empty: Story = {};
 
+function InitiallyHiddenComposer(props: React.ComponentProps<typeof Composer>) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <>
+      <button onClick={() => setVisible(true)}>Show composer</button>
+      <div style={{ display: visible ? "block" : "none" }}>
+        <Composer {...props} />
+      </div>
+    </>
+  );
+}
+
+export const RestoresHeightAfterHiddenMount: Story = {
+  parameters: {
+    setup: () => useDrafts.getState().set("c:general", "Hidden draft line one\nHidden draft line two\nHidden draft line three"),
+  },
+  render: args => <InitiallyHiddenComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general") as HTMLTextAreaElement;
+    expect(input.getBoundingClientRect().height).toBe(0);
+    await userEvent.click(canvas.getByRole("button", { name: "Show composer" }));
+    await waitFor(() => expect(input.getBoundingClientRect().height).toBeGreaterThan(40));
+  },
+};
+
 export const HeightResetsAfterSend: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

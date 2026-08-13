@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { fixtureMe } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
 import { Topbar } from "./Topbar";
@@ -46,15 +46,15 @@ export const AdminConnected: Story = {
 
 export const Rename: Story = {
   play: async ({ canvasElement }) => {
-    const oldPrompt = window.prompt;
-    window.prompt = fn(() => "Thomas");
-    try {
-      await userEvent.click(within(canvasElement).getByTitle("Change how your name appears"));
-      await expect(rename).toHaveBeenCalledWith({ display_name: "Thomas" });
-      await expect(within(canvasElement).findByText("Thomas")).resolves.toBeVisible();
-    } finally {
-      window.prompt = oldPrompt;
-    }
+    await userEvent.click(within(canvasElement).getByTitle("Change how your name appears"));
+    const dialog = within(await within(document.body).findByRole("dialog", { name: "Change display name" }));
+    const input = dialog.getByLabelText("Display name");
+    await userEvent.clear(input);
+    await userEvent.type(input, "Thomas");
+    await userEvent.click(dialog.getByRole("button", { name: "Save" }));
+    await expect(rename).toHaveBeenCalledWith({ display_name: "Thomas" });
+    await waitFor(() => expect(within(document.body).queryByRole("dialog", { name: "Change display name" })).not.toBeInTheDocument());
+    await expect(within(canvasElement).findByText("Thomas")).resolves.toBeVisible();
   },
   parameters: {
     docs: {
