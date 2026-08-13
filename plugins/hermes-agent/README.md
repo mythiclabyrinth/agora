@@ -13,7 +13,7 @@ NousResearch/hermes-agent commit `3e09adb`.
 
    ```bash
    mkdir -p ~/.hermes/plugins/agora
-   cp bridges/hermes-agent/{__init__.py,adapter.py,plugin.yaml} ~/.hermes/plugins/agora/
+   cp plugins/hermes-agent/{__init__.py,adapter.py,plugin.yaml} ~/.hermes/plugins/agora/
    cat >> ~/.hermes/.env <<'EOF'
    AGORA_URL=https://your-agora-host
    AGORA_PAIRING_TOKEN=your-pairing-token

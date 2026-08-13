@@ -20,8 +20,8 @@ One Rust core, three clients:
 | `packages/core` | `@agora/core` — shared TypeScript client core: API client + types, TanStack Query hooks, the WS event reducer, zustand stores, mdlite/format/unread/emoji helpers. Consumed by `web/` and `mobile/`. |
 | `web/` | The web UI: React (Vite + TS), incl. voice notes, speak-aloud, and live voice. `npm run build` emits `web/dist/` (gitignored — never committed), which the server serves (`--ui-dir`), the Docker image bakes in, and the desktop bundle copies. `web/public/` carries the root assets incl. `connect.html` (the desktop server picker) and the vendored `mermaid.min.js`. |
 | `mobile/` | React Native (Expo) iOS/Android app — a pure client of a hosted `agora-server`. Consumes `@agora/core` via a `file:../packages/core` dependency but is NOT an npm-workspace member (its `npm ci` stays standalone; `metro.config.js` pins React/query/zustand to mobile's copies to avoid the dual-instance hazard). |
-| `bridges/` | Dial-in bridge clients for the agent WebSocket protocol. |
-| `plugins/` | Native channel/platform plugins installed into another agent host (currently `openclaw-agora`, a TypeScript OpenClaw channel plugin with its own `package.json` — not an npm-workspace member). |
+| `bridges/` | Dial-in CLI bridge clients for the agent WebSocket protocol. |
+| `plugins/` | Native plugins installed into another agent host, speaking the same protocol: `hermes-agent` (Python, copied into `~/.hermes/plugins/agora/`) and `openclaw-agora` (a TypeScript OpenClaw channel plugin with its own `package.json` — not an npm-workspace member). |
 
 Agora is **multi-user**: real accounts (`users` table) with instance roles
 (admin/member), per-group roles, email/link invites, and Google/Apple
