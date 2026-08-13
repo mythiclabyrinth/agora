@@ -465,18 +465,18 @@ pub fn fts_query_any(raw: &str) -> Option<String> {
     }
 }
 
-/// SQL predicate (on a `files` alias `ff`) selecting one attachment *kind*, or
+/// SQL predicate selecting one attachment *kind*, or
 /// `None` for an unknown value (which means "any attachment"). Keeps the mime
 /// buckets the search UIs expose in one place.
-fn file_kind_predicate(kind: &str) -> Option<&'static str> {
+fn file_kind_predicate(kind: &str, alias: &str) -> Option<String> {
     Some(match kind {
-        "image" => "ff.mime LIKE 'image/%'",
-        "video" => "ff.mime LIKE 'video/%'",
-        "audio" => "ff.mime LIKE 'audio/%'",
-        "pdf" => "ff.mime = 'application/pdf'",
+        "image" => format!("{alias}.mime LIKE 'image/%'"),
+        "video" => format!("{alias}.mime LIKE 'video/%'"),
+        "audio" => format!("{alias}.mime LIKE 'audio/%'"),
+        "pdf" => format!("{alias}.mime = 'application/pdf'"),
         // Everything a person would call a "document".
-        "doc" => "(ff.mime = 'application/pdf' OR ff.mime LIKE 'application/vnd.%' \
-                   OR ff.mime LIKE 'application/msword%' OR ff.mime LIKE 'text/%')",
+        "doc" => format!("({alias}.mime = 'application/pdf' OR {alias}.mime LIKE 'application/vnd.%' \
+                   OR {alias}.mime LIKE 'application/msword%' OR {alias}.mime LIKE 'text/%')"),
         _ => return None,
     })
 }
@@ -2299,7 +2299,7 @@ impl Store {
         // file (optionally of one kind). An unknown `file_type` falls back to
         // "any attachment" rather than matching nothing.
         let attach_clause = if want_attach {
-            let kind = file_type.and_then(file_kind_predicate);
+            let kind = file_type.and_then(|kind| file_kind_predicate(kind, "ff"));
             let extra = kind.map(|k| format!(" AND {k}")).unwrap_or_default();
             format!(" AND EXISTS (SELECT 1 FROM files ff WHERE ff.message_id = m.id{extra})")
         } else {
@@ -2516,6 +2516,73 @@ impl Store {
 
     pub fn file_path(&self, file_id: &str) -> PathBuf {
         self.files_dir.join(file_id)
+    }
+
+    /// Page individual files in a channel, optionally restricted to one
+    /// thread (root included). File rows, rather than messages, are the paging
+    /// unit so a multi-file message cannot make page sizes uneven.
+    pub fn list_attachments(
+        &self,
+        channel_id: &str,
+        thread_id: Option<i64>,
+        file_type: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Vec<Value> {
+        let kind = file_type.and_then(|kind| file_kind_predicate(kind, "f"))
+            .map(|p| format!(" AND {p}"))
+            .unwrap_or_default();
+        let thread = if thread_id.is_some() {
+            " AND (m.id = ?2 OR m.thread_id = ?2)"
+        } else { "" };
+        let limit_i = if thread_id.is_some() { 3 } else { 2 };
+        let offset_i = limit_i + 1;
+        let sql = format!(
+            "SELECT f.id, f.filename, f.mime, f.size, f.channel_id, f.message_id, \
+                    m.thread_id, m.author_type, m.author_id, m.author_name, m.text, m.ts, \
+                    CASE \
+                      WHEN m.thread_id IS NOT NULL THEN COALESCE(NULLIF(r.thread_alias, ''), substr(r.text, 1, 140)) \
+                      WHEN NULLIF(m.thread_alias, '') IS NOT NULL OR EXISTS (SELECT 1 FROM messages rp WHERE rp.thread_id = m.id) \
+                        THEN COALESCE(NULLIF(m.thread_alias, ''), substr(m.text, 1, 140)) \
+                      ELSE NULL END \
+             FROM files f JOIN messages m ON m.id = f.message_id \
+             LEFT JOIN messages r ON r.id = m.thread_id \
+             WHERE f.channel_id = ?1{thread}{kind} \
+             ORDER BY m.id DESC, f.rowid DESC LIMIT ?{limit_i} OFFSET ?{offset_i}"
+        );
+        let conn = self.conn.lock().unwrap();
+        let map = |r: &rusqlite::Row<'_>| Ok(json!({
+            "id": r.get::<_, String>(0)?, "filename": r.get::<_, String>(1)?,
+            "mime": r.get::<_, String>(2)?, "size": r.get::<_, i64>(3)?,
+            "channel_id": r.get::<_, String>(4)?, "message_id": r.get::<_, i64>(5)?,
+            "thread_id": r.get::<_, Option<i64>>(6)?, "author_type": r.get::<_, String>(7)?,
+            "author_id": r.get::<_, String>(8)?, "author_name": r.get::<_, Option<String>>(9)?,
+            "message_text": r.get::<_, String>(10)?, "ts": r.get::<_, f64>(11)?,
+            "thread_name": r.get::<_, Option<String>>(12)?,
+        }));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        if let Some(root) = thread_id {
+            stmt.query_map(params![channel_id, root, limit as i64, offset as i64], map)
+                .unwrap().filter_map(Result::ok).collect()
+        } else {
+            stmt.query_map(params![channel_id, limit as i64, offset as i64], map)
+                .unwrap().filter_map(Result::ok).collect()
+        }
+    }
+
+    /// Remove one attachment row and its bytes, leaving its message and any
+    /// sibling attachments intact. Returns the refreshed parent message.
+    pub fn delete_attachment(&self, file_id: &str) -> Option<Value> {
+        let message_id;
+        {
+            let conn = self.conn.lock().unwrap();
+            message_id = conn.query_row(
+                "SELECT message_id FROM files WHERE id = ?1", params![file_id], |r| r.get::<_, i64>(0),
+            ).ok()?;
+            conn.execute("DELETE FROM files WHERE id = ?1", params![file_id]).ok()?;
+        }
+        self.unlink_files(&[file_id.to_string()]);
+        self.message(message_id)
     }
 
     fn attach_files(&self, mut messages: Vec<Value>) -> Vec<Value> {
@@ -4019,6 +4086,51 @@ mod tests {
         // Channel delete unlinks bytes.
         s.delete_channel(cid);
         assert!(!s.file_path(&file_id).exists());
+    }
+
+    #[test]
+    fn attachment_browser_pages_files_and_deletes_only_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("agora.db")).unwrap();
+        let g = s.create_group("G", "", None);
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        let file = |name: &str| NewAttachment {
+            filename: name.into(), mime: "text/plain".into(), data: name.as_bytes().to_vec(),
+        };
+        let root = s.add_message(
+            cid, "Fallback thread name", "user", "tom", None, None,
+            &[file("one.txt"), file("two.txt")],
+        );
+        let root_id = root["id"].as_i64().unwrap();
+        s.rename_thread(root_id, Some("Renamed thread"));
+        s.add_message(cid, "reply", "agent", "bot", None, Some(root_id), &[file("three.txt")]);
+
+        let first = s.list_attachments(cid, Some(root_id), None, 2, 0);
+        let second = s.list_attachments(cid, Some(root_id), None, 2, 2);
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0]["filename"], "three.txt");
+        assert!(first.iter().chain(second.iter()).all(|f| f["thread_name"] == "Renamed thread"));
+
+        let delete_id = root["attachments"][0]["id"].as_str().unwrap();
+        let path = s.file_path(delete_id);
+        let updated = s.delete_attachment(delete_id).unwrap();
+        assert!(!path.exists());
+        assert_eq!(updated["id"], root_id);
+        assert_eq!(updated["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(s.list_attachments(cid, None, None, 10, 0).len(), 2);
+
+        // Every browser filter uses the `f` alias and must remain executable;
+        // unknown kinds intentionally retain the search API's "any" fallback.
+        for kind in ["image", "video", "audio", "pdf", "doc", "unknown"] {
+            let rows = s.list_attachments(cid, None, Some(kind), 10, 0);
+            if kind == "doc" || kind == "unknown" {
+                assert!(!rows.is_empty(), "{kind} filter should include text files");
+            } else {
+                assert!(rows.is_empty(), "{kind} should not match text files");
+            }
+        }
     }
 
     #[test]

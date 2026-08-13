@@ -41,6 +41,9 @@ mod updater;
 
 use settings::{DesktopSettings, Mode};
 
+/// The public project website, reachable from the Server menu.
+const WEBSITE_URL: &str = "https://agora.kite.space";
+
 /// The embedded hub, once the core is up — the window-event handler flips
 /// its ui_active flag so unseen messages notify only while unfocused.
 static HUB: OnceLock<Arc<agora_core::hub::Hub>> = OnceLock::new();
@@ -127,7 +130,9 @@ fn main() {
             let server = SubmenuBuilder::new(handle, "Server")
                 .text("server-settings", "Server Settings…")
                 .separator()
-                .text("sign-out", "Sign Out");
+                .text("sign-out", "Sign Out")
+                .separator()
+                .text("website", "Agora Website");
             // "Check for Updates…" follows the macOS (Sparkle) convention:
             // it lives in the app menu, right under "About Agora". Elsewhere
             // there is no app menu, so it rides in the Server submenu.
@@ -160,6 +165,9 @@ fn main() {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "server-settings" => open_main(app, connect_page_url(true)),
             "sign-out" => sign_out(app),
+            "website" => {
+                let _ = tauri_plugin_opener::open_url(WEBSITE_URL, None::<&str>);
+            }
             #[cfg(feature = "updater")]
             "check-updates" => {
                 let handle = app.clone();

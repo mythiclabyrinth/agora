@@ -101,7 +101,7 @@ const ADD_DEFINITIONS: AddDefinition[] = [
   {
     kind: "claw", logo: openClawLogo, title: "OpenClaw", shortTitle: "OpenClaw",
     desc: "Create secure access for an OpenClaw agent.",
-    defaultLabel: "OpenClaw",
+    defaultLabel: "OpenClaw", guide: "/docs/agents/openclaw.html",
   },
   {
     kind: "pantheo", logo: pantheoLogo, title: "Pantheo instance", shortTitle: "Pantheo",

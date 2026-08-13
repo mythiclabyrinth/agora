@@ -170,6 +170,11 @@ export function ThreadPane() {
           {threadName && <span className="ago-thread-name" title={threadName}>{threadName}</span>}
         </div>
         <div className="ago-head-actions">
+          <button className={`btn sm ${ui.filesOpen && ui.filesThread === rootId ? "active" : ""}`}
+            title="Attachments in this thread"
+            onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread === rootId), rootId)}>
+            <Icon name="paperclip" /> Files
+          </button>
           {group && channel && (
             <button className="btn sm" title="Copy link to this thread"
               onClick={() => void copyDeepLink({

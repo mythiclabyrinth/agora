@@ -32,6 +32,7 @@ const siteDir = path.join(repoRoot, "docs", "site");
 const assetsDir = path.join(repoRoot, "scripts", "docs-site");
 const REPO_URL = "https://github.com/tomjose92/agora";
 const PAGES_URL = "https://tomjose92.github.io/agora/";
+const WEBSITE_URL = "https://agora.kite.space";
 
 const { guides } = await import(
   pathToFileURL(path.join(repoRoot, "web/public/docs/coding-agents/guide-data.js")).href
@@ -197,6 +198,13 @@ const agentEntries = Object.entries(guides).map(([key, guide]) => ({
   logo: `coding-agents/${guide.logo}`,
 }));
 
+// Native platform plugins ship as hand-written pages under agents/, not from
+// guide-data.js, but they belong beside the CLI guides in the sidebar.
+const PLATFORM_PLUGIN_ENTRIES = [
+  { title: "Hermes Agent", href: "agents/hermes.html" },
+  { title: "OpenClaw", href: "agents/openclaw.html" },
+];
+
 const guideItems = (label) =>
   GUIDE_GROUPS.find((g) => g.label === label).slugs.map((slug) => ({
     title: guideDocs.get(slug).title,
@@ -211,14 +219,13 @@ const NAV_GROUPS = [
   },
   { label: "Using Agora", items: guideItems("Using Agora") },
   {
-    label: "Agent integrations",
-    items: [{ title: "Hermes Agent", href: "agents/hermes.html" }],
-  },
-  {
+    // CLI bridges and native platform plugins are the same thing to a reader
+    // choosing an agent, so they share one category.
     label: "Coding agents",
     items: [
       { title: "Overview", href: "coding-agents/index.html" },
       ...agentEntries.map(({ title, href }) => ({ title, href })),
+      ...PLATFORM_PLUGIN_ENTRIES,
     ],
   },
   { label: "Self-hosting", items: guideItems("Self-hosting") },
@@ -227,6 +234,7 @@ const NAV_GROUPS = [
     items: [
       { title: "Support", href: "support.html", key: "support" },
       { title: "Privacy policy", href: "privacy.html", key: "privacy" },
+      { title: "Website", href: WEBSITE_URL },
       // Storybook is deployed with the Pages site, not bundled into web/dist.
       { title: "Storybook", href: isPages ? "storybook/" : `${PAGES_URL}storybook/` },
       { title: "GitHub", href: REPO_URL },
@@ -361,6 +369,7 @@ ${sections.join("\n")}
   <footer class="landing-footer">
     <a href="support.html">Support</a> &middot;
     <a href="privacy.html">Privacy policy</a> &middot;
+    <a href="${WEBSITE_URL}">Website</a> &middot;
     <a href="${isPages ? "storybook/" : `${PAGES_URL}storybook/`}">Storybook</a> &middot;
     <a href="${REPO_URL}">GitHub</a>${
       isPages
@@ -406,6 +415,7 @@ const searchIndex = [
     { t: a.title, p: a.href, h: "", id: "" },
     ...AGENT_SECTIONS.map(([h, id]) => ({ t: a.title, p: a.href, h, id })),
   ]),
+  ...PLATFORM_PLUGIN_ENTRIES.map((entry) => ({ t: entry.title, p: entry.href, h: "", id: "" })),
 ];
 
 // ---------------------------------------------------------------------------

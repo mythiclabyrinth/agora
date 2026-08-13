@@ -299,6 +299,26 @@ export interface SearchMessageHit extends Omit<Message, "attachments"> {
   snippet: string;
 }
 
+/** One file in the channel/thread attachment browser. */
+export interface AttachmentBrowserItem extends Attachment {
+  channel_id: string;
+  message_id: number;
+  thread_id: number | null;
+  author_type: "user" | "agent";
+  author_id: string;
+  author_name: string | null;
+  message_text: string;
+  ts: number;
+  thread_name: string | null;
+  can_delete: boolean;
+}
+
+export interface AttachmentPage {
+  items: AttachmentBrowserItem[];
+  has_more: boolean;
+  offset: number;
+}
+
 export interface SearchChannelHit {
   id: string;
   group_id: string;

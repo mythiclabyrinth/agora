@@ -10,6 +10,8 @@ export const keys = {
   threads: ["threads"] as const,
   pins: (channelId: string) => ["pins", channelId] as const,
   stars: (channelId: string) => ["stars", channelId] as const,
+  attachments: (channelId: string, threadId: number | null) =>
+    ["attachments", channelId, threadId ?? 0] as const,
   channelAgents: (channelId: string) => ["channelAgents", channelId] as const,
   activity: (channelId: string) => ["activity", channelId] as const,
   members: (groupId: string) => ["members", groupId] as const,

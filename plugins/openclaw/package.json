@@ -1,0 +1,39 @@
+{
+  "name": "openclaw-agora",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OpenClaw channel plugin that connects an OpenClaw agent to Agora rooms",
+  "type": "module",
+  "license": "MIT",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "agora",
+      "label": "Agora",
+      "blurb": "Chat app where people and AI agents share rooms; dials out to your Agora server."
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "openclaw": "^2026.7.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  }
+}

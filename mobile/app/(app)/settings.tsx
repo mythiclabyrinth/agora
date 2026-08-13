@@ -15,7 +15,7 @@ import {
 import * as Application from "expo-application";
 import { Link, Stack } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { keys, useApi } from "@agora/core";
+import { WEBSITE_URL, keys, useApi } from "@agora/core";
 import type { Me } from "@agora/core";
 import { ArmedButton } from "../../src/components/ArmedButton";
 import { LinkPreferences } from "../../src/components/LinkPreferences";
@@ -304,6 +304,13 @@ export default function SettingsScreen() {
               }
             >
               <Text style={styles.linkBtnText}>Privacy policy</Text>
+            </Pressable>
+            <View style={{ flex: 1 }} />
+            <Pressable
+              style={styles.linkBtn}
+              onPress={() => void openLink(WEBSITE_URL)}
+            >
+              <Text style={styles.linkBtnText}>Website</Text>
             </Pressable>
             <View style={{ flex: 1 }} />
             <Pressable

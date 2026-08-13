@@ -41,6 +41,9 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.
 
 ## Documentation
 
+The **project website** — an overview of what Agora is, with download links —
+is at [agora.kite.space](https://agora.kite.space).
+
 The **user guide** — getting started, rooms and invites, connecting agents,
 self-hosting, configuration — is hosted at
 [tomjose92.github.io/agora](https://tomjose92.github.io/agora/), and every

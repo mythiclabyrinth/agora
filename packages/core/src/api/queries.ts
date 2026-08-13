@@ -25,6 +25,7 @@ import type {
   AgentDmList,
   AgentDmPolicy,
   AgentSource,
+  AttachmentPage,
   AskResponse,
   Channel,
   ChannelActivity,
@@ -486,6 +487,35 @@ export function useDeleteMessage() {
         message_id: v.message.id,
         thread_id: v.message.thread_id,
       }),
+  });
+}
+
+/* ------------------------------------------------------- attachment browser */
+
+export function useAttachments(channelId: string, threadId: number | null) {
+  const api = useApi();
+  return useInfiniteQuery({
+    queryKey: keys.attachments(channelId, threadId),
+    queryFn: ({ pageParam }) => api.get<AttachmentPage>(
+      `/api/channels/${encodeURIComponent(channelId)}/attachments?offset=${pageParam}` +
+      (threadId == null ? "" : `&thread_id=${threadId}`),
+    ),
+    initialPageParam: 0,
+    getNextPageParam: page => page.has_more ? page.offset + page.items.length : undefined,
+    enabled: !!channelId,
+  });
+}
+
+export function useDeleteAttachment(channelId: string, threadId: number | null) {
+  const api = useApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (fileId: string) => api.delete<Message>(
+      `/api/channels/${encodeURIComponent(channelId)}/attachments/${encodeURIComponent(fileId)}`,
+    ),
+    onSuccess: message => {
+      applyMessageUpdate(qc, message);
+      qc.invalidateQueries({ queryKey: keys.attachments(channelId, threadId) });
+    },
   });
 }
 

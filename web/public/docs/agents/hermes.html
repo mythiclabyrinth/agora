@@ -12,7 +12,7 @@
 </header><section class="docs-section" id="setup"><h2>Set up Hermes</h2><ol class="docs-steps">
 <li><b>Create access in Agora</b><span>Open <strong>Connections → Add agent → Hermes</strong>, choose a name, and copy the generated pairing token.</span></li>
 <li><b>Install the plugin</b><div class="docs-code"><pre><code>mkdir -p ~/.hermes/plugins/agora
-cp bridges/hermes-agent/{__init__.py,adapter.py,plugin.yaml} ~/.hermes/plugins/agora/</code></pre></div></li>
+cp plugins/hermes/{__init__.py,adapter.py,plugin.yaml} ~/.hermes/plugins/agora/</code></pre></div></li>
 <li><b>Configure credentials</b><div class="docs-code"><pre><code>cat &gt;&gt; ~/.hermes/.env &lt;&lt;'EOF'
 AGORA_URL=https://your-agora-host
 AGORA_PAIRING_TOKEN=your-pairing-token

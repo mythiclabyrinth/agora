@@ -2,6 +2,7 @@
    form from interactive clients without invalidating the key itself. */
 
 import { useEffect, useRef, useState } from "react";
+import { WEBSITE_URL } from "@agora/core";
 import {
   AUTH_ERROR, AUTH_ERROR_TEXT, JOIN_TOKEN, rememberAuthPath, setSessionToken,
 } from "../lib/auth";
@@ -94,6 +95,10 @@ export function AuthGate({ onSignedIn }: { onSignedIn: () => void }) {
           </button>
         )}
         <p className="auth-error" id="auth-error">{error}</p>
+        <p className="auth-footer">
+          New to Agora?{" "}
+          <a href={WEBSITE_URL} target="_blank" rel="noreferrer">agora.kite.space</a>
+        </p>
       </div>
     </div>
   );
