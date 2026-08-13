@@ -32,6 +32,7 @@ const siteDir = path.join(repoRoot, "docs", "site");
 const assetsDir = path.join(repoRoot, "scripts", "docs-site");
 const REPO_URL = "https://github.com/tomjose92/agora";
 const PAGES_URL = "https://tomjose92.github.io/agora/";
+const WEBSITE_URL = "https://agora.kite.space";
 
 const { guides } = await import(
   pathToFileURL(path.join(repoRoot, "web/public/docs/coding-agents/guide-data.js")).href
@@ -233,6 +234,7 @@ const NAV_GROUPS = [
     items: [
       { title: "Support", href: "support.html", key: "support" },
       { title: "Privacy policy", href: "privacy.html", key: "privacy" },
+      { title: "Website", href: WEBSITE_URL },
       // Storybook is deployed with the Pages site, not bundled into web/dist.
       { title: "Storybook", href: isPages ? "storybook/" : `${PAGES_URL}storybook/` },
       { title: "GitHub", href: REPO_URL },
@@ -367,6 +369,7 @@ ${sections.join("\n")}
   <footer class="landing-footer">
     <a href="support.html">Support</a> &middot;
     <a href="privacy.html">Privacy policy</a> &middot;
+    <a href="${WEBSITE_URL}">Website</a> &middot;
     <a href="${isPages ? "storybook/" : `${PAGES_URL}storybook/`}">Storybook</a> &middot;
     <a href="${REPO_URL}">GitHub</a>${
       isPages

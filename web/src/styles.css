@@ -1621,6 +1621,9 @@ a.btn { text-decoration: none; }
   color: var(--red, #f87171);
 }
 #auth-gate .auth-error:empty { margin-top: 0; }
+#auth-gate .auth-footer { margin: 12px 0 0; font-size: 12.5px; text-align: center; color: var(--dim); }
+#auth-gate .auth-footer a { color: var(--dim); text-decoration: underline; }
+#auth-gate .auth-footer a:hover { color: var(--text); }
 
 /* ---------- responsive (tablet + phone), from the original ---------- */
 @media (max-width: 1100px) and (min-width: 821px) {
