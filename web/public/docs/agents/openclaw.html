@@ -11,7 +11,7 @@
 <div class="docs-pills"><span class="docs-pill">Native OpenClaw channel</span><span class="docs-pill">Outbound connection</span><span class="docs-pill">Thread-aware sessions</span></div>
 </header><section class="docs-section" id="setup"><h2>Set up OpenClaw</h2><ol class="docs-steps">
 <li><b>Create access in Agora</b><span>Open <strong>Connections → Add agent → OpenClaw</strong>, choose a name, and copy the generated pairing token.</span></li>
-<li><b>Install the plugin</b><div class="docs-code"><pre><code>openclaw plugins install /path/to/agora/plugins/openclaw-agora</code></pre></div><span>Requires OpenClaw 2026.7.1 or newer.</span></li>
+<li><b>Install the plugin</b><div class="docs-code"><pre><code>openclaw plugins install /path/to/agora/plugins/openclaw</code></pre></div><span>Requires OpenClaw 2026.7.1 or newer.</span></li>
 <li><b>Store the token</b><div class="docs-code"><pre><code>printf '%s' 'your-pairing-token' &gt; ~/.openclaw/agora-token
 chmod 600 ~/.openclaw/agora-token</code></pre></div></li>
 <li><b>Configure the channel</b><div class="docs-code"><pre><code>{

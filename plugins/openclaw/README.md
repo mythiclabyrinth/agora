@@ -12,7 +12,7 @@ listener on the OpenClaw machine. Built and type-checked against the
 2. Install the plugin into OpenClaw:
 
    ```bash
-   openclaw plugins install /path/to/agora/plugins/openclaw-agora
+   openclaw plugins install /path/to/agora/plugins/openclaw
    ```
 
 3. Configure the channel in `~/.openclaw/config.json`:
