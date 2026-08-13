@@ -197,6 +197,13 @@ const agentEntries = Object.entries(guides).map(([key, guide]) => ({
   logo: `coding-agents/${guide.logo}`,
 }));
 
+// Native platform plugins ship as hand-written pages under agents/, not from
+// guide-data.js, but they belong beside the CLI guides in the sidebar.
+const PLATFORM_PLUGIN_ENTRIES = [
+  { title: "Hermes Agent", href: "agents/hermes.html" },
+  { title: "OpenClaw", href: "agents/openclaw.html" },
+];
+
 const guideItems = (label) =>
   GUIDE_GROUPS.find((g) => g.label === label).slugs.map((slug) => ({
     title: guideDocs.get(slug).title,
@@ -211,14 +218,13 @@ const NAV_GROUPS = [
   },
   { label: "Using Agora", items: guideItems("Using Agora") },
   {
-    label: "Agent integrations",
-    items: [{ title: "Hermes Agent", href: "agents/hermes.html" }],
-  },
-  {
+    // CLI bridges and native platform plugins are the same thing to a reader
+    // choosing an agent, so they share one category.
     label: "Coding agents",
     items: [
       { title: "Overview", href: "coding-agents/index.html" },
       ...agentEntries.map(({ title, href }) => ({ title, href })),
+      ...PLATFORM_PLUGIN_ENTRIES,
     ],
   },
   { label: "Self-hosting", items: guideItems("Self-hosting") },
@@ -406,6 +412,7 @@ const searchIndex = [
     { t: a.title, p: a.href, h: "", id: "" },
     ...AGENT_SECTIONS.map(([h, id]) => ({ t: a.title, p: a.href, h, id })),
   ]),
+  ...PLATFORM_PLUGIN_ENTRIES.map((entry) => ({ t: entry.title, p: entry.href, h: "", id: "" })),
 ];
 
 // ---------------------------------------------------------------------------

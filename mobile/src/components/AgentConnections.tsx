@@ -106,6 +106,7 @@ const definitions: Definition[] = [
     shortTitle: "OpenClaw",
     description: "Create secure access for an OpenClaw agent.",
     defaultLabel: "OpenClaw",
+    guide: "/docs/agents/openclaw.html",
     image: require("../../assets/agents/openclaw.png"),
   },
   {

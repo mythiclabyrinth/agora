@@ -67,6 +67,17 @@ export const BridgeAccessPolicy: Story = {
   },
 };
 
+export const OpenClawSetupGuide: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("tab", { name: "Add agent" }));
+    await userEvent.click(await canvas.findByRole("button", { name: /OpenClaw/ }));
+    await expect(canvas.findByRole("link", { name: "Open full setup guide" }))
+      .resolves.toHaveAttribute("href", "/docs/agents/openclaw.html");
+    await expect(canvas.queryByText("Runs on your computer")).not.toBeInTheDocument();
+  },
+};
+
 export const HermesSetupGuide: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

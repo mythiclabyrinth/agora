@@ -29,6 +29,7 @@ on:
       - "scripts/worktree.sh"
       - "scripts/worktree.test.sh"
       - "bridges/*-cli/**"
+      - "plugins/**"
       - ".github/workflows/web-ci.yml"
   push:
     branches: [main]
@@ -44,6 +45,7 @@ on:
       - "scripts/worktree.sh"
       - "scripts/worktree.test.sh"
       - "bridges/*-cli/**"
+      - "plugins/**"
       - ".github/workflows/web-ci.yml"
 
 concurrency:
@@ -51,6 +53,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/openclaw/package-lock.json
+      - run: npm ci
+        working-directory: plugins/openclaw
+      - run: npm run typecheck
+        working-directory: plugins/openclaw
+      - run: npm test
+        working-directory: plugins/openclaw
+      - run: python3 -m unittest discover -s plugins/hermes -p 'test_*.py'
+
   checks:
     runs-on: ubuntu-latest
     steps:
