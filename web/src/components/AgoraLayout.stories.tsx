@@ -18,6 +18,16 @@ import { AgoraLayout } from "./AgoraLayout";
 // An empty username keeps useAgoraSocket dormant in this full-layout story.
 // Mine/self presentation states are covered by the focused component stories.
 const staticMe = { ...fixtureMe, username: "" };
+const attachmentPage = {
+  items: [{
+    id: "launch-plan", filename: "launch-plan.pdf", mime: "application/pdf", size: 524_288,
+    channel_id: "general", message_id: 43, thread_id: 42, author_type: "user", author_id: "tom",
+    author_name: "Tom", message_text: "The 820px phone boundary is covered.", ts: 1_750_000_000,
+    thread_name: "Responsive review", can_delete: false,
+  }],
+  has_more: false,
+  offset: 0,
+};
 const routes = {
   "GET /api/me": staticMe,
   "GET /api/groups": { groups: fixtureGroups },
@@ -33,6 +43,8 @@ const routes = {
   "GET /api/messages/42": fixtureMessages[0],
   "GET /api/channels/general/pins": { pins: [] },
   "GET /api/channels/general/stars": { stars: [] },
+  "GET /api/channels/general/attachments?offset=0": attachmentPage,
+  "GET /api/channels/general/attachments?offset=0&thread_id=42": attachmentPage,
   "PUT /api/channels/general/read": { ok: true, last_read_id: 43 },
   "PUT /api/threads/42/read": { ok: true, last_read_id: 45 },
 };

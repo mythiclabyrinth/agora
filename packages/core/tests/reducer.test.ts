@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { appendMessage, applyAliasToPages, applyMessageUpdate, replaceMessage, type MessagePages } from "../src/ws/reducer";
+import { appendMessage, applyAliasToPages, applyMessageUpdate, applyWsEvent, replaceMessage, type MessagePages } from "../src/ws/reducer";
 import { keys } from "../src/api/keys";
 import type { Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
@@ -86,5 +86,19 @@ describe("applyMessageUpdate", () => {
     expect(qc.getQueryData(keys.threads)).toBe(threads);
     expect(qc.getQueryData(keys.pins("c1"))).toBe(pins);
     expect(qc.getQueryData(keys.stars("c1"))).toBe(stars);
+  });
+});
+
+describe("attachment browser invalidation", () => {
+  it("invalidates channel and thread attachment pages when a message is deleted", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.attachments("c1", null), { pages: [], pageParams: [] });
+    qc.setQueryData(keys.attachments("c1", 42), { pages: [], pageParams: [] });
+    applyWsEvent(qc, {
+      type: "message_delete", channel_id: "c1", message_id: 9, thread_id: 42,
+    }, { username: "me" });
+    await Promise.resolve();
+    expect(qc.getQueryState(keys.attachments("c1", null))?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(keys.attachments("c1", 42))?.isInvalidated).toBe(true);
   });
 });

@@ -41,6 +41,8 @@ interface UiState {
   threadRoot: number | null;
   threadExpanded: boolean;
   membersOpen: boolean;
+  filesOpen: boolean;
+  filesThread: number | null;
   searchOpen: boolean;
   selectChannel: (g: string, c: string, history?: "push" | "replace" | "none") => void;
   openInbox: (history?: "push" | "replace" | "none") => void;
@@ -56,6 +58,7 @@ interface UiState {
   closeThread: (history?: "push" | "replace" | "none") => void;
   toggleThreadSize: () => void;
   setMembersOpen: (on: boolean) => void;
+  setFilesOpen: (on: boolean, threadId?: number | null) => void;
   setSearchOpen: (on: boolean) => void;
   openPanel: (p: Panel) => void;
 }
@@ -73,6 +76,8 @@ export const useUiState = create<UiState>((set, get) => ({
   threadRoot: null,
   threadExpanded: localStorage.getItem("agora_thread") === "expanded",
   membersOpen: false,
+  filesOpen: false,
+  filesThread: null,
   searchOpen: false,
 
   selectChannel: (g, c, history = "push") => set((s) => {
@@ -85,7 +90,8 @@ export const useUiState = create<UiState>((set, get) => ({
     }
     localStorage.setItem("agora_sel", JSON.stringify({ g, c }));
     writeHistory(deepLinkPath({ kind: "channel", groupId: g, channelId: c }), history);
-    return { sel: { g, c }, view: { kind: "channel" }, threadRoot: null, mobileView: "main" as const };
+    return { sel: { g, c }, view: { kind: "channel" }, threadRoot: null,
+      filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
   openInbox: (history = "push") => {
     writeHistory("/threads", history);
@@ -130,7 +136,7 @@ export const useUiState = create<UiState>((set, get) => ({
         kind: "thread", groupId: s.sel.g, channelId: s.sel.c, threadId: rootId,
       }), history);
     }
-    return { threadRoot: rootId, mobileView: "thread" as const };
+    return { threadRoot: rootId, filesOpen: false, filesThread: null, mobileView: "thread" as const };
   }),
   closeThread: (history = "replace") => set((s) => {
     const scope = useLiveVoice.getState().scope;
@@ -140,14 +146,17 @@ export const useUiState = create<UiState>((set, get) => ({
         kind: "channel", groupId: s.sel.g, channelId: s.sel.c,
       }), history);
     }
-    return { threadRoot: null, mobileView: "main" as const };
+    return { threadRoot: null, filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
   toggleThreadSize: () => set((s) => {
     const next = !s.threadExpanded;
     localStorage.setItem("agora_thread", next ? "expanded" : "open");
     return { threadExpanded: next };
   }),
-  setMembersOpen: (on) => set({ membersOpen: on }),
+  setMembersOpen: (on) => set({ membersOpen: on, filesOpen: on ? false : get().filesOpen }),
+  setFilesOpen: (on, threadId = null) => set({
+    filesOpen: on, filesThread: threadId, membersOpen: on ? false : get().membersOpen,
+  }),
   setSearchOpen: (on) => set({ searchOpen: on }),
   openPanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
 }));

@@ -319,10 +319,15 @@ export function applyWsEvent(
     case "message_update": {
       const { message } = ev as { type: "message_update"; message: Message };
       applyMessageUpdate(qc, message);
+      // Attachment deletion deliberately reuses message_update so every
+      // message presentation is patched. Refresh any open file browsers too;
+      // ordinary edits make this a cheap no-op while their queries are idle.
+      void qc.invalidateQueries({ queryKey: ["attachments", message.channel_id] });
       break;
     }
     case "message_delete": {
       applyMessageDelete(qc, ev);
+      void qc.invalidateQueries({ queryKey: ["attachments", ev.channel_id] });
       break;
     }
     case "read": {
