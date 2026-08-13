@@ -18,7 +18,7 @@ import { Redirect, type Href, useLocalSearchParams } from "expo-router";
 import { Image as ExpoImage } from "expo-image";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as WebBrowser from "expo-web-browser";
-import { normalizeBaseUrl, originOf } from "@agora/core";
+import { WEBSITE_URL, normalizeBaseUrl, originOf } from "@agora/core";
 import { appleAvailable, runAppleFlow } from "../src/lib/appleAuth";
 import { probeAuth } from "../src/lib/authConfig";
 import { runGoogleFlow } from "../src/lib/googleAuth";
@@ -243,6 +243,15 @@ export default function Connect() {
             ) : shouldShowServerSetupHelp(recentLoaded, recent) ? (
               <ServerSetupHelp onOpenGuide={(guideUrl) => void openLink(guideUrl)} />
             ) : null}
+            <Pressable
+              style={styles.siteLink}
+              onPress={() => void openLink(WEBSITE_URL)}
+              accessibilityRole="link"
+            >
+              <Text style={styles.siteLinkText}>
+                New to Agora? Learn more at agora.kite.space
+              </Text>
+            </Pressable>
           </>
         ) : (
           <>
@@ -432,4 +441,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   btnSubtleText: { color: colors.dim, fontSize: 13.5, fontWeight: "600" },
+  siteLink: { alignItems: "center", paddingVertical: 6, marginTop: 2 },
+  siteLinkText: { color: colors.dim, fontSize: 12.5, fontWeight: "600" },
 });

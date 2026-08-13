@@ -100,6 +100,9 @@
   .status { margin-top: 14px; font-size: 13.5px; min-height: 1.4em; text-align: center; }
   .status.error { color: var(--red); }
   .status.ok { color: var(--green); }
+  .site-link { margin: 12px 0 0; font-size: 12.5px; text-align: center; color: var(--dim); }
+  .site-link a { color: var(--dim); text-decoration: underline; }
+  .site-link a:hover { color: var(--text); }
   .hidden { display: none; }
 </style>
 </head>
@@ -147,6 +150,8 @@
     </div>
 
     <div class="status" id="status"></div>
+    <!-- target=_blank routes through the opener plugin to the system browser. -->
+    <p class="site-link">New to Agora? <a href="https://agora.kite.space" target="_blank" rel="noreferrer">agora.kite.space</a></p>
   </div>
 
 <script>

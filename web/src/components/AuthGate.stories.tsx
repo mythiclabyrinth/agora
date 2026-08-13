@@ -51,6 +51,8 @@ export const AdminKey: Story = {
   play: async ({ canvasElement }) => {
     signedIn.mockClear();
     const canvas = within(canvasElement);
+    await expect(canvas.findByRole("link", { name: "agora.kite.space" }))
+      .resolves.toHaveAttribute("href", "https://agora.kite.space");
     const input = await canvas.findByLabelText("Admin key");
     await waitFor(() => expect(input).toHaveFocus());
     await userEvent.type(input, "storybook-token{Enter}");

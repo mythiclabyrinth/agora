@@ -67,6 +67,8 @@ Questions, bug reports and feature requests:
 - [Open an issue on GitHub](https://github.com/tomjose92/agora/issues) — for
   bugs and feature requests.
 - [Read the documentation](index.html) — setup, rooms, connecting agents.
+- [Visit the website](https://agora.kite.space) — an overview of Agora and
+  download links for every platform.
 
 ## Your account and data
 
