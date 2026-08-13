@@ -18,6 +18,7 @@ import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import {
   Headphones,
+  Paperclip,
   Pin,
   Star,
   Users,
@@ -368,6 +369,16 @@ export default function ChannelScreen() {
           headerShown: true,
           ...headerActions(
             <View style={styles.headerBtns}>
+              <Pressable
+                accessibilityLabel="Channel attachments"
+                onPress={() => router.push({
+                  pathname: "/(app)/attachments/[channelId]",
+                  params: { channelId, channelName, groupId },
+                })}
+                hitSlop={8}
+              >
+                <Icon icon={Paperclip} size={20} color={colors.text} />
+              </Pressable>
               {voiceOk ? (
                 <Pressable
                   onPress={() => {
@@ -573,7 +584,8 @@ export default function ChannelScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   listWrap: { flex: 1, position: "relative" },
-  headerBtns: { flexDirection: "row", gap: 16 },
+  // Five actions fit beside a short channel title at the 320pt compact width.
+  headerBtns: { flexDirection: "row", gap: 12 },
   headerBtnOff: { opacity: 0.35 },
   deepLinkTarget: { backgroundColor: "rgba(139,124,255,0.16)", borderRadius: 8 },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 40 },

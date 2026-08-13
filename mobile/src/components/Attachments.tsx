@@ -18,7 +18,7 @@ import { Icon } from "./Icon";
 import { toastErr } from "./Toast";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
-async function downloadAndShare(session: Session, att: Attachment) {
+export async function downloadAndShare(session: Session, att: Attachment) {
   const target = `${FileSystem.cacheDirectory}${att.id}-${att.filename}`;
   const res = await FileSystem.downloadAsync(fileUrl(session, att.id), target, {
     headers: authHeaders(session),
