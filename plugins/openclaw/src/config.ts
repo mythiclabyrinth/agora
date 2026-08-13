@@ -113,7 +113,9 @@ export function expandHomePath(file: string, home = homedir()): string {
 
 export function resolveMaxFileBytes(section: AgoraAccountConfig): number {
   const raw = Number(section.maxFileMb ?? DEFAULT_MAX_FILE_MB);
-  const megabytes = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_MAX_FILE_MB;
+  const megabytes = Number.isFinite(raw) && raw > 0
+    ? Math.max(1, Math.floor(raw))
+    : DEFAULT_MAX_FILE_MB;
   return megabytes * 1024 * 1024;
 }
 

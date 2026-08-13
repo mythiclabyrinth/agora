@@ -115,6 +115,7 @@ describe("resolveMaxFileBytes", () => {
   it("defaults to 10 MB and ignores nonsense", () => {
     expect(resolveMaxFileBytes({})).toBe(10 * 1024 * 1024);
     expect(resolveMaxFileBytes({ maxFileMb: 0 })).toBe(10 * 1024 * 1024);
+    expect(resolveMaxFileBytes({ maxFileMb: 0.5 })).toBe(1 * 1024 * 1024);
     expect(resolveMaxFileBytes({ maxFileMb: 25 })).toBe(25 * 1024 * 1024);
   });
 });

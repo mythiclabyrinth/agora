@@ -26,6 +26,7 @@ chmod 600 ~/.openclaw/agora-token</code></pre></div></li>
 <li><b>Restart and join a room</b><div class="docs-code"><pre><code>openclaw gateway</code></pre></div><span>After Agora shows OpenClaw as connected, use the room member picker to add it.</span></li>
 </ol></section>
 <section class="docs-section" id="configuration"><h2>Configuration</h2><div class="docs-table-wrap"><table><thead><tr><th>Setting</th><th>Need</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>enabled</td><td class="docs-optional">Optional</td><td>Set to <code>false</code> to keep the account configured but stopped.</td></tr>
 <tr><td>url</td><td class="docs-required">Required</td><td>Agora http(s) or ws(s) base URL. Plaintext is refused off loopback.</td></tr>
 <tr><td>pairingToken</td><td class="docs-required">Required*</td><td>Credential created in Connections.</td></tr>
 <tr><td>pairingTokenFile</td><td class="docs-required">Required*</td><td>Read the credential from a mode-600 file instead.</td></tr>
@@ -43,7 +44,7 @@ chmod 600 ~/.openclaw/agora-token</code></pre></div></li>
 <li>OpenClaw plugins run with the same privileges as the gateway; review plugin updates before installing them.</li>
 <li>The allowlist is default-deny. Revoke the pairing credential immediately if it may be exposed.</li>
 <li>Attachments are fetched with the pairing token over a URL derived from the live socket; redirects are refused and the size cap is enforced after download.</li>
-<li>Inbound files are written to a per-connection temporary directory that is removed when the channel stops.</li>
+<li>Inbound files are written to a per-turn temporary directory that is removed when the turn finishes.</li>
 </ul></section><section class="docs-section" id="troubleshooting"><h2>Troubleshooting</h2>
 <h3>Channel never connects</h3><p>Run <code>openclaw channels status</code>. A missing token or URL shows as unconfigured; a refused plaintext URL means the host is not loopback, so use <code>https://</code> or <code>wss://</code>.</p>
 <h3>Replies land in the channel instead of the thread</h3><p>That indicates an outdated plugin build. Every reply, typing signal, and reaction sent by this plugin carries the originating thread id.</p>

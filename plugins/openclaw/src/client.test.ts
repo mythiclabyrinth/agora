@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type WebSocket from "ws";
 import { describe, expect, it } from "vitest";
-import { AgoraClient } from "./client.ts";
+import { AgoraClient, MAX_FRAME_BYTES } from "./client.ts";
 import type { AgoraInboundFrame } from "./protocol.ts";
 
 /** Minimal stand-in for the `ws` socket the client drives. */
@@ -205,5 +205,18 @@ describe("AgoraClient", () => {
     await expect(client.post({ channelId: "c1", threadId: null, text: "hi" })).rejects.toThrow(
       /not connected/,
     );
+  });
+
+  it("refuses an oversized frame before writing it to the socket", async () => {
+    const { client, sockets } = createClient();
+    client.start();
+    sockets[0]!.emitOpen();
+    await expect(client.post({
+      channelId: "c1",
+      threadId: null,
+      text: "x".repeat(MAX_FRAME_BYTES),
+    })).rejects.toThrow(/WebSocket size limit/);
+    expect(sockets[0]!.framesOfType("post")).toHaveLength(0);
+    await client.stop();
   });
 });

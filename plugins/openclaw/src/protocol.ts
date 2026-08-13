@@ -117,8 +117,11 @@ export function isErrorFrame(frame: AgoraServerFrame): frame is AgoraErrorFrame 
  */
 export function normalizeThreadId(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
-  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const raw = String(value);
+  if (!/^\d+$/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 /** Agora message ids are integers; reactions are dropped for anything else. */

@@ -14,16 +14,17 @@ enabled, so room membership and `allowFrom` are security boundaries.
   Revoke the token in Agora if it may be exposed.
 - Agent-authored messages are not dispatched unless `contextFeed` is enabled,
   and even then only when they @mention this agent and Agora's bot-loop budget
-  still allows a turn. This keeps an ambient bot from becoming an execution
-  path into the host.
+  still allows a turn. `allowFrom` applies to humans only: with `contextFeed`
+  enabled, any mentioning agent may drive a turn. This keeps the default
+  configuration from becoming an ambient execution path into the host.
 - Attachments are untrusted input. They are fetched with the pairing token
   over a URL derived from the live socket, redirects are refused rather than
   followed, and the size cap is enforced after download — a `content-length`
   header proves nothing. OpenClaw still decides how its tools process the
   contents.
 - Attachment filenames are stripped of path separators and control characters
-  and written into a per-connection temp directory, which is removed when the
-  channel stops.
+  and written into a per-turn temp directory, which is removed when that turn
+  finishes.
 - The pairing token travels in the socket URL's query string; the plugin
   redacts that URL before logging it. Anything else that logs the resolved
   socket URL will leak the credential.

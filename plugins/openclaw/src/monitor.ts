@@ -11,15 +11,16 @@ import {
 } from "./attachments.ts";
 import { normalizeMessageId, type AgoraInboundFrame } from "./protocol.ts";
 
-/** Agora's convention: 👀 while the agent is working, cleared when it replies. */
+/** Agora's convention: 👀 while working, then ☑️ after a completed turn. */
 const ACK_EMOJI = "👀";
+const DONE_EMOJI = "☑️";
 
 function describeAuthor(frame: AgoraInboundFrame): { id: string; name: string; isBot: boolean } {
   const author = frame.author ?? {};
   const id = String(author.id ?? "");
   return {
     id,
-    name: String(author.name ?? id ?? "Agora user"),
+    name: String(author.name || id || "Agora user"),
     isBot: (author.type ?? "user") !== "user",
   };
 }
@@ -72,101 +73,115 @@ export async function startAgoraAccount(
       return;
     }
 
-    const { media, unavailable } = await localizeAttachments({
-      attachments: frame.attachments,
-      directory,
-      socketUrl: account.socketUrl,
-      agentId: account.agentId,
-      token: account.token,
-      limitBytes: account.maxFileBytes,
-      onError: message => ctx.log?.warn?.(message),
-    });
-
-    const author = describeAuthor(frame);
-    const messageId = normalizeMessageId(frame.message_id);
-    const rawText = String(frame.text ?? "");
-    const bodyForAgent = unavailable.length
-      ? `${rawText}\n\n[attachments not retrieved: ${unavailable.join("; ")}]`.trim()
-      : rawText;
-
-    const agentRoute = runtime.routing.resolveAgentRoute({
-      cfg: ctx.cfg,
-      channel: CHANNEL_ID,
-      accountId,
-      peer: { kind: "channel", id: route.conversationId },
-      // A thread inherits its channel's binding when nothing targets it directly.
-      parentPeer: route.threadId === null ? null : { kind: "channel", id: route.channelId },
-    });
-    const storePath = runtime.session.resolveStorePath(ctx.cfg.session?.store, {
-      agentId: agentRoute.agentId,
-    });
-
-    const ctxPayload = runtime.inbound.buildContext({
-      channel: CHANNEL_ID,
-      accountId,
-      provider: CHANNEL_ID,
-      surface: CHANNEL_ID,
-      messageId: messageId === null ? undefined : String(messageId),
-      from: `agora:channel:${route.conversationId}`,
-      sender: { id: author.id, name: author.name, isBot: author.isBot },
-      conversation: {
-        kind: "channel",
-        id: route.conversationId,
-        label: String(frame.chat_name ?? route.channelId),
-        nativeChannelId: route.channelId,
-        ...(route.threadId === null
-          ? {}
-          : { threadId: String(route.threadId), parentId: route.channelId }),
-        routePeer: { kind: "channel", id: route.conversationId },
-      },
-      route: {
-        agentId: agentRoute.agentId,
-        accountId,
-        routeSessionKey: agentRoute.sessionKey,
-        mainSessionKey: agentRoute.mainSessionKey,
-        createIfMissing: true,
-      },
-      reply: {
-        to: route.conversationId,
-        nativeChannelId: route.channelId,
-        ...(route.threadId === null ? {} : { messageThreadId: route.threadId }),
-        sourceReplyDeliveryMode: route.threadId === null ? "channel" : "thread",
-      },
-      message: {
-        rawBody: rawText,
-        bodyForAgent,
-        commandBody: rawText.trim(),
-        senderLabel: author.name,
-      },
-      media,
-    });
-
-    if (messageId !== null) {
-      await client.react({
-        channelId: route.channelId,
-        messageId,
-        emoji: ACK_EMOJI,
-        action: "add",
+    const turnDirectory = await createAttachmentDirectory(directory);
+    let indicatorsCleared = false;
+    let completed = false;
+    let clearIndicators = async () => {};
+    try {
+      const { media, unavailable } = await localizeAttachments({
+        attachments: frame.attachments,
+        directory: turnDirectory,
+        socketUrl: account.socketUrl,
+        agentId: account.agentId,
+        token: account.token,
+        limitBytes: account.maxFileBytes,
+        onError: message => ctx.log?.warn?.(message),
       });
-    }
-    await client.setTyping(route.channelId, route.threadId, true);
 
-    // Concurrent turns in one conversation share provider typing/reaction
-    // state. Proper overlap handling needs per-conversation reference counts;
-    // until then a finishing turn may clear another turn's indicators early.
-    const clearIndicators = async () => {
-      await client.setTyping(route.channelId, route.threadId, false);
+      const author = describeAuthor(frame);
+      const messageId = normalizeMessageId(frame.message_id);
+      const rawText = String(frame.text ?? "");
+      const bodyForAgent = unavailable.length
+        ? `${rawText}\n\n[attachments not retrieved: ${unavailable.join("; ")}]`.trim()
+        : rawText;
+
+      const agentRoute = runtime.routing.resolveAgentRoute({
+        cfg: ctx.cfg,
+        channel: CHANNEL_ID,
+        accountId,
+        peer: { kind: "channel", id: route.conversationId },
+        // A thread inherits its channel's binding when nothing targets it directly.
+        parentPeer: route.threadId === null ? null : { kind: "channel", id: route.channelId },
+      });
+      const storePath = runtime.session.resolveStorePath(ctx.cfg.session?.store, {
+        agentId: agentRoute.agentId,
+      });
+
+      const ctxPayload = runtime.inbound.buildContext({
+        channel: CHANNEL_ID,
+        accountId,
+        provider: CHANNEL_ID,
+        surface: CHANNEL_ID,
+        messageId: messageId === null ? undefined : String(messageId),
+        from: `agora:channel:${route.conversationId}`,
+        sender: { id: author.id, name: author.name, isBot: author.isBot },
+        conversation: {
+          kind: "channel",
+          id: route.conversationId,
+          label: String(frame.chat_name ?? route.channelId),
+          nativeChannelId: route.channelId,
+          ...(route.threadId === null
+            ? {}
+            : { threadId: String(route.threadId), parentId: route.channelId }),
+          routePeer: { kind: "channel", id: route.conversationId },
+        },
+        route: {
+          agentId: agentRoute.agentId,
+          accountId,
+          routeSessionKey: agentRoute.sessionKey,
+          mainSessionKey: agentRoute.mainSessionKey,
+          createIfMissing: true,
+        },
+        reply: {
+          to: route.conversationId,
+          nativeChannelId: route.channelId,
+          ...(route.threadId === null ? {} : { messageThreadId: route.threadId }),
+          sourceReplyDeliveryMode: route.threadId === null ? "channel" : "thread",
+        },
+        message: {
+          rawBody: rawText,
+          bodyForAgent,
+          commandBody: rawText.trim(),
+          senderLabel: author.name,
+        },
+        media,
+      });
+
       if (messageId !== null) {
         await client.react({
           channelId: route.channelId,
           messageId,
           emoji: ACK_EMOJI,
-          action: "remove",
+          action: "add",
         });
       }
-    };
+      await client.setTyping(route.channelId, route.threadId, true);
 
-    try {
+      // Concurrent turns in one conversation share provider typing/reaction
+      // state. Proper overlap handling needs per-conversation reference counts;
+      // until then a finishing turn may clear another turn's indicators early.
+      clearIndicators = async () => {
+        if (indicatorsCleared) return;
+        indicatorsCleared = true;
+        await client.setTyping(route.channelId, route.threadId, false);
+        if (messageId !== null) {
+          await client.react({
+            channelId: route.channelId,
+            messageId,
+            emoji: ACK_EMOJI,
+            action: "remove",
+          });
+          if (completed) {
+            await client.react({
+              channelId: route.channelId,
+              messageId,
+              emoji: DONE_EMOJI,
+              action: "add",
+            });
+          }
+        }
+      };
+
       await runtime.inbound.run({
         channel: CHANNEL_ID,
         accountId,
@@ -196,12 +211,12 @@ export async function startAgoraAccount(
                 if (!text) return;
                 // Every reply carries the thread id back: a reply posted
                 // without it lands in the channel root instead of the thread.
-                const postId = await client.post({
+                await client.post({
                   channelId: route.channelId,
                   threadId: route.threadId,
                   text,
                 });
-                return { messageIds: [postId], visibleReplySent: true };
+                return { visibleReplySent: true };
               },
               onError: (error, info) => {
                 ctx.log?.warn?.(`agora: ${info.kind} reply failed: ${String(error)}`);
@@ -213,14 +228,14 @@ export async function startAgoraAccount(
                 ctx.log?.warn?.(`agora: could not record session metadata: ${String(error)}`),
             },
           }),
-          onFinalize: async () => {
-            await clearIndicators();
-          },
         },
       });
+      completed = true;
     } catch (error) {
-      await clearIndicators();
       ctx.log?.warn?.(`agora: inbound dispatch failed: ${String(error)}`);
+    } finally {
+      await clearIndicators();
+      await removeAttachmentDirectory(turnDirectory);
     }
   }
 

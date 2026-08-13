@@ -52,8 +52,15 @@ async function readMedia(
   readVia?: (filePath: string) => Promise<Buffer>,
 ): Promise<Buffer> {
   if (/^https?:\/\//i.test(mediaUrl)) {
-    const response = await fetch(mediaUrl, { redirect: "follow" });
+    const response = await fetch(mediaUrl, { redirect: "manual" });
+    if (response.status >= 300 && response.status < 400) {
+      throw new Error("media URL redirected; refusing to fetch a different host");
+    }
     if (!response.ok) throw new Error(`could not fetch media (${response.status})`);
+    const declared = Number(response.headers.get("content-length") ?? Number.NaN);
+    if (Number.isFinite(declared) && declared > limitBytes) {
+      throw new Error("media exceeds the Agora file limit");
+    }
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.byteLength > limitBytes) throw new Error("media exceeds the Agora file limit");
     return buffer;

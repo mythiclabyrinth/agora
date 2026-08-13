@@ -77,7 +77,7 @@ function decodeInline(encoded: string, limitBytes: number): Uint8Array {
 }
 
 /**
- * Writes inbound attachments into a per-connection temp directory and hands
+ * Writes inbound attachments into a per-turn temp directory and hands
  * OpenClaw their local paths. Anything that cannot be materialized is reported
  * as a note instead of disappearing, so the agent can say what it did not see.
  */
@@ -131,9 +131,9 @@ export async function localizeAttachments(params: {
   return { media, unavailable };
 }
 
-/** Per-connection scratch space, removed when the channel stops. */
-export async function createAttachmentDirectory(): Promise<string> {
-  return await mkdtemp(join(tmpdir(), "openclaw-agora-"));
+/** Scratch space; callers remove per-turn children as soon as dispatch ends. */
+export async function createAttachmentDirectory(parent = tmpdir()): Promise<string> {
+  return await mkdtemp(join(parent, "openclaw-agora-"));
 }
 
 export async function removeAttachmentDirectory(directory: string): Promise<void> {

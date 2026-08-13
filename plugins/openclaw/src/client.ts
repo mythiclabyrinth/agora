@@ -36,7 +36,7 @@ const DEFAULT_ACK_GRACE_MS = 600;
 const BASE_RECONNECT_MS = 1_000;
 const MAX_RECONNECT_MS = 30_000;
 /** Conservative client cap; the hub derives its actual wire cap from max_file_mb. */
-const MAX_FRAME_BYTES = 64 * 1024 * 1024;
+export const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 
 type PendingPost = {
   resolve: () => void;
@@ -53,6 +53,10 @@ export class AgoraClient {
   private stopped = false;
 
   constructor(private readonly options: AgoraClientOptions) {}
+
+  private safeError(error: unknown): string {
+    return String(error).split(this.options.socketUrl).join(redactSocketUrl(this.options.socketUrl));
+  }
 
   get connected(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
@@ -80,7 +84,7 @@ export class AgoraClient {
     try {
       socket = create(this.options.socketUrl);
     } catch (error) {
-      this.scheduleReconnect(String(error));
+      this.scheduleReconnect(this.safeError(error));
       return;
     }
     this.socket = socket;
@@ -99,7 +103,7 @@ export class AgoraClient {
             wants_context_feed: this.options.contextFeed,
           },
         ],
-      }).catch(error => this.options.warn?.(`agora: hello failed: ${String(error)}`));
+      }).catch(error => this.options.warn?.(`agora: hello failed: ${this.safeError(error)}`));
       this.options.log?.(`agora: connected to ${redactSocketUrl(this.options.socketUrl)}`);
       this.options.onConnected?.();
     });

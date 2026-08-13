@@ -41,6 +41,7 @@ listener on the OpenClaw machine. Built and type-checked against the
 
 | Key | Need | Behavior |
 | --- | --- | --- |
+| `enabled` | Optional | Set to `false` to keep this account configured but stopped. |
 | `url` | Required | Agora http(s) or ws(s) base URL. Plaintext is refused off loopback. |
 | `pairingToken` | Required* | Credential created in Agora under Connections. |
 | `pairingTokenFile` | Required* | Read the credential from a file instead, keeping it out of `config.json`. |
@@ -63,15 +64,16 @@ signal, and reaction echoes the thread id back, so a threaded answer cannot
 land in the channel root.
 
 Inbound attachments are decoded inline or fetched through Agora's
-authenticated file route into a per-connection temp directory, which is
-removed when the channel stops. Attachments that are too large, or that an
+authenticated file route into a per-turn temp directory, which is removed
+when that turn finishes. Attachments that are too large, or that an
 older Agora cannot serve, are named in the message rather than dropped
 silently. Outbound attachments are images only — Agora validates image magic
 bytes and rejects a post that carries anything else.
 
-A post is not acknowledged by Agora on success, so the plugin holds each send
-briefly to catch a correlated rejection and reports it as a failed delivery
-instead of losing the message quietly.
+A post is not acknowledged by Agora on success, so the plugin holds each
+delivered block briefly to catch a correlated rejection and reports it as a
+failed delivery instead of losing the message quietly. With the default
+600 ms grace, an N-block reply can therefore add up to N × 600 ms.
 
 See [SECURITY.md](SECURITY.md) before enabling this on a machine with
 sensitive tools or files.

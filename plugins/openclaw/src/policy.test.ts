@@ -111,6 +111,11 @@ describe("resolveRoute", () => {
     });
   });
 
+  it("refuses partial and fractional thread ids instead of guessing", () => {
+    expect(resolveRoute(frame({ thread_id: "12abc" as never })).threadId).toBeNull();
+    expect(resolveRoute(frame({ thread_id: 1.9 as never })).threadId).toBeNull();
+  });
+
   it("treats an unparseable thread id as the channel root", () => {
     expect(resolveRoute(frame({ thread_id: "not-a-number" })).threadId).toBeNull();
   });
