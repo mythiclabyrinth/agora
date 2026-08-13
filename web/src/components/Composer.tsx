@@ -122,6 +122,16 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
      committed value so clears after sends (including async attachment sends)
      and conversation switches can shrink a previously tall textarea. */
   useEffect(() => { autoGrow(taRef.current); }, [text]);
+  /* Routing can mount a composer while its pane is display:none. In that
+     state scrollHeight is zero, so resize again when responsive navigation or
+     initial route resolution gives the textarea a real layout box. */
+  useEffect(() => {
+    const input = taRef.current;
+    if (!input || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => autoGrow(input));
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, []);
 
   const inThread = threadId != null;
   const readyAttachments = attachments.filter(

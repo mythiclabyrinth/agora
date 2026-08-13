@@ -1,7 +1,8 @@
 /* Which pane the main column shows, and which overlay panel is open.
    Selection persists to localStorage: agora_sel = {g,c}; agora_open = an
    array of expanded group ids, or null meaning "just the selected group";
-   agora_thread = "expanded"/"open"; agora_unreads_only = "1"/"0". */
+   agora_thread = "expanded"/"open"; agora_unreads_only = "1"/"0";
+   agora_chan_collapsed = channel ids whose sidebar threads are collapsed. */
 
 import { create } from "zustand";
 import { deepLinkPath } from "@agora/core";
@@ -35,6 +36,7 @@ interface UiState {
   panel: Panel;
   /** Expanded group ids; null = "the selected group counts as expanded". */
   expanded: string[] | null;
+  collapsedChannels: string[];
   unreadsOnly: boolean;
   hiddenOpen: boolean;
   sideCollapsed: boolean;
@@ -49,6 +51,8 @@ interface UiState {
   isExpanded: (g: string) => boolean;
   setExpanded: (g: string, on: boolean) => void;
   toggleGroup: (g: string) => void;
+  isChannelCollapsed: (c: string) => boolean;
+  toggleChannelThreads: (c: string) => void;
   setUnreadsOnly: (on: boolean) => void;
   toggleHiddenSection: () => void;
   toggleSide: () => void;
@@ -67,6 +71,7 @@ export const useUiState = create<UiState>((set, get) => ({
   mobileView: loadJSON<Selection>("agora_sel", {}).c ? "main" : "side",
   panel: null,
   expanded: loadJSON<string[] | null>("agora_open", null),
+  collapsedChannels: loadJSON<string[]>("agora_chan_collapsed", []),
   unreadsOnly: localStorage.getItem("agora_unreads_only") === "1",
   hiddenOpen: false,
   sideCollapsed: localStorage.getItem("agora_side") === "collapsed",
@@ -110,6 +115,14 @@ export const useUiState = create<UiState>((set, get) => ({
     return { expanded };
   }),
   toggleGroup: (g) => get().setExpanded(g, !get().isExpanded(g)),
+  isChannelCollapsed: (c) => get().collapsedChannels.includes(c),
+  toggleChannelThreads: (c) => set((s) => {
+    const collapsedChannels = s.collapsedChannels.includes(c)
+      ? s.collapsedChannels.filter(id => id !== c)
+      : [...s.collapsedChannels, c];
+    localStorage.setItem("agora_chan_collapsed", JSON.stringify(collapsedChannels));
+    return { collapsedChannels };
+  }),
 
   setUnreadsOnly: (on) => {
     localStorage.setItem("agora_unreads_only", on ? "1" : "0");

@@ -1,14 +1,17 @@
 /* Threads inbox (.ago-inbox-list): every thread the user participates in,
    newest first, with rename and two-step remove on each row. */
 
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   fmtTs, keys, useGroups, useHideThread, useMe, useRenameThread, useThreads,
   type ThreadRow,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
+import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
+import { PromptDialog } from "./ThreadRenameDialog";
 
 function snippet(m: { alias?: string | null; text?: string }): string {
   const alias = (m.alias || "").trim();
@@ -28,6 +31,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
   const g = groups.find(x => x.id === t.group_id);
   const canRemove = (g && g.role === "admin") || !!me?.instance_admin;
   const root = t.root || ({} as ThreadRow["root"]);
+  const [renaming, setRenaming] = useState(false);
 
   return (
     <div className={`ago-inbox-row ${t.unread ? "unread" : ""}`}
@@ -43,12 +47,20 @@ function InboxRow({ t }: { t: ThreadRow }) {
             <button className="ago-x" title="Rename this thread"
               onClick={e => {
                 e.stopPropagation();
-                const next = window.prompt("Thread name (blank resets to the first line):", root.alias || "");
-                if (next === null) return;
-                rename.mutate({ threadId: root.id, alias: next.trim() });
+                setRenaming(true);
               }}>
               <Icon name="pencil" />
             </button>
+            {renaming && <PromptDialog title="Rename thread"
+              description="Leave the name blank to use the first line of the thread."
+              label="Thread name" value={root.alias || ""} pending={rename.isPending}
+              onClose={() => setRenaming(false)} onSave={alias => rename.mutate(
+                { threadId: root.id, alias },
+                {
+                  onSuccess: () => setRenaming(false),
+                  onError: error => toast(`Couldn't rename thread: ${(error as Error).message}`, { variant: "warn" }),
+                },
+              )} />}
             {canRemove && (
               <button className={`ago-x ${armed ? "armed" : ""}`}
                 title={armed ? "Click again to remove this thread" : "Remove from Threads (messages stay in the channel)"}

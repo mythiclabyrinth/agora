@@ -2,11 +2,12 @@
    and the operator-only People/Connections buttons. Same ids/classes as
    ui/index.html + shim.js renderServerBadge()/boot(). */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys, useConnectionsInfo, useMe, useApi, type Me } from "@agora/core";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
+import { PromptDialog } from "./ThreadRenameDialog";
 
 /* Topbar dot (connRefreshBadge): green when every enabled connection is
    live, amber when some are down, grey when none are configured. The query
@@ -57,18 +58,20 @@ export function Topbar() {
   const me = useMe().data;
   const openPanel = useUiState(s => s.openPanel);
   const isAdmin = !!me?.instance_admin;
+  const [renaming, setRenaming] = useState(false);
+  const [renamePending, setRenamePending] = useState(false);
 
-  const rename = async () => {
-    const next = window.prompt(
-      "Display name (leave blank to use your username):",
-      me?.display_name || me?.username || "");
-    if (next === null) return;
+  const rename = async (next: string) => {
+    setRenamePending(true);
     try {
-      const updated = await api.patch<Partial<Me>>("/api/me", { display_name: next.trim() });
+      const updated = await api.patch<Partial<Me>>("/api/me", { display_name: next });
       qc.setQueryData<Me>(keys.me, prev => prev ? { ...prev, ...updated } : undefined);
       toast("Display name updated", { variant: "ok" });
+      setRenaming(false);
     } catch (e) {
       toast("Couldn't update your name: " + ((e as Error).message || e), { variant: "error" });
+    } finally {
+      setRenamePending(false);
     }
   };
 
@@ -78,9 +81,14 @@ export function Topbar() {
       <ServerBadge />
       <StatusBadge isAdmin={isAdmin} />
       <button className="topbar-me" id="topbar-me" title="Change how your name appears"
-        onClick={() => void rename()}>
+        onClick={() => setRenaming(true)}>
         {me ? (me.display_name || me.username) : ""}
       </button>
+      {renaming && <PromptDialog title="Change display name"
+        description="Leave the name blank to use your username."
+        label="Display name" value={me?.display_name || me?.username || ""}
+        pending={renamePending} onClose={() => setRenaming(false)}
+        onSave={value => void rename(value)} />}
       {isAdmin && (
         <button className="btn sm" id="btn-people" onClick={() => openPanel("people")}>People</button>
       )}

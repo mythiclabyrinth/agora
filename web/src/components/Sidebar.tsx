@@ -16,6 +16,7 @@ import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { AgentDmPanel } from "./AgentDmPanel";
+import { PromptDialog } from "./ThreadRenameDialog";
 
 const SEARCH_KEY = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl+K";
 
@@ -54,6 +55,7 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
   const arm = useConfirm(s => s.arm);
   const disarm = useConfirm(s => s.disarm);
   const snippet = pinSnippet(t.root || {});
+  const [renaming, setRenaming] = useState(false);
   return (
     <div className={`ago-side-thread ${t.unread ? "unread" : ""}`} title={snippet}
       onClick={e => {
@@ -67,12 +69,20 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
       <button className="ago-x" title="Rename this thread"
         onClick={e => {
           e.stopPropagation();
-          const next = window.prompt("Thread name (blank resets to the first line):", t.root.alias || "");
-          if (next === null) return;
-          rename.mutate({ threadId: t.root.id, alias: next.trim() });
+          setRenaming(true);
         }}>
         <Icon name="pencil" />
       </button>
+      {renaming && <PromptDialog title="Rename thread"
+        description="Leave the name blank to use the first line of the thread."
+        label="Thread name" value={t.root.alias || ""} pending={rename.isPending}
+        onClose={() => setRenaming(false)} onSave={alias => rename.mutate(
+          { threadId: t.root.id, alias },
+          {
+            onSuccess: () => setRenaming(false),
+            onError: error => toast(`Couldn't rename thread: ${(error as Error).message}`, { variant: "warn" }),
+          },
+        )} />}
       <button className={`ago-x ${armed ? "armed" : ""}`}
         title={armed ? "Click again to remove this thread" : "Remove thread from your sidebar (messages stay in the channel)"}
         onClick={e => {
@@ -244,19 +254,29 @@ export function Sidebar() {
                 const unread = unreadOf(c), mentions = mentionsOf(c);
                 const chThreads = channelThreads(threads, c.id);
                 const threadUnread = chThreads.reduce((n, t) => n + (t.unread || 0), 0);
+                const threadsCollapsed = ui.isChannelCollapsed(c.id);
                 const active = sel && c.id === ui.sel.c && ui.view.kind === "channel";
                 if (ui.unreadsOnly && !unread && !mentions && !threadUnread && !active) return null;
                 const chArmed = armedKey === `chan:${c.id}`;
                 return (
                   <div key={c.id}>
-                    <div className={`ago-chan ${active ? "active" : ""} ${unread || mentions ? "unread" : ""}`}
+                    <div className={`ago-chan ${active ? "active" : ""} ${unread || mentions || (threadsCollapsed && threadUnread) ? "unread" : ""}`}
                       draggable={!isDms}
                       onDragStart={isDms ? undefined : dragStart("chan", c.id, g.id)}
                       onDragOver={isDms ? undefined : dragOver("chan", g.id)}
                       onDrop={isDms ? undefined : dropOn("chan", c.id, g.id)}
                       onClick={() => ui.selectChannel(g.id, c.id)}>
+                      {chThreads.length ? (
+                        <button type="button" className={`ago-caret ago-chan-caret ${threadsCollapsed ? "" : "open"}`}
+                          aria-expanded={!threadsCollapsed}
+                          aria-controls={threadsCollapsed ? undefined : `ago-channel-threads-${c.id}`}
+                          aria-label={`${threadsCollapsed ? "Expand" : "Collapse"} threads in #${c.name}`}
+                          onClick={event => { event.stopPropagation(); ui.toggleChannelThreads(c.id); }}>
+                          <Icon name="chevron-right" />
+                        </button>
+                      ) : <span className="ago-chan-caret-spacer" aria-hidden="true" />}
                       <span className="hash">{isDms ? "↔" : "#"}</span><span className="nm">{c.name}</span>
-                      <Badge n={unread} mentions={mentions} />
+                      <Badge n={threadsCollapsed ? unread + threadUnread : unread} mentions={mentions} />
                       {!isDms && <button className="ago-x hide" title={`Hide #${c.name} from your sidebar`}
                         onClick={e => {
                           e.stopPropagation();
@@ -279,9 +299,11 @@ export function Sidebar() {
                         </button>
                       )}
                     </div>
-                    {chThreads
-                      .filter(t => !ui.unreadsOnly || (t.unread || 0) > 0)
-                      .map(t => <SideThread key={t.root.id} t={t} g={g} c={c} />)}
+                    {!threadsCollapsed && <div id={`ago-channel-threads-${c.id}`}>
+                      {chThreads
+                        .filter(t => !ui.unreadsOnly || (t.unread || 0) > 0)
+                        .map(t => <SideThread key={t.root.id} t={t} g={g} c={c} />)}
+                    </div>}
                   </div>
                 );
               })}
