@@ -233,6 +233,11 @@ export function ChannelPane() {
           </div>
         )}
         <div className="ago-head-actions">
+          <button className={`btn sm ${ui.filesOpen && ui.filesThread == null ? "active" : ""}`}
+            title={`Attachments in #${channel.name}`}
+            onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread == null), null)}>
+            <Icon name="paperclip" /> Files
+          </button>
           {!isDm && <button className="btn sm" title="Copy link to this channel"
             onClick={() => void copyDeepLink({
               kind: "channel", groupId: group.id, channelId: channel.id,

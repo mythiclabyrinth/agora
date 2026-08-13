@@ -175,7 +175,9 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
             </button>
           </div>
         </div>
-      ) : <MdText text={onTldr ? (tldr as string) : visibleText(m)} mentions={mentions} />}
+      ) : m.text || m.attachments.length ? (
+        <MdText text={onTldr ? (tldr as string) : visibleText(m)} mentions={mentions} />
+      ) : <div className="ago-attachment-deleted">Attachment deleted</div>}
       <ArtifactList artifacts={m.meta?.artifacts} />
       <Attachments message={m} />
       <Unfurls message={m} />

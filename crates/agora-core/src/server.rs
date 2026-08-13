@@ -353,6 +353,11 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{channel_id}/messages",
             get(list_messages).post(post_message),
         )
+        .route("/api/channels/{channel_id}/attachments", get(list_attachments))
+        .route(
+            "/api/channels/{channel_id}/attachments/{file_id}",
+            delete(delete_attachment),
+        )
         .route(
             "/api/channels/{channel_id}/messages/{message_id}",
             patch(edit_message).delete(delete_message),
@@ -1393,6 +1398,65 @@ async fn search(
         out["groups"] = json!(personal_hidden(store.search_groups(query, scope_user, 20), "group"));
     }
     Ok(Json(out))
+}
+
+/// GET /api/channels/{channel_id}/attachments — individual attachment rows,
+/// optionally scoped to `thread_id` (root plus replies). Channel membership
+/// is the visibility boundary, including for instance admins and agent DMs.
+async fn list_attachments(
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channel = require_channel_member(&state, &user, &channel_id)?;
+    let thread_id = q.get("thread_id").and_then(|s| s.parse::<i64>().ok());
+    let file_type = q.get("file_type").map(String::as_str).filter(|s| !s.is_empty());
+    let limit = q.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50usize).clamp(1, 100);
+    let offset = q.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0usize);
+    let admin = require_group_admin(
+        &state, &user, channel["group_id"].as_str().unwrap_or_default(),
+    ).is_ok();
+    let mut items = state.hub.store.list_attachments(
+        &channel_id, thread_id, file_type, limit + 1, offset,
+    );
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    for item in &mut items {
+        let mine = item["author_type"] == "user" && item["author_id"] == user.username.as_str();
+        item["can_delete"] = json!(mine || admin);
+    }
+    Ok(Json(json!({"items": items, "has_more": has_more, "offset": offset})))
+}
+
+/// DELETE one attachment while retaining its message and sibling files.
+/// User-authored files may be removed by their sender or a group admin;
+/// agent-authored files are deliberately group-admin-only.
+async fn delete_attachment(
+    State(state): State<AppState>,
+    Path((channel_id, file_id)): Path<(String, String)>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channel = require_channel_member(&state, &user, &channel_id)?;
+    let file = state.hub.store.file(&file_id)
+        .filter(|f| f["channel_id"] == channel_id.as_str())
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown attachment"))?;
+    let message = state.hub.store.message(file["message_id"].as_i64().unwrap_or_default())
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown message"))?;
+    let mine = message["author_type"] == "user" && message["author_id"] == user.username.as_str();
+    if !mine {
+        require_group_admin(&state, &user, channel["group_id"].as_str().unwrap_or_default())
+            .map_err(|_| err(StatusCode::FORBIDDEN, "Only the sender or a group admin can delete an attachment"))?;
+    }
+    let updated = state.hub.store.delete_attachment(&file_id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown attachment"))?;
+    state.hub.post_transient(
+        &channel_id, json!({"type": "message_update", "message": updated}),
+    );
+    Ok(Json(updated))
 }
 
 /// POST /api/search/ask {"q", "channel_id"?, "group_id"?} — AI answer mode:
@@ -4706,6 +4770,64 @@ mod tests {
         .await;
         assert!(missed.is_err());
         assert!(store.message(mid(&stray)).is_some());
+    }
+
+    #[tokio::test]
+    async fn attachment_browser_gates_membership_and_agent_file_deletion() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        for user in ["boss", "ana", "mal"] {
+            store.create_user(user, "", None, "member").unwrap();
+        }
+        store.create_user("outsider", "", None, "member").unwrap();
+        let g = store.create_group("Team", "", Some("boss"));
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "boss", "admin", None);
+        store.add_member(gid, "user", "ana", "member", None);
+        store.add_member(gid, "user", "mal", "member", None);
+        let c = store.create_channel(gid, "general", "");
+        let cid = c["id"].as_str().unwrap().to_string();
+        let attachment = || crate::store::NewAttachment {
+            filename: "note.txt".into(), mime: "text/plain".into(), data: b"bytes".to_vec(),
+        };
+        let own = store.add_message(&cid, "", "user", "ana", None, None, &[attachment()]);
+        let agent = store.add_message(&cid, "agent file", "agent", "bot", Some("Bot"), None, &[attachment()]);
+        let own_file = own["attachments"][0]["id"].as_str().unwrap().to_string();
+        let agent_file = agent["attachments"][0]["id"].as_str().unwrap().to_string();
+        let q = || Query(HashMap::new());
+
+        let listed = list_attachments(
+            State(state.clone()), Path(cid.clone()), q(), session_headers(&state, "ana"),
+        ).await.unwrap();
+        assert_eq!(listed.0["items"].as_array().unwrap().len(), 2);
+        assert!(list_attachments(
+            State(state.clone()), Path(cid.clone()), q(), session_headers(&state, "outsider"),
+        ).await.is_err());
+
+        // A plain member cannot delete an agent-authored attachment.
+        assert!(delete_attachment(
+            State(state.clone()), Path((cid.clone(), agent_file.clone())), q(),
+            session_headers(&state, "ana"),
+        ).await.is_err());
+        // Nor can a non-member delete even a user-authored attachment.
+        assert!(delete_attachment(
+            State(state.clone()), Path((cid.clone(), own_file.clone())), q(),
+            session_headers(&state, "outsider"),
+        ).await.is_err());
+
+        // The sender may remove their own file; the empty message survives.
+        let updated = delete_attachment(
+            State(state.clone()), Path((cid.clone(), own_file)), q(), session_headers(&state, "ana"),
+        ).await.unwrap();
+        assert_eq!(updated.0["id"], own["id"]);
+        assert_eq!(updated.0["attachments"], json!([]));
+        assert!(store.message(own["id"].as_i64().unwrap()).is_some());
+
+        // A group admin may remove an agent-authored file.
+        let _ = delete_attachment(
+            State(state.clone()), Path((cid, agent_file)), q(), session_headers(&state, "boss"),
+        ).await.unwrap();
+        assert_eq!(store.message(agent["id"].as_i64().unwrap()).unwrap()["attachments"], json!([]));
     }
 
     #[tokio::test]
