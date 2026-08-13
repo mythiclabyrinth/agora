@@ -41,9 +41,10 @@ export function PromptDialog({ title, description, label, value: initialValue, p
   };
 
   return createPortal(
-    <div className="conn-overlay" onMouseDown={event => {
-      if (event.target === event.currentTarget && !pending) onClose();
-    }}>
+    <div className="conn-overlay" onClick={event => event.stopPropagation()}
+      onMouseDown={event => {
+        if (event.target === event.currentTarget && !pending) onClose();
+      }}>
       <div className="conn-panel ago-thread-rename-dialog" role="dialog" aria-modal="true"
         aria-labelledby={titleId}>
         <h2 id={titleId}>{title}</h2>

@@ -7,7 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { keys, useConnectionsInfo, useMe, useApi, type Me } from "@agora/core";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
-import { PromptDialog } from "./ThreadRenameDialog";
+import { PromptDialog } from "./PromptDialog";
 
 /* Topbar dot (connRefreshBadge): green when every enabled connection is
    live, amber when some are down, grey when none are configured. The query

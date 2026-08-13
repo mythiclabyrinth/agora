@@ -16,7 +16,7 @@ import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { AgentDmPanel } from "./AgentDmPanel";
-import { PromptDialog } from "./ThreadRenameDialog";
+import { PromptDialog } from "./PromptDialog";
 
 const SEARCH_KEY = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl+K";
 
@@ -270,7 +270,7 @@ export function Sidebar() {
                         <button type="button" className={`ago-caret ago-chan-caret ${threadsCollapsed ? "" : "open"}`}
                           aria-expanded={!threadsCollapsed}
                           aria-controls={threadsCollapsed ? undefined : `ago-channel-threads-${c.id}`}
-                          aria-label={`${threadsCollapsed ? "Expand" : "Collapse"} threads in #${c.name}`}
+                          aria-label={`${threadsCollapsed ? "Expand" : "Collapse"} threads in ${isDms ? "↔" : "#"}${c.name}`}
                           onClick={event => { event.stopPropagation(); ui.toggleChannelThreads(c.id); }}>
                           <Icon name="chevron-right" />
                         </button>

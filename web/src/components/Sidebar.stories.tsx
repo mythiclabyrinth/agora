@@ -69,7 +69,11 @@ export const RenameThreadDialog: Story = {
     const thread = await canvas.findByText("Can we validate the responsive component layout?");
     await userEvent.hover(thread);
     await userEvent.click(canvas.getByTitle("Rename this thread"));
-    const dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
+    let dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    expect(useUiState.getState().threadRoot).toBeNull();
+    await userEvent.click(canvas.getByTitle("Rename this thread"));
+    dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
     const input = dialog.getByLabelText("Thread name");
     await expect(input).toHaveFocus();
     await userEvent.clear(input);

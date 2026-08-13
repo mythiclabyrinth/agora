@@ -11,7 +11,7 @@ import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
-import { PromptDialog } from "./ThreadRenameDialog";
+import { PromptDialog } from "./PromptDialog";
 
 function snippet(m: { alias?: string | null; text?: string }): string {
   const alias = (m.alias || "").trim();

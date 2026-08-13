@@ -128,7 +128,12 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   useEffect(() => {
     const input = taRef.current;
     if (!input || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => autoGrow(input));
+    let hidden = input.getBoundingClientRect().height === 0;
+    const observer = new ResizeObserver(entries => {
+      const visible = entries.some(entry => entry.contentRect.height > 0);
+      if (hidden && visible) autoGrow(input);
+      hidden = !visible;
+    });
     observer.observe(input);
     return () => observer.disconnect();
   }, []);
