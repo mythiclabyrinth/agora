@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { fixtureGroups } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
 import { AttachmentBrowser } from "./AttachmentBrowser";
@@ -14,7 +14,7 @@ const channelPage = {
       channel_id: "general", message_id: 21, thread_id: 20, author_type: "user", author_id: "tom",
       author_name: "Tom", message_text: "Here is the design", ts: 1_750_000_000,
       thread_name: "Launch readiness review", can_delete: true },
-    { id: "shot", filename: "dashboard.png", mime: "image/png", size: 1200000,
+    { id: "storybook-preview.svg", filename: "dashboard.svg", mime: "image/svg+xml", size: 1200000,
       channel_id: "general", message_id: 10, thread_id: null, author_type: "agent", author_id: "codex",
       author_name: "Codex", message_text: "Dashboard preview", ts: 1_749_999_000,
       thread_name: null, can_delete: false },
@@ -48,12 +48,28 @@ export const ChannelWithRenamedThread: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("launch-plan.pdf")).resolves.toBeVisible();
     await expect(canvas.findByText("Launch readiness review")).resolves.toBeVisible();
-    await expect(canvas.findByText("dashboard.png")).resolves.toBeVisible();
+    await expect(canvas.findByText("dashboard.svg")).resolves.toBeVisible();
+    const preview = canvasElement.querySelector<HTMLImageElement>(".ago-file-browser-thumb img");
+    expect(preview).not.toBeNull();
+    await waitFor(() => expect(preview?.naturalWidth).toBeGreaterThan(0));
     const remove = canvas.getByTitle("Delete attachment");
     await userEvent.click(remove);
     await expect(canvas.findByTitle("Click again to delete from Agora")).resolves.toBeVisible();
     await userEvent.click(canvas.getByTitle("Click again to delete from Agora"));
     await expect(deleted).toHaveBeenCalled();
+  },
+};
+
+export const BrokenImageFallsBackToIcon: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("dashboard.svg")).resolves.toBeVisible();
+    const preview = canvasElement.querySelector<HTMLImageElement>(".ago-file-browser-thumb img");
+    if (!preview) throw new Error("Missing image preview");
+    await waitFor(() => expect(preview.naturalWidth).toBeGreaterThan(0));
+    preview.dispatchEvent(new Event("error"));
+    await waitFor(() => expect(canvasElement.querySelector(".ago-file-browser-thumb")).toBeNull());
+    expect(canvasElement.querySelectorAll(".ago-file-browser-icon").length).toBe(2);
   },
 };
 

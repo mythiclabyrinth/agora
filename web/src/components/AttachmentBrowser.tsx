@@ -3,7 +3,7 @@ import {
   fmtTs, useAttachments, useDeleteAttachment, useGroups,
   type AttachmentBrowserItem,
 } from "@agora/core";
-import { fileUrl, humanSize } from "../lib/files";
+import { BROWSER_IMAGE, fileUrl, humanSize } from "../lib/files";
 import { toast } from "../lib/toast";
 import { useJump } from "../state/jump";
 import { useUiState } from "../state/ui";
@@ -18,6 +18,7 @@ export function AttachmentBrowser() {
   const del = useDeleteAttachment(channel?.id || "", threadId);
   const jump = useJump(s => s.request);
   const [armed, setArmed] = useState<string | null>(null);
+  const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   useEffect(() => {
     if (!ui.filesOpen) setArmed(null);
   }, [ui.filesOpen]);
@@ -51,7 +52,14 @@ export function AttachmentBrowser() {
         {items.map(item => (
           <div className="ago-file-browser-row" key={item.id}>
             <button className="ago-file-browser-main" title="Jump to message" onClick={() => go(item)}>
-              <span className="ago-file-browser-icon"><Icon name={item.mime.startsWith("image/") ? "image" : "file-text"} /></span>
+              {BROWSER_IMAGE.test(item.mime || "") && !failedImages.has(item.id) ? (
+                <span className="ago-file-browser-thumb">
+                  <img src={fileUrl(item.id)} alt="" loading="lazy" decoding="async"
+                    onError={() => setFailedImages(current => new Set(current).add(item.id))} />
+                </span>
+              ) : (
+                <span className="ago-file-browser-icon"><Icon name={item.mime.startsWith("image/") ? "image" : "file-text"} /></span>
+              )}
               <span className="ago-file-browser-copy">
                 <span className="fname">{item.filename}</span>
                 <span className="meta">{humanSize(item.size)} · {item.author_name || item.author_id} · {fmtTs(item.ts)}</span>
