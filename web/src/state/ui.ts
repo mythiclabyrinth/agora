@@ -90,7 +90,8 @@ export const useUiState = create<UiState>((set, get) => ({
     }
     localStorage.setItem("agora_sel", JSON.stringify({ g, c }));
     writeHistory(deepLinkPath({ kind: "channel", groupId: g, channelId: c }), history);
-    return { sel: { g, c }, view: { kind: "channel" }, threadRoot: null, mobileView: "main" as const };
+    return { sel: { g, c }, view: { kind: "channel" }, threadRoot: null,
+      filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
   openInbox: (history = "push") => {
     writeHistory("/threads", history);
@@ -135,7 +136,7 @@ export const useUiState = create<UiState>((set, get) => ({
         kind: "thread", groupId: s.sel.g, channelId: s.sel.c, threadId: rootId,
       }), history);
     }
-    return { threadRoot: rootId, mobileView: "thread" as const };
+    return { threadRoot: rootId, filesOpen: false, filesThread: null, mobileView: "thread" as const };
   }),
   closeThread: (history = "replace") => set((s) => {
     const scope = useLiveVoice.getState().scope;
@@ -145,7 +146,7 @@ export const useUiState = create<UiState>((set, get) => ({
         kind: "channel", groupId: s.sel.g, channelId: s.sel.c,
       }), history);
     }
-    return { threadRoot: null, mobileView: "main" as const };
+    return { threadRoot: null, filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
   toggleThreadSize: () => set((s) => {
     const next = !s.threadExpanded;

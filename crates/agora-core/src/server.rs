@@ -1415,7 +1415,9 @@ async fn list_attachments(
     let file_type = q.get("file_type").map(String::as_str).filter(|s| !s.is_empty());
     let limit = q.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50usize).clamp(1, 100);
     let offset = q.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0usize);
-    let admin = require_group_admin(
+    let privileged = channel["kind"] == "agent_dm"
+        && state.hub.store.user_owns_agent_dm(&user.username, &channel_id)
+        || require_group_admin(
         &state, &user, channel["group_id"].as_str().unwrap_or_default(),
     ).is_ok();
     let mut items = state.hub.store.list_attachments(
@@ -1425,14 +1427,15 @@ async fn list_attachments(
     items.truncate(limit);
     for item in &mut items {
         let mine = item["author_type"] == "user" && item["author_id"] == user.username.as_str();
-        item["can_delete"] = json!(mine || admin);
+        item["can_delete"] = json!(mine || privileged);
     }
     Ok(Json(json!({"items": items, "has_more": has_more, "offset": offset})))
 }
 
 /// DELETE one attachment while retaining its message and sibling files.
 /// User-authored files may be removed by their sender or a group admin;
-/// agent-authored files are deliberately group-admin-only.
+/// agent-authored files are group-admin-only, except that the owner of a
+/// private agent DM controls files posted by that agent in their DM.
 async fn delete_attachment(
     State(state): State<AppState>,
     Path((channel_id, file_id)): Path<(String, String)>,
@@ -1447,7 +1450,9 @@ async fn delete_attachment(
     let message = state.hub.store.message(file["message_id"].as_i64().unwrap_or_default())
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown message"))?;
     let mine = message["author_type"] == "user" && message["author_id"] == user.username.as_str();
-    if !mine {
+    let owns_dm = channel["kind"] == "agent_dm"
+        && state.hub.store.user_owns_agent_dm(&user.username, &channel_id);
+    if !mine && !owns_dm {
         require_group_admin(&state, &user, channel["group_id"].as_str().unwrap_or_default())
             .map_err(|_| err(StatusCode::FORBIDDEN, "Only the sender or a group admin can delete an attachment"))?;
     }
@@ -4828,6 +4833,22 @@ mod tests {
             State(state.clone()), Path((cid, agent_file)), q(), session_headers(&state, "boss"),
         ).await.unwrap();
         assert_eq!(store.message(agent["id"].as_i64().unwrap()).unwrap()["attachments"], json!([]));
+
+        // The owner of a private agent DM controls files the agent posts there.
+        let dm = store.open_agent_dm("ana", "bot", "Bot");
+        let dm_id = dm["id"].as_str().unwrap().to_string();
+        let dm_message = store.add_message(
+            &dm_id, "DM file", "agent", "bot", Some("Bot"), None, &[attachment()],
+        );
+        let dm_file = dm_message["attachments"][0]["id"].as_str().unwrap().to_string();
+        let listed = list_attachments(
+            State(state.clone()), Path(dm_id.clone()), q(), session_headers(&state, "ana"),
+        ).await.unwrap();
+        assert_eq!(listed.0["items"][0]["can_delete"], true);
+        let _ = delete_attachment(
+            State(state.clone()), Path((dm_id, dm_file)), q(), session_headers(&state, "ana"),
+        ).await.unwrap();
+        assert_eq!(store.message(dm_message["id"].as_i64().unwrap()).unwrap()["attachments"], json!([]));
     }
 
     #[tokio::test]

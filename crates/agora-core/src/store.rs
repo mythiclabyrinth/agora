@@ -465,18 +465,18 @@ pub fn fts_query_any(raw: &str) -> Option<String> {
     }
 }
 
-/// SQL predicate (on a `files` alias `ff`) selecting one attachment *kind*, or
+/// SQL predicate selecting one attachment *kind*, or
 /// `None` for an unknown value (which means "any attachment"). Keeps the mime
 /// buckets the search UIs expose in one place.
-fn file_kind_predicate(kind: &str) -> Option<&'static str> {
+fn file_kind_predicate(kind: &str, alias: &str) -> Option<String> {
     Some(match kind {
-        "image" => "ff.mime LIKE 'image/%'",
-        "video" => "ff.mime LIKE 'video/%'",
-        "audio" => "ff.mime LIKE 'audio/%'",
-        "pdf" => "ff.mime = 'application/pdf'",
+        "image" => format!("{alias}.mime LIKE 'image/%'"),
+        "video" => format!("{alias}.mime LIKE 'video/%'"),
+        "audio" => format!("{alias}.mime LIKE 'audio/%'"),
+        "pdf" => format!("{alias}.mime = 'application/pdf'"),
         // Everything a person would call a "document".
-        "doc" => "(ff.mime = 'application/pdf' OR ff.mime LIKE 'application/vnd.%' \
-                   OR ff.mime LIKE 'application/msword%' OR ff.mime LIKE 'text/%')",
+        "doc" => format!("({alias}.mime = 'application/pdf' OR {alias}.mime LIKE 'application/vnd.%' \
+                   OR {alias}.mime LIKE 'application/msword%' OR {alias}.mime LIKE 'text/%')"),
         _ => return None,
     })
 }
@@ -2299,7 +2299,7 @@ impl Store {
         // file (optionally of one kind). An unknown `file_type` falls back to
         // "any attachment" rather than matching nothing.
         let attach_clause = if want_attach {
-            let kind = file_type.and_then(file_kind_predicate);
+            let kind = file_type.and_then(|kind| file_kind_predicate(kind, "ff"));
             let extra = kind.map(|k| format!(" AND {k}")).unwrap_or_default();
             format!(" AND EXISTS (SELECT 1 FROM files ff WHERE ff.message_id = m.id{extra})")
         } else {
@@ -2529,7 +2529,7 @@ impl Store {
         limit: usize,
         offset: usize,
     ) -> Vec<Value> {
-        let kind = file_type.and_then(file_kind_predicate)
+        let kind = file_type.and_then(|kind| file_kind_predicate(kind, "f"))
             .map(|p| format!(" AND {p}"))
             .unwrap_or_default();
         let thread = if thread_id.is_some() {
@@ -4120,6 +4120,17 @@ mod tests {
         assert_eq!(updated["id"], root_id);
         assert_eq!(updated["attachments"].as_array().unwrap().len(), 1);
         assert_eq!(s.list_attachments(cid, None, None, 10, 0).len(), 2);
+
+        // Every browser filter uses the `f` alias and must remain executable;
+        // unknown kinds intentionally retain the search API's "any" fallback.
+        for kind in ["image", "video", "audio", "pdf", "doc", "unknown"] {
+            let rows = s.list_attachments(cid, None, Some(kind), 10, 0);
+            if kind == "doc" || kind == "unknown" {
+                assert!(!rows.is_empty(), "{kind} filter should include text files");
+            } else {
+                assert!(rows.is_empty(), "{kind} should not match text files");
+            }
+        }
     }
 
     #[test]

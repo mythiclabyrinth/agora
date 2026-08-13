@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   fmtTs, useAttachments, useDeleteAttachment, useGroups,
   type AttachmentBrowserItem,
@@ -18,6 +18,9 @@ export function AttachmentBrowser() {
   const del = useDeleteAttachment(channel?.id || "", threadId);
   const jump = useJump(s => s.request);
   const [armed, setArmed] = useState<string | null>(null);
+  useEffect(() => {
+    if (!ui.filesOpen) setArmed(null);
+  }, [ui.filesOpen]);
   if (!ui.filesOpen || !channel) {
     return <div className="agora-files-pane" style={{ display: "none" }} />;
   }

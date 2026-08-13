@@ -327,6 +327,7 @@ export function applyWsEvent(
     }
     case "message_delete": {
       applyMessageDelete(qc, ev);
+      void qc.invalidateQueries({ queryKey: ["attachments", ev.channel_id] });
       break;
     }
     case "read": {
