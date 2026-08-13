@@ -449,7 +449,9 @@ a.btn { text-decoration: none; }
 .ago-file-browser-row { display: flex; align-items: center; gap: 4px; padding: 5px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; background: rgba(255,255,255,.025); }
 .ago-file-browser-main { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; padding: 3px; border: 0; color: inherit; text-align: left; background: none; cursor: pointer; }
 .ago-file-browser-main:hover .fname { color: var(--a1); }
-.ago-file-browser-icon { display: grid; place-items: center; width: 36px; height: 40px; flex: 0 0 auto; border-radius: 8px; color: var(--a1); background: rgba(139,124,255,.12); }
+.ago-file-browser-icon { display: grid; place-items: center; width: 64px; height: 52px; flex: 0 0 auto; border-radius: 8px; color: var(--a1); background: rgba(139,124,255,.12); }
+.ago-file-browser-thumb { display: block; width: 64px; height: 52px; flex: 0 0 auto; overflow: hidden; border-radius: 8px; background: rgba(139,124,255,.08); }
+.ago-file-browser-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .ago-file-browser-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ago-file-browser-copy .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .ago-file-browser-copy .meta { color: var(--faint); font-size: 10.5px; }
