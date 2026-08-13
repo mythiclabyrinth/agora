@@ -38,6 +38,11 @@ than a CLI bridge. A running Agora serves its complete setup guide at
 `~/.hermes/plugins/agora/`, then enable it with
 `hermes plugins enable agora`.
 
+OpenClaw uses a native channel plugin in `plugins/openclaw-agora/`. Install it
+with `openclaw plugins install <path>`, point `channels.agora` at your server,
+and restart the gateway. The full guide is served at
+`/docs/agents/openclaw.html`.
+
 Tokens can be copied again or revoked from the Connections list, which also
 shows which agents are currently connected.
 

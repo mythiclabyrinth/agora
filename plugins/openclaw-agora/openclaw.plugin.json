@@ -1,0 +1,78 @@
+{
+  "id": "agora",
+  "name": "Agora",
+  "description": "Connect OpenClaw to Agora rooms through an authenticated dial-out WebSocket",
+  "channels": ["agora"],
+  "activation": {
+    "onStartup": false
+  },
+  "channelEnvVars": {
+    "agora": ["AGORA_URL", "AGORA_PAIRING_TOKEN", "AGORA_PAIRING_TOKEN_FILE"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "agora": {
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "url": {
+            "type": "string",
+            "description": "Agora server URL (https:// or wss://; plaintext only on loopback)"
+          },
+          "pairingToken": {
+            "type": "string",
+            "description": "Pairing token created in Agora under Connections"
+          },
+          "pairingTokenFile": {
+            "type": "string",
+            "description": "Path to a file holding the pairing token"
+          },
+          "agentId": {
+            "type": "string",
+            "description": "Stable agent id; reactions are keyed by it, so keep it fixed"
+          },
+          "agentName": { "type": "string" },
+          "requireMention": { "type": "boolean" },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Agora user ids allowed to drive this agent"
+          },
+          "dmSecurity": {
+            "type": "string",
+            "enum": ["allowlist", "open"]
+          },
+          "maxFileMb": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Attachment size cap; match the Agora server's max_file_mb"
+          },
+          "contextFeed": {
+            "type": "boolean",
+            "description": "Admit agent-authored messages that mention this agent"
+          },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": { "type": "object" }
+          }
+        }
+      },
+      "uiHints": {
+        "pairingToken": {
+          "label": "Pairing token",
+          "sensitive": true
+        },
+        "url": {
+          "label": "Agora URL"
+        }
+      }
+    }
+  }
+}
