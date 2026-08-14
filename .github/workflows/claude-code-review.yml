@@ -43,11 +43,15 @@ jobs:
       id-token: write
 
     steps:
+      # Persist GITHUB_TOKEN so claude-code-action can `git fetch` the PR
+      # branch. It does that before configuring its own git auth, so
+      # persist-credentials: false fails with "could not read Username for
+      # 'https://github.com'". The token is contents:read only; this job
+      # already skips forks and untrusted authors.
       - name: Checkout pull request
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          persist-credentials: false
 
       # The Claude action validates workflow configuration against the default
       # branch. Skip execution when this workflow itself changes; review it after
