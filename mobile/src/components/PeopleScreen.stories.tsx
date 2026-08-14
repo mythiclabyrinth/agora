@@ -1,11 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-native";
-import { fixtureUsers } from "@agora/core/testing/fixtures";
+import { fixtureMe, fixtureUsers } from "@agora/core/testing/fixtures";
 import PeopleScreen from "../../app/(app)/people";
 
 const meta = {
   title: "Native/Screens/People",
   component: PeopleScreen,
   parameters: { apiRoutes: {
+    "GET /api/me": { ...fixtureMe, instance_admin: true },
     "GET /api/users": { users: fixtureUsers },
     "GET /api/memberships": { memberships: [
       { group_id: "product", group_name: "Product", channel_id: null, channel_name: null, member_type: "user", member_id: "tom", role: "admin", added_at: 1 },

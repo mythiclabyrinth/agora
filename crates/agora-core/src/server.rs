@@ -231,10 +231,8 @@ fn require_instance_admin(user: &AuthedUser) -> Result<(), ApiError> {
     }
 }
 
-/// Group-level access: any scoped or group-wide row makes the group shell
-/// visible. Channel contents are gated separately by `require_channel_member`.
-/// Instance admins bypass it (they are the operator).
-/// Member-level access: instance admin, membership row, or a public group.
+/// Group-shell access: instance admin, any scoped or group-wide membership
+/// row, or a public group. Channel contents are gated separately.
 fn require_member(state: &AppState, user: &AuthedUser, group_id: &str) -> Result<(), ApiError> {
     if user.instance_admin || state.hub.store.user_can_access_group(&user.username, group_id) {
         Ok(())
@@ -1245,6 +1243,12 @@ async fn list_members(
         })
         .collect();
     let mut members = state.hub.store.members(&group_id);
+    if !user.instance_admin && !state.hub.store.user_is_group_admin(&user.username, &group_id) {
+        members.retain(|member| match member["channel_id"].as_str() {
+            None => true,
+            Some(channel_id) => state.hub.store.user_can_see_channel(&user.username, channel_id),
+        });
+    }
     for m in &mut members {
         let id = m["member_id"].as_str().unwrap_or_default();
         if m["member_type"] == "agent" {
@@ -1300,6 +1304,15 @@ async fn add_member(
         require_channel_admin(&state, &user, cid)?;
     } else {
         require_group_admin(&state, &user, &group_id)?;
+    }
+    if member_type == "user"
+        && channel_id.is_some()
+        && state.hub.store.user_has_group_wide_membership(member_id, &group_id)
+    {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "User already has whole-group access",
+        ));
     }
     state.hub.store.add_member(
         &group_id,
@@ -5268,7 +5281,9 @@ mod tests {
     async fn scoped_user_group_payload_and_channel_gate_hide_siblings() {
         let (state, _dir) = test_state();
         let store = &state.hub.store;
-        store.create_user("alice", "Alice", None, "member").unwrap();
+        for username in ["alice", "bob", "carol"] {
+            store.create_user(username, username, None, "member").unwrap();
+        }
         let group = store.create_group("Scoped", "", None);
         let gid = group["id"].as_str().unwrap();
         let allowed = store.create_channel(gid, "allowed", "");
@@ -5276,6 +5291,8 @@ mod tests {
         let allowed_id = allowed["id"].as_str().unwrap();
         let hidden_id = hidden["id"].as_str().unwrap();
         store.add_member(gid, "user", "alice", "admin", Some(allowed_id));
+        store.add_member(gid, "user", "bob", "admin", None);
+        store.add_member(gid, "user", "carol", "member", Some(hidden_id));
 
         let headers = session_headers(&state, "alice");
         let payload = list_groups(State(state.clone()), Query(HashMap::new()), headers.clone())
@@ -5283,6 +5300,31 @@ mod tests {
         assert_eq!(payload["groups"][0]["channels"].as_array().unwrap().len(), 1);
         assert_eq!(payload["groups"][0]["channels"][0]["id"], allowed_id);
         assert_eq!(payload["groups"][0]["channels"][0]["role"], "admin");
+        let roster = list_members(
+            State(state.clone()),
+            Path(gid.to_string()),
+            Query(HashMap::new()),
+            headers.clone(),
+        ).await.unwrap().0;
+        let roster = roster["members"].as_array().unwrap();
+        assert!(roster.iter().any(|member| member["member_id"] == "bob"));
+        assert!(!roster.iter().any(|member| member["member_id"] == "carol"));
+
+        let conflict = add_member(
+            State(state.clone()),
+            Path(gid.to_string()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "member_type": "user",
+                "member_id": "bob",
+                "role": "member",
+                "channel_id": allowed_id,
+            })),
+        ).await.unwrap_err();
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+        assert_eq!(conflict.1.0["detail"], "User already has whole-group access");
+
         assert!(list_messages(State(state.clone()), Path(allowed_id.to_string()), Query(HashMap::new()), headers.clone()).await.is_ok());
         assert_eq!(list_messages(State(state), Path(hidden_id.to_string()), Query(HashMap::new()), headers).await.unwrap_err().0, StatusCode::FORBIDDEN);
     }

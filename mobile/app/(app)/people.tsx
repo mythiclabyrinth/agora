@@ -2,13 +2,15 @@ import React, { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { Stack } from "expo-router";
 import { User } from "lucide-react-native";
-import { useAllMemberships, useUsers } from "@agora/core";
+import { useAllMemberships, useMe, useUsers } from "@agora/core";
 import { Icon } from "../../src/components/Icon";
 import { colors } from "../../src/lib/theme";
 
 export default function PeopleScreen() {
-  const users = useUsers();
-  const memberships = useAllMemberships();
+  const me = useMe();
+  const isInstanceAdmin = me.data?.instance_admin === true;
+  const users = useUsers(isInstanceAdmin);
+  const memberships = useAllMemberships(isInstanceAdmin);
   const byUser = useMemo(() => {
     const result = new Map<string, NonNullable<typeof memberships.data>>();
     for (const membership of memberships.data ?? []) {
@@ -18,6 +20,13 @@ export default function PeopleScreen() {
     }
     return result;
   }, [memberships.data]);
+
+  if (me.isSuccess && !isInstanceAdmin) return <>
+    <Stack.Screen options={{ title: "People", headerShown: true }} />
+    <View style={[styles.root, styles.content]}>
+      <Text style={styles.hint}>Instance admin access required.</Text>
+    </View>
+  </>;
 
   return <>
     <Stack.Screen options={{ title: "People", headerShown: true }} />

@@ -1406,6 +1406,19 @@ impl Store {
         .collect()
     }
 
+    pub fn user_has_group_wide_membership(&self, username: &str, group_id: &str) -> bool {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT 1 FROM memberships WHERE group_id = ?1 AND channel_id = '' \
+                 AND member_type = 'user' AND member_id = ?2 LIMIT 1",
+                params![group_id, username],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
     pub fn all_user_memberships(&self) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1420,6 +1433,7 @@ impl Store {
                 "group_id": r.get::<_, String>(0)?, "group_name": r.get::<_, String>(1)?,
                 "channel_id": if channel_id.is_empty() { Value::Null } else { json!(channel_id) },
                 "channel_name": r.get::<_, Option<String>>(3)?, "member_id": r.get::<_, String>(4)?,
+                "member_type": "user",
                 "role": r.get::<_, String>(5)?, "added_at": r.get::<_, f64>(6)?,
             }))
         }).unwrap().filter_map(Result::ok).collect()
@@ -2438,9 +2452,8 @@ impl Store {
                 ));
                 p.push(Box::new(agent.to_string()));
             }
-            // User visibility mirrors the UI: a person sees a channel iff
-            // they are a member of its group (users are group-scoped), or
-            // the group is public.
+            // User visibility mirrors the UI: public channels stay visible;
+            // private channels require whole-group or matching channel scope.
             if let Some(username) = user {
                 let i = p.len() + 1;
                 sql.push_str(&format!(
@@ -3742,6 +3755,7 @@ mod tests {
         assert!(!s.user_can_see_channel("alice", c2id));
         assert!(s.user_is_channel_admin("alice", c1id));
         assert!(!s.user_is_group_admin("alice", gid));
+        assert_eq!(s.all_user_memberships()[0]["member_type"], "user");
 
         s.add_member(gid, "user", "alice", "member", None);
         assert!(s.user_can_see_channel("alice", c2id));
@@ -4645,6 +4659,76 @@ mod tests {
         let got = s.push_tokens_for_channel(cid, None);
         assert!(got.contains(&"ExponentPushToken[legacy]".to_string()));
         assert!(got.contains(&"ExponentPushToken[tom]".to_string()));
+    }
+
+    #[test]
+    fn scoped_user_gets_neither_sibling_pushes_nor_search_hits() {
+        let s = store();
+        s.create_user("alice", "Alice", None, "member").unwrap();
+        let group = s.create_group("Team", "", None);
+        let gid = group["id"].as_str().unwrap();
+        let allowed = s.create_channel(gid, "allowed", "");
+        let hidden = s.create_channel(gid, "hidden", "");
+        let allowed_id = allowed["id"].as_str().unwrap();
+        let hidden_id = hidden["id"].as_str().unwrap();
+        s.add_member(gid, "user", "alice", "member", Some(allowed_id));
+        s.upsert_push_token("alice", "ExponentPushToken[alice]", "ios");
+        s.add_message(
+            allowed_id,
+            "visible allowed phrase",
+            "user",
+            "tom",
+            None,
+            None,
+            &[],
+        );
+        s.add_message(
+            hidden_id,
+            "private sibling phrase",
+            "user",
+            "tom",
+            None,
+            None,
+            &[],
+        );
+
+        assert!(s
+            .push_tokens_for_channel(allowed_id, None)
+            .contains(&"ExponentPushToken[alice]".to_string()));
+        assert!(!s
+            .push_tokens_for_channel(hidden_id, None)
+            .contains(&"ExponentPushToken[alice]".to_string()));
+        let visible = s.search_messages(
+            "visible allowed",
+            false,
+            None,
+            None,
+            None,
+            None,
+            Some("alice"),
+            false,
+            10,
+            0,
+        );
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0]["channel_id"], allowed_id);
+        assert!(s
+            .search_messages(
+                "private sibling",
+                false,
+                None,
+                None,
+                None,
+                None,
+                Some("alice"),
+                false,
+                10,
+                0,
+            )
+            .is_empty());
+        let channels = s.search_channels("allowed", Some("alice"), 10);
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0]["id"], allowed_id);
     }
 
     #[test]
