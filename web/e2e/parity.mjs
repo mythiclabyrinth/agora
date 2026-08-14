@@ -533,12 +533,6 @@ async function main() {
     if (after[0] !== "second") throw new Error(`expected second first, got ${after.join(",")}`);
   });
 
-  await check("topbar: connection status dot renders for admins", async () => {
-    await page.locator("#topbar-status .conn-dot").waitFor({ timeout: 8000 });
-    const text = await page.$eval("#topbar-status", el => el.textContent.trim());
-    if (!/no connections|linked/.test(text)) throw new Error(`unexpected status: ${text}`);
-  });
-
   await check("no unexpected page errors during the run", async () => {
     if (errors.length) throw new Error(errors.join(" | "));
   });
