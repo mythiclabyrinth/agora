@@ -41,8 +41,8 @@ jobs:
       - run: npm ci
       - name: Build bundled web UI
         run: npm run build
-      - name: Test desktop shell
-        run: cargo test -p agora-desktop
+      - name: Test core and desktop shell
+        run: cargo test -p agora-core -p agora-desktop
       - name: Build deb and AppImage packages
         working-directory: crates/agora-desktop
         run: >-
