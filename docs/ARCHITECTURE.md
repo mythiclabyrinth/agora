@@ -108,14 +108,21 @@ helpers in `server.rs`:
 
 - `require_instance_admin` — operator surfaces: connections, pairing,
   users/invites, export/import, instance rename.
-- `require_group_admin` — group/channel mutations (create/rename/delete,
-  member management).
+- `require_group_admin` — group-wide mutations and membership.
+- `require_channel_admin` — channel metadata, moderation, and membership
+  scoped to that exact channel. A scoped admin row never grants group admin.
 - `require_member` / `require_channel_member` / `require_message_visible` —
   everything on the message path (read, post, stars, pins, files, threads,
   activity). Search results stay scoped to the caller (`visible_to` / `user`
   params on the store's search functions).
 - The admin key resolves to an instance-admin `AuthedUser`, so it keeps working
-  everywhere a user session does.
+everywhere a user session does.
+
+User membership rows may be group-wide (`channel_id = ''`) or scoped to one
+channel, and each scope carries its own `member`/`admin` role. Group-wide
+membership supersedes narrower rows; scoped users see only their assigned
+channels. Public groups remain additive and expose every channel regardless
+of any narrower membership row.
 
 **Public groups.** A group flagged `is_public` (a real `groups` column, not a
 pref) grants every signed-in user member-level access without a membership

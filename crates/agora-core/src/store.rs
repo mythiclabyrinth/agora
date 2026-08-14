@@ -1320,6 +1320,26 @@ impl Store {
         channel_id: Option<&str>,
     ) {
         let conn = self.conn.lock().unwrap();
+        let scoped = channel_id.is_some_and(|id| !id.is_empty());
+        if member_type == "user" {
+            if scoped {
+                // Group-wide access already includes every channel. Keeping a
+                // stale narrow row would unexpectedly resurrect access if the
+                // group-wide row were later removed.
+                let group_wide = conn.query_row(
+                    "SELECT 1 FROM memberships WHERE group_id = ?1 AND channel_id = '' \
+                     AND member_type = 'user' AND member_id = ?2 LIMIT 1",
+                    params![group_id, member_id], |_| Ok(()),
+                ).is_ok();
+                if group_wide { return; }
+            } else {
+                conn.execute(
+                    "DELETE FROM memberships WHERE group_id = ?1 AND member_type = 'user' \
+                     AND member_id = ?2 AND channel_id != ''",
+                    params![group_id, member_id],
+                ).unwrap();
+            }
+        }
         insert_member(&conn, group_id, channel_id, member_type, member_id, role);
         if member_type == "user" {
             // A new member starts clean (like joining a Discord server): the
@@ -1328,9 +1348,9 @@ impl Store {
                 "INSERT INTO reads (username, channel_id, last_read_id, updated_at) \
                  SELECT ?1, c.id, \
                    COALESCE((SELECT MAX(m.id) FROM messages m WHERE m.channel_id = c.id), 0), ?2 \
-                 FROM channels c WHERE c.group_id = ?3 \
+                 FROM channels c WHERE c.group_id = ?3 AND (?4 = '' OR c.id = ?4) \
                  ON CONFLICT(username, channel_id) DO NOTHING",
-                params![member_id, now(), group_id],
+                params![member_id, now(), group_id, channel_id.unwrap_or("")],
             )
             .unwrap();
         }
@@ -1351,6 +1371,16 @@ impl Store {
         )
         .unwrap()
             > 0
+    }
+
+    /// Remove every scope for one member in a group. Used for leaving and
+    /// explicit whole-roster removal; a missing channel must not mean only
+    /// the empty-string sentinel.
+    pub fn remove_member_all(&self, group_id: &str, member_type: &str, member_id: &str) -> bool {
+        self.conn.lock().unwrap().execute(
+            "DELETE FROM memberships WHERE group_id = ?1 AND member_type = ?2 AND member_id = ?3",
+            params![group_id, member_type, member_id],
+        ).unwrap() > 0
     }
 
     pub fn members(&self, group_id: &str) -> Vec<Value> {
@@ -1374,6 +1404,25 @@ impl Store {
         .unwrap()
         .filter_map(Result::ok)
         .collect()
+    }
+
+    pub fn all_user_memberships(&self) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT m.group_id, g.name, m.channel_id, c.name, m.member_id, m.role, m.added_at \
+             FROM memberships m JOIN groups g ON g.id = m.group_id \
+             LEFT JOIN channels c ON c.id = m.channel_id \
+             WHERE m.member_type = 'user' ORDER BY m.member_id, g.name, c.name",
+        ).unwrap();
+        stmt.query_map([], |r| {
+            let channel_id: String = r.get(2)?;
+            Ok(json!({
+                "group_id": r.get::<_, String>(0)?, "group_name": r.get::<_, String>(1)?,
+                "channel_id": if channel_id.is_empty() { Value::Null } else { json!(channel_id) },
+                "channel_name": r.get::<_, Option<String>>(3)?, "member_id": r.get::<_, String>(4)?,
+                "role": r.get::<_, String>(5)?, "added_at": r.get::<_, f64>(6)?,
+            }))
+        }).unwrap().filter_map(Result::ok).collect()
     }
 
     pub fn user_groups(&self, username: &str) -> Vec<String> {
@@ -1417,8 +1466,8 @@ impl Store {
     pub fn user_is_group_admin(&self, username: &str, group_id: &str) -> bool {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT 1 FROM memberships WHERE group_id = ?1 AND member_type = 'user' \
-             AND member_id = ?2 AND role = 'admin' LIMIT 1",
+            "SELECT 1 FROM memberships WHERE group_id = ?1 AND channel_id = '' \
+             AND member_type = 'user' AND member_id = ?2 AND role = 'admin' LIMIT 1",
             params![group_id, username],
             |_| Ok(()),
         )
@@ -1431,10 +1480,27 @@ impl Store {
                 if chan["kind"] == "agent_dm" {
                     return chan["dm_user_id"].as_str() == Some(username);
                 }
-                self.user_can_access_group(username, chan["group_id"].as_str().unwrap_or_default())
+                let group_id = chan["group_id"].as_str().unwrap_or_default();
+                let conn = self.conn.lock().unwrap();
+                conn.query_row(
+                    "SELECT 1 FROM groups g WHERE g.id = ?1 AND (g.is_public = 1 OR EXISTS ( \
+                       SELECT 1 FROM memberships m WHERE m.group_id = g.id AND m.member_type = 'user' \
+                       AND m.member_id = ?2 AND (m.channel_id = '' OR m.channel_id = ?3)))",
+                    params![group_id, username, channel_id], |_| Ok(()),
+                ).is_ok()
             }
             None => false,
         }
+    }
+
+    pub fn user_is_channel_admin(&self, username: &str, channel_id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM channels c JOIN memberships m ON m.group_id = c.group_id \
+             WHERE c.id = ?1 AND m.member_type = 'user' AND m.member_id = ?2 \
+             AND m.role = 'admin' AND (m.channel_id = '' OR m.channel_id = c.id) LIMIT 1",
+            params![channel_id, username], |_| Ok(()),
+        ).is_ok()
     }
 
     /// Agent ids that are members of the channel — via a group-level
@@ -2380,7 +2446,7 @@ impl Store {
                 sql.push_str(&format!(
                     " AND ((c.kind = 'agent_dm' AND c.dm_user_id = ?{i}) OR (c.kind != 'agent_dm' AND (g.is_public = 1 OR EXISTS (SELECT 1 FROM memberships mu \
                        WHERE mu.member_type = 'user' AND mu.member_id = ?{i} \
-                       AND mu.group_id = c.group_id))))"
+                       AND mu.group_id = c.group_id AND (mu.channel_id = '' OR mu.channel_id = c.id)))))"
                 ));
                 p.push(Box::new(username.to_string()));
             } else {
@@ -2420,7 +2486,8 @@ impl Store {
         let pattern = like_pattern(query);
         let member_clause = if visible_to.is_some() {
             " AND (g.is_public = 1 OR EXISTS (SELECT 1 FROM memberships mu WHERE mu.member_type = 'user' \
-               AND mu.member_id = ?3 AND mu.group_id = c.group_id))"
+               AND mu.member_id = ?3 AND mu.group_id = c.group_id \
+               AND (mu.channel_id = '' OR mu.channel_id = c.id)))"
         } else {
             ""
         };
@@ -3198,10 +3265,11 @@ impl Store {
                  WHERE u.disabled = 0 AND u.username != ?1 \
                  AND (u.instance_role = 'admin' OR EXISTS ( \
                      SELECT 1 FROM memberships m WHERE m.group_id = ?2 \
-                     AND m.member_type = 'user' AND m.member_id = u.username))",
+                     AND m.member_type = 'user' AND m.member_id = u.username \
+                     AND (m.channel_id = '' OR m.channel_id = ?3)))",
             )
             .unwrap();
-        stmt.query_map(params![exclude_user.unwrap_or(""), group_id], |r| {
+        stmt.query_map(params![exclude_user.unwrap_or(""), group_id, channel_id], |r| {
             r.get::<_, String>(0)
         })
         .unwrap()
@@ -3655,6 +3723,41 @@ mod tests {
         s.add_member(g2id, "agent", "bot-c", "member", Some(c1id));
         assert!(!s.agent_in_channel("bot-c", c1id));
         assert!(!s.agent_in_channel("bot-c", c3id));
+    }
+
+    #[test]
+    fn user_membership_scopes_roles_and_normalization() {
+        let s = Store::open_in_memory().unwrap();
+        s.create_user("alice", "Alice", None, "member").unwrap();
+        let g = s.create_group("Private", "", None);
+        let gid = g["id"].as_str().unwrap();
+        let c1 = s.create_channel(gid, "one", "");
+        let c2 = s.create_channel(gid, "two", "");
+        let c1id = c1["id"].as_str().unwrap();
+        let c2id = c2["id"].as_str().unwrap();
+
+        s.add_member(gid, "user", "alice", "admin", Some(c1id));
+        assert!(s.user_can_access_group("alice", gid));
+        assert!(s.user_can_see_channel("alice", c1id));
+        assert!(!s.user_can_see_channel("alice", c2id));
+        assert!(s.user_is_channel_admin("alice", c1id));
+        assert!(!s.user_is_group_admin("alice", gid));
+
+        s.add_member(gid, "user", "alice", "member", None);
+        assert!(s.user_can_see_channel("alice", c2id));
+        assert_eq!(s.members(gid).iter().filter(|m| m["member_id"] == "alice").count(), 1);
+        // Narrow rows are no-ops while whole-group access exists.
+        s.add_member(gid, "user", "alice", "admin", Some(c1id));
+        assert_eq!(s.members(gid).iter().filter(|m| m["member_id"] == "alice").count(), 1);
+        assert!(s.remove_member_all(gid, "user", "alice"));
+        assert!(!s.user_can_access_group("alice", gid));
+
+        s.set_group_public(gid, true);
+        s.add_member(gid, "user", "alice", "member", Some(c1id));
+        assert!(s.user_can_see_channel("alice", c1id));
+        assert!(s.user_can_see_channel("alice", c2id), "a scoped row must not narrow a public group");
+        s.delete_channel(c1id);
+        assert!(s.members(gid).iter().all(|m| m["channel_id"] != c1id));
     }
 
     #[test]

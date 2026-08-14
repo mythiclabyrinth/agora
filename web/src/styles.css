@@ -1377,6 +1377,8 @@ a.btn { text-decoration: none; }
 }
 .ago-tag-x:hover { color: #f87171; }
 .ago-member-add { display: flex; gap: 8px; padding: 4px 14px; align-items: center; flex-wrap: wrap; }
+.ago-person-add #ago-add-user { flex-basis: 100%; }
+.ago-person-add #ago-add-user-role, .ago-person-add #ago-add-user-chan { flex: 1 1 90px; }
 .ago-head-actions .btn.active { border-color: var(--a1); color: var(--a1); }
 .ago-member-add input, .ago-member-add select {
   flex: 1;

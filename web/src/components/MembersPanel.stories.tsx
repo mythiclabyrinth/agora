@@ -26,7 +26,11 @@ const users = [
 const routes = {
   "GET /api/me": fixtureMe,
   "GET /api/groups": { groups: fixtureGroups },
-  "GET /api/groups/product/members": { members: fixtureMembers },
+  "GET /api/groups/product/members": { members: [
+    ...fixtureMembers,
+    { channel_id: "general", member_type: "user", member_id: "carol", role: "admin", added_at: 1_750_000_300, name: "Carol" },
+    { channel_id: "responsive", member_type: "user", member_id: "carol", role: "member", added_at: 1_750_000_301, name: "Carol" },
+  ] },
   "GET /api/agents": { agents: fixtureAgents },
   "GET /api/users": { users },
   "POST /api/groups/product/members": addMember,
@@ -59,6 +63,8 @@ export const AdminRosterAndAdd: Story = {
     useUiState.setState({ membersOpen: true });
     // "Codex" also appears as an <option> in the add-agent select.
     await expect(canvas.findByText("Codex", { selector: ".mname" })).resolves.toBeVisible();
+    await expect(canvas.findByText("Carol", { selector: ".mname" })).resolves.toBeVisible();
+    await expect(canvas.findByText("#storybook · admin")).resolves.toBeVisible();
     const person = canvasElement.querySelector<HTMLSelectElement>("#ago-add-user");
     if (!person) throw new Error("Missing add-person picker");
     await userEvent.selectOptions(person, "carol");

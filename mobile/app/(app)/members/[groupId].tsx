@@ -28,57 +28,44 @@ function LiveDot({ live }: { live: boolean }) {
   return <View style={[styles.dot, { backgroundColor: live ? colors.green : colors.faint }]} />;
 }
 
-function MemberRow({
-  member,
-  channelName,
-  offline,
-  admin,
-  isSelf,
-  onRemove,
-  onSetRole,
+function PersonMemberRow({
+  memberId, name, scopes, channelName, isSelf, canManageScope, onRemoveScope, onSetRole, onRemoveAll,
 }: {
-  member: Member;
-  channelName: string | null;
-  offline: boolean;
-  admin: boolean;
-  isSelf?: boolean;
-  onRemove: () => void;
-  /** Group admins only, user members only: flip member/admin. */
-  onSetRole?: (role: "admin" | "member") => void;
+  memberId: string;
+  name: string;
+  scopes: Member[];
+  channelName: (id: string | null) => string | null;
+  isSelf: boolean;
+  canManageScope: (m: Member) => boolean;
+  onRemoveScope: (m: Member) => void;
+  onSetRole: (m: Member, role: "admin" | "member") => void;
+  onRemoveAll?: () => void;
 }) {
-  return (
-    <View style={styles.row}>
-      {member.member_type === "agent" ? (
-        <AgentAvatar agentId={member.member_id} size={26} />
-      ) : (
-        <Icon icon={User} size={20} />
-      )}
-      <View style={{ flex: 1 }}>
-        <Text style={styles.name}>
-          {member.name || member.member_id}
-          {isSelf ? <Text style={styles.meta}> (you)</Text> : null}
-        </Text>
-        <Text style={styles.meta}>
-          {member.role}
-          {channelName ? ` · scoped to #${channelName}` : ""}
-          {offline ? <Text style={styles.offline}> · offline — won't reply</Text> : null}
-        </Text>
+  return <View style={styles.row}>
+    <Icon icon={User} size={20} />
+    <View style={{ flex: 1, gap: 4 }}>
+      <Text style={styles.name}>{name}{isSelf ? <Text style={styles.meta}> (you)</Text> : null}</Text>
+      <View style={styles.tagRow}>
+        {scopes.map(scope => {
+          const manageable = canManageScope(scope);
+          return <View key={scope.channel_id ?? "group"} style={styles.tag}>
+            <Text style={styles.tagText}>
+              {scope.channel_id ? `# ${channelName(scope.channel_id)}` : "Whole group"} · {scope.role}
+            </Text>
+            {manageable ? <>
+              <Pressable hitSlop={8} onPress={() => onSetRole(scope, scope.role === "admin" ? "member" : "admin")}>
+                <Text style={styles.tagText}>{scope.role === "admin" ? "↓" : "↑"}</Text>
+              </Pressable>
+              <Pressable hitSlop={8} onPress={() => onRemoveScope(scope)}>
+                <Icon icon={X} size={12} color={colors.dim} />
+              </Pressable>
+            </> : null}
+          </View>;
+        })}
       </View>
-      {onSetRole ? (
-        <Pressable
-          style={styles.roleBtn}
-          onPress={() => onSetRole(member.role === "admin" ? "member" : "admin")}
-        >
-          <Text style={styles.roleBtnText}>
-            {member.role === "admin" ? "Demote" : "Make admin"}
-          </Text>
-        </Pressable>
-      ) : null}
-      {admin || isSelf ? (
-        <ArmedButton label={isSelf ? "Leave" : "Remove"} onConfirm={onRemove} />
-      ) : null}
     </View>
-  );
+    {onRemoveAll ? <ArmedButton label={isSelf ? "Leave" : "Remove"} onConfirm={onRemoveAll} /> : null}
+  </View>;
 }
 
 /* One row per agent: an agent scoped to several channels comes back as
@@ -94,6 +81,7 @@ function AgentMemberRow({
   admin,
   onRemoveScope,
   onRemoveAll,
+  canManageScope,
 }: {
   memberId: string;
   name: string;
@@ -103,6 +91,7 @@ function AgentMemberRow({
   admin: boolean;
   onRemoveScope: (m: Member) => void;
   onRemoveAll: () => void;
+  canManageScope: (m: Member) => boolean;
 }) {
   return (
     <View style={styles.row}>
@@ -119,7 +108,7 @@ function AgentMemberRow({
               <Text style={styles.tagText}>
                 {s.channel_id ? `# ${channelName(s.channel_id)}` : "Whole group"}
               </Text>
-              {admin ? (
+              {canManageScope(s) ? (
                 <Pressable hitSlop={8} onPress={() => onRemoveScope(s)}>
                   <Icon icon={X} size={12} color={colors.dim} />
                 </Pressable>
@@ -128,7 +117,7 @@ function AgentMemberRow({
           ))}
         </View>
       </View>
-      {admin ? <ArmedButton label="Remove" onConfirm={onRemoveAll} /> : null}
+      {admin && scopes.every(canManageScope) ? <ArmedButton label="Remove" onConfirm={onRemoveAll} /> : null}
     </View>
   );
 }
@@ -140,12 +129,14 @@ function AddAgent({
   pending,
   onAdd,
   onCancel,
+  allowWholeGroup = true,
 }: {
   agents: AgentInfo[];
   channels: { id: string; name: string }[];
   pending: boolean;
   onAdd: (agent: AgentInfo, channelId: string | null) => void;
   onCancel: () => void;
+  allowWholeGroup?: boolean;
 }) {
   const [picked, setPicked] = useState<AgentInfo | null>(null);
 
@@ -187,13 +178,13 @@ function AddAgent({
       </Text>
       <Text style={styles.hint}>Scope it to one channel, or give it the whole group.</Text>
       <View style={styles.scopeChips}>
-        <Pressable
+        {allowWholeGroup ? <Pressable
           style={styles.scopeChip}
           disabled={pending}
           onPress={() => onAdd(picked, null)}
         >
           <Text style={styles.scopeText}>Whole group</Text>
-        </Pressable>
+        </Pressable> : null}
         {channels.map((c) => (
           <Pressable
             key={c.id}
@@ -218,14 +209,18 @@ function AddAgent({
 /* Two-step add flow: pick a workspace user, then a role. */
 function AddPerson({
   users,
+  channels,
   pending,
   onAdd,
   onCancel,
+  allowWholeGroup = true,
 }: {
   users: UserInfo[];
+  channels: { id: string; name: string }[];
   pending: boolean;
-  onAdd: (user: UserInfo, role: "admin" | "member") => void;
+  onAdd: (user: UserInfo, role: "admin" | "member", channelId: string | null) => void;
   onCancel: () => void;
+  allowWholeGroup?: boolean;
 }) {
   const [picked, setPicked] = useState<UserInfo | null>(null);
 
@@ -262,20 +257,13 @@ function AddPerson({
         Add <Text style={styles.name}>{picked.display_name || picked.username}</Text> as…
       </Text>
       <View style={styles.scopeChips}>
-        <Pressable
-          style={styles.scopeChip}
-          disabled={pending}
-          onPress={() => onAdd(picked, "member")}
-        >
-          <Text style={styles.scopeText}>Member</Text>
-        </Pressable>
-        <Pressable
-          style={styles.scopeChip}
-          disabled={pending}
-          onPress={() => onAdd(picked, "admin")}
-        >
-          <Text style={styles.scopeText}>Group admin</Text>
-        </Pressable>
+        {([...(allowWholeGroup ? [{ id: null, name: "Whole group" }] : []), ...channels] as { id: string | null; name: string }[]).flatMap(scope =>
+          (["member", "admin"] as const).map(role => (
+            <Pressable key={`${scope.id ?? "group"}-${role}`} style={styles.scopeChip} disabled={pending}
+              onPress={() => onAdd(picked, role, scope.id)}>
+              <Text style={styles.scopeText}>{scope.id ? `# ${scope.name}` : scope.name} · {role}</Text>
+            </Pressable>
+          )))}
       </View>
       <Pressable style={styles.cancelBtn} onPress={() => setPicked(null)}>
         <View style={styles.cancelRow}>
@@ -288,7 +276,7 @@ function AddPerson({
 }
 
 export default function MembersScreen() {
-  const params = useLocalSearchParams<{ groupId: string; name?: string }>();
+  const params = useLocalSearchParams<{ groupId: string; name?: string; channelId?: string }>();
   const groupId = params.groupId;
   const members = useMembers(groupId);
   const agents = useAgents();
@@ -303,7 +291,9 @@ export default function MembersScreen() {
     () => (groups.data ?? []).find((g) => g.id === groupId) ?? null,
     [groups.data, groupId],
   );
-  const admin = group ? group.role === "admin" : true;
+  const groupAdmin = group ? group.role === "admin" : true;
+  const selectedChannel = group?.channels.find(channel => channel.id === params.channelId);
+  const admin = groupAdmin || selectedChannel?.role === "admin";
   // Only fetch the workspace roster when the picker can actually be used.
   const users = useUsers(admin);
   const channels = group?.channels ?? [];
@@ -327,6 +317,15 @@ export default function MembersScreen() {
     }
     return [...byId.entries()].map(([id, scopes]) => ({ id, scopes }));
   }, [members.data]);
+  const peopleGroups = useMemo(() => {
+    const byId = new Map<string, Member[]>();
+    for (const member of (members.data ?? []).filter(item => item.member_type === "user")) {
+      const scopes = byId.get(member.member_id) ?? [];
+      scopes.push(member);
+      byId.set(member.member_id, scopes);
+    }
+    return [...byId.entries()].map(([id, scopes]) => ({ id, scopes }));
+  }, [members.data]);
 
   /* Desktop lists every known agent in the picker (an agent can be scoped to
      several channels); only hide the ones that already listen group-wide. */
@@ -335,14 +334,14 @@ export default function MembersScreen() {
   );
   const addable = (agents.data ?? []).filter((a) => !groupWide.has(a.id));
 
-  const memberUsernames = new Set(people.map((m) => m.member_id));
+  const memberUsernames = new Set(people.filter(m => !m.channel_id).map((m) => m.member_id));
   const addablePeople = (users.data ?? []).filter(
     (u) => !u.disabled && !memberUsernames.has(u.username),
   );
 
-  const addPerson = (u: UserInfo, role: "admin" | "member") => {
+  const addPerson = (u: UserInfo, role: "admin" | "member", channelId: string | null) => {
     addMember.mutate(
-      { member_type: "user", member_id: u.username, role },
+      { member_type: "user", member_id: u.username, role, channel_id: channelId ?? undefined },
       {
         onSuccess: () => {
           setAddingPerson(false);
@@ -387,6 +386,12 @@ export default function MembersScreen() {
       { onError: (e) => toastErr("Remove failed", e) },
     );
 
+  const removePersonEverywhere = (memberId: string) =>
+    removeMember.mutate(
+      { member_type: "user", member_id: memberId, all_scopes: true },
+      { onError: (e) => toastErr("Remove failed", e) },
+    );
+
   /* The API deletes one (member, channel) pair per call, so removing an
      agent entirely means one DELETE per scope. */
   const removeAgentEverywhere = async (scopes: Member[]) => {
@@ -413,22 +418,23 @@ export default function MembersScreen() {
       />
       <ScrollView style={styles.root} contentContainerStyle={styles.content}>
         {people.length > 0 ? <Text style={styles.section}>People</Text> : null}
-        {people.map((m) => (
-          <MemberRow
-            key={`user:${m.member_id}:${m.channel_id ?? ""}`}
-            member={m}
-            channelName={channelName(m.channel_id)}
-            offline={false}
-            admin={admin}
-            isSelf={m.member_id === username}
-            onRemove={() => remove(m)}
-            onSetRole={
-              admin && m.member_id !== username
-                ? (role) => setRole(m, role)
-                : undefined
-            }
-          />
-        ))}
+        {peopleGroups.map(person => {
+          const isSelf = person.id === username;
+          const canManageScope = (scope: Member) => groupAdmin
+            || (!!scope.channel_id && scope.channel_id === params.channelId && admin);
+          return <PersonMemberRow
+            key={`user:${person.id}`}
+            memberId={person.id}
+            name={person.scopes[0].name || person.id}
+            scopes={person.scopes}
+            channelName={channelName}
+            isSelf={isSelf}
+            canManageScope={canManageScope}
+            onRemoveScope={remove}
+            onSetRole={setRole}
+            onRemoveAll={groupAdmin || isSelf ? () => removePersonEverywhere(person.id) : undefined}
+          />;
+        })}
         {admin && !addingPerson ? (
           <Pressable style={styles.addBtn} onPress={() => setAddingPerson(true)}>
             <Text style={styles.addBtnText}>＋ Add person</Text>
@@ -437,9 +443,11 @@ export default function MembersScreen() {
         {admin && addingPerson ? (
           <AddPerson
             users={addablePeople}
+            channels={groupAdmin ? channels : channels.filter(channel => channel.id === params.channelId)}
             pending={addMember.isPending}
             onAdd={addPerson}
             onCancel={() => setAddingPerson(false)}
+            allowWholeGroup={groupAdmin}
           />
         ) : null}
 
@@ -455,6 +463,7 @@ export default function MembersScreen() {
             admin={admin}
             onRemoveScope={remove}
             onRemoveAll={() => void removeAgentEverywhere(g.scopes)}
+            canManageScope={(scope) => groupAdmin || (!!scope.channel_id && scope.channel_id === params.channelId && admin)}
           />
         ))}
         {members.isSuccess && agentMembers.length === 0 ? (
@@ -469,10 +478,11 @@ export default function MembersScreen() {
         {admin && adding ? (
           <AddAgent
             agents={addable}
-            channels={channels}
+            channels={groupAdmin ? channels : channels.filter(channel => channel.id === params.channelId)}
             pending={addMember.isPending}
             onAdd={add}
             onCancel={() => setAdding(false)}
+            allowWholeGroup={groupAdmin}
           />
         ) : null}
         {admin ? (
@@ -555,8 +565,6 @@ const styles = StyleSheet.create({
   cancelBtn: { alignItems: "center", paddingVertical: 8 },
   cancelRow: { flexDirection: "row", alignItems: "center", gap: 3 },
   cancelText: { color: colors.dim, fontSize: 13.5, fontWeight: "600" },
-  roleBtn: { paddingVertical: 6, paddingHorizontal: 4 },
-  roleBtnText: { color: colors.a2, fontSize: 12.5, fontWeight: "700" },
   hint: { color: colors.faint, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 2 },
   hintLink: { color: colors.a2, textDecorationLine: "underline" },
 });
