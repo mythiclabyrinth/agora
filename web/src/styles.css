@@ -94,7 +94,6 @@ svg.ico.spin { animation: ico-spin 1s linear infinite; transform-origin: center;
 }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex-shrink: 0; display: inline-block; }
 .conn-dot.on { background: var(--green); }
-.conn-dot.part { background: var(--amber); }
 .conn-dot.err { background: var(--red); }
 .conn-dot.off { background: var(--faint); }
 

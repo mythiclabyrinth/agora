@@ -24,7 +24,8 @@ export const Admin: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(fixtureMe.display_name || fixtureMe.username)).resolves.toBeVisible();
-    expect(canvas.queryByText(/linked · \d+ agents?/)).not.toBeInTheDocument();
+    expect(canvasElement.querySelector("#topbar-status")).toBeNull();
+    expect(canvas.queryByText(/linked|no connections/)).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole("button", { name: "People" }));
     expect(useUiState.getState().panel).toBe("people");
   },
