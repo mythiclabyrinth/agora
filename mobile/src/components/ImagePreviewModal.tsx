@@ -1,5 +1,5 @@
 import React from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image, type ImageSource } from "expo-image";
 import { ChevronLeft, ChevronRight, X } from "lucide-react-native";
 import { SafeAreaInsetsContext } from "react-native-safe-area-context";
@@ -16,6 +16,11 @@ export function ImagePreviewModal({ source, filename, index, total, onPrevious, 
 }) {
   const insets = React.useContext(SafeAreaInsetsContext) ?? { top: 0, right: 0, bottom: 0, left: 0 };
   const gallery = index !== undefined && total !== undefined && total > 1;
+  /* The modal covers the status bar and safe-area context is not always
+     populated inside a native Modal, so floor the corner gap: without it the
+     close button lands under the clock, flush with the screen edge. */
+  const closeTop = Math.max(insets.top, Platform.OS === "ios" ? 44 : 16) + 8;
+  const closeRight = Math.max(insets.right, 0) + 16;
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.root} accessibilityViewIsModal>
@@ -25,10 +30,6 @@ export function ImagePreviewModal({ source, filename, index, total, onPrevious, 
           paddingTop: Math.max(12, insets.top), paddingBottom: Math.max(12, insets.bottom),
           paddingLeft: Math.max(20, insets.left), paddingRight: Math.max(20, insets.right),
         }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Close image preview"
-            style={styles.close} onPress={onClose}>
-            <Icon icon={X} size={22} color="#fff" />
-          </Pressable>
           <Image key={filename} source={source} style={styles.image} contentFit="contain" accessible
             accessibilityLabel={filename} />
           {gallery ? (
@@ -53,6 +54,13 @@ export function ImagePreviewModal({ source, filename, index, total, onPrevious, 
             </>
           ) : null}
         </View>
+        {/* Outside the padded content view so the gap is measured from the
+            screen edge, not from the image's own padding. */}
+        <Pressable accessibilityRole="button" accessibilityLabel="Close image preview" hitSlop={12}
+          style={({ pressed }) => [styles.close, { top: closeTop, right: closeRight }, pressed && styles.pressed]}
+          onPress={onClose}>
+          <Icon icon={X} size={22} color="#fff" />
+        </Pressable>
       </View>
     </Modal>
   );
@@ -69,9 +77,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   close: {
-    position: "absolute", top: 0, right: 0, zIndex: 1, width: 44, height: 44,
+    position: "absolute", zIndex: 2, width: 44, height: 44,
     borderRadius: 22, alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(20,22,30,0.92)",
+    borderWidth: StyleSheet.hairlineWidth, borderColor: "rgba(255,255,255,0.25)",
   },
   image: { flex: 1, width: "100%" },
   navButton: {
