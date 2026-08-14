@@ -3335,7 +3335,7 @@ mod tests {
 
     #[test]
     fn delete_user_data_sweeps_everything_user_keyed() {
-        let s = store();
+        let (s, _dir) = disk_store();
         let g = s.create_group("Health", "", Some("tom"));
         let gid = g["id"].as_str().unwrap();
         let c = s.create_channel(gid, "main", "");
@@ -3351,8 +3351,17 @@ mod tests {
         let root = s.add_message(cid, "mine", "user", "tom", Some("Tom"), None, &[att]);
         let root_id = root["id"].as_i64().unwrap();
         s.add_message(cid, "reply", "agent", "bot", Some("Bot"), Some(root_id), &[]);
-        let other = s.add_message(cid, "agent news", "agent", "bot", Some("Bot"), None, &[]);
+        let other = s.add_message(
+            cid,
+            "agent news",
+            "agent",
+            "bot",
+            Some("Bot"),
+            None,
+            &[attachment("surviving.txt")],
+        );
         let other_id = other["id"].as_i64().unwrap();
+        let other_file_id = attachment_id(&other);
         s.star_message("tom", cid, other_id);
         s.pin_message(cid, other_id, Some("tom"));
         s.add_mentions(other_id, cid, &["tom".to_string()]);
@@ -3362,6 +3371,7 @@ mod tests {
         s.create_message_template("tom", gid, "Mine", "private draft", 50)
             .unwrap();
         let file_id = root["attachments"][0]["id"].as_str().unwrap().to_string();
+        assert_attachment_kept(&s, &file_id);
 
         s.delete_user_data("tom");
         assert!(s.message_templates("tom", gid).is_empty());
@@ -3372,7 +3382,8 @@ mod tests {
         let remaining = s.messages(cid, None, None, 50);
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0]["id"].as_i64().unwrap(), other_id);
-        assert!(s.file(&file_id).is_none());
+        assert_attachment_deleted(&s, &file_id);
+        assert_attachment_kept(&s, &other_file_id);
         // FTS no longer finds the deleted text.
         assert!(s.search_messages("mine", false, None, None, None, None, None, false, 10, 0).is_empty());
 
@@ -3519,6 +3530,8 @@ mod tests {
         let root_file = attachment_id(&root);
         let reply_file = attachment_id(&reply);
         let kept_file = attachment_id(&kept);
+        assert_attachment_kept(&s, &root_file);
+        assert_attachment_kept(&s, &reply_file);
 
         assert!(s.delete_channel(doomed_id));
 
@@ -3584,6 +3597,9 @@ mod tests {
             attachment_id(&second_message),
         ];
         let kept_file = attachment_id(&kept);
+        for file_id in &deleted_files {
+            assert_attachment_kept(&s, file_id);
+        }
 
         assert!(s.delete_group(doomed_group_id));
 
