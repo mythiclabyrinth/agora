@@ -732,7 +732,9 @@ impl Store {
                 for cid in &channel_ids {
                     delete_thread_reads_for_channel(&conn, cid);
                 }
-                for table in ["messages", "pins", "stars", "files", "reads", "mentions"] {
+                for table in
+                    ["messages", "pins", "stars", "reactions", "files", "reads", "mentions"]
+                {
                     conn.execute(
                         &format!("DELETE FROM {table} WHERE channel_id IN ({placeholders})"),
                         params_from_iter(channel_ids.iter()),
@@ -2679,7 +2681,11 @@ impl Store {
 
     fn unlink_files(&self, file_ids: &[String]) {
         for id in file_ids {
-            std::fs::remove_file(self.files_dir.join(id)).ok();
+            if let Err(error) = std::fs::remove_file(self.files_dir.join(id)) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(file_id = %id, %error, "failed to delete attachment bytes");
+                }
+            }
         }
     }
 
@@ -3251,9 +3257,38 @@ fn insert_member(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()
+    }
+
+    fn disk_store() -> (Store, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("agora.db")).unwrap();
+        (store, dir)
+    }
+
+    fn attachment(name: &str) -> NewAttachment {
+        NewAttachment {
+            filename: name.into(),
+            mime: "text/plain".into(),
+            data: format!("contents of {name}").into_bytes(),
+        }
+    }
+
+    fn attachment_id(message: &Value) -> String {
+        message["attachments"][0]["id"].as_str().unwrap().to_string()
+    }
+
+    fn assert_attachment_deleted(store: &Store, file_id: &str) {
+        assert!(store.file(file_id).is_none());
+        assert!(!store.file_path(file_id).exists());
+    }
+
+    fn assert_attachment_kept(store: &Store, file_id: &str) {
+        assert!(store.file(file_id).is_some());
+        assert!(store.file_path(file_id).exists());
     }
 
     #[test]
@@ -3396,6 +3431,175 @@ mod tests {
         // Already gone: false, and nothing else is disturbed.
         assert!(!s.delete_message(root_id));
         assert_eq!(s.messages(cid, None, None, 50).len(), 1);
+    }
+
+    #[test]
+    fn deleting_thread_removes_root_and_reply_attachment_bytes_only() {
+        let (s, _dir) = disk_store();
+        let group = s.create_group("Team", "", Some("tom"));
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let channel_id = channel["id"].as_str().unwrap();
+        let root = s.add_message(
+            channel_id,
+            "root",
+            "user",
+            "tom",
+            Some("Tom"),
+            None,
+            &[attachment("root.txt")],
+        );
+        let root_id = root["id"].as_i64().unwrap();
+        let reply = s.add_message(
+            channel_id,
+            "reply",
+            "agent",
+            "bot",
+            Some("Bot"),
+            Some(root_id),
+            &[attachment("reply.txt")],
+        );
+        let unrelated = s.add_message(
+            channel_id,
+            "unrelated",
+            "user",
+            "tom",
+            Some("Tom"),
+            None,
+            &[attachment("unrelated.txt")],
+        );
+        let root_file = attachment_id(&root);
+        let reply_file = attachment_id(&reply);
+        let unrelated_file = attachment_id(&unrelated);
+        assert_attachment_kept(&s, &root_file);
+        assert_attachment_kept(&s, &reply_file);
+
+        assert!(s.delete_message(root_id));
+
+        assert_attachment_deleted(&s, &root_file);
+        assert_attachment_deleted(&s, &reply_file);
+        assert_attachment_kept(&s, &unrelated_file);
+    }
+
+    #[test]
+    fn deleting_channel_removes_all_attachment_bytes_only_in_that_channel() {
+        let (s, _dir) = disk_store();
+        let group = s.create_group("Team", "", Some("tom"));
+        let group_id = group["id"].as_str().unwrap();
+        let doomed = s.create_channel(group_id, "doomed", "");
+        let keeper = s.create_channel(group_id, "keeper", "");
+        let doomed_id = doomed["id"].as_str().unwrap();
+        let keeper_id = keeper["id"].as_str().unwrap();
+        let root = s.add_message(
+            doomed_id,
+            "root",
+            "user",
+            "tom",
+            None,
+            None,
+            &[attachment("root.txt")],
+        );
+        let reply = s.add_message(
+            doomed_id,
+            "reply",
+            "agent",
+            "bot",
+            None,
+            Some(root["id"].as_i64().unwrap()),
+            &[attachment("reply.txt")],
+        );
+        let kept = s.add_message(
+            keeper_id,
+            "kept",
+            "user",
+            "tom",
+            None,
+            None,
+            &[attachment("kept.txt")],
+        );
+        let root_file = attachment_id(&root);
+        let reply_file = attachment_id(&reply);
+        let kept_file = attachment_id(&kept);
+
+        assert!(s.delete_channel(doomed_id));
+
+        assert_attachment_deleted(&s, &root_file);
+        assert_attachment_deleted(&s, &reply_file);
+        assert_attachment_kept(&s, &kept_file);
+    }
+
+    #[test]
+    fn deleting_group_removes_all_attachment_bytes_and_reactions_only_in_that_group() {
+        let (s, _dir) = disk_store();
+        let doomed_group = s.create_group("Doomed", "", Some("tom"));
+        let kept_group = s.create_group("Kept", "", Some("tom"));
+        let doomed_group_id = doomed_group["id"].as_str().unwrap();
+        let kept_group_id = kept_group["id"].as_str().unwrap();
+        let first = s.create_channel(doomed_group_id, "first", "");
+        let second = s.create_channel(doomed_group_id, "second", "");
+        let kept_channel = s.create_channel(kept_group_id, "kept", "");
+        let first_id = first["id"].as_str().unwrap();
+        let second_id = second["id"].as_str().unwrap();
+        let kept_channel_id = kept_channel["id"].as_str().unwrap();
+        let root = s.add_message(
+            first_id,
+            "root",
+            "user",
+            "tom",
+            None,
+            None,
+            &[attachment("root.txt")],
+        );
+        let reply = s.add_message(
+            first_id,
+            "reply",
+            "agent",
+            "bot",
+            None,
+            Some(root["id"].as_i64().unwrap()),
+            &[attachment("reply.txt")],
+        );
+        let second_message = s.add_message(
+            second_id,
+            "second",
+            "user",
+            "tom",
+            None,
+            None,
+            &[attachment("second.txt")],
+        );
+        let kept = s.add_message(
+            kept_channel_id,
+            "kept",
+            "user",
+            "tom",
+            None,
+            None,
+            &[attachment("kept.txt")],
+        );
+        s.add_reaction("tom", first_id, root["id"].as_i64().unwrap(), "👍");
+        s.add_reaction("tom", kept_channel_id, kept["id"].as_i64().unwrap(), "👍");
+        let deleted_files = [
+            attachment_id(&root),
+            attachment_id(&reply),
+            attachment_id(&second_message),
+        ];
+        let kept_file = attachment_id(&kept);
+
+        assert!(s.delete_group(doomed_group_id));
+
+        for file_id in &deleted_files {
+            assert_attachment_deleted(&s, file_id);
+        }
+        assert_attachment_kept(&s, &kept_file);
+        let reaction_channels: Vec<String> = {
+            let conn = s.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT channel_id FROM reactions").unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .filter_map(Result::ok)
+                .collect()
+        };
+        assert_eq!(reaction_channels, vec![kept_channel_id.to_string()]);
     }
 
     #[test]
