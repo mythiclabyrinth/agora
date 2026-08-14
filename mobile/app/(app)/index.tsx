@@ -26,6 +26,7 @@ import {
   MessagesSquare,
   Search,
   Settings,
+  Users,
 } from "lucide-react-native";
 import {
   useCreateChannel,
@@ -33,6 +34,7 @@ import {
   useDeleteChannel,
   useDeleteGroup,
   useGroups,
+  useMe,
   FEATURES,
   useAgentDms,
   useOpenAgentDm,
@@ -461,6 +463,7 @@ function HiddenSection({ groups }: { groups: Group[] }) {
 export default function Home() {
   const { groupId } = useLocalSearchParams<{ groupId?: string }>();
   const groups = useGroups();
+  const me = useMe();
   const threads = useThreads();
   const createGroup = useCreateGroup();
   const [creatingGroup, setCreatingGroup] = useState(false);
@@ -494,6 +497,11 @@ export default function Home() {
               <Icon icon={Bot} size={21} color={colors.text} />
             </Pressable>
           </Link>
+          {me.data?.instance_admin ? <Link href="/(app)/people" asChild>
+            <Pressable accessibilityLabel="People" hitSlop={8}>
+              <Icon icon={Users} size={21} color={colors.text} />
+            </Pressable>
+          </Link> : null}
           <Link href="/(app)/settings" asChild>
             <Pressable hitSlop={8}>
               <Icon icon={Settings} size={21} color={colors.text} />
@@ -502,7 +510,7 @@ export default function Home() {
         </View>,
       ),
     }),
-    [],
+    [me.data?.instance_admin],
   );
 
   return (

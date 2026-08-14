@@ -231,9 +231,8 @@ fn require_instance_admin(user: &AuthedUser) -> Result<(), ApiError> {
     }
 }
 
-/// Membership is the visibility boundary: users are group-scoped in v1.
-/// Instance admins bypass it (they are the operator).
-/// Member-level access: instance admin, membership row, or a public group.
+/// Group-shell access: instance admin, any scoped or group-wide membership
+/// row, or a public group. Channel contents are gated separately.
 fn require_member(state: &AppState, user: &AuthedUser, group_id: &str) -> Result<(), ApiError> {
     if user.instance_admin || state.hub.store.user_can_access_group(&user.username, group_id) {
         Ok(())
@@ -266,8 +265,22 @@ fn require_channel_member(
         if state.hub.store.user_owns_agent_dm(&user.username, channel_id) { return Ok(channel); }
         return Err(err(StatusCode::FORBIDDEN, "This direct message is private"));
     }
-    require_member(state, user, channel["group_id"].as_str().unwrap_or_default())?;
+    if !user.instance_admin && !state.hub.store.user_can_see_channel(&user.username, channel_id) {
+        return Err(err(StatusCode::FORBIDDEN, "You are not a member of this channel"));
+    }
     Ok(channel)
+}
+
+fn require_channel_admin(
+    state: &AppState,
+    user: &AuthedUser,
+    channel_id: &str,
+) -> Result<(), ApiError> {
+    if user.instance_admin || state.hub.store.user_is_channel_admin(&user.username, channel_id) {
+        Ok(())
+    } else {
+        Err(err(StatusCode::FORBIDDEN, "Channel admin access required"))
+    }
 }
 
 fn require_channel_postable(state: &AppState, user: &AuthedUser, channel_id: &str) -> Result<Value, ApiError> {
@@ -329,6 +342,7 @@ pub fn router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/api/me", get(me).patch(update_me).delete(delete_me))
         .route("/api/users", get(list_users))
+        .route("/api/memberships", get(list_all_memberships))
         .route("/api/users/{username}", patch(update_user))
         .route("/api/invites", get(list_invites).post(create_invite))
         .route("/api/invites/{email}", delete(revoke_invite))
@@ -497,18 +511,30 @@ fn overlay_prefs(items: Vec<Value>, prefs: &std::collections::HashMap<String, (b
 fn group_payload(state: &AppState, group: &Value, user: &AuthedUser) -> Value {
     let gid = group["id"].as_str().unwrap_or_default();
     let chan_prefs = state.hub.store.user_prefs(&user.username, "channel");
-    let mut channels = overlay_prefs(state.hub.store.group_channels(gid), &chan_prefs);
+    let visible = state.hub.store.group_channels(gid).into_iter().filter(|channel| {
+        user.instance_admin || channel["id"].as_str().is_some_and(|cid| {
+            state.hub.store.user_can_see_channel(&user.username, cid)
+        })
+    }).collect();
+    let mut channels = overlay_prefs(visible, &chan_prefs);
     let ids: Vec<String> = channels
         .iter()
         .filter_map(|c| c["id"].as_str().map(String::from))
         .collect();
     let unreads = state.hub.store.unread_counts(&user.username, &ids);
     for c in &mut channels {
-        let cid = c["id"].as_str().unwrap_or_default();
-        let unread = &unreads[cid];
+        let cid = c["id"].as_str().unwrap_or_default().to_string();
+        let unread = &unreads[&cid];
         c["unread"] = unread["count"].clone();
         c["mentions"] = unread["mentions"].clone();
         c["last_read_id"] = unread["last_read_id"].clone();
+        c["role"] = json!(if user.instance_admin
+            || state.hub.store.user_is_channel_admin(&user.username, &cid)
+        {
+            "admin"
+        } else {
+            "member"
+        });
     }
     let mut out = group.clone();
     // Hiding is personal: report the caller's flag, not the legacy global.
@@ -680,6 +706,14 @@ async fn list_users(
         })
         .collect();
     Ok(Json(json!({"users": users})))
+}
+
+async fn list_all_memberships(
+    State(state): State<AppState>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    Ok(Json(json!({"memberships": state.hub.store.all_user_memberships()})))
 }
 
 /// Instance-admin account management: disable/enable a user (disabling also
@@ -1109,7 +1143,7 @@ async fn update_channel(
     // Rename/topic edit the shared channel (group admins); hiding is the
     // caller's personal sidebar pref (any member).
     if name.is_some() || topic.is_some() {
-        require_group_admin(&state, &user, &group_id)?;
+        require_channel_admin(&state, &user, &channel_id)?;
     } else {
         require_member(&state, &user, &group_id)?;
     }
@@ -1209,6 +1243,12 @@ async fn list_members(
         })
         .collect();
     let mut members = state.hub.store.members(&group_id);
+    if !user.instance_admin && !state.hub.store.user_is_group_admin(&user.username, &group_id) {
+        members.retain(|member| match member["channel_id"].as_str() {
+            None => true,
+            Some(channel_id) => state.hub.store.user_can_see_channel(&user.username, channel_id),
+        });
+    }
     for m in &mut members {
         let id = m["member_id"].as_str().unwrap_or_default();
         if m["member_type"] == "agent" {
@@ -1227,9 +1267,8 @@ async fn list_members(
     Ok(Json(json!({"members": members})))
 }
 
-/// Add a person or an agent to the group (group admins only). Re-adding an
-/// existing user member with a different role updates the role — this is
-/// also the promote/demote API.
+/// Add a person or agent group-wide or to one channel. Group admins manage
+/// every scope; channel admins may manage only their channel's scoped rows.
 async fn add_member(
     State(state): State<AppState>,
     Path(group_id): Path<String>,
@@ -1239,7 +1278,6 @@ async fn add_member(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     group_or_404(&state, &group_id)?;
-    require_group_admin(&state, &user, &group_id)?;
     let member_type = payload["member_type"].as_str().unwrap_or("");
     let member_id = payload["member_id"].as_str().unwrap_or("");
     let role = payload["role"].as_str().unwrap_or("member");
@@ -1260,12 +1298,21 @@ async fn add_member(
     }
     let channel_id = payload["channel_id"].as_str().filter(|s| !s.is_empty());
     if let Some(cid) = channel_id {
-        if member_type != "agent" {
-            return Err(err(StatusCode::BAD_REQUEST, "Only agents can be scoped to one channel"));
-        }
         if channel_or_404(&state, cid)?["group_id"] != group_id.as_str() {
             return Err(err(StatusCode::NOT_FOUND, "Channel not in this group"));
         }
+        require_channel_admin(&state, &user, cid)?;
+    } else {
+        require_group_admin(&state, &user, &group_id)?;
+    }
+    if member_type == "user"
+        && channel_id.is_some()
+        && state.hub.store.user_has_group_wide_membership(member_id, &group_id)
+    {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "User already has whole-group access",
+        ));
     }
     state.hub.store.add_member(
         &group_id,
@@ -1285,16 +1332,31 @@ async fn remove_member(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     group_or_404(&state, &group_id)?;
-    // Group admins manage the roster; anyone may remove *themselves* (leave).
+    // Group admins manage the roster; channel admins manage their exact
+    // channel scope; anyone may remove all of their own scopes (leave).
     let leaving = member_type == "user" && member_id == user.username;
-    if !leaving {
-        require_group_admin(&state, &user, &group_id)?;
-    }
     let channel_id = q.get("channel_id").map(String::as_str).filter(|s| !s.is_empty());
-    let removed = state
-        .hub
-        .store
-        .remove_member(&group_id, &member_type, &member_id, channel_id);
+    let requested_all_scopes = q.get("all_scopes").map(String::as_str) == Some("true");
+    let all_scopes = requested_all_scopes || (leaving && channel_id.is_none());
+    if !leaving {
+        if requested_all_scopes {
+            // Removing every scope is a group-wide mutation. A channel admin
+            // must not bootstrap this flag through a channel they administer.
+            require_group_admin(&state, &user, &group_id)?;
+        } else if let Some(cid) = channel_id {
+            if channel_or_404(&state, cid)?["group_id"] != group_id.as_str() {
+                return Err(err(StatusCode::NOT_FOUND, "Channel not in this group"));
+            }
+            require_channel_admin(&state, &user, cid)?;
+        } else {
+            require_group_admin(&state, &user, &group_id)?;
+        }
+    }
+    let removed = if all_scopes {
+        state.hub.store.remove_member_all(&group_id, &member_type, &member_id)
+    } else {
+        state.hub.store.remove_member(&group_id, &member_type, &member_id, channel_id)
+    };
     Ok(Json(json!({"ok": removed})))
 }
 
@@ -1417,9 +1479,7 @@ async fn list_attachments(
     let offset = q.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0usize);
     let privileged = channel["kind"] == "agent_dm"
         && state.hub.store.user_owns_agent_dm(&user.username, &channel_id)
-        || require_group_admin(
-        &state, &user, channel["group_id"].as_str().unwrap_or_default(),
-    ).is_ok();
+        || require_channel_admin(&state, &user, &channel_id).is_ok();
     let mut items = state.hub.store.list_attachments(
         &channel_id, thread_id, file_type, limit + 1, offset,
     );
@@ -1453,8 +1513,8 @@ async fn delete_attachment(
     let owns_dm = channel["kind"] == "agent_dm"
         && state.hub.store.user_owns_agent_dm(&user.username, &channel_id);
     if !mine && !owns_dm {
-        require_group_admin(&state, &user, channel["group_id"].as_str().unwrap_or_default())
-            .map_err(|_| err(StatusCode::FORBIDDEN, "Only the sender or a group admin can delete an attachment"))?;
+        require_channel_admin(&state, &user, &channel_id)
+            .map_err(|_| err(StatusCode::FORBIDDEN, "Only the sender or a channel admin can delete an attachment"))?;
     }
     let updated = state.hub.store.delete_attachment(&file_id)
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown attachment"))?;
@@ -2352,8 +2412,7 @@ async fn remove_reaction(
     reaction_result(&state, &channel_id, message_id, changed)
 }
 
-/// Delete a message: the sender, or any admin of the channel's group
-/// (instance admins included, via [`require_group_admin`]). A thread root
+/// Delete a message: the sender, or an admin of that channel. A thread root
 /// takes its replies with it. Clients hear about it as a `message_delete`
 /// transient — `thread_id` tells them which list (and reply count) to fix.
 async fn delete_message(
@@ -2363,7 +2422,7 @@ async fn delete_message(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
-    let channel = require_channel_member(&state, &user, &channel_id)?;
+    require_channel_member(&state, &user, &channel_id)?;
     let message = state
         .hub
         .store
@@ -2372,11 +2431,11 @@ async fn delete_message(
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown message"))?;
     let mine = message["author_type"] == "user" && message["author_id"] == user.username.as_str();
     if !mine {
-        require_group_admin(&state, &user, channel["group_id"].as_str().unwrap_or_default())
+        require_channel_admin(&state, &user, &channel_id)
             .map_err(|_| {
                 err(
                     StatusCode::FORBIDDEN,
-                    "Only the sender or a group admin can delete a message",
+                    "Only the sender or a channel admin can delete a message",
                 )
             })?;
     }
@@ -5216,6 +5275,86 @@ mod tests {
         assert_eq!(res.0["is_public"], false);
         let mine = list_groups(State(state.clone()), q(), rex).await.unwrap();
         assert!(mine.0["groups"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoped_user_group_payload_and_channel_gate_hide_siblings() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        for username in ["alice", "bob", "carol"] {
+            store.create_user(username, username, None, "member").unwrap();
+        }
+        let group = store.create_group("Scoped", "", None);
+        let gid = group["id"].as_str().unwrap();
+        let allowed = store.create_channel(gid, "allowed", "");
+        let hidden = store.create_channel(gid, "hidden", "");
+        let allowed_id = allowed["id"].as_str().unwrap();
+        let hidden_id = hidden["id"].as_str().unwrap();
+        store.add_member(gid, "user", "alice", "admin", Some(allowed_id));
+        store.add_member(gid, "user", "bob", "admin", None);
+        store.add_member(gid, "user", "carol", "member", Some(hidden_id));
+
+        let headers = session_headers(&state, "alice");
+        let payload = list_groups(State(state.clone()), Query(HashMap::new()), headers.clone())
+            .await.unwrap().0;
+        assert_eq!(payload["groups"][0]["channels"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["groups"][0]["channels"][0]["id"], allowed_id);
+        assert_eq!(payload["groups"][0]["channels"][0]["role"], "admin");
+        let roster = list_members(
+            State(state.clone()),
+            Path(gid.to_string()),
+            Query(HashMap::new()),
+            headers.clone(),
+        ).await.unwrap().0;
+        let roster = roster["members"].as_array().unwrap();
+        assert!(roster.iter().any(|member| member["member_id"] == "bob"));
+        assert!(!roster.iter().any(|member| member["member_id"] == "carol"));
+
+        let conflict = add_member(
+            State(state.clone()),
+            Path(gid.to_string()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "member_type": "user",
+                "member_id": "bob",
+                "role": "member",
+                "channel_id": allowed_id,
+            })),
+        ).await.unwrap_err();
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+        assert_eq!(conflict.1.0["detail"], "User already has whole-group access");
+
+        assert!(list_messages(State(state.clone()), Path(allowed_id.to_string()), Query(HashMap::new()), headers.clone()).await.is_ok());
+        assert_eq!(list_messages(State(state), Path(hidden_id.to_string()), Query(HashMap::new()), headers).await.unwrap_err().0, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn channel_admin_cannot_remove_all_member_scopes() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        for username in ["alice", "bob"] {
+            store.create_user(username, username, None, "member").unwrap();
+        }
+        let group = store.create_group("Scoped", "", None);
+        let gid = group["id"].as_str().unwrap().to_string();
+        let channel = store.create_channel(&gid, "allowed", "");
+        let cid = channel["id"].as_str().unwrap().to_string();
+        store.add_member(&gid, "user", "alice", "admin", Some(&cid));
+        store.add_member(&gid, "user", "bob", "admin", None);
+
+        let result = remove_member(
+            State(state.clone()),
+            Path((gid.clone(), "user".into(), "bob".into())),
+            Query(HashMap::from([
+                ("channel_id".into(), cid),
+                ("all_scopes".into(), "true".into()),
+            ])),
+            session_headers(&state, "alice"),
+        ).await;
+
+        assert_eq!(result.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert!(store.user_is_group_admin("bob", &gid));
     }
 
     #[tokio::test]

@@ -49,6 +49,8 @@ export interface Channel {
   dm_user_id?: string | null;
   dm_agent_id?: string | null;
   dm_can_post?: boolean;
+  /** The caller's effective role in this channel. */
+  role?: "admin" | "member";
 }
 
 export interface Group {
@@ -390,6 +392,12 @@ export interface Member {
   added_at: number;
   /* Agents get their display name resolved server-side. */
   name?: string;
+}
+
+export interface InstanceMembership extends Member {
+  group_id: string;
+  group_name: string;
+  channel_name: string | null;
 }
 
 export interface AgentInfo {

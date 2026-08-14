@@ -33,6 +33,7 @@ import type {
   Connection,
   Group,
   InstanceInfo,
+  InstanceMembership,
   Invite,
   InviteLink,
   Me,
@@ -245,6 +246,15 @@ export function useMembers(groupId: string) {
   });
 }
 
+export function useAllMemberships(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.memberships,
+    queryFn: async () => (await api.get<{ memberships: InstanceMembership[] }>("/api/memberships")).memberships,
+    enabled,
+  });
+}
+
 export function useAddMember(groupId: string) {
   const api = useApi();
   const qc = useQueryClient();
@@ -257,6 +267,8 @@ export function useAddMember(groupId: string) {
     }) => api.post(`/api/groups/${groupId}/members`, v),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.members(groupId) });
+      void qc.invalidateQueries({ queryKey: keys.memberships });
+      void qc.invalidateQueries({ queryKey: keys.groups });
       // Mention chips + "no agents" banners key off the per-channel agent list.
       void qc.invalidateQueries({ queryKey: ["channelAgents"] });
     },
@@ -267,13 +279,15 @@ export function useRemoveMember(groupId: string) {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { member_type: string; member_id: string; channel_id?: string | null }) =>
+    mutationFn: (v: { member_type: string; member_id: string; channel_id?: string | null; all_scopes?: boolean }) =>
       api.delete(
         `/api/groups/${groupId}/members/${v.member_type}/${encodeURIComponent(v.member_id)}` +
-          (v.channel_id ? `?channel_id=${encodeURIComponent(v.channel_id)}` : ""),
+          (v.channel_id ? `?channel_id=${encodeURIComponent(v.channel_id)}` : v.all_scopes ? "?all_scopes=true" : ""),
       ),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.members(groupId) });
+      void qc.invalidateQueries({ queryKey: keys.memberships });
+      void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: ["channelAgents"] });
     },
   });

@@ -270,9 +270,9 @@ export default function ChannelScreen() {
     if (!groupId) return;
     router.push({
       pathname: "/(app)/members/[groupId]",
-      params: { groupId, name: groupName ?? "" },
+      params: { groupId, name: groupName ?? "", channelId },
     });
-  }, [groupId, groupName]);
+  }, [groupId, groupName, channelId]);
 
   /* Desktop's "no agents are listening" nudge: any member agent (group-wide
      or scoped to this channel) counts, even if it's currently offline. */

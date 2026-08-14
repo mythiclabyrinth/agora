@@ -2458,21 +2458,32 @@ mod tests {
     fn ui_broadcast_respects_membership() {
         let h = hub();
         let cid = setup_channel(&h, &[]);
+        let group_id = h.store.channel(&cid).unwrap()["group_id"].as_str().unwrap().to_string();
+        let sibling = h.store.create_channel(&group_id, "sibling", "");
+        let sibling_id = sibling["id"].as_str().unwrap().to_string();
+        h.store.create_user("alice", "Alice", None, "member");
+        h.store.add_member(&group_id, "user", "alice", "member", Some(&cid));
         let (tx_member, mut rx_member) = unbounded_channel();
         let (tx_out, mut rx_out) = unbounded_channel();
         let (tx_root, mut rx_root) = unbounded_channel();
+        let (tx_scoped, mut rx_scoped) = unbounded_channel();
         h.attach_socket("tom", false, tx_member);
         h.attach_socket("mallory", false, tx_out);
         h.attach_socket("root", true, tx_root);
+        h.attach_socket("alice", false, tx_scoped);
         h.post_user_message(&cid, "hi", "tom", None, None, vec![]);
         assert_eq!(rx_member.try_recv().unwrap()["type"], "message");
         assert!(rx_out.try_recv().is_err());
         assert_eq!(rx_root.try_recv().unwrap()["type"], "message");
+        assert_eq!(rx_scoped.try_recv().unwrap()["type"], "message");
         // Transient events (typing, pins) honor the same visibility line.
         h.post_transient(&cid, json!({"type": "pin", "channel_id": cid, "pinned": true}));
         assert_eq!(rx_member.try_recv().unwrap()["type"], "pin");
         assert!(rx_out.try_recv().is_err());
         assert_eq!(rx_root.try_recv().unwrap()["type"], "pin");
+        assert_eq!(rx_scoped.try_recv().unwrap()["type"], "pin");
+        h.post_user_message(&sibling_id, "secret sibling", "tom", None, None, vec![]);
+        assert!(rx_scoped.try_recv().is_err());
     }
 
     #[test]
