@@ -1,4 +1,4 @@
-import { canManageMembershipScope, personRemovalTargets, visibleMembershipScopes } from "../src/lib/membershipAccess";
+import { canManageMembershipScope, hasChannelScope, membershipUsernames, personRemovalTargets, visibleMembershipScopes } from "../src/lib/membershipAccess";
 
 test("group admins can manage every membership scope", () => {
   expect(canManageMembershipScope({ channel_id: null }, true, undefined, false)).toBe(true);
@@ -40,4 +40,16 @@ test("group removal uses all_scopes while channel removal deletes only visible r
     { member_id: "alice", channel_id: "general" },
   ]);
   expect(personRemovalTargets([scopes[0]], "general")).toEqual([]);
+});
+
+test("channel helpers distinguish exact access from inherited access", () => {
+  const members = [
+    { member_id: "inherited", channel_id: null },
+    { member_id: "exact", channel_id: "general" },
+    { member_id: "other", channel_id: "private" },
+  ];
+  expect(hasChannelScope(members, "general")).toBe(true);
+  expect(hasChannelScope([members[0]], "general")).toBe(false);
+  expect([...membershipUsernames(members, "general")]).toEqual(["inherited", "exact"]);
+  expect([...membershipUsernames(members)]).toEqual(["inherited"]);
 });

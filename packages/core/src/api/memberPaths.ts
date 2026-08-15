@@ -11,6 +11,9 @@ export function memberRemovalPath(v: {
   channelId?: string | null;
   allScopes?: boolean;
 }) {
+  if (v.channelId && v.allScopes) {
+    throw new Error("A membership removal cannot target one channel and all scopes.");
+  }
   const suffix = v.channelId
     ? `?channel_id=${encodeURIComponent(v.channelId)}`
     : v.allScopes ? "?all_scopes=true" : "";

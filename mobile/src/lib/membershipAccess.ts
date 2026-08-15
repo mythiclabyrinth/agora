@@ -13,8 +13,8 @@ export function canManageMembershipScope(
   );
 }
 
-/** Keep inherited whole-group access plus the selected channel in a
- * channel-focused roster. The returned set is also the safe removal set. */
+/** Keep inherited whole-group access plus the selected channel as context in
+ * a channel-focused roster. Removal targets must be derived separately. */
 export function visibleMembershipScopes<T extends Pick<Member, "channel_id">>(
   scopes: T[],
   channelId?: string,
@@ -22,6 +22,22 @@ export function visibleMembershipScopes<T extends Pick<Member, "channel_id">>(
   return channelId
     ? scopes.filter(scope => !scope.channel_id || scope.channel_id === channelId)
     : scopes;
+}
+
+export function hasChannelScope(
+  scopes: Array<Pick<Member, "channel_id">>,
+  channelId?: string,
+) {
+  return !!channelId && scopes.some(scope => scope.channel_id === channelId);
+}
+
+export function membershipUsernames(
+  members: Array<Pick<Member, "member_id" | "channel_id">>,
+  channelId?: string,
+) {
+  return new Set(members.filter(member =>
+    !member.channel_id || (!!channelId && member.channel_id === channelId)
+  ).map(member => member.member_id));
 }
 
 export function personRemovalTargets(

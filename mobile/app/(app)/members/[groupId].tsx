@@ -23,7 +23,7 @@ import { Icon } from "../../../src/components/Icon";
 import { toast, toastErr } from "../../../src/components/Toast";
 import { colors } from "../../../src/lib/theme";
 import { useSession } from "../../../src/state/session";
-import { canManageMembershipScope, personRemovalTargets, visibleMembershipScopes } from "../../../src/lib/membershipAccess";
+import { canManageMembershipScope, hasChannelScope, membershipUsernames, personRemovalTargets, visibleMembershipScopes } from "../../../src/lib/membershipAccess";
 import { RoleDropdown } from "../../../src/components/RoleDropdown";
 
 function LiveDot({ live }: { live: boolean }) {
@@ -64,12 +64,12 @@ function PersonMemberRow({
               {!manageable && scope.channel_id === null ? <Text style={styles.meta}>Managed by a group admin</Text> : null}
             </View>
             <View style={styles.scopeActions}>
-              {manageable && !shadowed ? <>
-              <RoleDropdown value={scope.role === "admin" ? "admin" : "member"} onChange={role => onSetRole(scope, role)} />
-              <Pressable style={styles.iconAction} hitSlop={8} onPress={() => onRemoveScope(scope)} accessibilityLabel={`Remove ${name} from this scope`}>
+              {manageable && !shadowed
+                ? <RoleDropdown value={scope.role === "admin" ? "admin" : "member"} onChange={role => onSetRole(scope, role)} />
+                : <View><Text style={styles.roleLabel}>{scope.role}</Text>{shadowed ? <Text style={styles.meta}>Included in whole-group access</Text> : null}</View>}
+              {manageable ? <Pressable style={styles.iconAction} hitSlop={8} onPress={() => onRemoveScope(scope)} accessibilityLabel={`Remove ${name} from this scope`}>
                 <Icon icon={X} size={12} color={colors.dim} />
-              </Pressable>
-              </> : <View><Text style={styles.roleLabel}>{scope.role}</Text>{shadowed ? <Text style={styles.meta}>Included in whole-group access</Text> : null}</View>}
+              </Pressable> : null}
             </View>
           </View>;
         })}
@@ -92,6 +92,8 @@ function AgentMemberRow({
   admin,
   onRemoveScope,
   onRemoveAll,
+  removeAllLabel,
+  canRemoveAll,
   canManageScope,
 }: {
   memberId: string;
@@ -102,6 +104,8 @@ function AgentMemberRow({
   admin: boolean;
   onRemoveScope: (m: Member) => void;
   onRemoveAll: () => void;
+  removeAllLabel?: string;
+  canRemoveAll: boolean;
   canManageScope: (m: Member) => boolean;
 }) {
   return (
@@ -130,7 +134,7 @@ function AgentMemberRow({
             </View>
           ))}
       </View>
-      {admin && scopes.every(canManageScope) ? <View style={styles.agentFooter}><ArmedButton label="Remove" onConfirm={onRemoveAll} /></View> : null}
+      {admin && canRemoveAll && scopes.every(canManageScope) ? <View style={styles.agentFooter}><ArmedButton label={removeAllLabel ?? "Remove"} onConfirm={onRemoveAll} /></View> : null}
     </View>
   );
 }
@@ -372,9 +376,7 @@ export default function MembersScreen() {
   );
   const addable = (agents.data ?? []).filter((a) => !groupWide.has(a.id));
 
-  const memberUsernames = new Set(people.filter(m =>
-    !m.channel_id || (!!params.channelId && m.channel_id === params.channelId)
-  ).map((m) => m.member_id));
+  const memberUsernames = membershipUsernames(people, params.channelId);
   const addablePeople = (users.data ?? []).filter(
     (u) => !u.disabled && !memberUsernames.has(u.username),
   );
@@ -426,9 +428,9 @@ export default function MembersScreen() {
       { onError: (e) => toastErr("Remove failed", e) },
     );
 
-  const removePersonScopes = async (scopes: Member[]) => {
+  const removePersonScopes = async (scopes: Member[], forceAll = false) => {
     try {
-      for (const target of personRemovalTargets(scopes, params.channelId)) await removeMember.mutateAsync({
+      for (const target of personRemovalTargets(scopes, forceAll ? undefined : params.channelId)) await removeMember.mutateAsync({
         member_type: "user", ...target,
       });
     } catch (e) { toastErr("Remove failed", e); }
@@ -436,9 +438,12 @@ export default function MembersScreen() {
 
   /* The API deletes one (member, channel) pair per call, so removing an
      agent entirely means one DELETE per scope. */
-  const removeAgentEverywhere = async (scopes: Member[]) => {
+  const removeAgentScopes = async (scopes: Member[]) => {
     try {
-      for (const m of scopes) {
+      const targets = params.channelId
+        ? scopes.filter(scope => scope.channel_id === params.channelId)
+        : scopes;
+      for (const m of targets) {
         await removeMember.mutateAsync({
           member_type: "agent",
           member_id: m.member_id,
@@ -464,8 +469,8 @@ export default function MembersScreen() {
         {visiblePeopleGroups.length > 0 ? <Text style={styles.section}>People</Text> : null}
         {visiblePeopleGroups.map(person => {
           const isSelf = person.id === username;
-          const hasSelectedChannelScope = !params.channelId
-            || person.scopes.some(scope => scope.channel_id === params.channelId);
+          const hasSelectedChannel = hasChannelScope(person.scopes, params.channelId);
+          const leaveWholeGroupFromChannel = isSelf && !!params.channelId && !hasSelectedChannel;
           const canManageScope = (scope: Member) => canManageMembershipScope(scope, groupAdmin, params.channelId, !!admin);
           return <PersonMemberRow
             key={`user:${person.id}`}
@@ -476,8 +481,12 @@ export default function MembersScreen() {
             canManageScope={canManageScope}
             onRemoveScope={remove}
             onSetRole={setRole}
-            onRemoveAll={(groupAdmin || isSelf) && hasSelectedChannelScope ? () => void removePersonScopes(person.scopes) : undefined}
-            removeAllLabel={params.channelId
+            onRemoveAll={(groupAdmin || isSelf) && (!params.channelId || hasSelectedChannel || leaveWholeGroupFromChannel)
+              ? () => void removePersonScopes(person.scopes, leaveWholeGroupFromChannel)
+              : undefined}
+            removeAllLabel={leaveWholeGroupFromChannel
+              ? `Leave ${group?.name ?? params.name ?? "group"}`
+              : params.channelId
               ? `${isSelf ? "Leave" : "Remove from"} #${selectedChannel?.name ?? channelName(params.channelId)}`
               : undefined}
           />;
@@ -509,7 +518,9 @@ export default function MembersScreen() {
             offline={liveById.get(g.id) === false}
             admin={admin}
             onRemoveScope={remove}
-            onRemoveAll={() => void removeAgentEverywhere(g.scopes)}
+            onRemoveAll={() => void removeAgentScopes(g.scopes)}
+            removeAllLabel={params.channelId ? `Remove from #${selectedChannel?.name ?? channelName(params.channelId)}` : undefined}
+            canRemoveAll={!params.channelId || hasChannelScope(g.scopes, params.channelId)}
             canManageScope={(scope) => canManageMembershipScope(scope, groupAdmin, params.channelId, !!admin)}
           />
         ))}
