@@ -1,4 +1,4 @@
-import { canManageMembershipScope, visibleMembershipScopes } from "../src/lib/membershipAccess";
+import { canManageMembershipScope, personRemovalTargets, visibleMembershipScopes } from "../src/lib/membershipAccess";
 
 test("group admins can manage every membership scope", () => {
   expect(canManageMembershipScope({ channel_id: null }, true, undefined, false)).toBe(true);
@@ -27,4 +27,17 @@ test("channel-focused removal receives only rendered scopes", () => {
   expect(visibleMembershipScopes(scopes).map(scope => scope.label)).toEqual([
     "group", "selected", "hidden",
   ]);
+});
+
+test("group removal uses all_scopes while channel removal deletes only visible rows", () => {
+  const scopes = [
+    { member_id: "alice", channel_id: null },
+    { member_id: "alice", channel_id: "general" },
+    { member_id: "alice", channel_id: "private" },
+  ];
+  expect(personRemovalTargets(scopes)).toEqual([{ member_id: "alice", all_scopes: true }]);
+  expect(personRemovalTargets(scopes, "general")).toEqual([
+    { member_id: "alice", channel_id: "general" },
+  ]);
+  expect(personRemovalTargets([scopes[0]], "general")).toEqual([]);
 });

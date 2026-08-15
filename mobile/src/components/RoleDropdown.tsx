@@ -6,18 +6,16 @@ import { colors } from "../lib/theme";
 
 export type MembershipRole = "admin" | "member";
 
-export function RoleDropdown({ value, onChange, disabled = false }: {
+export function RoleDropdown({ value, onChange }: {
   value: MembershipRole;
   onChange: (role: MembershipRole) => void;
-  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return <View style={styles.root}>
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Role: ${value}`}
-      accessibilityState={{ expanded: open, disabled }}
-      disabled={disabled}
+      accessibilityState={{ expanded: open }}
       style={styles.trigger}
       onPress={() => setOpen(current => !current)}
     >

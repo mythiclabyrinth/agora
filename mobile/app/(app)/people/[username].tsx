@@ -62,7 +62,8 @@ export default function PersonAccessScreen() {
     } }],
   );
 
-  if (me.isSuccess && !me.data.instance_admin) return <View style={[styles.root, styles.content]}><Stack.Screen options={{ title: "Person", headerShown: true }} /><Text style={styles.hint}>Instance admin access required.</Text></View>;
+  if (!me.isSuccess) return null;
+  if (!me.data.instance_admin) return <View style={[styles.root, styles.content]}><Stack.Screen options={{ title: "Person", headerShown: true }} /><Text style={styles.hint}>Instance admin access required.</Text></View>;
   return <>
     <Stack.Screen options={{ title: user?.display_name || username, headerShown: true }} />
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
@@ -72,11 +73,11 @@ export default function PersonAccessScreen() {
       <Text style={styles.section}>Access</Text>
       {[...byGroup.entries()].map(([groupId, groupRows]) => <View key={groupId} style={styles.card}>
         <Text style={styles.groupName}>{groupRows[0].group_name}</Text>
-        {groupRows.map(row => <View key={row.channel_id ?? "group"} style={styles.scopeRow}>
+        {groupRows.map(row => { const shadowed = !!row.channel_id && groupRows.some(candidate => !candidate.channel_id); return <View key={row.channel_id ?? "group"} style={styles.scopeRow}>
           <View style={{ flex: 1 }}><Text style={styles.scopeName}>{row.channel_name ? `# ${row.channel_name}` : "Whole group"}</Text></View>
-          <RoleDropdown value={row.role === "admin" ? "admin" : "member"} onChange={role => setRole(row, role)} />
+          {shadowed ? <View><Text style={styles.staticRole}>{row.role}</Text><Text style={styles.meta}>Included in whole-group access</Text></View> : <RoleDropdown value={row.role === "admin" ? "admin" : "member"} onChange={role => setRole(row, role)} />}
           <Pressable accessibilityLabel={`Remove ${row.channel_name ?? row.group_name} access`} style={styles.removeButton} onPress={() => remove(row)}><Icon icon={X} size={15} color={colors.dim} /></Pressable>
-        </View>)}
+        </View>;})}
       </View>)}
       {memberships.isSuccess && rows.length === 0 ? <Text style={styles.empty}>No group access yet.</Text> : null}
       {!adding ? <Pressable style={styles.addButton} onPress={() => setAdding(true)}><Icon icon={Plus} size={17} color={colors.a1} /><Text style={styles.addText}>Add access</Text></Pressable> :
@@ -94,7 +95,7 @@ function ScopePicker({ group, existing, onPick, onConvert }: { group: Group; exi
   const wholeGroup = existing.find(row => !row.channel_id);
   const existingChannels = new Set(existing.map(row => row.channel_id));
   return <><Text style={styles.addTitle}>Choose access in {group.name}</Text>
-    {!wholeGroup && !existingChannels.has(null) ? <Pressable style={styles.option} onPress={() => onPick({ groupId: group.id, channelId: null, label: `${group.name} · whole group` })}><Text style={styles.scopeName}>Whole group</Text><Icon icon={ChevronRight} size={17} color={colors.faint} /></Pressable> : null}
+    {!wholeGroup ? <Pressable style={styles.option} onPress={() => onPick({ groupId: group.id, channelId: null, label: `${group.name} · whole group` })}><Text style={styles.scopeName}>Whole group</Text><Icon icon={ChevronRight} size={17} color={colors.faint} /></Pressable> : null}
     {group.channels.map(channel => {
       const alreadyAdded = existingChannels.has(channel.id);
       return <View key={channel.id}>
@@ -118,6 +119,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 13, padding: 12, gap: 2 }, groupName: { color: colors.text, fontSize: 15, fontWeight: "700", marginBottom: 4 },
   scopeRow: { flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 9, borderTopWidth: 1, borderTopColor: colors.border }, scopeName: { color: colors.text, fontSize: 13.5, fontWeight: "600" },
   removeButton: { padding: 8 }, empty: { color: colors.faint, textAlign: "center", paddingVertical: 18 },
+  staticRole: { color: colors.a1, fontWeight: "700", fontSize: 12, textTransform: "capitalize" },
   addButton: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, padding: 13 }, addText: { color: colors.a1, fontWeight: "700" },
   addCard: { borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panel, borderRadius: 14, padding: 12, gap: 7 }, addTitle: { color: colors.text, fontWeight: "700", fontSize: 15, marginBottom: 3 },
   option: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 12 }, optionDisabled: { opacity: 0.55 }, convertRow: { alignItems: "flex-end", paddingVertical: 5, paddingRight: 4 }, convertText: { color: colors.a2, fontSize: 12, fontWeight: "600" },

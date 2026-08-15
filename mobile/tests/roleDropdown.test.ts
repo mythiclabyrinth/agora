@@ -15,3 +15,15 @@ test("shows the current role and switches immediately from the dropdown", () => 
 
   expect(onChange).toHaveBeenCalledWith("admin");
 });
+
+test("re-picking the current role closes without firing a change", () => {
+  const onChange = jest.fn();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(RoleDropdown, { value: "member", onChange })); });
+  const trigger = tree.root.findByProps({ accessibilityLabel: "Role: member" });
+  act(() => trigger.props.onPress());
+  const options = tree.root.findAll(node => node.props.accessibilityRole === "menuitem" && typeof node.props.onPress === "function");
+  act(() => options[0].props.onPress());
+  expect(onChange).not.toHaveBeenCalled();
+  expect(tree.root.findByProps({ accessibilityLabel: "Role: member" }).props.accessibilityState.expanded).toBe(false);
+});

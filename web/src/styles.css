@@ -1733,7 +1733,7 @@ a.btn { text-decoration: none; }
 
   .agora-main .chat-input, .agora-thread .chat-input { flex-wrap: wrap; padding: 10px; gap: 8px; }
   .agora-main .chat-input textarea, .agora-thread .chat-input textarea {
-    flex: 1 0 100%; width: 100%; font-size: 16px; padding: 10px 12px; min-width: 0;
+    order: -1; flex: 1 0 100%; width: 100%; font-size: 16px; padding: 10px 12px; min-width: 0;
   }
   .agora-main .chat-input .btn, .agora-thread .chat-input .btn { flex-shrink: 0; }
   .toast-host { bottom: 14px; }

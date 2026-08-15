@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { keys } from "./keys";
+import { memberRemovalPath, resolveMemberGroupId } from "./memberPaths";
 import { useApi } from "./context";
 import { useLive } from "../state/live";
 import {
@@ -266,8 +267,7 @@ export function useAddMember(groupId?: string) {
       role?: string;
       channel_id?: string;
     }) => {
-      const targetGroupId = v.group_id ?? groupId;
-      if (!targetGroupId) throw new Error("A group is required to add a member.");
+      const targetGroupId = resolveMemberGroupId(groupId, v.group_id);
       const { group_id: _groupId, ...body } = v;
       return api.post(`/api/groups/${targetGroupId}/members`, body);
     },
@@ -287,12 +287,14 @@ export function useRemoveMember(groupId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: { group_id?: string; member_type: string; member_id: string; channel_id?: string | null; all_scopes?: boolean }) => {
-      const targetGroupId = v.group_id ?? groupId;
-      if (!targetGroupId) throw new Error("A group is required to remove a member.");
-      return api.delete(
-        `/api/groups/${targetGroupId}/members/${v.member_type}/${encodeURIComponent(v.member_id)}` +
-          (v.channel_id ? `?channel_id=${encodeURIComponent(v.channel_id)}` : v.all_scopes ? "?all_scopes=true" : ""),
-      );
+      const targetGroupId = resolveMemberGroupId(groupId, v.group_id);
+      return api.delete(memberRemovalPath({
+        groupId: targetGroupId,
+        memberType: v.member_type,
+        memberId: v.member_id,
+        channelId: v.channel_id,
+        allScopes: v.all_scopes,
+      }));
     },
     onSuccess: (_data, v) => {
       const targetGroupId = v.group_id ?? groupId;

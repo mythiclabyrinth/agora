@@ -23,3 +23,15 @@ export function visibleMembershipScopes<T extends Pick<Member, "channel_id">>(
     ? scopes.filter(scope => !scope.channel_id || scope.channel_id === channelId)
     : scopes;
 }
+
+export function personRemovalTargets(
+  scopes: Array<Pick<Member, "member_id" | "channel_id">>,
+  channelId?: string,
+) {
+  if (scopes.length === 0) return [];
+  if (!channelId) return [{ member_id: scopes[0].member_id, all_scopes: true as const }];
+  return scopes.filter(scope => scope.channel_id === channelId).map(scope => ({
+    member_id: scope.member_id,
+    channel_id: scope.channel_id,
+  }));
+}
