@@ -255,18 +255,25 @@ export function useAllMemberships(enabled = true) {
   });
 }
 
-export function useAddMember(groupId: string) {
+export function useAddMember(groupId?: string) {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: {
+      group_id?: string;
       member_type: "user" | "agent";
       member_id: string;
       role?: string;
       channel_id?: string;
-    }) => api.post(`/api/groups/${groupId}/members`, v),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: keys.members(groupId) });
+    }) => {
+      const targetGroupId = v.group_id ?? groupId;
+      if (!targetGroupId) throw new Error("A group is required to add a member.");
+      const { group_id: _groupId, ...body } = v;
+      return api.post(`/api/groups/${targetGroupId}/members`, body);
+    },
+    onSuccess: (_data, v) => {
+      const targetGroupId = v.group_id ?? groupId;
+      if (targetGroupId) void qc.invalidateQueries({ queryKey: keys.members(targetGroupId) });
       void qc.invalidateQueries({ queryKey: keys.memberships });
       void qc.invalidateQueries({ queryKey: keys.groups });
       // Mention chips + "no agents" banners key off the per-channel agent list.
@@ -275,17 +282,21 @@ export function useAddMember(groupId: string) {
   });
 }
 
-export function useRemoveMember(groupId: string) {
+export function useRemoveMember(groupId?: string) {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { member_type: string; member_id: string; channel_id?: string | null; all_scopes?: boolean }) =>
-      api.delete(
-        `/api/groups/${groupId}/members/${v.member_type}/${encodeURIComponent(v.member_id)}` +
+    mutationFn: (v: { group_id?: string; member_type: string; member_id: string; channel_id?: string | null; all_scopes?: boolean }) => {
+      const targetGroupId = v.group_id ?? groupId;
+      if (!targetGroupId) throw new Error("A group is required to remove a member.");
+      return api.delete(
+        `/api/groups/${targetGroupId}/members/${v.member_type}/${encodeURIComponent(v.member_id)}` +
           (v.channel_id ? `?channel_id=${encodeURIComponent(v.channel_id)}` : v.all_scopes ? "?all_scopes=true" : ""),
-      ),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: keys.members(groupId) });
+      );
+    },
+    onSuccess: (_data, v) => {
+      const targetGroupId = v.group_id ?? groupId;
+      if (targetGroupId) void qc.invalidateQueries({ queryKey: keys.members(targetGroupId) });
       void qc.invalidateQueries({ queryKey: keys.memberships });
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: ["channelAgents"] });
