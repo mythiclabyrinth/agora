@@ -20,7 +20,7 @@ import {
 } from "react-native";
 import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
-import { Headphones, Volume2 } from "lucide-react-native";
+import { Headphones, Paperclip, Volume2 } from "lucide-react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "@agora/core";
 import { useSendVoice } from "../../../../src/api/voice";
@@ -306,8 +306,18 @@ export default function ThreadScreen() {
             ),
           headerShown: true,
           ...headerActions(
-            voiceOk ? (
-              <View style={styles.headerBtns}>
+            <View style={styles.headerBtns}>
+              <Pressable
+                accessibilityLabel="Thread attachments"
+                onPress={() => router.push({
+                  pathname: "/(app)/attachments/[channelId]",
+                  params: { channelId, channelName, groupId, threadId: String(rootId), threadName },
+                })}
+                hitSlop={8}
+              >
+                <Icon icon={Paperclip} size={20} color={colors.text} />
+              </Pressable>
+              {voiceOk ? <>
                 <Pressable
                   onPress={() => {
                     if (speakAloud) stopSpeech();
@@ -322,8 +332,8 @@ export default function ThreadScreen() {
                 <Pressable onPress={openLive} hitSlop={8}>
                   <Icon icon={Headphones} size={20} color={colors.text} />
                 </Pressable>
-              </View>
-            ) : null,
+              </> : null}
+            </View>,
           ),
         }}
       />
