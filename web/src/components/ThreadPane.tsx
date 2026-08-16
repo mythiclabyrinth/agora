@@ -19,7 +19,6 @@ import { SectionRail } from "./SectionRail";
 import { Composer } from "./Composer";
 import { LiveRows } from "./ChannelPane";
 import { LiveButton, LiveStrip, SpeakButton } from "./VoiceControls";
-import { copyDeepLink } from "../lib/deepLinks";
 
 const AT_BOTTOM_PX = 40;
 const MAX_JUMP_PAGES = 10;
@@ -169,26 +168,22 @@ export function ThreadPane() {
           </span>
           {threadName && <span className="ago-thread-name" title={threadName}>{threadName}</span>}
         </div>
+        {/* Docked to the side the header only has ~340px, so `.ago-btn-label`
+            is hidden there and the titles carry the meaning; expanded (or
+            full-width on a phone) the labels come back. */}
         <div className="ago-head-actions">
           <button className={`btn sm ${ui.filesOpen && ui.filesThread === rootId ? "active" : ""}`}
-            title="Attachments in this thread"
+            title="Files: attachments in this thread"
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread === rootId), rootId)}>
-            <Icon name="paperclip" /> Files
+            <Icon name="paperclip" /><span className="ago-btn-label">Files</span>
           </button>
-          {group && channel && (
-            <button className="btn sm" title="Copy link to this thread"
-              onClick={() => void copyDeepLink({
-                kind: "thread", groupId: group.id, channelId: channel.id, threadId: rootId,
-              }, "Thread")}>
-              <Icon name="link" /> Link
-            </button>
-          )}
           {me?.voice && <SpeakButton />}
           {me?.voice && <LiveButton channelId={channel.id} threadId={rootId} />}
           <button className={`btn sm ${pinned ? "active" : ""}`}
             title={pinned ? "Unpin this thread" : "Pin this thread for quick access"}
             onClick={() => pinMut.mutate({ messageId: rootId, pinned: !pinned })}>
-            {pinned ? <><Icon name="pin" cls="fill" /> Pinned</> : <><Icon name="pin" /> Pin</>}
+            <Icon name="pin" cls={pinned ? "fill" : undefined} />
+            <span className="ago-btn-label">{pinned ? "Pinned" : "Pin"}</span>
           </button>
           <button className="btn sm ago-thread-expand"
             title={ui.threadExpanded ? "Shrink thread back to the side panel" : "Expand thread to full width"}

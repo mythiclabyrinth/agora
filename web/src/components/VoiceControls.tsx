@@ -73,7 +73,7 @@ export function LiveButton({ channelId, threadId }: { channelId: string; threadI
           ? "Live voice in this thread: talk hands-free, turns post here"
           : "Live voice: talk hands-free and hear the replies")}
       onClick={() => void liveToggle(channelId, threadId)}>
-      <Icon name="headphones" /> Live
+      <Icon name="headphones" /><span className="ago-btn-label">Live</span>
     </button>
   );
 }

@@ -28,9 +28,10 @@ type LayoutMode = "channel" | "thread" | "members";
 function RealResponsivePanes({ mode }: { mode: LayoutMode }) {
   const mobileView = useUiState((state) => state.mobileView);
   const threadRoot = useUiState((state) => state.threadRoot);
+  const threadExpanded = useUiState((state) => state.threadExpanded);
   return (
     <div id="content">
-      <div className={`agora-layout view-${mobileView}`}>
+      <div className={`agora-layout view-${mobileView}${threadExpanded ? " thread-expanded" : ""}`}>
         <Sidebar />
         <ChannelPane />
         {threadRoot != null
@@ -62,13 +63,14 @@ const routes = {
   "PUT /api/threads/42/read": { ok: true, last_read_id: 45 },
 };
 
-function setup(mode: LayoutMode): void {
+function setup(mode: LayoutMode, threadExpanded = false): void {
   useUiState.setState({
     sel: { g: "product", c: "general" },
     view: { kind: "channel" },
     mobileView: mode === "thread" ? "thread" : "main",
     threadRoot: mode === "thread" ? 42 : null,
     membersOpen: mode === "members",
+    threadExpanded,
   });
 }
 
@@ -76,6 +78,11 @@ function element(canvasElement: HTMLElement, selector: string): HTMLElement {
   const found = canvasElement.querySelector<HTMLElement>(selector);
   if (!found) throw new Error(`Missing responsive pane: ${selector}`);
   return found;
+}
+
+function threadActionLabels(canvasElement: HTMLElement): HTMLElement[] {
+  const actions = element(canvasElement, "#agora-thread .ago-head-actions");
+  return [...actions.querySelectorAll<HTMLElement>(".ago-btn-label")];
 }
 
 async function expectNoHorizontalOverflow(canvasElement: HTMLElement): Promise<void> {
@@ -140,6 +147,58 @@ export const TabletThreadOverlay: Story = {
     await waitFor(() => expect(thread.querySelector(".ago-thread-name")).toHaveTextContent("Responsive layout review"));
     expect(getComputedStyle(thread).position).toBe("fixed");
     expect(element(canvasElement, "#agora-main")).toBeVisible();
+    await expectNoHorizontalOverflow(canvasElement);
+  },
+};
+
+/* Docked to the side, the header actions drop their labels so the thread name
+   keeps its room; the titles still name each button. */
+export const DesktopThreadDocked: Story = {
+  globals: { viewport: { value: "desktopBoundary", isRotated: false } },
+  args: { mode: "thread" },
+  parameters: {
+    viewport: { defaultViewport: "desktopBoundary" },
+    setup: () => setup("thread"),
+  },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(element(canvasElement, "#agora-thread")).toBeVisible());
+    const labels = threadActionLabels(canvasElement);
+    expect(labels.length).toBeGreaterThan(0);
+    for (const label of labels) await waitFor(() => expect(label).not.toBeVisible());
+    await expectNoHorizontalOverflow(canvasElement);
+  },
+};
+
+export const DesktopThreadExpanded: Story = {
+  globals: { viewport: { value: "desktopBoundary", isRotated: false } },
+  args: { mode: "thread" },
+  parameters: {
+    viewport: { defaultViewport: "desktopBoundary" },
+    setup: () => setup("thread", true),
+  },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(element(canvasElement, "#agora-thread")).toBeVisible());
+    const labels = threadActionLabels(canvasElement);
+    expect(labels.map(l => l.textContent)).toContain("Files");
+    for (const label of labels) await waitFor(() => expect(label).toBeVisible());
+    await expectNoHorizontalOverflow(canvasElement);
+  },
+};
+
+/* A phone shows the thread full-screen rather than docked, so the labels stay
+   even though `.thread-expanded` is off. */
+export const PhoneThreadPane: Story = {
+  globals: { viewport: { value: "phone", isRotated: false } },
+  args: { mode: "thread" },
+  parameters: {
+    viewport: { defaultViewport: "phone" },
+    setup: () => setup("thread"),
+  },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(element(canvasElement, "#agora-thread")).toBeVisible());
+    for (const label of threadActionLabels(canvasElement)) {
+      await waitFor(() => expect(label).toBeVisible());
+    }
     await expectNoHorizontalOverflow(canvasElement);
   },
 };
