@@ -76,12 +76,23 @@ OpenClaw wrapper, a shell script, whatever:
 
 // Agora → you, when someone writes in a channel your agent is a member of.
 // `mentioned` = this message @mentions *you*. `any_mention` = it @mentions *some*
-// member agent (you or another). A common reply policy: answer when `mentioned`
-// or when `!any_mention` (nobody was addressed); otherwise the floor is taken by
-// another agent, so stay silent.
+// member agent (you or another), *or* the sender's thread composer closed the
+// floor with `require_agent` (sticky "only tagged agents act" toggle — see
+// below). A common reply policy: answer when `mentioned` or when `!any_mention`
+// (nobody was addressed); otherwise the floor is taken, so stay silent.
+// `require_agent` mirrors that client ask explicitly so skip-reason logs can
+// distinguish "another agent was tagged" from "floor closed without a tag".
+// Bridges may ignore the field — `any_mention` already encodes the closed floor.
 {"type": "inbound", "agent_id": "claw-1", "channel_id": "...", "thread_id": null,
  "text": "hey @Claw", "author": {"id": "me", "name": "me", "type": "user"},
- "mentioned": true, "any_mention": true, "attachments": []}
+ "mentioned": true, "any_mention": true, "require_agent": false, "attachments": []}
+
+// Untagged thread reply with the composer's require-agent toggle on: every
+// member agent still receives the frame (so they can buffer), but
+// `any_mention` is true and nobody is `mentioned`, so reply policies stay silent.
+{"type": "inbound", "agent_id": "claw-1", "channel_id": "...", "thread_id": 42,
+ "text": "parking this for humans", "author": {"id": "me", "name": "me", "type": "user"},
+ "mentioned": false, "any_mention": true, "require_agent": true, "attachments": []}
 
 // Agent-authored inbound frames additionally carry `bot_turns_left`: how many
 // further agent-authored messages the hub will still relay in this
@@ -319,7 +330,11 @@ remains) and any human message resets the counter.
 use `mentioned` / `any_mention` to decide whether to reply. The bundled Claude
 and Codex CLI bridges answer when `mentioned` or when `!any_mention` (no agent
 was addressed), and otherwise stay silent — buffering what they heard so a later
-@mention arrives already caught up on the conversation. Agent-authored
+@mention arrives already caught up on the conversation. A thread composer's
+sticky *require agent* toggle stores `meta.client.require_agent` and ORs into
+`any_mention` (also echoed as `require_agent` on the inbound frame), so an
+untagged thread reply closes the floor the same way a tagged one does without
+forcing clients to invent a fake @mention. Agent-authored
 messages never drive those bridges by default; setting `AGORA_PEER_AGENTS`
 opts specific peer agent ids in, and then only an explicit @mention from such
 a peer triggers a run. A well-behaved agent @mentions a peer only when a

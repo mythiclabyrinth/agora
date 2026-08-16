@@ -7,7 +7,7 @@ import {
   DroppedFileError, dropMaterializationLimit,
   droppedTooLargeMessage, uploadMaxBytes,
   draftAttachmentPreviewUrl, materializeDroppedFile, MAX_MESSAGE_CHARS,
-  useAgents, useAttachmentDrafts, useMe, useSendMessage,
+  threadAddressKey, useAgents, useAttachmentDrafts, useMe, useSendMessage,
   type ChannelAgent, type DraftAttachment, type OutgoingFile,
 } from "@agora/core";
 import { create } from "zustand";
@@ -16,6 +16,7 @@ import { autoGrow } from "../lib/autoGrow";
 import { BROWSER_IMAGE, humanSize, withToken } from "../lib/files";
 import { slugify } from "../lib/mentions";
 import { toast } from "../lib/toast";
+import { useRequireAgent } from "../state/requireAgent";
 import { MicButton } from "./VoiceControls";
 import { ImageLightbox } from "./ImageLightbox";
 import { TemplateControls } from "./TemplateControls";
@@ -84,7 +85,7 @@ function AgentAv({ a, cls }: { a: { id: string; avatar?: string }; cls: string }
   return <span className={`ago-av ${cls}`}><Icon name="bot" /></span>;
 }
 
-export function Composer({ channelId, channelName, groupId, threadId, agents = [], candidates = [], voiceOK, replyInThread, onSetReplyInThread }: {
+export function Composer({ channelId, channelName, groupId, threadId, agents = [], candidates = [], voiceOK, replyInThread, onSetReplyInThread, isDm }: {
   channelId: string;
   channelName: string;
   groupId: string;
@@ -97,6 +98,8 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   voiceOK?: boolean;
   replyInThread?: boolean;
   onSetReplyInThread?: (value: boolean) => void;
+  /** Agent DMs always address the peer — hide the require-agent toggle. */
+  isDm?: boolean;
 }) {
   const send = useSendMessage(channelId);
   const me = useMe().data;
@@ -139,6 +142,12 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   }, []);
 
   const inThread = threadId != null;
+  const requireAgentKey = inThread ? threadAddressKey(channelId, threadId) : null;
+  const requireAgentOn = useRequireAgent(s =>
+    requireAgentKey ? s.onKeys.includes(requireAgentKey) : false,
+  );
+  const requireAgentToggle = useRequireAgent(s => s.toggle);
+  const showRequireAgent = inThread && !isDm && agents.length > 0;
   const readyAttachments = attachments.filter(
     (entry): entry is DraftAttachment & { status: "ready"; file: File } =>
       entry.status === "ready" && !!entry.file,
@@ -314,6 +323,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
       threadId,
       files: outgoing.length ? outgoing : undefined,
       replyInThread,
+      requireAgent: showRequireAgent && requireAgentOn,
       signal: controller?.signal,
     }).then(() => {
       if (!sentIds.length) return;
@@ -510,6 +520,18 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         </button>
         <TemplateControls groupId={groupId} draft={text} onChoose={insertTemplate} />
         {voiceOK && <MicButton channelId={channelId} threadId={threadId} />}
+        {showRequireAgent && requireAgentKey && (
+          <button
+            className={`btn ago-require-agent ${requireAgentOn ? "active" : ""}`}
+            title={requireAgentOn
+              ? "Agents only act when tagged"
+              : "Agents can reply without an @mention"}
+            aria-pressed={requireAgentOn}
+            onClick={() => requireAgentToggle(requireAgentKey)}
+          >
+            <Icon name="at-sign" />
+          </button>
+        )}
         {!inThread && onSetReplyInThread && (
           <button className={`btn ago-thread-ask ${replyInThread ? "active" : ""}`} id="ago-thread-ask"
             title="Agents answer this message in a thread under it"

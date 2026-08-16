@@ -29,3 +29,4 @@ export * from "./lib/reactions";
 export * from "./lib/sections";
 export * from "./lib/features";
 export * from "./lib/links";
+export * from "./lib/requireAgent";

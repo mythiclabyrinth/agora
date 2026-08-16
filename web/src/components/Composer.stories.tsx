@@ -319,8 +319,37 @@ export const ThreadReply: Story = {
   parameters: {
     docs: {
       description: {
-        story: "The composer inside an existing thread. It keeps a thread-scoped draft and omits the channel-level “reply in thread” toggle.",
+        story: "The composer inside an existing thread. It keeps a thread-scoped draft, omits the channel-level “reply in thread” toggle, and shows the sticky require-agent (@) control.",
       },
     },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByPlaceholderText("Reply in thread…")).resolves.toBeVisible();
+    const toggle = await canvas.findByTitle("Agents can reply without an @mention");
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  },
+};
+
+export const RequireAgentEnabled: Story = {
+  args: {
+    threadId: 42,
+    onSetReplyInThread: undefined,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: "Thread composer with the sticky require-agent toggle on — untagged replies close the agent floor.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = await canvas.findByTitle("Agents can reply without an @mention");
+    await userEvent.click(toggle);
+    await expect(canvas.findByTitle("Agents only act when tagged")).resolves.toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   },
 };

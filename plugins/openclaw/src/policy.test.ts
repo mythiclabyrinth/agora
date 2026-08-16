@@ -73,6 +73,14 @@ describe("decideInbound", () => {
     expect(decision).toMatchObject({ reason: "another agent was mentioned" });
   });
 
+  it("stays silent when require_agent closed the floor without a tag", () => {
+    const decision = decideInbound({
+      frame: frame({ any_mention: true, mentioned: false, require_agent: true }),
+      account: account(),
+    });
+    expect(decision).toMatchObject({ reason: "require_agent: no mention" });
+  });
+
   it("answers when it is the one mentioned", () => {
     expect(
       decideInbound({ frame: frame({ any_mention: true, mentioned: true }), account: account() }),

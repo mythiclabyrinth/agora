@@ -32,8 +32,15 @@ export function decideInbound(params: {
   }
 
   if (account.requireMention && !frame.mentioned) return SKIP("no mention");
-  // Somebody else was addressed by name: the floor belongs to that agent.
-  if (frame.any_mention && !frame.mentioned) return SKIP("another agent was mentioned");
+  // Somebody else was addressed by name — or the sender closed the floor
+  // without tagging anyone (`require_agent`). Either way, stay silent.
+  if (frame.any_mention && !frame.mentioned) {
+    return SKIP(
+      frame.require_agent
+        ? "require_agent: no mention"
+        : "another agent was mentioned",
+    );
+  }
 
   if (!frame.text?.trim() && !params.hasMedia) return SKIP("empty message");
   return { handle: true };

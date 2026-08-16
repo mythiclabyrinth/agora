@@ -199,7 +199,8 @@ export function ThreadPane() {
       <LiveRows channelId={channel.id} threadId={rootId} />
       <LiveStrip channelId={channel.id} threadId={rootId} />
       <Composer channelId={channel.id} channelName={channel.name} groupId={channel.group_id} threadId={rootId}
-        agents={agents} candidates={candidates} voiceOK={!!me?.voice} />
+        agents={agents} candidates={candidates} voiceOK={!!me?.voice}
+        isDm={channel.kind === "agent_dm"} />
     </div>
   );
 }

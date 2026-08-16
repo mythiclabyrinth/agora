@@ -35,6 +35,7 @@ import * as ImagePicker from "expo-image-picker";
 import { Image } from "expo-image";
 import {
   ArrowUp,
+  AtSign,
   Bot,
   Camera,
   Check,
@@ -53,6 +54,7 @@ import { toOutgoing, type LocalFile } from "../api/voice";
 import { useKeyboardVisible } from "../lib/keyboard";
 import { colors } from "../lib/theme";
 import { useAddressed, useMessageDrafts } from "@agora/core";
+import { usePrefs } from "../state/prefs";
 import { AgentAvatar } from "./AgentAvatar";
 import { Icon } from "./Icon";
 import { toast, toastErr } from "./Toast";
@@ -158,6 +160,7 @@ export function Composer({
   groupId,
   sending,
   threadToggle,
+  requireAgentToggle,
   onSend,
   onSendVoice,
   initialFiles = [],
@@ -177,7 +180,14 @@ export function Composer({
   /** Offer the per-message "reply in thread" ask (agents answer in a thread
       under the message). Channel composer only — a thread already is one. */
   threadToggle?: boolean;
-  onSend: (v: { text: string; files: OutgoingFile[]; replyInThread?: boolean }) => Promise<void>;
+  /** Sticky thread ask: only tagged agents act. Hidden in agent DMs. */
+  requireAgentToggle?: boolean;
+  onSend: (v: {
+    text: string;
+    files: OutgoingFile[];
+    replyInThread?: boolean;
+    requireAgent?: boolean;
+  }) => Promise<void>;
   /** When set (server has voice), a 🎤 button records a voice note and hands
       the file here for the transcribe-and-post upload. `mentions` carries the
       "talk to" prefix ("@a, @b") so the transcript addresses the same agents
@@ -225,6 +235,11 @@ export function Composer({
     () => agents.filter((a) => addressed.includes(a.id)),
     [agents, addressed],
   );
+  const showRequireAgent = !!requireAgentToggle && !!addressKey && agents.length > 0;
+  const requireAgentOn = usePrefs((s) =>
+    showRequireAgent && addressKey ? s.requireAgentThreads.includes(addressKey) : false,
+  );
+  const toggleRequireAgent = usePrefs((s) => s.toggleRequireAgent);
   const toggleAddressed = (id: string) => {
     if (addressKey) toggleAddr(addressKey, id);
   };
@@ -555,6 +570,7 @@ export function Composer({
         text: prefix ? (body ? `${prefix}, ${body}` : prefix) : body,
         files: files.map(toOutgoing),
         replyInThread: threadToggle ? replyInThread : undefined,
+        requireAgent: showRequireAgent && requireAgentOn,
       });
       if (addressKey) {
         if ((useMessageDrafts.getState().byConvo[addressKey] ?? "") === sentText) {
@@ -766,6 +782,26 @@ export function Composer({
           {groupId ? (
             <Pressable onPress={() => setTemplateSheet(true)} hitSlop={8} style={styles.toolBtn} accessibilityRole="button" accessibilityLabel="Message templates">
               <Icon icon={NotepadText} size={22} />
+            </Pressable>
+          ) : null}
+          {showRequireAgent && addressKey ? (
+            <Pressable
+              onPress={() => toggleRequireAgent(addressKey)}
+              hitSlop={8}
+              style={styles.toolBtn}
+              accessibilityRole="button"
+              accessibilityState={{ selected: requireAgentOn }}
+              accessibilityLabel={
+                requireAgentOn
+                  ? "Agents only act when tagged"
+                  : "Agents can reply without an @mention"
+              }
+            >
+              <Icon
+                icon={AtSign}
+                size={22}
+                color={requireAgentOn ? colors.a1 : colors.dim}
+              />
             </Pressable>
           ) : null}
           <View style={{ flex: 1 }} />
