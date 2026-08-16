@@ -70,7 +70,18 @@ describe("decideInbound", () => {
       frame: frame({ any_mention: true, mentioned: false }),
       account: account(),
     });
-    expect(decision).toMatchObject({ reason: "another agent was mentioned" });
+    expect(decision).toMatchObject({ reason: "floor closed" });
+  });
+
+  it("stays silent when require_agent closed the floor without a tag", () => {
+    // Same reason as a peer-tag closed floor: the frame cannot express the
+    // overlap (require_agent is also true whenever a peer was tagged via the
+    // any_mention OR), so the skip string stays honest for both cases.
+    const decision = decideInbound({
+      frame: frame({ any_mention: true, mentioned: false, require_agent: true }),
+      account: account(),
+    });
+    expect(decision).toMatchObject({ handle: false, reason: "floor closed" });
   });
 
   it("answers when it is the one mentioned", () => {

@@ -720,6 +720,7 @@ impl Hub {
     ) -> Value {
         self.post_user_message_opts(
             channel_id, text, username, user_name, thread_id, attachments, false, None, false,
+            false,
         )
     }
 
@@ -737,6 +738,11 @@ impl Hub {
     /// replies land in a thread under it (see [`Self::build_inbound`]). Kept
     /// hidden in message `meta.client` like the timezone; meaningless on
     /// thread replies and voice turns, so ignored there.
+    ///
+    /// `require_agent` is the thread composer's sticky ask: close the agent
+    /// floor unless someone is @mentioned (bridges treat it like
+    /// `any_mention`, so untagged replies are buffered as context). Only
+    /// honored on thread replies, never on top-level or voice turns.
     #[allow(clippy::too_many_arguments)]
     pub fn post_user_message_opts(
         &self,
@@ -749,6 +755,7 @@ impl Hub {
         voice: bool,
         timezone: Option<&str>,
         reply_in_thread: bool,
+        require_agent: bool,
     ) -> Value {
         let mut client = serde_json::Map::new();
         if let Some(tz) = timezone {
@@ -756,6 +763,9 @@ impl Hub {
         }
         if reply_in_thread && thread_id.is_none() && !voice {
             client.insert("reply_thread".into(), json!(true));
+        }
+        if require_agent && thread_id.is_some() && !voice {
+            client.insert("require_agent".into(), json!(true));
         }
         let meta = (!client.is_empty()).then(|| json!({"client": client}));
         let message = self.store.add_message_with_meta(
@@ -1130,16 +1140,23 @@ impl Hub {
         };
         let tokens = mention_tokens(message["text"].as_str().unwrap_or_default());
         let is_dm = channel["kind"] == "agent_dm";
+        // Thread composers can ask to close the floor even without an @tag
+        // (`meta.client.require_agent`). OR'd into `any_mention` so existing
+        // bridges buffer untagged replies as context without a protocol bump.
+        let require_agent = message["meta"]["client"]["require_agent"]
+            .as_bool()
+            .unwrap_or(false);
         // Was any *member agent* @mentioned? This drives the CLI bridges' reply
         // policy: a human message that tags no agent is open to everyone, while
         // one that tags an agent is only for the tagged agent(s). Carried to the
         // agent as `any_mention`; the recipient decides what to do with it.
-        let any_agent_mentioned = self.store.agents_for_channel(channel_id).iter().any(|aid| {
-            tokens.contains(&aid.to_lowercase())
-                || self
-                    .agent_handle(aid)
-                    .is_some_and(|h| tokens.contains(&slugify(&h.agent_name)))
-        });
+        let any_agent_mentioned = require_agent
+            || self.store.agents_for_channel(channel_id).iter().any(|aid| {
+                tokens.contains(&aid.to_lowercase())
+                    || self
+                        .agent_handle(aid)
+                        .is_some_and(|h| tokens.contains(&slugify(&h.agent_name)))
+            });
         for agent_id in self.store.agents_for_channel(channel_id) {
             if Some(agent_id.as_str()) == exclude_agent {
                 continue;
@@ -1260,7 +1277,14 @@ impl Hub {
             // Whether any member agent was @mentioned anywhere in this message.
             // Bridges reply when addressed (`mentioned`) or when the floor is
             // open (`!any_mention`); otherwise they buffer it as context.
+            // Also true when the sender's thread toggle closed the floor via
+            // `meta.client.require_agent` (see `require_agent` on this frame).
             "any_mention": any_mention,
+            // Explicit copy of the composer's sticky thread ask. Bridges may
+            // ignore it — `any_mention` already encodes the closed floor.
+            "require_agent": message["meta"]["client"]["require_agent"]
+                .as_bool()
+                .unwrap_or(false),
             "from_bot": from_bot,
             "voice_live": voice,
             "attachments": atts,
@@ -2274,6 +2298,57 @@ mod tests {
     }
 
     #[test]
+    fn require_agent_closes_floor_on_thread_replies() {
+        let h = hub();
+        let mut rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+        let root = h.post_user_message(&cid, "root", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64();
+        let _ = rx_a.try_recv();
+        let _ = rx_b.try_recv();
+
+        // Toggle on, no tag: both hear it, floor closed, require_agent flagged.
+        let msg = h.post_user_message_opts(
+            &cid, "note for humans", "tom", None, root_id, vec![], false, None, false, true,
+        );
+        assert_eq!(msg["meta"]["client"]["require_agent"], true);
+        let fa = rx_a.try_recv().unwrap();
+        assert_eq!(fa["mentioned"], false);
+        assert_eq!(fa["any_mention"], true);
+        assert_eq!(fa["require_agent"], true);
+        let fb = rx_b.try_recv().unwrap();
+        assert_eq!(fb["mentioned"], false);
+        assert_eq!(fb["any_mention"], true);
+        assert_eq!(fb["require_agent"], true);
+
+        // Toggle on + tag: tagged agent still mentioned; OR is a no-op.
+        h.post_user_message_opts(
+            &cid, "hey @bot-a", "tom", None, root_id, vec![], false, None, false, true,
+        );
+        let fa = rx_a.try_recv().unwrap();
+        assert_eq!(fa["mentioned"], true);
+        assert_eq!(fa["any_mention"], true);
+        assert_eq!(fa["require_agent"], true);
+        let fb = rx_b.try_recv().unwrap();
+        assert_eq!(fb["mentioned"], false);
+        assert_eq!(fb["any_mention"], true);
+
+        // Ignored on top-level (even when asked) and on voice turns.
+        let top = h.post_user_message_opts(
+            &cid, "channel note", "tom", None, None, vec![], false, None, false, true,
+        );
+        assert!(top["meta"]["client"]["require_agent"].is_null());
+        assert_eq!(rx_a.try_recv().unwrap()["any_mention"], false);
+        let _ = rx_b.try_recv();
+        let spoken = h.post_user_message_opts(
+            &cid, "spoken", "tom", None, root_id, vec![], true, None, false, true,
+        );
+        assert!(spoken["meta"]["client"]["require_agent"].is_null());
+        assert_eq!(rx_a.try_recv().unwrap()["require_agent"], false);
+    }
+
+    #[test]
     fn context_feed_delivers_unmentioned_agent_messages() {
         let h = hub();
         let mut rx_feed = add_agent_full(&h, "claude", "Claude", false, true);
@@ -2376,7 +2451,7 @@ mod tests {
         assert_eq!(frame["voice_live"], false);
         assert!(frame["context_note"].as_str().unwrap().contains("Markdown"));
         // Live voice turn: flagged, spoken-prose steering replaces the hint.
-        let msg = h.post_user_message_opts(&cid, "spoken words", "tom", None, None, vec![], true, None, false);
+        let msg = h.post_user_message_opts(&cid, "spoken words", "tom", None, None, vec![], true, None, false, false);
         // The stored message is a plain transcript — nothing voice-specific.
         assert_eq!(msg["text"], "spoken words");
         let frame = rx.try_recv().unwrap();
@@ -2393,7 +2468,7 @@ mod tests {
         let cid = setup_channel(&h, &["bot-a"]);
         let msg = h.post_user_message_opts(
             &cid, "what time is it?", "tom", None, None, vec![], false,
-            Some("Asia/Kolkata"), false,
+            Some("Asia/Kolkata"), false, false,
         );
         // Stored hidden in meta (the UI only renders meta.options/resolved).
         assert_eq!(msg["meta"]["client"]["tz"], "Asia/Kolkata");
@@ -2608,7 +2683,7 @@ mod tests {
         let cid = setup_channel(&h, &["bot-a"]);
 
         let msg = h.post_user_message_opts(
-            &cid, "explain x", "tom", Some("Tom"), None, vec![], false, None, true,
+            &cid, "explain x", "tom", Some("Tom"), None, vec![], false, None, true, false,
         );
         let mid = msg["id"].as_i64().unwrap();
         // The stored message stays a top-level root, the ask hidden in meta...
@@ -2629,7 +2704,7 @@ mod tests {
         // On a thread reply the ask is meaningless: dropped from meta, the
         // message keeps its own thread, no re-rooting.
         let reply = h.post_user_message_opts(
-            &cid, "follow-up", "tom", Some("Tom"), Some(mid), vec![], false, None, true,
+            &cid, "follow-up", "tom", Some("Tom"), Some(mid), vec![], false, None, true, false,
         );
         assert!(reply["meta"]["client"]["reply_thread"].is_null());
         let inbound = last_frame(&mut rx, "inbound").unwrap();
@@ -2637,7 +2712,7 @@ mod tests {
 
         // Live-voice turns are exempt: replies read aloud, not threaded.
         let spoken = h.post_user_message_opts(
-            &cid, "say hi", "tom", Some("Tom"), None, vec![], true, None, true,
+            &cid, "say hi", "tom", Some("Tom"), None, vec![], true, None, true, false,
         );
         assert!(spoken["meta"]["client"]["reply_thread"].is_null());
         let inbound = last_frame(&mut rx, "inbound").unwrap();

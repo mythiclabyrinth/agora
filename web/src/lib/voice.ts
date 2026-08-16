@@ -89,6 +89,9 @@ export async function uploadVoice(v: {
   threadId: number | null;
   blob: Blob;
   live?: boolean;
+  /** Thread sticky: close the agent floor unless someone is @mentioned.
+      Ignored for live turns (hub drops require_agent when voice=true). */
+  requireAgent?: boolean;
 }): Promise<void> {
   const type = (v.blob.type || "audio/webm").toLowerCase();
   // The transcription API infers the codec from the file extension.
@@ -99,6 +102,7 @@ export async function uploadVoice(v: {
   if (v.threadId != null) fd.append("thread_id", String(v.threadId));
   const tz = timezone();
   if (tz) fd.append("timezone", tz);
+  if (v.requireAgent && v.threadId != null && !v.live) fd.append("require_agent", "true");
   const res = await fetch(`/api/channels/${encodeURIComponent(v.channelId)}/voice`, {
     method: "POST",
     headers: { Authorization: `Bearer ${sessionToken()}` },

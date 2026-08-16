@@ -43,6 +43,10 @@ export type AgoraInboundFrame = {
   mentioned?: boolean;
   /** This message @mentions *some* member agent (this one or another). */
   any_mention?: boolean;
+  /** Thread composer closed the floor without requiring a real @tag.
+   *  Observability only — `any_mention` already encodes the closed floor;
+   *  the skip reason does not branch on this. */
+  require_agent?: boolean;
   from_bot?: boolean;
   /** Agent-authored frames only: how many further agent turns the hub relays. */
   bot_turns_left?: number;

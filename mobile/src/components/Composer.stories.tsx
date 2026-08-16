@@ -3,6 +3,7 @@ import { fn } from "storybook/test";
 import { useAddressed, useMessageDrafts } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
 import { Composer } from "./Composer";
+import { usePrefs } from "../state/prefs";
 
 const agents = [
   { id: "codex", name: "Codex" },
@@ -106,6 +107,23 @@ export const ThreadReply: Story = {
     addressKey: "general:t42",
     sending: false,
     threadToggle: false,
+    requireAgentToggle: true,
     onSend: send,
+  },
+};
+
+export const RequireAgentEnabled: Story = {
+  args: {
+    placeholder: "Reply in thread",
+    mentions,
+    agents,
+    addressKey: "general:t42",
+    sending: false,
+    threadToggle: false,
+    requireAgentToggle: true,
+    onSend: send,
+  },
+  parameters: {
+    setup: () => usePrefs.setState({ requireAgentThreads: ["general:t42"] }),
   },
 };

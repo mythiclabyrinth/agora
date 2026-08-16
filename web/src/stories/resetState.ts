@@ -8,6 +8,7 @@ import { useUiState } from "../state/ui";
 import { useVoiceRec } from "../state/voiceRec";
 import { useLiveVoice } from "../state/liveVoice";
 import { useSpeak } from "../state/speak";
+import { useRequireAgent } from "../state/requireAgent";
 import { useToasts } from "../lib/toast";
 
 const STORAGE_KEYS = [
@@ -19,6 +20,7 @@ const STORAGE_KEYS = [
   "agora_side",
   "agora_thread",
   "agora_speak",
+  "agora_thread_require_agent",
   "agoEmojiRecent",
 ];
 
@@ -59,5 +61,6 @@ export function resetStoryState(): void {
   useVoiceRec.setState({ recordingKey: null, startedAt: 0, busyKey: null });
   useLiveVoice.setState({ scope: null, state: "listening", muted: false });
   useSpeak.setState({ on: false });
+  useRequireAgent.getState().resetAll();
   useToasts.setState({ toasts: [] });
 }

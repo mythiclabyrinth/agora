@@ -90,12 +90,19 @@ export default function ThreadScreen() {
   const { typing, progress } = useChannelLive(channelId, rootId);
 
   const groups = useGroups();
-  const { groupId, groupRole, resolvedChannelName } = useMemo(() => {
+  const { groupId, groupRole, resolvedChannelName, isDm } = useMemo(() => {
     for (const g of groups.data ?? []) {
       const c = g.channels.find((x) => x.id === channelId);
-      if (c) return { groupId: g.id, groupRole: g.role, resolvedChannelName: c.name };
+      if (c) {
+        return {
+          groupId: g.id,
+          groupRole: g.role,
+          resolvedChannelName: c.name,
+          isDm: c.kind === "agent_dm",
+        };
+      }
     }
-    return { groupId: null, groupRole: null, resolvedChannelName: null };
+    return { groupId: null, groupRole: null, resolvedChannelName: null, isDm: false };
   }, [groups.data, channelId]);
   const members = useMembers(groupId ?? "");
   const channelName = params.channelName || resolvedChannelName;
@@ -402,13 +409,19 @@ export default function ThreadScreen() {
           maxFileMb={me?.max_file_mb}
           maxVideoMb={me?.max_video_mb}
           sending={send.isPending}
-          onSend={async ({ text, files }) => {
-            await send.mutateAsync({ text, threadId: rootId, files });
+          requireAgentToggle={!isDm}
+          onSend={async ({ text, files, requireAgent }) => {
+            await send.mutateAsync({ text, threadId: rootId, files, requireAgent });
           }}
           onSendVoice={
             voiceOk
-              ? async (file, mentions) => {
-                  await sendVoice.mutateAsync({ file, threadId: rootId, mentions });
+              ? async (file, mentions, requireAgent) => {
+                  await sendVoice.mutateAsync({
+                    file,
+                    threadId: rootId,
+                    mentions,
+                    requireAgent,
+                  });
                 }
               : undefined
           }

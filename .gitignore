@@ -20,6 +20,8 @@ mobile/.expo/
 
 # Local environment (secrets); .env.example is the committed template
 .env
+.env.*
+!.env.example
 .venv/
 
 # Bridge runtime state (per-machine channel->session bindings) and logs

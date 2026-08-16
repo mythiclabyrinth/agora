@@ -373,15 +373,19 @@ export function useSendMessage(channelId: string) {
       signal?: AbortSignal;
       /** Ask agents to answer in a thread under this (top-level) message. */
       replyInThread?: boolean;
+      /** Thread sticky: close the agent floor unless someone is @mentioned. */
+      requireAgent?: boolean;
     }) => {
       const tz = clientTimezone();
       const askThread = v.replyInThread === true && v.threadId == null;
+      const requireAgent = v.requireAgent === true && v.threadId != null;
       if (v.files && v.files.length > 0) {
         const form = new FormData();
         form.append("text", v.text);
         if (v.threadId != null) form.append("thread_id", String(v.threadId));
         if (tz) form.append("timezone", tz);
         if (askThread) form.append("reply_in_thread", "true");
+        if (requireAgent) form.append("require_agent", "true");
         for (const f of v.files) {
           appendFile(form, "files", f);
         }
@@ -396,6 +400,7 @@ export function useSendMessage(channelId: string) {
         thread_id: v.threadId,
         ...(tz ? { timezone: tz } : {}),
         ...(askThread ? { reply_in_thread: true } : {}),
+        ...(requireAgent ? { require_agent: true } : {}),
       });
     },
     onSuccess: (message, v) => {

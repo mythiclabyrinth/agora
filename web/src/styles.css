@@ -1077,6 +1077,8 @@ a.btn { text-decoration: none; }
 .chat-input .ago-attach { flex-shrink: 0; }
 .chat-input .ago-thread-ask { flex-shrink: 0; }
 .ago-thread-ask.active { border-color: var(--a1); color: var(--a1); }
+.chat-input .ago-require-agent { flex-shrink: 0; }
+.ago-require-agent.active { border-color: var(--a1); color: var(--a1); }
 .ago-pending { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 14px 0; }
 .ago-pending-chip, .ago-att-file {
   display: inline-flex; align-items: center; gap: 8px; max-width: 280px;

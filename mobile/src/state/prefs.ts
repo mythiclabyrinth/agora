@@ -5,6 +5,11 @@
 
 import * as FileSystem from "expo-file-system/legacy";
 import { create } from "zustand";
+import {
+  disableRequireAgent,
+  enableRequireAgent,
+  parseRequireAgentKeys,
+} from "@agora/core";
 
 const PREFS_FILE = `${FileSystem.documentDirectory ?? ""}ui-prefs.json`;
 
@@ -17,6 +22,8 @@ interface PersistedPrefs {
   recentEmoji: string[];
   preferNativeApps: boolean;
   linkBrowser: LinkBrowser;
+  /** Conversation keys (`threadAddressKey`) where require-agent is on. */
+  requireAgentThreads: string[];
 }
 
 export type LinkBrowser = "in-app" | "system" | "chrome";
@@ -32,6 +39,7 @@ interface PrefsState {
   recentEmoji: string[];
   preferNativeApps: boolean;
   linkBrowser: LinkBrowser;
+  requireAgentThreads: string[];
   load: () => Promise<void>;
   toggleGroup: (groupId: string) => void;
   expandGroup: (groupId: string) => void;
@@ -40,6 +48,9 @@ interface PrefsState {
   rememberEmoji: (ch: string) => void;
   setPreferNativeApps: (on: boolean) => void;
   setLinkBrowser: (browser: LinkBrowser) => void;
+  isRequireAgent: (key: string) => boolean;
+  setRequireAgent: (key: string, on: boolean) => void;
+  toggleRequireAgent: (key: string) => void;
 }
 
 function persist(state: PrefsState): void {
@@ -50,6 +61,7 @@ function persist(state: PrefsState): void {
     recentEmoji: state.recentEmoji,
     preferNativeApps: state.preferNativeApps,
     linkBrowser: state.linkBrowser,
+    requireAgentThreads: state.requireAgentThreads,
   };
   FileSystem.writeAsStringAsync(PREFS_FILE, JSON.stringify(data)).catch(() => {
     /* best-effort */
@@ -64,6 +76,7 @@ export const usePrefs = create<PrefsState>((set, get) => ({
   recentEmoji: [],
   preferNativeApps: true,
   linkBrowser: "in-app",
+  requireAgentThreads: [],
 
   async load() {
     try {
@@ -86,6 +99,7 @@ export const usePrefs = create<PrefsState>((set, get) => ({
         linkBrowser: ["in-app", "system", "chrome"].includes(data.linkBrowser ?? "")
           ? data.linkBrowser as LinkBrowser
           : "in-app",
+        requireAgentThreads: parseRequireAgentKeys(data.requireAgentThreads),
       });
     } catch {
       set({ loaded: true }); // first run
@@ -133,5 +147,21 @@ export const usePrefs = create<PrefsState>((set, get) => ({
   setLinkBrowser(browser) {
     set({ linkBrowser: browser });
     persist(get());
+  },
+
+  isRequireAgent(key) {
+    return get().requireAgentThreads.includes(key);
+  },
+
+  setRequireAgent(key, on) {
+    const requireAgentThreads = on
+      ? enableRequireAgent(get().requireAgentThreads, key)
+      : disableRequireAgent(get().requireAgentThreads, key);
+    set({ requireAgentThreads });
+    persist(get());
+  },
+
+  toggleRequireAgent(key) {
+    get().setRequireAgent(key, !get().isRequireAgent(key));
   },
 }));

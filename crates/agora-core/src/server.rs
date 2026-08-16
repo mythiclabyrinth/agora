@@ -1614,6 +1614,7 @@ async fn post_message(
     let thread_id = resolve_thread(&state, &channel_id, payload["thread_id"].as_i64())?;
     let timezone = client_timezone(payload["timezone"].as_str().unwrap_or(""));
     let reply_in_thread = payload["reply_in_thread"].as_bool().unwrap_or(false);
+    let require_agent = payload["require_agent"].as_bool().unwrap_or(false);
     let message = state.hub.post_user_message_opts(
         &channel_id,
         &text,
@@ -1624,6 +1625,7 @@ async fn post_message(
         false,
         timezone.as_deref(),
         reply_in_thread,
+        require_agent,
     );
     Ok(Json(message))
 }
@@ -1656,6 +1658,7 @@ async fn post_message_upload(
     let mut thread_id: Option<i64> = None;
     let mut timezone: Option<String> = None;
     let mut reply_in_thread = false;
+    let mut require_agent = false;
     let mut attachments: Vec<NewAttachment> = Vec::new();
     let mut uploaded_bytes = 0usize;
     let request_max_bytes = upload_request_max_bytes(&config);
@@ -1678,6 +1681,9 @@ async fn post_message_upload(
             "timezone" => timezone = client_timezone(&field.text().await.unwrap_or_default()),
             "reply_in_thread" => {
                 reply_in_thread = field.text().await.unwrap_or_default().trim() == "true";
+            }
+            "require_agent" => {
+                require_agent = field.text().await.unwrap_or_default().trim() == "true";
             }
             "files" => {
                 if attachments.len() >= MAX_FILES_PER_MESSAGE {
@@ -1722,7 +1728,7 @@ async fn post_message_upload(
     let display_name = user.display_name.clone();
     let message = tokio::task::spawn_blocking(move || hub.post_user_message_opts(
         &channel_id, &text, &username, Some(&display_name), thread_id, attachments,
-        false, timezone.as_deref(), reply_in_thread,
+        false, timezone.as_deref(), reply_in_thread, require_agent,
     )).await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Message write failed"))?;
     Ok(Json(message))
 }
@@ -1756,6 +1762,7 @@ async fn post_voice_message(
     let mut live = false;
     let mut mentions = String::new();
     let mut timezone: Option<String> = None;
+    let mut require_agent = false;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -1782,6 +1789,9 @@ async fn post_voice_message(
             "live" => live = field.text().await.unwrap_or_default() == "true",
             "mentions" => mentions = field.text().await.unwrap_or_default(),
             "timezone" => timezone = client_timezone(&field.text().await.unwrap_or_default()),
+            "require_agent" => {
+                require_agent = field.text().await.unwrap_or_default().trim() == "true";
+            }
             _ => {}
         }
     }
@@ -1822,6 +1832,7 @@ async fn post_voice_message(
         live,
         timezone.as_deref(),
         false,
+        require_agent,
     );
     Ok(Json(message))
 }
