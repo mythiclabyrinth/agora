@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -424,6 +425,104 @@ class OutboundAttachmentTests(unittest.TestCase):
             _, attachments, notices = bridge.Bridge._split_outbound_attachments(
                 f"{line}\n{line}", tmp, [], 1024)
             self.assertEqual((len(attachments), notices), (1, []))
+
+
+def _fake_proc(lines):
+    """A stand-in for the CLI child process that replays `lines` on stdout."""
+    stdout = asyncio.StreamReader()
+    for line in lines:
+        stdout.feed_data(line.encode() + b"\n")
+    stdout.feed_eof()
+    stderr = asyncio.StreamReader()
+    stderr.feed_eof()
+
+    proc = Mock()
+    proc.stdout = stdout
+    proc.stderr = stderr
+    proc.stdin = Mock()
+    proc.stdin.write = Mock()
+    proc.stdin.close = Mock()
+    proc.wait = AsyncMock(return_value=0)
+    proc.kill = Mock()
+    proc.returncode = 0
+    return proc
+
+
+def _assistant(text):
+    return json.dumps({"type": "assistant",
+                       "message": {"content": [{"type": "text", "text": text}]}})
+
+
+def _cursor_result(text, **extra):
+    frame = {"type": "result", "subtype": "success", "result": text,
+             "session_id": "sess-1"}
+    frame.update(extra)
+    return json.dumps(frame)
+
+
+def run_cursor_stream(lines):
+    """Drive the real run_agent() against a scripted stdout stream."""
+    b = make_bridge()
+    b.agent_bin = "agent"
+    b.base_agent_args = []
+    b.default_model = None
+    b.default_mode = "agent"
+    b.disable_sandbox = False
+    b.timeout = 10
+    b.procs = {}
+    b.stop_requested = set()
+    b.progress = Mock()
+    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._prompt_suffixes = Mock(return_value="")
+    b._save_state = Mock()
+
+    async def main():
+        proc = _fake_proc(lines)  # StreamReader needs a running loop
+
+        async def fake_exec(*a, **kw):
+            return proc
+
+        original_exec = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            return await b.run_agent(
+                "k", {"channel_id": "c1"}, {"cwd": "/tmp"}, "hi")
+        finally:
+            asyncio.create_subprocess_exec = original_exec
+
+    return asyncio.run(main()), b
+
+
+class PartialStreamTests(unittest.TestCase):
+    """`--stream-partial-output` sends each message as deltas *and* again as a
+    consolidated copy. Only `result` may build the reply, or it doubles."""
+
+    def test_deltas_and_consolidated_copy_are_not_doubled(self):
+        reply, _ = run_cursor_stream([
+            _assistant("hello"), _assistant(" world"),
+            _assistant("hello world"),          # consolidated repeat
+            _cursor_result("hello world"),
+        ])
+        self.assertEqual(reply, "hello world")
+
+    def test_multi_message_turn_keeps_result_ordering(self):
+        reply, _ = run_cursor_stream([
+            _assistant("**Step 1**"), _assistant("**Step 1**"),
+            _assistant("did a thing."), _assistant("**Step 1**did a thing."),
+            _cursor_result("**Step 1**did a thing."),
+        ])
+        self.assertEqual(reply, "**Step 1**did a thing.")
+
+    def test_assistant_text_still_drives_progress(self):
+        _, b = run_cursor_stream([_assistant("working on it"),
+                                  _cursor_result("done")])
+        self.assertTrue(b.progress.called)
+
+    def test_missing_result_falls_back_to_last_chunk(self):
+        """A turn that ends without a result must not raise 'no result'."""
+        reply, _ = run_cursor_stream([_assistant("partial answer"),
+                                      _cursor_result("")])
+        self.assertEqual(reply, "partial answer")
 
 
 if __name__ == "__main__":

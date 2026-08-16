@@ -1377,6 +1377,7 @@ class Bridge:
             new_session_id: str | None = None
             turn_failed = False
             last_progress = 0.0
+            stream_tail = ""
             try:
                 async with asyncio.timeout(self.timeout):
                     assert proc.stdout is not None
@@ -1391,10 +1392,23 @@ class Bridge:
                         kind = event.get("type")
                         new_session_id = event.get("session_id") or new_session_id
                         if kind == "assistant":
+                            # `--stream-partial-output` emits every message
+                            # twice: first as incremental deltas, then as one
+                            # consolidated copy. The events carry no id or
+                            # subtype to tell the two apart, so accumulating
+                            # them doubles the whole reply. Assistant text
+                            # therefore only drives a throttled progress tick;
+                            # the reply comes from `result`, which carries the
+                            # turn already assembled (as claude-cli does).
                             content = ((event.get("message") or {}).get("content") or [])
                             for item in content:
                                 if isinstance(item, dict) and item.get("type") == "text":
-                                    reply_parts.append(str(item.get("text") or ""))
+                                    chunk = str(item.get("text") or "")
+                                    if chunk.strip():
+                                        stream_tail = chunk
+                            if stream_tail and time.monotonic() - last_progress > PROGRESS_THROTTLE:
+                                last_progress = time.monotonic()
+                                self.progress(frame, stream_tail.strip()[:180])
                         elif kind == "tool_call":
                             snippet = self._progress_snippet(event)
                             if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
@@ -1404,9 +1418,15 @@ class Bridge:
                             if event.get("is_error"):
                                 error_parts.append(str(event.get("result") or "Cursor run failed"))
                                 turn_failed = True
-                            # Without partial streaming, result is the complete answer.
-                            if not reply_parts and event.get("result"):
+                            # `result` is the complete answer for the turn,
+                            # with or without partial streaming.
+                            if event.get("result"):
                                 reply_parts.append(str(event["result"]))
+                            elif stream_tail:
+                                # Only if the turn ended without a result at
+                                # all: the last consolidated chunk beats
+                                # raising "no result" at the caller.
+                                reply_parts.append(stream_tail)
                             break
                         elif kind == "error":
                             error_parts.append(str(event.get("message") or event))
