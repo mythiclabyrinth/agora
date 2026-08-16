@@ -1349,6 +1349,12 @@ a.btn { text-decoration: none; }
 .agora-layout.thread-expanded .ago-thread-log { padding: 22px; }
 .agora-layout.thread-expanded .agora-thread .bubble { max-width: 78%; }
 
+/* Docked to the side the thread header is 340px wide and the labelled actions
+   push the thread name out, so they go icon-only and lean on their titles.
+   Expanded there is room to spell them out again. */
+.agora-thread .ago-head-actions .ago-btn-label { display: none; }
+.agora-layout.thread-expanded .agora-thread .ago-head-actions .ago-btn-label { display: inline; }
+
 /* ---------- members panel ---------- */
 .ago-members-body { flex: 1; overflow-y: auto; padding-top: 4px; }
 .ago-member-list { padding: 8px 14px; }
@@ -1710,6 +1716,9 @@ a.btn { text-decoration: none; }
     min-width: 30px; padding: 4px 8px; font-size: 16px; line-height: 1; flex-shrink: 0;
   }
   .agora-thread .ago-thread-close, .agora-thread .ago-thread-expand { display: none; }
+  /* A phone never docks the thread to the side — it fills the screen, so the
+     action labels stay even though `.thread-expanded` isn't set. */
+  .agora-thread .ago-head-actions .ago-btn-label { display: inline; }
   .agora-layout.view-main.thread-expanded .agora-main { display: flex; }
   .ago-head { flex-wrap: wrap; row-gap: 8px; }
   .ago-head-actions { flex-wrap: wrap; }
