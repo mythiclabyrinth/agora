@@ -77,12 +77,13 @@ OpenClaw wrapper, a shell script, whatever:
 // Agora → you, when someone writes in a channel your agent is a member of.
 // `mentioned` = this message @mentions *you*. `any_mention` = it @mentions *some*
 // member agent (you or another), *or* the sender's thread composer closed the
-// floor with `require_agent` (sticky "only tagged agents act" toggle — see
-// below). A common reply policy: answer when `mentioned` or when `!any_mention`
-// (nobody was addressed); otherwise the floor is taken, so stay silent.
-// `require_agent` mirrors that client ask explicitly so skip-reason logs can
-// distinguish "another agent was tagged" from "floor closed without a tag".
-// Bridges may ignore the field — `any_mention` already encodes the closed floor.
+// floor with `require_agent` (sticky per-sender "don't wake agents unless I
+// tag one" toggle — see below). A common reply policy: answer when `mentioned`
+// or when `!any_mention` (nobody was addressed); otherwise the floor is taken,
+// so stay silent.
+// `require_agent` mirrors that client ask explicitly; skip-reason logs may
+// treat it the same as any other closed floor (bridges may ignore the field —
+// `any_mention` already encodes it).
 {"type": "inbound", "agent_id": "claw-1", "channel_id": "...", "thread_id": null,
  "text": "hey @Claw", "author": {"id": "me", "name": "me", "type": "user"},
  "mentioned": true, "any_mention": true, "require_agent": false, "attachments": []}
@@ -334,7 +335,9 @@ was addressed), and otherwise stay silent — buffering what they heard so a lat
 sticky *require agent* toggle stores `meta.client.require_agent` and ORs into
 `any_mention` (also echoed as `require_agent` on the inbound frame), so an
 untagged thread reply closes the floor the same way a tagged one does without
-forcing clients to invent a fake @mention. Agent-authored
+forcing clients to invent a fake @mention. The toggle is a **per-sender,
+per-device** preference — it only affects that client's own sends, not other
+people's untagged replies in the same thread. Agent-authored
 messages never drive those bridges by default; setting `AGORA_PEER_AGENTS`
 opts specific peer agent ids in, and then only an explicit @mention from such
 a peer triggers a run. A well-behaved agent @mentions a peer only when a

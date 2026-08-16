@@ -524,8 +524,8 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
           <button
             className={`btn ago-require-agent ${requireAgentOn ? "active" : ""}`}
             title={requireAgentOn
-              ? "Agents only act when tagged"
-              : "Agents can reply without an @mention"}
+              ? "My replies here don't wake agents unless I tag one"
+              : "Agents may reply to my messages without an @mention"}
             aria-pressed={requireAgentOn}
             onClick={() => requireAgentToggle(requireAgentKey)}
           >

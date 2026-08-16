@@ -4,8 +4,10 @@
    stored as audio. One recording at a time across all composers. */
 
 import { create } from "zustand";
+import { threadAddressKey } from "@agora/core";
 import { recMime, uploadVoice, voiceSupported } from "../lib/voice";
 import { toast } from "../lib/toast";
+import { useRequireAgent } from "./requireAgent";
 
 const recKey = (channelId: string, threadId: number | null) =>
   threadId != null ? `t:${threadId}` : `c:${channelId}`;
@@ -73,8 +75,15 @@ async function upload(session: RecSession): Promise<void> {
   const type = (session.recorder.mimeType || "audio/webm").toLowerCase();
   const blob = new Blob(session.chunks, { type });
   useVoiceRec.setState({ busyKey: session.key });
+  const requireAgent = session.threadId != null
+    && useRequireAgent.getState().isOn(threadAddressKey(session.channelId, session.threadId));
   try {
-    await uploadVoice({ channelId: session.channelId, threadId: session.threadId, blob });
+    await uploadVoice({
+      channelId: session.channelId,
+      threadId: session.threadId,
+      blob,
+      requireAgent,
+    });
     // The WS echo delivers the transcribed message.
   } catch (e) {
     toast("Voice message failed: " + (e as Error).message, { variant: "warn" });

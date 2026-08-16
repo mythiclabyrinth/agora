@@ -192,7 +192,11 @@ export function Composer({
       the file here for the transcribe-and-post upload. `mentions` carries the
       "talk to" prefix ("@a, @b") so the transcript addresses the same agents
       a typed message would. */
-  onSendVoice?: (file: LocalFile, mentions?: string) => Promise<void>;
+  onSendVoice?: (
+    file: LocalFile,
+    mentions?: string,
+    requireAgent?: boolean,
+  ) => Promise<void>;
   /** Deterministic initial attachments for component catalogs and tests. */
   initialFiles?: LocalFile[];
   maxFileMb?: number;
@@ -355,6 +359,7 @@ export function Composer({
           type: "audio/m4a",
         },
         prefix || undefined,
+        showRequireAgent && requireAgentOn,
       );
     } catch (e) {
       toastErr("Voice message failed", e);
@@ -793,8 +798,8 @@ export function Composer({
               accessibilityState={{ selected: requireAgentOn }}
               accessibilityLabel={
                 requireAgentOn
-                  ? "Agents only act when tagged"
-                  : "Agents can reply without an @mention"
+                  ? "My replies here don't wake agents unless I tag one"
+                  : "Agents may reply to my messages without an @mention"
               }
             >
               <Icon

@@ -415,8 +415,13 @@ export default function ThreadScreen() {
           }}
           onSendVoice={
             voiceOk
-              ? async (file, mentions) => {
-                  await sendVoice.mutateAsync({ file, threadId: rootId, mentions });
+              ? async (file, mentions, requireAgent) => {
+                  await sendVoice.mutateAsync({
+                    file,
+                    threadId: rootId,
+                    mentions,
+                    requireAgent,
+                  });
                 }
               : undefined
           }

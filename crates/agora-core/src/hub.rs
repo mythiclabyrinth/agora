@@ -1281,9 +1281,7 @@ impl Hub {
             // `meta.client.require_agent` (see `require_agent` on this frame).
             "any_mention": any_mention,
             // Explicit copy of the composer's sticky thread ask. Bridges may
-            // ignore it — `any_mention` already encodes the closed floor —
-            // but plugins that log "another agent was mentioned" should prefer
-            // this when explaining a skip.
+            // ignore it — `any_mention` already encodes the closed floor.
             "require_agent": message["meta"]["client"]["require_agent"]
                 .as_bool()
                 .unwrap_or(false),

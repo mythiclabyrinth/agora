@@ -46,6 +46,9 @@ export function useSendVoice(channelId: string) {
       threadId: number | null;
       live?: boolean;
       mentions?: string;
+      /** Thread sticky: close the agent floor unless someone is @mentioned.
+          Hub drops it when `live` is true. */
+      requireAgent?: boolean;
     }) => {
       const form = new FormData();
       const out = toOutgoing(v.file);
@@ -55,6 +58,9 @@ export function useSendVoice(channelId: string) {
       if (v.mentions) form.append("mentions", v.mentions);
       const tz = clientTimezone();
       if (tz) form.append("timezone", tz);
+      if (v.requireAgent && v.threadId != null && !v.live) {
+        form.append("require_agent", "true");
+      }
       return api.upload<Message>(`/api/channels/${channelId}/voice`, form);
     },
     onSuccess: (message, v) => {

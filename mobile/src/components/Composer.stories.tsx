@@ -4,6 +4,7 @@ import { useAddressed, useMessageDrafts } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
 import { Composer } from "./Composer";
 import { usePrefs } from "../state/prefs";
+
 const agents = [
   { id: "codex", name: "Codex" },
   { id: "claude", name: "Claude" },

@@ -326,7 +326,9 @@ export const ThreadReply: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByPlaceholderText("Reply in thread…")).resolves.toBeVisible();
-    const toggle = await canvas.findByTitle("Agents can reply without an @mention");
+    const toggle = await canvas.findByTitle(
+      "Agents may reply to my messages without an @mention",
+    );
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
   },
 };
@@ -345,11 +347,12 @@ export const RequireAgentEnabled: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = await canvas.findByTitle("Agents can reply without an @mention");
-    await userEvent.click(toggle);
-    await expect(canvas.findByTitle("Agents only act when tagged")).resolves.toHaveAttribute(
-      "aria-pressed",
-      "true",
+    const toggle = await canvas.findByTitle(
+      "Agents may reply to my messages without an @mention",
     );
+    await userEvent.click(toggle);
+    await expect(
+      canvas.findByTitle("My replies here don't wake agents unless I tag one"),
+    ).resolves.toHaveAttribute("aria-pressed", "true");
   },
 };

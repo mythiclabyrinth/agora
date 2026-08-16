@@ -1762,6 +1762,7 @@ async fn post_voice_message(
     let mut live = false;
     let mut mentions = String::new();
     let mut timezone: Option<String> = None;
+    let mut require_agent = false;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -1788,6 +1789,9 @@ async fn post_voice_message(
             "live" => live = field.text().await.unwrap_or_default() == "true",
             "mentions" => mentions = field.text().await.unwrap_or_default(),
             "timezone" => timezone = client_timezone(&field.text().await.unwrap_or_default()),
+            "require_agent" => {
+                require_agent = field.text().await.unwrap_or_default().trim() == "true";
+            }
             _ => {}
         }
     }
@@ -1828,7 +1832,7 @@ async fn post_voice_message(
         live,
         timezone.as_deref(),
         false,
-        false,
+        require_agent,
     );
     Ok(Json(message))
 }

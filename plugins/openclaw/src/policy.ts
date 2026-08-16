@@ -32,15 +32,9 @@ export function decideInbound(params: {
   }
 
   if (account.requireMention && !frame.mentioned) return SKIP("no mention");
-  // Somebody else was addressed by name — or the sender closed the floor
-  // without tagging anyone (`require_agent`). Either way, stay silent.
-  if (frame.any_mention && !frame.mentioned) {
-    return SKIP(
-      frame.require_agent
-        ? "require_agent: no mention"
-        : "another agent was mentioned",
-    );
-  }
+  // Floor is closed: another agent was tagged, and/or the sender's
+  // require_agent toggle closed it without a tag. Same outcome either way.
+  if (frame.any_mention && !frame.mentioned) return SKIP("floor closed");
 
   if (!frame.text?.trim() && !params.hasMedia) return SKIP("empty message");
   return { handle: true };
