@@ -15,7 +15,6 @@ import {
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { openLinkOrThrow } from "../lib/openLink";
-import { recordPositiveEvent } from "../lib/storeReview";
 import {
   Bot,
   Check,
@@ -476,7 +475,6 @@ export function AddAgentFlow({
                     setUrl("");
                     setConnectionToken("");
                     toast("Linked — connecting…");
-                    void recordPositiveEvent();
                     onDone?.();
                   },
                   onError: (e) => toastErr("Link failed", e),

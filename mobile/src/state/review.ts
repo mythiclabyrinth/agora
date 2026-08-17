@@ -9,7 +9,10 @@ const REVIEW_FILE = `${FileSystem.documentDirectory ?? ""}store-review.json`;
 export interface PersistedReview {
   firstLaunchAt: number | null;
   sessionCount: number;
+  /** Distinct local days that recorded a value moment (not a raw event tally). */
   positiveEvents: number;
+  /** Local YYYY-MM-DD of the last day that incremented positiveEvents. */
+  lastPositiveEventDay: string | null;
   lastPromptedVersion: string | null;
   lastPromptedAt: number | null;
   promptCount: number;
@@ -18,7 +21,8 @@ export interface PersistedReview {
 interface ReviewState extends PersistedReview {
   loaded: boolean;
   load: () => Promise<void>;
-  incrementPositive: () => void;
+  /** Increment at most once per local day key (`YYYY-MM-DD`). */
+  incrementPositive: (dayKey: string) => void;
   markPrompted: (version: string, at: number) => void;
 }
 
@@ -27,6 +31,7 @@ function snapshot(state: ReviewState): PersistedReview {
     firstLaunchAt: state.firstLaunchAt,
     sessionCount: state.sessionCount,
     positiveEvents: state.positiveEvents,
+    lastPositiveEventDay: state.lastPositiveEventDay,
     lastPromptedVersion: state.lastPromptedVersion,
     lastPromptedAt: state.lastPromptedAt,
     promptCount: state.promptCount,
@@ -61,6 +66,7 @@ export const useReview = create<ReviewState>((set, get) => ({
   firstLaunchAt: null,
   sessionCount: 0,
   positiveEvents: 0,
+  lastPositiveEventDay: null,
   lastPromptedVersion: null,
   lastPromptedAt: null,
   promptCount: 0,
@@ -87,6 +93,7 @@ export const useReview = create<ReviewState>((set, get) => ({
       firstLaunchAt,
       sessionCount,
       positiveEvents: asNumber(data.positiveEvents, 0),
+      lastPositiveEventDay: asNullableString(data.lastPositiveEventDay),
       lastPromptedVersion: asNullableString(data.lastPromptedVersion),
       lastPromptedAt: asNullableNumber(data.lastPromptedAt),
       promptCount: asNumber(data.promptCount, 0),
@@ -94,9 +101,13 @@ export const useReview = create<ReviewState>((set, get) => ({
     persist(get());
   },
 
-  incrementPositive() {
+  incrementPositive(dayKey) {
     if (!get().loaded) return;
-    set({ positiveEvents: get().positiveEvents + 1 });
+    if (get().lastPositiveEventDay === dayKey) return;
+    set({
+      positiveEvents: get().positiveEvents + 1,
+      lastPositiveEventDay: dayKey,
+    });
     persist(get());
   },
 

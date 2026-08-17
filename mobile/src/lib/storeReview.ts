@@ -31,6 +31,16 @@ export const MIN_DAYS_SINCE_FIRST_LAUNCH = 3;
 export const MIN_DAYS_BETWEEN_PROMPTS = 90;
 export const MAX_LIFETIME_PROMPTS = 2;
 
+/** Local calendar day as `YYYY-MM-DD` — not UTC, so evening US times don't
+    collapse into the next UTC date before the user's midnight. */
+export function localDayKey(now: number): string {
+  const d = new Date(now);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 /** In-memory only — survives until the next deferred flush attempt. */
 let pendingPrompt = false;
 let voiceCallActive = false;
@@ -111,10 +121,12 @@ export async function initStoreReview(): Promise<void> {
   await ensureLoaded();
 }
 
-/** Mark a value moment. Does not show the prompt — call flush later. */
-export async function recordPositiveEvent(): Promise<void> {
+/** Mark a value moment. Does not show the prompt — call flush later.
+    At most one credit per local day; the deferred-prompt flag still sets
+    even when today's credit was already banked. */
+export async function recordPositiveEvent(now: number = Date.now()): Promise<void> {
   await ensureLoaded();
-  useReview.getState().incrementPositive();
+  useReview.getState().incrementPositive(localDayKey(now));
   pendingPrompt = true;
 }
 

@@ -25,6 +25,7 @@ import {
   canRequestReview,
   flushDeferredReviewPrompt,
   getStoreReviewRuntimeForTests,
+  localDayKey,
   recordPositiveEvent,
   resetStoreReviewRuntimeForTests,
   setReviewVoiceActive,
@@ -63,6 +64,7 @@ beforeEach(() => {
     firstLaunchAt: null,
     sessionCount: 0,
     positiveEvents: 0,
+    lastPositiveEventDay: null,
     lastPromptedVersion: null,
     lastPromptedAt: null,
     promptCount: 0,
@@ -166,6 +168,22 @@ describe("agentReplyFollowsUser", () => {
   });
 });
 
+describe("localDayKey", () => {
+  it("formats the local calendar date as YYYY-MM-DD", () => {
+    const local = new Date(2024, 5, 15, 9, 30, 0); // Jun 15 2024 09:30 local
+    expect(localDayKey(local.getTime())).toBe("2024-06-15");
+  });
+
+  it("rolls over on local midnight, not UTC", () => {
+    // 11pm local on June 15 — west of UTC this is already June 16 in UTC.
+    const lateLocal = new Date(2024, 5, 15, 23, 0, 0);
+    expect(localDayKey(lateLocal.getTime())).toBe("2024-06-15");
+    if (lateLocal.getTimezoneOffset() > 0) {
+      expect(lateLocal.toISOString().slice(0, 10)).toBe("2024-06-16");
+    }
+  });
+});
+
 describe("review persistence and deferred flush", () => {
   it("bumps session count once per load and sets firstLaunchAt", async () => {
     mockRead.mockRejectedValue(new Error("missing"));
@@ -186,6 +204,7 @@ describe("review persistence and deferred flush", () => {
         firstLaunchAt: 1000,
         sessionCount: 2,
         positiveEvents: 0,
+        lastPositiveEventDay: null,
         lastPromptedVersion: null,
         lastPromptedAt: null,
         promptCount: 0,
@@ -198,6 +217,7 @@ describe("review persistence and deferred flush", () => {
         firstLaunchAt: 1000,
         sessionCount: 3,
         positiveEvents: 0,
+        lastPositiveEventDay: null,
         lastPromptedVersion: null,
         lastPromptedAt: null,
         promptCount: 0,
@@ -214,12 +234,13 @@ describe("review persistence and deferred flush", () => {
       firstLaunchAt: now - 4 * DAY,
       sessionCount: 3,
       positiveEvents: 1,
+      lastPositiveEventDay: "2000-01-01",
       lastPromptedVersion: null,
       lastPromptedAt: null,
       promptCount: 0,
     });
 
-    await recordPositiveEvent();
+    await recordPositiveEvent(now);
     expect(useReview.getState().positiveEvents).toBe(2);
     expect(getStoreReviewRuntimeForTests().pendingPrompt).toBe(true);
     expect(mockRequestReview).not.toHaveBeenCalled();
@@ -240,13 +261,59 @@ describe("review persistence and deferred flush", () => {
     expect(getStoreReviewRuntimeForTests().pendingPrompt).toBe(false);
 
     // Same version must not prompt again even with a fresh pending flag.
-    await recordPositiveEvent();
+    await recordPositiveEvent(now + DAY);
     expect(await flushDeferredReviewPrompt()).toBe(false);
   });
 
   it("ignores mutations until load finishes (load-before-read race)", async () => {
-    useReview.setState({ loaded: false, positiveEvents: 0 });
-    useReview.getState().incrementPositive();
+    useReview.setState({ loaded: false, positiveEvents: 0, lastPositiveEventDay: null });
+    useReview.getState().incrementPositive("2024-06-15");
     expect(useReview.getState().positiveEvents).toBe(0);
+  });
+
+  it("caps positive events at one per local day", async () => {
+    const day1 = new Date(2024, 5, 15, 10, 0, 0).getTime();
+    const day1Later = new Date(2024, 5, 15, 22, 0, 0).getTime();
+    const day2 = new Date(2024, 5, 16, 9, 0, 0).getTime();
+    useReview.setState({
+      loaded: true,
+      firstLaunchAt: day1,
+      sessionCount: 1,
+      positiveEvents: 0,
+      lastPositiveEventDay: null,
+      lastPromptedVersion: null,
+      lastPromptedAt: null,
+      promptCount: 0,
+    });
+
+    await recordPositiveEvent(day1);
+    expect(useReview.getState().positiveEvents).toBe(1);
+    expect(useReview.getState().lastPositiveEventDay).toBe("2024-06-15");
+
+    await recordPositiveEvent(day1Later);
+    expect(useReview.getState().positiveEvents).toBe(1);
+    expect(useReview.getState().lastPositiveEventDay).toBe("2024-06-15");
+
+    await recordPositiveEvent(day2);
+    expect(useReview.getState().positiveEvents).toBe(2);
+    expect(useReview.getState().lastPositiveEventDay).toBe("2024-06-16");
+  });
+
+  it("still sets the pending flag when today's credit is already banked", async () => {
+    const now = new Date(2024, 5, 15, 18, 0, 0).getTime();
+    useReview.setState({
+      loaded: true,
+      firstLaunchAt: now,
+      sessionCount: 1,
+      positiveEvents: 1,
+      lastPositiveEventDay: "2024-06-15",
+      lastPromptedVersion: null,
+      lastPromptedAt: null,
+      promptCount: 0,
+    });
+
+    await recordPositiveEvent(now);
+    expect(useReview.getState().positiveEvents).toBe(1);
+    expect(getStoreReviewRuntimeForTests().pendingPrompt).toBe(true);
   });
 });
