@@ -1,10 +1,11 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
-import { Composer, useDrafts } from "./Composer";
+import { Composer, useAddressing, useDrafts } from "./Composer";
 import { me, message } from "../stories/fixtures/data";
 import { useAttachmentDrafts } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
+import { useVoiceRec } from "../state/voiceRec";
 
 const agents = [
   { id: "codex", name: "Codex" },
@@ -308,6 +309,34 @@ export const AddressingPicker: Story = {
     await userEvent.click(await canvas.findByTitle("Choose which agents you're talking to"));
     await expect(canvas.findByText("Talk to")).resolves.toBeVisible();
     await expect(canvas.findByText("Claude")).resolves.toBeVisible();
+  },
+};
+
+/* "Talk to" chips plus an in-progress voice note — the surface that must keep
+   the addressing prefix in sync with stop-and-send. */
+export const AddressingWithVoiceRecording: Story = {
+  args: { voiceOK: true },
+  parameters: {
+    docs: {
+      description: {
+        story: "Addressing chips (“To”) with the mic in recording state — voice notes must capture the current talk-to prefix on stop-and-send.",
+      },
+    },
+    setup: () => {
+      useAddressing.setState({ addr: { "c:general": ["codex", "claude"] } });
+      useVoiceRec.setState({
+        recordingKey: "c:general",
+        startedAt: Date.now() - 12_000,
+        busyKey: null,
+      });
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("To")).resolves.toBeVisible();
+    await expect(canvas.findByText("Codex")).resolves.toBeVisible();
+    await expect(canvas.findByText("Claude")).resolves.toBeVisible();
+    await expect(canvas.findByTitle("Stop and send")).resolves.toBeVisible();
   },
 };
 
