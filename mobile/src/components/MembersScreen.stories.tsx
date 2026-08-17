@@ -69,10 +69,20 @@ export const LongScopeNames: Story = {
         ...fixtureMembers.filter(member => member.member_id !== "alice"),
         { channel_id: fixtureGroups[0].channels[0].id, member_type: "user", member_id: "alice", role: "admin", added_at: 1_750_000_100, name: "Alice" },
         { channel_id: fixtureGroups[0].channels[1].id, member_type: "user", member_id: "alice", role: "member", added_at: 1_750_000_101, name: "Alice" },
+        {
+          channel_id: fixtureGroups[0].channels[0].id,
+          member_type: "agent",
+          member_id: "codex",
+          role: "member",
+          added_at: 1_750_000_200,
+          name: "Codex",
+        },
       ] },
     },
     setup: () => {
-      (globalThis as typeof globalThis & { __AGORA_STORY_PARAMS__?: Record<string, string> }).__AGORA_STORY_PARAMS__ = { groupId: "product", name: "Product" };
+      (globalThis as typeof globalThis & { __AGORA_STORY_PARAMS__?: Record<string, string> }).__AGORA_STORY_PARAMS__ = {
+        groupId: "product", name: "Product", channelId: fixtureGroups[0].channels[0].id,
+      };
     },
   },
 };

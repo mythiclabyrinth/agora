@@ -17,5 +17,5 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const Compact: Story = {
-  args: { label: "Delete", armedLabel: "Sure?", style: { alignSelf: "center" } },
+  args: { label: "Remove", armedLabel: "Sure?", compact: true },
 };

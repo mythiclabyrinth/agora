@@ -9,12 +9,17 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Link, Stack, useLocalSearchParams } from "expo-router";
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, User, X } from "lucide-react-native";
 import {
+  canManageMembershipScope,
+  hasChannelScope,
+  membershipUsernames,
+  personRemovalTargets,
   useAddMember,
   useAgents,
   useGroups,
   useMembers,
   useRemoveMember,
   useUsers,
+  visibleMembershipScopes,
 } from "@agora/core";
 import type { AgentInfo, Member, UserInfo } from "@agora/core";
 import { AgentAvatar } from "../../../src/components/AgentAvatar";
@@ -23,25 +28,28 @@ import { Icon } from "../../../src/components/Icon";
 import { toast, toastErr } from "../../../src/components/Toast";
 import { colors } from "../../../src/lib/theme";
 import { useSession } from "../../../src/state/session";
-import { canManageMembershipScope, hasChannelScope, membershipUsernames, personRemovalTargets, visibleMembershipScopes } from "../../../src/lib/membershipAccess";
 import { RoleDropdown } from "../../../src/components/RoleDropdown";
 
 function LiveDot({ live }: { live: boolean }) {
   return <View style={[styles.dot, { backgroundColor: live ? colors.green : colors.faint }]} />;
 }
 
+function scopeLabel(scope: Member, channelName: (id: string | null) => string | null) {
+  return scope.channel_id ? `# ${channelName(scope.channel_id)}` : "Whole group";
+}
+
 function PersonMemberRow({
-  name, scopes, channelName, isSelf, canManageScope, onRemoveScope, onSetRole, onRemoveAll, removeAllLabel,
+  name, scopes, channelName, isSelf, channelFocused, canManageScope, onRemoveScope, onSetRole, onLeave,
 }: {
   name: string;
   scopes: Member[];
   channelName: (id: string | null) => string | null;
   isSelf: boolean;
+  channelFocused: boolean;
   canManageScope: (m: Member) => boolean;
   onRemoveScope: (m: Member) => void;
   onSetRole: (m: Member, role: "admin" | "member") => void;
-  onRemoveAll?: () => void;
-  removeAllLabel?: string;
+  onLeave?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   return <View style={styles.personCard}>
@@ -58,42 +66,65 @@ function PersonMemberRow({
         {scopes.map(scope => {
           const manageable = canManageScope(scope);
           const shadowed = !!scope.channel_id && scopes.some(candidate => !candidate.channel_id);
+          const wholeGroupContext = channelFocused && !scope.channel_id;
+          // Channel view: armed action replaces tag ×. Self always gets Leave on
+          // their exact channel row; admins get Remove for others.
+          const channelAction = channelFocused && !!scope.channel_id && (manageable || isSelf);
+          const actionLabel = isSelf ? "Leave" : "Remove";
           return <View key={scope.channel_id ?? "group"} style={styles.scopeRow}>
-            <View style={styles.scopeInfo}>
-              <Text style={styles.scopeName} numberOfLines={1} ellipsizeMode="tail">{scope.channel_id ? `# ${channelName(scope.channel_id)}` : "Whole group"}</Text>
-              {!manageable && scope.channel_id === null ? <Text style={styles.meta}>Managed by a group admin</Text> : null}
+            <View style={channelAction ? styles.inlineRemoveRow : styles.scopeInfo}>
+              <Text
+                style={[styles.scopeName, channelAction && styles.wrapName]}
+                numberOfLines={channelAction ? undefined : 1}
+                ellipsizeMode={channelAction ? undefined : "tail"}
+              >
+                {scopeLabel(scope, channelName)}
+              </Text>
+              {channelAction ? (
+                <ArmedButton
+                  compact
+                  label={actionLabel}
+                  accessibilityLabel={`${actionLabel} ${isSelf ? "" : name + " "}from this channel`.trim()}
+                  onConfirm={() => onRemoveScope(scope)}
+                />
+              ) : null}
             </View>
-            <View style={styles.scopeActions}>
-              {manageable && !shadowed
+            {!channelAction ? <View style={styles.scopeActions}>
+              {manageable && !shadowed && !wholeGroupContext
                 ? <RoleDropdown value={scope.role === "admin" ? "admin" : "member"} onChange={role => onSetRole(scope, role)} />
-                : <View><Text style={styles.roleLabel}>{scope.role}</Text>{shadowed ? <Text style={styles.meta}>Included in whole-group access</Text> : null}</View>}
-              {manageable ? <Pressable style={styles.iconAction} hitSlop={8} onPress={() => onRemoveScope(scope)} accessibilityLabel={`Remove ${name} from this scope`}>
+                : <View>
+                  <Text style={styles.roleLabel}>{scope.role}</Text>
+                  {shadowed ? <Text style={styles.meta}>Included in whole-group access</Text> : null}
+                  {wholeGroupContext ? <Text style={styles.meta}>Inherited — manage from group members</Text> : null}
+                </View>}
+              {manageable && !channelFocused ? <Pressable style={styles.iconAction} hitSlop={8} onPress={() => onRemoveScope(scope)} accessibilityLabel={`Remove ${name} from this scope`}>
                 <Icon icon={X} size={12} color={colors.dim} />
               </Pressable> : null}
-            </View>
+            </View> : manageable && !shadowed ? (
+              <View style={styles.scopeActions}>
+                <RoleDropdown value={scope.role === "admin" ? "admin" : "member"} onChange={role => onSetRole(scope, role)} />
+              </View>
+            ) : null}
           </View>;
         })}
       </View>
-      {onRemoveAll ? <View style={styles.personFooter}><ArmedButton label={removeAllLabel ?? (isSelf ? "Leave" : "Remove all")} onConfirm={onRemoveAll} /></View> : null}
+      {onLeave ? <View style={styles.personFooter}><ArmedButton label="Leave" onConfirm={onLeave} /></View> : null}
     </> : null}
   </View>;
 }
 
 /* One row per agent: an agent scoped to several channels comes back as
    several membership rows, so they arrive collapsed here with every scope
-   rendered as a tag. Admins can drop one scope from its tag, or remove the
-   agent from every scope at once. */
+   rendered as a tag. Channel view uses a compact armed Remove (no tag ×);
+   group view keeps ×-only removal. */
 function AgentMemberRow({
   memberId,
   name,
   scopes,
   channelName,
   offline,
-  admin,
+  channelFocused,
   onRemoveScope,
-  onRemoveAll,
-  removeAllLabel,
-  canRemoveAll,
   canManageScope,
 }: {
   memberId: string;
@@ -101,11 +132,8 @@ function AgentMemberRow({
   scopes: Member[];
   channelName: (id: string | null) => string | null;
   offline: boolean;
-  admin: boolean;
+  channelFocused: boolean;
   onRemoveScope: (m: Member) => void;
-  onRemoveAll: () => void;
-  removeAllLabel?: string;
-  canRemoveAll: boolean;
   canManageScope: (m: Member) => boolean;
 }) {
   return (
@@ -120,21 +148,44 @@ function AgentMemberRow({
           </Text>
         </View>
       </View>
-      <View style={styles.tagRow}>
-          {scopes.map((s) => (
-            <View key={s.channel_id ?? "group"} style={styles.tag}>
-              <Text style={styles.tagText} numberOfLines={1} ellipsizeMode="tail">
-                {s.channel_id ? `# ${channelName(s.channel_id)}` : "Whole group"}
-              </Text>
-              {canManageScope(s) ? (
-                <Pressable hitSlop={8} onPress={() => onRemoveScope(s)}>
-                  <Icon icon={X} size={12} color={colors.dim} />
-                </Pressable>
-              ) : null}
-            </View>
-          ))}
+      <View style={channelFocused ? styles.channelScopeList : styles.tagRow}>
+          {scopes.map((s) => {
+            const manageable = canManageScope(s);
+            const channelRemove = channelFocused && !!s.channel_id && manageable;
+            const wholeGroupContext = channelFocused && !s.channel_id;
+            if (channelFocused) {
+              return (
+                <View key={s.channel_id ?? "group"} style={styles.inlineRemoveRow}>
+                  <View style={[styles.tag, styles.tagFlex, wholeGroupContext && styles.tagMuted]}>
+                    <Text style={styles.tagTextWrap}>
+                      {scopeLabel(s, channelName)}
+                    </Text>
+                  </View>
+                  {channelRemove ? (
+                    <ArmedButton
+                      compact
+                      label="Remove"
+                      accessibilityLabel={`Remove ${name} from this channel`}
+                      onConfirm={() => onRemoveScope(s)}
+                    />
+                  ) : null}
+                </View>
+              );
+            }
+            return (
+              <View key={s.channel_id ?? "group"} style={styles.tag}>
+                <Text style={styles.tagText} numberOfLines={1} ellipsizeMode="tail">
+                  {scopeLabel(s, channelName)}
+                </Text>
+                {manageable ? (
+                  <Pressable hitSlop={8} onPress={() => onRemoveScope(s)} accessibilityLabel={`Remove ${name} from this scope`}>
+                    <Icon icon={X} size={12} color={colors.dim} />
+                  </Pressable>
+                ) : null}
+              </View>
+            );
+          })}
       </View>
-      {admin && canRemoveAll && scopes.every(canManageScope) ? <View style={styles.agentFooter}><ArmedButton label={removeAllLabel ?? "Remove"} onConfirm={onRemoveAll} /></View> : null}
     </View>
   );
 }
@@ -328,6 +379,7 @@ export default function MembersScreen() {
   const groupAdmin = group ? group.role === "admin" : true;
   const selectedChannel = group?.channels.find(channel => channel.id === params.channelId);
   const admin = groupAdmin || selectedChannel?.role === "admin";
+  const channelFocused = !!params.channelId;
   // Only fetch the workspace roster when the picker can actually be used.
   const users = useUsers(admin);
   const channels = group?.channels ?? [];
@@ -428,31 +480,14 @@ export default function MembersScreen() {
       { onError: (e) => toastErr("Remove failed", e) },
     );
 
-  const removePersonScopes = async (scopes: Member[], forceAll = false) => {
+  const leavePerson = async (scopes: Member[], forceAll = false) => {
     try {
-      for (const target of personRemovalTargets(scopes, forceAll ? undefined : params.channelId)) await removeMember.mutateAsync({
-        member_type: "user", ...target,
-      });
-    } catch (e) { toastErr("Remove failed", e); }
-  };
-
-  /* The API deletes one (member, channel) pair per call, so removing an
-     agent entirely means one DELETE per scope. */
-  const removeAgentScopes = async (scopes: Member[]) => {
-    try {
-      const targets = params.channelId
-        ? scopes.filter(scope => scope.channel_id === params.channelId)
-        : scopes;
-      for (const m of targets) {
+      for (const target of personRemovalTargets(scopes, forceAll ? undefined : params.channelId)) {
         await removeMember.mutateAsync({
-          member_type: "agent",
-          member_id: m.member_id,
-          channel_id: m.channel_id,
+          member_type: "user", ...target,
         });
       }
-    } catch (e) {
-      toastErr("Remove failed", e);
-    }
+    } catch (e) { toastErr("Leave failed", e); }
   };
 
   return (
@@ -472,23 +507,22 @@ export default function MembersScreen() {
           const hasSelectedChannel = hasChannelScope(person.scopes, params.channelId);
           const leaveWholeGroupFromChannel = isSelf && !!params.channelId && !hasSelectedChannel;
           const canManageScope = (scope: Member) => canManageMembershipScope(scope, groupAdmin, params.channelId, !!admin);
+          // Group view: only self can leave (× handles admin removals). Channel view:
+          // exact channel Leave is inline; footer Leave only for inherited whole-group.
+          const onLeave = isSelf && (!channelFocused || leaveWholeGroupFromChannel)
+            ? () => void leavePerson(person.scopes, leaveWholeGroupFromChannel || !channelFocused)
+            : undefined;
           return <PersonMemberRow
             key={`user:${person.id}`}
             name={person.scopes[0].name || person.id}
             scopes={person.scopes}
             channelName={channelName}
             isSelf={isSelf}
+            channelFocused={channelFocused}
             canManageScope={canManageScope}
             onRemoveScope={remove}
             onSetRole={setRole}
-            onRemoveAll={(groupAdmin || isSelf) && (!params.channelId || hasSelectedChannel || leaveWholeGroupFromChannel)
-              ? () => void removePersonScopes(person.scopes, leaveWholeGroupFromChannel)
-              : undefined}
-            removeAllLabel={leaveWholeGroupFromChannel
-              ? `Leave ${group?.name ?? params.name ?? "group"}`
-              : params.channelId
-              ? `${isSelf ? "Leave" : "Remove from"} #${selectedChannel?.name ?? channelName(params.channelId)}`
-              : undefined}
+            onLeave={onLeave}
           />;
         })}
         {admin && !addingPerson ? (
@@ -516,11 +550,8 @@ export default function MembersScreen() {
             scopes={g.scopes}
             channelName={channelName}
             offline={liveById.get(g.id) === false}
-            admin={admin}
+            channelFocused={channelFocused}
             onRemoveScope={remove}
-            onRemoveAll={() => void removeAgentScopes(g.scopes)}
-            removeAllLabel={params.channelId ? `Remove from #${selectedChannel?.name ?? channelName(params.channelId)}` : undefined}
-            canRemoveAll={!params.channelId || hasChannelScope(g.scopes, params.channelId)}
             canManageScope={(scope) => canManageMembershipScope(scope, groupAdmin, params.channelId, !!admin)}
           />
         ))}
@@ -608,6 +639,7 @@ const styles = StyleSheet.create({
   },
   scopeText: { color: colors.a1, fontSize: 13.5, fontWeight: "600" },
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 2 },
+  channelScopeList: { gap: 6, marginTop: 2 },
   tag: {
     flexDirection: "row",
     alignItems: "center",
@@ -621,11 +653,20 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     paddingHorizontal: 8,
   },
+  tagFlex: { flex: 1, minWidth: 0 },
+  tagMuted: { opacity: 0.75 },
   tagText: { color: colors.a1, fontSize: 12, fontWeight: "600", flexShrink: 1 },
+  tagTextWrap: { color: colors.a1, fontSize: 12, fontWeight: "600", flexShrink: 1, flexWrap: "wrap" },
+  inlineRemoveRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    width: "100%",
+  },
+  wrapName: { flex: 1, minWidth: 0 },
   agentCard: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, gap: 8 },
   agentHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
   agentIdentity: { flex: 1, flexShrink: 1 },
-  agentFooter: { alignItems: "flex-end", paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.border },
   personCard: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, gap: 8 },
   personHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
   personIdentity: { flex: 1, flexShrink: 1 },
