@@ -39,7 +39,7 @@ function scopeLabel(scope: Member, channelName: (id: string | null) => string | 
 }
 
 function PersonMemberRow({
-  name, scopes, channelName, isSelf, channelFocused, canManageScope, onRemoveScope, onSetRole, onLeave,
+  name, scopes, channelName, isSelf, channelFocused, canManageScope, onRemoveScope, onSetRole, onLeave, leaveLabel,
 }: {
   name: string;
   scopes: Member[];
@@ -50,6 +50,7 @@ function PersonMemberRow({
   onRemoveScope: (m: Member) => void;
   onSetRole: (m: Member, role: "admin" | "member") => void;
   onLeave?: () => void;
+  leaveLabel?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   return <View style={styles.personCard}>
@@ -108,7 +109,7 @@ function PersonMemberRow({
           </View>;
         })}
       </View>
-      {onLeave ? <View style={styles.personFooter}><ArmedButton label="Leave" onConfirm={onLeave} /></View> : null}
+      {onLeave ? <View style={styles.personFooter}><ArmedButton label={leaveLabel ?? "Leave"} onConfirm={onLeave} /></View> : null}
     </> : null}
   </View>;
 }
@@ -523,6 +524,9 @@ export default function MembersScreen() {
             onRemoveScope={remove}
             onSetRole={setRole}
             onLeave={onLeave}
+            leaveLabel={leaveWholeGroupFromChannel
+              ? `Leave ${group?.name ?? params.name ?? "group"}`
+              : "Leave"}
           />;
         })}
         {admin && !addingPerson ? (

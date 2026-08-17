@@ -259,7 +259,7 @@ export function MembersPanel() {
                   {self && (!channelFocused || leaveInherited) ? (
                     <ArmedRemove
                       armKey={`leave:${person.id}:${focusChannelId ?? "group"}`}
-                      label="Leave"
+                      label={leaveInherited ? `Leave ${g.name}` : "Leave"}
                       title={leaveInherited ? `Leave ${g.name}` : "Leave this group"}
                       onConfirm={() => void leaveSelf(person.scopes, leaveInherited || !channelFocused)}
                     />
