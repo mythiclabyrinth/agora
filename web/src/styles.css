@@ -1414,7 +1414,7 @@ a.btn { text-decoration: none; }
   background-repeat: no-repeat; background-position: right 7px center; background-size: 12px 12px;
 }
 .ago-members-mode {
-  display: flex; gap: 4px; padding: 0 14px 6px;
+  display: flex; gap: 4px; padding: 10px 14px 6px;
 }
 .ago-members-mode button {
   flex: 1; border: 1px solid var(--border-strong); background: transparent; color: var(--dim);
