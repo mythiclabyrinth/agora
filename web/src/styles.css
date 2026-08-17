@@ -1812,8 +1812,17 @@ a.btn { text-decoration: none; }
   .ago-side-thread .ago-x, .ago-hidden-row .ago-x,
   .ago-gp-chan .ago-x, .ago-inbox-row .ago-x { opacity: 1; }  /* no hover on touch */
   .ago-chan-edit { flex-wrap: wrap; }
-  .ago-chan-edit #ago-edit-name, .ago-chan-edit #ago-edit-topic {
+  .agora-main > .ago-head > .ago-chan-edit {
+    flex: 1 1 0; min-width: 0; align-items: stretch;
+  }
+  .agora-main > .ago-head > .ago-chan-edit #ago-edit-name,
+  .agora-main > .ago-head > .ago-chan-edit #ago-edit-topic {
+    flex: 1 0 100%;
+    width: 100%;
     font-size: 16px;                      /* iOS anti-zoom */
+  }
+  .agora-main > .ago-head > .ago-chan-edit .btn {
+    flex: 1 1 auto;
   }
 
   .agora-main .chat-input, .agora-thread .chat-input { flex-wrap: wrap; padding: 10px; gap: 8px; }
