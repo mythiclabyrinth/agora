@@ -107,13 +107,62 @@ export const ChannelInlineRemove: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("Hermes", { selector: ".mname" })).resolves.toBeVisible();
     await expect(canvas.findAllByRole("button", { name: "Remove" })).resolves.not.toHaveLength(0);
-    await expect(canvas.queryByText("#storybook · admin")).toBeNull();
+    expect([...canvasElement.querySelectorAll(".ago-scope-label")].some(el => el.textContent === "#storybook")).toBe(true);
     await userEvent.click(canvas.getByRole("tab", { name: "Whole group" }));
     await waitFor(() => {
       expect(canvasElement.querySelectorAll(".ago-scope-label")).not.toHaveLength(0);
       expect([...canvasElement.querySelectorAll(".ago-scope-label")].some(el => el.textContent === "#storybook")).toBe(true);
       expect(canvasElement.querySelector(".ago-tag-x")).not.toBeNull();
     });
+  },
+};
+
+export const ShadowedChannelAccess: Story = {
+  parameters: {
+    apiRoutes: {
+      ...routes,
+      "GET /api/groups/product/members": { members: [
+        {
+          channel_id: null,
+          member_type: "user",
+          member_id: "tom",
+          role: "admin",
+          added_at: 1_750_000_000,
+          name: "Tom",
+        },
+        {
+          channel_id: "general",
+          member_type: "user",
+          member_id: "tom",
+          role: "member",
+          added_at: 1_750_000_010,
+          name: "Tom",
+        },
+        {
+          channel_id: null,
+          member_type: "agent",
+          member_id: "codex",
+          role: "member",
+          added_at: 1_750_000_020,
+          name: "Codex",
+        },
+        {
+          channel_id: "general",
+          member_type: "agent",
+          member_id: "codex",
+          role: "member",
+          added_at: 1_750_000_030,
+          name: "Codex",
+        },
+      ] },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("Tom", { selector: ".mname" })).resolves.toBeVisible();
+    await expect(canvas.findAllByText(/included in whole-group access/i)).resolves.not.toHaveLength(0);
+    expect(canvas.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(canvas.queryByRole("button", { name: "Leave" })).toBeNull();
   },
 };
 

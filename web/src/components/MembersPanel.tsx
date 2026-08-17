@@ -153,7 +153,9 @@ export function MembersPanel() {
     toast(`${msg}: ${(e as Error).message || e}`, { variant: "warn" });
 
   const canManage = (scope: Member) =>
-    canManageMembershipScope(scope, groupAdmin, focusChannelId, !!admin);
+    // Use the selected channel (not roster mode) so channel admins keep
+    // controls on their own channel rows when viewing Whole group.
+    canManageMembershipScope(scope, groupAdmin, ui.sel.c ?? undefined, !!admin);
 
   const removeScope = (memberType: "user" | "agent", memberId: string, channelId: string | null) => {
     remove.mutate(
@@ -268,13 +270,16 @@ export function MembersPanel() {
                 <div className="ago-scope-list">
                   {person.scopes.map((scope, si) => {
                     const manageable = canManage(scope);
+                    const shadowed = !!scope.channel_id && person.scopes.some(candidate => !candidate.channel_id);
                     const wholeGroupContext = channelFocused && !scope.channel_id;
-                    const channelAction = channelFocused && !!scope.channel_id && (manageable || self);
+                    // Shadowed channel rows inherit whole-group access — removing
+                    // them is a no-op, so suppress the armed action and show why.
+                    const channelAction = channelFocused && !!scope.channel_id && !shadowed && (manageable || self);
                     const actionLabel = self ? "Leave" : "Remove";
                     return (
                       <div key={si} className="ago-scope-row">
                         <div className={channelAction ? "ago-inline-remove-row" : "ago-scope-main"}>
-                          <span className={`ago-scope-tag ${wholeGroupContext ? "muted" : ""}`}>
+                          <span className={`ago-scope-tag ${wholeGroupContext || shadowed ? "muted" : ""}`}>
                             <span className="ago-scope-label">{scope.channel_id ? chanName(scope.channel_id) : "whole group"}</span>
                             {!channelFocused && manageable ? (
                               <button className="ago-tag-x" title="Remove this access"
@@ -292,7 +297,7 @@ export function MembersPanel() {
                             />
                           ) : null}
                         </div>
-                        {manageable && !wholeGroupContext ? (
+                        {manageable && !shadowed && !wholeGroupContext ? (
                           <RoleSelect
                             value={scope.role === "admin" ? "admin" : "member"}
                             onChange={role => setRole(person.id, role, scope.channel_id)}
@@ -300,6 +305,7 @@ export function MembersPanel() {
                         ) : (
                           <span className="mmeta short">
                             {scope.role}
+                            {shadowed ? " · included in whole-group access" : ""}
                             {wholeGroupContext ? " · inherited" : ""}
                           </span>
                         )}
@@ -325,28 +331,32 @@ export function MembersPanel() {
                 <div className="ago-scope-list">
                   {agent.scopes.map((scope, si) => {
                     const manageable = canManage(scope);
+                    const shadowed = !!scope.channel_id && agent.scopes.some(candidate => !candidate.channel_id);
                     const wholeGroupContext = channelFocused && !scope.channel_id;
-                    const channelAction = channelFocused && !!scope.channel_id && manageable;
+                    const channelAction = channelFocused && !!scope.channel_id && manageable && !shadowed;
                     return (
-                      <div key={si} className={channelAction || channelFocused ? "ago-inline-remove-row" : "ago-scope-main"}>
-                        <span className={`ago-scope-tag ${wholeGroupContext ? "muted" : ""}`}>
-                          <span className="ago-scope-label">{scope.channel_id ? chanName(scope.channel_id) : "whole group"}</span>
-                          {!channelFocused && manageable ? (
-                            <button className="ago-tag-x"
-                              title={`Stop listening ${scope.channel_id ? "in " + chanName(scope.channel_id) : "group-wide"}`}
-                              onClick={() => removeScope("agent", agent.id, scope.channel_id)}>
-                              <Icon name="x" />
-                            </button>
+                      <div key={si} className="ago-scope-row">
+                        <div className={channelAction || channelFocused ? "ago-inline-remove-row" : "ago-scope-main"}>
+                          <span className={`ago-scope-tag ${wholeGroupContext || shadowed ? "muted" : ""}`}>
+                            <span className="ago-scope-label">{scope.channel_id ? chanName(scope.channel_id) : "whole group"}</span>
+                            {!channelFocused && manageable ? (
+                              <button className="ago-tag-x"
+                                title={`Stop listening ${scope.channel_id ? "in " + chanName(scope.channel_id) : "group-wide"}`}
+                                onClick={() => removeScope("agent", agent.id, scope.channel_id)}>
+                                <Icon name="x" />
+                              </button>
+                            ) : null}
+                          </span>
+                          {channelAction ? (
+                            <ArmedRemove
+                              armKey={`rm:agent:${agent.id}:${scope.channel_id}`}
+                              label="Remove"
+                              title={`Remove ${agent.name} from this channel`}
+                              onConfirm={() => removeScope("agent", agent.id, scope.channel_id)}
+                            />
                           ) : null}
-                        </span>
-                        {channelAction ? (
-                          <ArmedRemove
-                            armKey={`rm:agent:${agent.id}:${scope.channel_id}`}
-                            label="Remove"
-                            title={`Remove ${agent.name} from this channel`}
-                            onConfirm={() => removeScope("agent", agent.id, scope.channel_id)}
-                          />
-                        ) : null}
+                        </div>
+                        {shadowed ? <span className="mmeta short">included in whole-group access</span> : null}
                       </div>
                     );
                   })}

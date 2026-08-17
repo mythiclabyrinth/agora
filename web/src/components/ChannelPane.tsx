@@ -215,14 +215,14 @@ export function ChannelPane() {
               aria-label="Channel name"
               onChange={e => setEditName(e.target.value)}
               onKeyDown={e => {
-                if (e.key === "Enter" && editName.trim()) saveEdit();
+                if (e.key === "Enter" && !updateChannel.isPending) saveEdit();
                 if (e.key === "Escape") setEditing(false);
               }} />
             <input id="ago-edit-topic" value={editTopic} placeholder="Description (optional)"
               aria-label="Channel description"
               onChange={e => setEditTopic(e.target.value)}
               onKeyDown={e => {
-                if (e.key === "Enter" && editName.trim()) saveEdit();
+                if (e.key === "Enter" && !updateChannel.isPending) saveEdit();
                 if (e.key === "Escape") setEditing(false);
               }} />
             <div className="ago-chan-edit-actions">

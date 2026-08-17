@@ -69,8 +69,9 @@ function PersonMemberRow({
           const shadowed = !!scope.channel_id && scopes.some(candidate => !candidate.channel_id);
           const wholeGroupContext = channelFocused && !scope.channel_id;
           // Channel view: armed action replaces tag ×. Self always gets Leave on
-          // their exact channel row; admins get Remove for others.
-          const channelAction = channelFocused && !!scope.channel_id && (manageable || isSelf);
+          // their exact channel row; admins get Remove for others. Shadowed rows
+          // inherit whole-group access, so Remove would be a no-op — hide it.
+          const channelAction = channelFocused && !!scope.channel_id && !shadowed && (manageable || isSelf);
           const actionLabel = isSelf ? "Leave" : "Remove";
           return <View key={scope.channel_id ?? "group"} style={styles.scopeRow}>
             <View style={channelAction ? styles.inlineRemoveRow : styles.scopeInfo}>
@@ -152,24 +153,28 @@ function AgentMemberRow({
       <View style={channelFocused ? styles.channelScopeList : styles.tagRow}>
           {scopes.map((s) => {
             const manageable = canManageScope(s);
-            const channelRemove = channelFocused && !!s.channel_id && manageable;
+            const shadowed = !!s.channel_id && scopes.some(candidate => !candidate.channel_id);
+            const channelRemove = channelFocused && !!s.channel_id && manageable && !shadowed;
             const wholeGroupContext = channelFocused && !s.channel_id;
             if (channelFocused) {
               return (
-                <View key={s.channel_id ?? "group"} style={styles.inlineRemoveRow}>
-                  <View style={[styles.tag, styles.tagFlex, wholeGroupContext && styles.tagMuted]}>
-                    <Text style={styles.tagTextWrap}>
-                      {scopeLabel(s, channelName)}
-                    </Text>
+                <View key={s.channel_id ?? "group"} style={styles.channelScopeItem}>
+                  <View style={styles.inlineRemoveRow}>
+                    <View style={[styles.tag, styles.tagFlex, (wholeGroupContext || shadowed) && styles.tagMuted]}>
+                      <Text style={styles.tagTextWrap}>
+                        {scopeLabel(s, channelName)}
+                      </Text>
+                    </View>
+                    {channelRemove ? (
+                      <ArmedButton
+                        compact
+                        label="Remove"
+                        accessibilityLabel={`Remove ${name} from this channel`}
+                        onConfirm={() => onRemoveScope(s)}
+                      />
+                    ) : null}
                   </View>
-                  {channelRemove ? (
-                    <ArmedButton
-                      compact
-                      label="Remove"
-                      accessibilityLabel={`Remove ${name} from this channel`}
-                      onConfirm={() => onRemoveScope(s)}
-                    />
-                  ) : null}
+                  {shadowed ? <Text style={styles.meta}>Included in whole-group access</Text> : null}
                 </View>
               );
             }
@@ -559,7 +564,7 @@ export default function MembersScreen() {
             canManageScope={(scope) => canManageMembershipScope(scope, groupAdmin, params.channelId, !!admin)}
           />
         ))}
-        {members.isSuccess && agentMembers.length === 0 ? (
+        {members.isSuccess && visibleAgentGroups.length === 0 ? (
           <Text style={styles.empty}>No agents in this group yet.</Text>
         ) : null}
 
@@ -644,6 +649,7 @@ const styles = StyleSheet.create({
   scopeText: { color: colors.a1, fontSize: 13.5, fontWeight: "600" },
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 2 },
   channelScopeList: { gap: 6, marginTop: 2 },
+  channelScopeItem: { gap: 3 },
   tag: {
     flexDirection: "row",
     alignItems: "center",
