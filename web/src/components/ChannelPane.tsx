@@ -211,14 +211,24 @@ export function ChannelPane() {
         </button>
         {editing ? (
           <div className="ago-head-text ago-chan-edit">
-            <input id="ago-edit-name" autoFocus value={editName} placeholder="channel name"
+            <input id="ago-edit-name" autoFocus value={editName} placeholder="Channel name"
+              aria-label="Channel name"
               onChange={e => setEditName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditing(false); }} />
-            <input id="ago-edit-topic" value={editTopic} placeholder="topic (optional)"
+              onKeyDown={e => {
+                if (e.key === "Enter" && editName.trim()) saveEdit();
+                if (e.key === "Escape") setEditing(false);
+              }} />
+            <input id="ago-edit-topic" value={editTopic} placeholder="Description (optional)"
+              aria-label="Channel description"
               onChange={e => setEditTopic(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditing(false); }} />
-            <button className="btn sm primary" onClick={saveEdit}>Save</button>
-            <button className="btn sm" onClick={() => setEditing(false)}>Cancel</button>
+              onKeyDown={e => {
+                if (e.key === "Enter" && editName.trim()) saveEdit();
+                if (e.key === "Escape") setEditing(false);
+              }} />
+            <div className="ago-chan-edit-actions">
+              <button className="btn sm primary" disabled={!editName.trim() || updateChannel.isPending} onClick={saveEdit}>Save</button>
+              <button className="btn sm" onClick={() => setEditing(false)}>Cancel</button>
+            </div>
           </div>
         ) : (
           <div className="ago-head-text">
