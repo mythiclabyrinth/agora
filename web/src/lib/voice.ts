@@ -89,6 +89,9 @@ export async function uploadVoice(v: {
   threadId: number | null;
   blob: Blob;
   live?: boolean;
+  /** Composer's "talk to" prefix ("@a, @b") — the server prepends it to the
+      transcript so voice turns address agents like typed messages do. */
+  mentions?: string;
   /** Thread sticky: close the agent floor unless someone is @mentioned.
       Ignored for live turns (hub drops require_agent when voice=true). */
   requireAgent?: boolean;
@@ -100,6 +103,7 @@ export async function uploadVoice(v: {
   fd.append("file", v.blob, (v.live ? "utterance." : "voice-note.") + ext);
   if (v.live) fd.append("live", "true");
   if (v.threadId != null) fd.append("thread_id", String(v.threadId));
+  if (v.mentions) fd.append("mentions", v.mentions);
   const tz = timezone();
   if (tz) fd.append("timezone", tz);
   if (v.requireAgent && v.threadId != null && !v.live) fd.append("require_agent", "true");

@@ -7,7 +7,7 @@ import {
   DroppedFileError, dropMaterializationLimit,
   droppedTooLargeMessage, uploadMaxBytes,
   draftAttachmentPreviewUrl, materializeDroppedFile, MAX_MESSAGE_CHARS,
-  threadAddressKey, useAgents, useAttachmentDrafts, useMe, useSendMessage,
+  mentionPrefix, threadAddressKey, useAgents, useAttachmentDrafts, useMe, useSendMessage,
   type ChannelAgent, type DraftAttachment, type OutgoingFile,
 } from "@agora/core";
 import { create } from "zustand";
@@ -161,6 +161,8 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const selectedAgents = addrSel
     .map(id => agents.find(a => a.id === id))
     .filter(Boolean) as ChannelAgent[];
+  // One prefix for typed send and voice notes so formats cannot drift.
+  const addr = mentionPrefix(selectedAgents);
   const previewEntry = attachments.find(entry => entry.id === previewId) ?? null;
   const previewUrl = previewEntry ? draftAttachmentPreviewUrl(previewEntry) : null;
 
@@ -298,7 +300,6 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
       return;
     }
     // "Talk to" prefix: the chosen agents' mentions route the message.
-    const addr = selectedAgents.map(a => "@" + slugify(a.name)).join(", ");
     const outText = addr ? (t ? `${addr}, ${t}` : addr) : t;
     const outgoing: OutgoingFile[] = readyAttachments.map(entry => ({
       part: entry.file,
@@ -519,7 +520,13 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
           <Icon name="paperclip" />
         </button>
         <TemplateControls groupId={groupId} draft={text} onChoose={insertTemplate} />
-        {voiceOK && <MicButton channelId={channelId} threadId={threadId} />}
+        {voiceOK && (
+          <MicButton
+            channelId={channelId}
+            threadId={threadId}
+            mentions={addr || undefined}
+          />
+        )}
         {showRequireAgent && requireAgentKey && (
           <button
             className={`btn ago-require-agent ${requireAgentOn ? "active" : ""}`}

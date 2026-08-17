@@ -21,6 +21,8 @@ interface RecSession {
   chunks: Blob[];
   canceled: boolean;
   startedAt: number;
+  /** "Talk to" prefix captured at stop-and-send (not at record start). */
+  mentions?: string;
 }
 
 let rec: RecSession | null = null;
@@ -82,6 +84,7 @@ async function upload(session: RecSession): Promise<void> {
       channelId: session.channelId,
       threadId: session.threadId,
       blob,
+      mentions: session.mentions,
       requireAgent,
     });
     // The WS echo delivers the transcribed message.
@@ -103,8 +106,17 @@ function finish(send: boolean): void {
 
 export function voiceCancel(): void { finish(false); }
 
-export async function voiceToggle(channelId: string, threadId: number | null): Promise<void> {
-  if (rec && rec.key === recKey(channelId, threadId)) { finish(true); return; }
+export async function voiceToggle(
+  channelId: string,
+  threadId: number | null,
+  mentions?: string,
+): Promise<void> {
+  // Capture mentions at stop-and-send so mid-recording picker changes apply.
+  if (rec && rec.key === recKey(channelId, threadId)) {
+    rec.mentions = mentions;
+    finish(true);
+    return;
+  }
   if (rec) finish(false); // one recording at a time
   await start(channelId, threadId);
 }

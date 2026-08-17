@@ -18,7 +18,12 @@ function RecTimer({ startedAt }: { startedAt: number }) {
   return <span className="ago-rec-time">{Math.floor(s / 60)}:{String(s % 60).padStart(2, "0")}</span>;
 }
 
-export function MicButton({ channelId, threadId }: { channelId: string; threadId: number | null }) {
+export function MicButton({ channelId, threadId, mentions }: {
+  channelId: string;
+  threadId: number | null;
+  /** Current "talk to" prefix; captured on stop-and-send, ignored at start. */
+  mentions?: string;
+}) {
   const { recordingKey, startedAt, busyKey } = useVoiceRec();
   const key = voiceRecKey(channelId, threadId);
   if (busyKey === key) {
@@ -35,7 +40,7 @@ export function MicButton({ channelId, threadId }: { channelId: string; threadId
           <Icon name="x" />
         </button>
         <button className="btn ago-mic recording" title="Stop and send"
-          onClick={() => void voiceToggle(channelId, threadId)}>
+          onClick={() => void voiceToggle(channelId, threadId, mentions)}>
           <Icon name="square" cls="fill" />&nbsp;<RecTimer startedAt={startedAt} />
         </button>
       </>
@@ -43,7 +48,7 @@ export function MicButton({ channelId, threadId }: { channelId: string; threadId
   }
   return (
     <button className="btn ago-mic" title="Record a voice message"
-      onClick={() => void voiceToggle(channelId, threadId)}>
+      onClick={() => void voiceToggle(channelId, threadId, mentions)}>
       <Icon name="mic" />
     </button>
   );
