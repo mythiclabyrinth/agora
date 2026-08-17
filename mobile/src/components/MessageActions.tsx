@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Alert, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View,
 } from "react-native";
@@ -11,6 +11,7 @@ import {
   FEATURES, tldrOf, useDeleteMessage, useEditMessage, usePinMessage, useStarMessage, useTldrView,
   type Message,
 } from "@agora/core";
+import { beginReviewUiBlock, endReviewUiBlock } from "../lib/storeReview";
 import { colors } from "../lib/theme";
 import { copyDeepLink } from "../lib/deepLinks";
 import { speakMessage } from "../lib/nativeSpeech";
@@ -46,6 +47,10 @@ export function MessageActions({
   const isRoot = message.thread_id == null;
   const hasText = !!message.text.trim();
   const act = (fn: () => void) => { fn(); onClose(); };
+  useEffect(() => {
+    beginReviewUiBlock();
+    return () => endReviewUiBlock();
+  }, []);
   const confirmDelete = () => Alert.alert(
     "Delete message?",
     isRoot && (message.reply_count ?? 0) > 0

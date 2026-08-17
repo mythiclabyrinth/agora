@@ -26,6 +26,7 @@ import { useGroups, useThreads } from "@agora/core";
 import { headerBack } from "../../src/lib/headerItems";
 import { notificationNavigationAction } from "../../src/lib/notificationRouting";
 import { colors } from "../../src/lib/theme";
+import { StoreReviewHost } from "../../src/components/StoreReviewHost";
 
 /** Ensure cold-start deep links still have Home beneath them in the stack. */
 export const unstable_settings = { initialRouteName: "index" };
@@ -112,6 +113,7 @@ export default function AppLayout() {
       <LiveSocket />
       <UnreadSync />
       <NotificationTapRouter />
+      <StoreReviewHost />
       <Stack
         screenOptions={{
           headerStyle: { backgroundColor: colors.bg },
