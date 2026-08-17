@@ -22,6 +22,7 @@ import { LinkPreferences } from "../../src/components/LinkPreferences";
 import { toast, toastErr } from "../../src/components/Toast";
 import { compareVersions, lookupStoreVersion } from "../../src/lib/appVersion";
 import { openLink } from "../../src/lib/openLink";
+import { openWriteReviewUrl } from "../../src/lib/storeReview";
 import { colors } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 import { useSession } from "../../src/state/session";
@@ -320,6 +321,24 @@ export default function SettingsScreen() {
               }
             >
               <Text style={styles.linkBtnText}>Support</Text>
+            </Pressable>
+          </View>
+          {/* Direct App Store write-review URL — never requestReview() from a
+              tap; Apple's guidelines forbid that and it silently no-ops. */}
+          <View style={styles.row}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.name}>Enjoying Agora?</Text>
+              <Text style={styles.meta}>
+                Ratings help invited teammates find the right app in the store.
+              </Text>
+            </View>
+            <Pressable
+              style={styles.linkBtn}
+              accessibilityRole="link"
+              accessibilityLabel="Rate Agora on the App Store"
+              onPress={() => void openWriteReviewUrl()}
+            >
+              <Text style={styles.linkBtnText}>Rate Agora</Text>
             </Pressable>
           </View>
         </Section>

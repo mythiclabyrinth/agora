@@ -8,6 +8,10 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-nati
 import { Smile } from "lucide-react-native";
 import type { Message, Reaction, ReactionReactor } from "@agora/core";
 import { useAgents, useToggleReaction, useUsers } from "@agora/core";
+import {
+  POSITIVE_REACTION_EMOJIS,
+  recordPositiveEvent,
+} from "../lib/storeReview";
 import { colors } from "../lib/theme";
 import { useSession } from "../state/session";
 import { Icon } from "./Icon";
@@ -15,6 +19,13 @@ import { AgentAvatar } from "./AgentAvatar";
 import { hasMine, legacyReactors, reactorNames } from "../lib/reactions";
 
 export { hasMine, legacyReactors, reactorNames } from "../lib/reactions";
+
+function maybeRecordPositiveReaction(message: Message, emoji: string, on: boolean) {
+  if (!on) return;
+  if (message.author_type !== "agent") return;
+  if (!POSITIVE_REACTION_EMOJIS.has(emoji)) return;
+  void recordPositiveEvent();
+}
 
 /** Returns react(message, emoji): adds the caller's reaction, or removes it
     when they already reacted with that emoji — picker taps are toggles. */
@@ -25,7 +36,11 @@ export function useReactWith() {
     const mine =
       username !== "" &&
       (message.reactions ?? []).some((r) => r.emoji === emoji && hasMine(r, username));
-    toggle.mutate({ message, emoji, on: !mine });
+    const on = !mine;
+    toggle.mutate(
+      { message, emoji, on },
+      { onSuccess: () => maybeRecordPositiveReaction(message, emoji, on) },
+    );
   };
 }
 
@@ -84,7 +99,16 @@ export function Reactions({ message }: { message: Message }) {
           <Pressable
             key={r.emoji}
             style={[styles.chip, isMine && styles.chipMine]}
-            onPress={() => toggle.mutate({ message, emoji: r.emoji, on: !isMine })}
+            onPress={() => {
+              const on = !isMine;
+              toggle.mutate(
+                { message, emoji: r.emoji, on },
+                {
+                  onSuccess: () =>
+                    maybeRecordPositiveReaction(message, r.emoji, on),
+                },
+              );
+            }}
             onLongPress={() => setSelected(r)}
             accessibilityLabel={`${reactorNames(r).join(", ")} reacted with ${r.emoji}`}
             accessibilityHint="Tap to toggle your reaction. Long press to see everyone who reacted."

@@ -25,6 +25,7 @@ import { useSendVoice } from "../../../src/api/voice";
 import { LiveVoiceView, type LiveStatus } from "../../../src/components/LiveVoice";
 import { toast } from "../../../src/components/Toast";
 import { onAgentMessage } from "../../../src/lib/agentBus";
+import { recordPositiveEvent } from "../../../src/lib/storeReview";
 import { slugify } from "@agora/core";
 import {
   enqueueSpeech,
@@ -90,6 +91,8 @@ export default function LiveScreen() {
   const vad = useRef(initialVadState());
   const ended = useRef(false);
   const turnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveStartedAt = useRef(Date.now());
+  const liveErrored = useRef(false);
 
   /* -------------------------------------------------- mic control */
 
@@ -154,10 +157,17 @@ export default function LiveScreen() {
   /* -------------------------------------------------- session lifecycle */
 
   useEffect(() => {
+    if (status === "error") liveErrored.current = true;
+  }, [status]);
+
+  useEffect(() => {
     ended.current = false;
+    liveStartedAt.current = Date.now();
+    liveErrored.current = false;
     void (async () => {
       const perm = await AudioModule.requestRecordingPermissionsAsync();
       if (!perm.granted) {
+        liveErrored.current = true;
         setStatus("error");
         return;
       }
@@ -168,6 +178,13 @@ export default function LiveScreen() {
       ended.current = true;
       if (turnTimer.current) clearTimeout(turnTimer.current);
       stopSpeech();
+      // Clean end after ~30s of hands-free chat is a real value moment.
+      if (
+        !liveErrored.current &&
+        Date.now() - liveStartedAt.current >= 30_000
+      ) {
+        void recordPositiveEvent();
+      }
       void stopMic().then(() =>
         setAudioModeAsync({
           allowsRecording: false,
