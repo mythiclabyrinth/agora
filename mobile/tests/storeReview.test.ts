@@ -175,12 +175,21 @@ describe("localDayKey", () => {
   });
 
   it("rolls over on local midnight, not UTC", () => {
-    // 11pm local on June 15 — west of UTC this is already June 16 in UTC.
-    const lateLocal = new Date(2024, 5, 15, 23, 0, 0);
-    expect(localDayKey(lateLocal.getTime())).toBe("2024-06-15");
-    if (lateLocal.getTimezoneOffset() > 0) {
-      expect(lateLocal.toISOString().slice(0, 10)).toBe("2024-06-16");
-    }
+    // Pick a local hour where the UTC calendar date differs from the local one,
+    // so a toISOString()-based implementation would return the wrong day.
+    const probe = new Date(2024, 5, 15, 12, 0, 0);
+    const offset = probe.getTimezoneOffset();
+    if (offset === 0) return; // local === UTC; nothing to distinguish
+
+    // West of UTC: late evening — UTC has already rolled forward.
+    // East of UTC: early morning — UTC is still on the previous day.
+    const hour = offset > 0 ? 23 : 0;
+    const minute = offset > 0 ? 0 : 30;
+    const local = new Date(2024, 5, 15, hour, minute, 0);
+    const expectedLocal = "2024-06-15";
+    expect(localDayKey(local.getTime())).toBe(expectedLocal);
+    // A UTC-sliced key must disagree — that's the regression this catches.
+    expect(local.toISOString().slice(0, 10)).not.toBe(expectedLocal);
   });
 });
 
