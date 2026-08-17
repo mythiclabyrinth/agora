@@ -223,13 +223,15 @@ export function ChannelPane() {
         ) : (
           <div className="ago-head-text">
             <span className="ago-chan-name"><span className="hash">{isDm ? "↔" : "#"}</span>{channel.name}</span>
-            <span className="dim" title={channel.topic || ""}>{isDm ? "Private agent conversation" : (channel.topic || group.name)}</span>
-            {isAdmin && (
-              <button className="ago-edit-btn" title={`Rename #${channel.name} / edit topic`}
-                onClick={() => { setEditing(true); setEditName(channel.name); setEditTopic(channel.topic || ""); }}>
-                <Icon name="pencil" />
-              </button>
-            )}
+            <span className="ago-chan-topic">
+              <span className="dim" title={channel.topic || ""}>{isDm ? "Private agent conversation" : (channel.topic || group.name)}</span>
+              {isAdmin && (
+                <button className="ago-edit-btn" title={`Rename #${channel.name} / edit topic`}
+                  onClick={() => { setEditing(true); setEditName(channel.name); setEditTopic(channel.topic || ""); }}>
+                  <Icon name="pencil" />
+                </button>
+              )}
+            </span>
           </div>
         )}
         <div className="ago-head-actions">

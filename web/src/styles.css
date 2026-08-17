@@ -545,6 +545,9 @@ a.btn { text-decoration: none; }
 .ago-head-text { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .ago-chan-name { font-size: 13.5px; font-weight: 700; white-space: nowrap; }
 .ago-chan-name .hash { opacity: .45; margin-right: 1px; }
+.ago-chan-topic {
+  display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1;
+}
 .ago-head-text .dim { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ago-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
@@ -1784,6 +1787,16 @@ a.btn { text-decoration: none; }
   .agora-thread .ago-head-actions .ago-btn-label { display: inline; }
   .agora-layout.view-main.thread-expanded .agora-main { display: flex; }
   .ago-head { flex-wrap: wrap; row-gap: 8px; }
+  /* Narrow channel header: [← #name] / [topic] / [action buttons]. */
+  .agora-main > .ago-head > .ago-head-text {
+    flex: 1 1 0; min-width: 0; flex-wrap: wrap; row-gap: 2px; align-items: center;
+  }
+  .agora-main > .ago-head > .ago-head-text > .ago-chan-topic {
+    flex: 1 0 100%;
+  }
+  .agora-main > .ago-head > .ago-head-actions {
+    flex: 1 0 100%;
+  }
   .ago-head-actions { flex-wrap: wrap; }
   .ago-log { padding: 14px; }
   .bubble.ago-bubble { max-width: 88%; }
