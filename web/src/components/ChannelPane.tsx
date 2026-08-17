@@ -211,25 +211,37 @@ export function ChannelPane() {
         </button>
         {editing ? (
           <div className="ago-head-text ago-chan-edit">
-            <input id="ago-edit-name" autoFocus value={editName} placeholder="channel name"
+            <input id="ago-edit-name" autoFocus value={editName} placeholder="Channel name"
+              aria-label="Channel name"
               onChange={e => setEditName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditing(false); }} />
-            <input id="ago-edit-topic" value={editTopic} placeholder="topic (optional)"
+              onKeyDown={e => {
+                if (e.key === "Enter" && !updateChannel.isPending) saveEdit();
+                if (e.key === "Escape") setEditing(false);
+              }} />
+            <input id="ago-edit-topic" value={editTopic} placeholder="Description (optional)"
+              aria-label="Channel description"
               onChange={e => setEditTopic(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditing(false); }} />
-            <button className="btn sm primary" onClick={saveEdit}>Save</button>
-            <button className="btn sm" onClick={() => setEditing(false)}>Cancel</button>
+              onKeyDown={e => {
+                if (e.key === "Enter" && !updateChannel.isPending) saveEdit();
+                if (e.key === "Escape") setEditing(false);
+              }} />
+            <div className="ago-chan-edit-actions">
+              <button className="btn sm primary" disabled={!editName.trim() || updateChannel.isPending} onClick={saveEdit}>Save</button>
+              <button className="btn sm" onClick={() => setEditing(false)}>Cancel</button>
+            </div>
           </div>
         ) : (
           <div className="ago-head-text">
             <span className="ago-chan-name"><span className="hash">{isDm ? "↔" : "#"}</span>{channel.name}</span>
-            <span className="dim" title={channel.topic || ""}>{isDm ? "Private agent conversation" : (channel.topic || group.name)}</span>
-            {isAdmin && (
-              <button className="ago-edit-btn" title={`Rename #${channel.name} / edit topic`}
-                onClick={() => { setEditing(true); setEditName(channel.name); setEditTopic(channel.topic || ""); }}>
-                <Icon name="pencil" />
-              </button>
-            )}
+            <span className="ago-chan-topic">
+              <span className="dim" title={channel.topic || ""}>{isDm ? "Private agent conversation" : (channel.topic || group.name)}</span>
+              {isAdmin && (
+                <button className="ago-edit-btn" title={`Rename #${channel.name} / edit topic`}
+                  onClick={() => { setEditing(true); setEditName(channel.name); setEditTopic(channel.topic || ""); }}>
+                  <Icon name="pencil" />
+                </button>
+              )}
+            </span>
           </div>
         )}
         <div className="ago-head-actions">

@@ -545,6 +545,9 @@ a.btn { text-decoration: none; }
 .ago-head-text { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .ago-chan-name { font-size: 13.5px; font-weight: 700; white-space: nowrap; }
 .ago-chan-name .hash { opacity: .45; margin-right: 1px; }
+.ago-chan-topic {
+  display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1;
+}
 .ago-head-text .dim { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ago-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
@@ -751,6 +754,8 @@ a.btn { text-decoration: none; }
 .ago-chan-edit input:focus { border-color: var(--a1); }
 .ago-chan-edit #ago-edit-name { width: 150px; flex-shrink: 0; }
 .ago-chan-edit #ago-edit-topic { flex: 1; }
+.ago-chan-edit-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.ago-chan-edit-actions .btn:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ---------- drag-to-reorder ---------- */
 .ago-chan[draggable="true"], .ago-group-head[draggable="true"] { -webkit-user-drag: element; }
@@ -1359,8 +1364,14 @@ a.btn { text-decoration: none; }
 
 /* ---------- members panel ---------- */
 .ago-members-body { flex: 1; overflow-y: auto; padding-top: 4px; }
-.ago-member-list { padding: 8px 14px; }
+.ago-member-list { padding: 8px 14px; display: flex; flex-direction: column; gap: 10px; }
 .ago-member { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; min-width: 0; }
+.ago-member-card {
+  display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: rgba(0,0,0,.12);
+}
+.ago-member-identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ago-member .mname { font-weight: 600; flex-shrink: 0; }
 .ago-member .mmeta {
   color: var(--faint); font-size: 11.5px; flex: 1; min-width: 0;
@@ -1368,36 +1379,72 @@ a.btn { text-decoration: none; }
 }
 /* Agent rows: role stays compact so the channel-scope tags get the room. */
 .ago-member .mmeta.short { flex: 0 0 auto; }
-.ago-scope-tags {
-  display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0;
-  justify-content: flex-end;
+.ago-scope-list { display: flex; flex-direction: column; gap: 6px; }
+.ago-scope-row { display: flex; flex-direction: column; gap: 4px; }
+.ago-scope-main, .ago-inline-remove-row {
+  display: flex; align-items: flex-start; gap: 8px; min-width: 0; width: 100%;
 }
 .ago-scope-tag {
-  display: inline-flex; align-items: center; gap: 2px;
+  display: inline-flex; align-items: flex-start; gap: 2px; min-width: 0; flex: 1;
   font-size: 10.5px; font-weight: 600; color: var(--a1);
   background: rgba(139,124,255,.12); border: 1px solid rgba(139,124,255,.25);
-  border-radius: 6px; padding: 1px 6px; white-space: nowrap;
+  border-radius: 6px; padding: 3px 6px;
+}
+.ago-scope-tag.muted { opacity: .75; }
+.ago-scope-label {
+  flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; white-space: normal;
 }
 .ago-tag-x {
   border: none; background: transparent; color: var(--dim); cursor: pointer;
-  padding: 0 0 0 2px; font-size: 10px; line-height: 1; display: inline-flex;
+  padding: 0 0 0 2px; font-size: 10px; line-height: 1; display: inline-flex; flex-shrink: 0;
 }
 .ago-tag-x:hover { color: #f87171; }
-.ago-member-add { display: flex; gap: 8px; padding: 4px 14px; align-items: center; flex-wrap: wrap; }
-.ago-person-add #ago-add-user { flex-basis: 100%; }
-.ago-person-add #ago-add-user-role, .ago-person-add #ago-add-user-chan { flex: 1 1 90px; }
-.ago-head-actions .btn.active { border-color: var(--a1); color: var(--a1); }
-.ago-member-add input, .ago-member-add select {
-  flex: 1;
-  background: rgba(0,0,0,.25); border: 1px solid var(--border-strong); border-radius: 8px;
-  padding: 6px 9px; color: var(--text); font: inherit; font-size: 12px; outline: none; min-width: 0;
+.ago-inline-remove {
+  flex-shrink: 0; align-self: flex-start;
+  border: 1px solid rgba(248,113,113,.35); background: transparent; color: #f87171;
+  border-radius: 6px; padding: 3px 8px; font: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
 }
-.ago-member-add input:focus, .ago-member-add select:focus { border-color: var(--a1); }
-.ago-member-add select {
+.ago-inline-remove.armed { background: rgba(248,113,113,.16); border-color: #f87171; }
+.ago-role-select {
   appearance: none; -webkit-appearance: none; -moz-appearance: none;
-  padding-right: 28px; cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b6072' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 9px center; background-size: 14px 14px;
+  align-self: flex-start; max-width: 120px;
+  background: rgba(139,124,255,.12); border: 1px solid rgba(139,124,255,.35); border-radius: 7px;
+  color: var(--a1); font: inherit; font-size: 11.5px; font-weight: 700;
+  padding: 4px 24px 4px 8px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b7cff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 7px center; background-size: 12px 12px;
+}
+.ago-members-mode {
+  display: flex; gap: 4px; padding: 10px 14px 6px;
+}
+.ago-members-mode button {
+  flex: 1; border: 1px solid var(--border-strong); background: transparent; color: var(--dim);
+  border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer;
+}
+.ago-members-mode button.active {
+  border-color: var(--a1); color: var(--a1); background: rgba(139,124,255,.12);
+}
+.ago-head-actions .btn.active { border-color: var(--a1); color: var(--a1); }
+.ago-member-add-flow { padding: 4px 14px; }
+.ago-add-link {
+  border: none; background: transparent; color: var(--a1); font: inherit; font-size: 13px;
+  font-weight: 700; cursor: pointer; padding: 8px 0;
+}
+.ago-add-box {
+  border: 1px solid var(--border-strong); border-radius: 12px; padding: 10px; display: flex;
+  flex-direction: column; gap: 6px; background: rgba(0,0,0,.14);
+}
+.ago-add-title { font-size: 13px; font-weight: 700; }
+.ago-add-option {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--text);
+  font: inherit; font-size: 12.5px; font-weight: 600; padding: 9px 11px; cursor: pointer;
+}
+.ago-add-option:hover { border-color: var(--a1); }
+.ago-add-option:disabled { opacity: .55; cursor: default; }
+.ago-add-cancel {
+  border: none; background: transparent; color: var(--dim); font: inherit; font-size: 12.5px;
+  font-weight: 600; cursor: pointer; padding: 6px 0;
 }
 .ago-member-hint { padding: 6px 14px 12px; margin: 0; font-size: 11.5px; color: var(--faint); }
 
@@ -1723,6 +1770,16 @@ a.btn { text-decoration: none; }
   .agora-thread .ago-head-actions .ago-btn-label { display: inline; }
   .agora-layout.view-main.thread-expanded .agora-main { display: flex; }
   .ago-head { flex-wrap: wrap; row-gap: 8px; }
+  /* Narrow channel header: [← #name] / [topic] / [action buttons]. */
+  .agora-main > .ago-head > .ago-head-text {
+    flex: 1 1 0; min-width: 0; flex-wrap: wrap; row-gap: 2px; align-items: center;
+  }
+  .agora-main > .ago-head > .ago-head-text > .ago-chan-topic {
+    flex: 1 0 100%;
+  }
+  .agora-main > .ago-head > .ago-head-actions {
+    flex: 1 0 100%;
+  }
   .ago-head-actions { flex-wrap: wrap; }
   .ago-log { padding: 14px; }
   .bubble.ago-bubble { max-width: 88%; }
@@ -1738,8 +1795,48 @@ a.btn { text-decoration: none; }
   .ago-side-thread .ago-x, .ago-hidden-row .ago-x,
   .ago-gp-chan .ago-x, .ago-inbox-row .ago-x { opacity: 1; }  /* no hover on touch */
   .ago-chan-edit { flex-wrap: wrap; }
-  .ago-chan-edit #ago-edit-name, .ago-chan-edit #ago-edit-topic {
-    font-size: 16px;                      /* iOS anti-zoom */
+  /* Narrow edit: [← name] / [full-width description] / [Save Cancel]. */
+  .agora-main > .ago-head:has(> .ago-chan-edit) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 6px;
+  }
+  .agora-main > .ago-head:has(> .ago-chan-edit) > .ago-back {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .agora-main > .ago-head > .ago-chan-edit {
+    display: contents;
+  }
+  .agora-main > .ago-head > .ago-chan-edit #ago-edit-name {
+    grid-column: 2;
+    grid-row: 1;
+    width: auto;
+    min-width: 0;
+    padding: 5px 8px;
+    font-size: 17px;                      /* ≥16px keeps iOS from zooming */
+    font-weight: 600;
+  }
+  .agora-main > .ago-head > .ago-chan-edit #ago-edit-topic {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    padding: 4px 8px;
+    font-size: 16px;                      /* iOS anti-zoom; lighter weight marks it as description */
+    font-weight: 400;
+  }
+  .agora-main > .ago-head > .ago-chan-edit .ago-chan-edit-actions {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .agora-main > .ago-head > .ago-chan-edit .ago-chan-edit-actions .btn {
+    flex: 1 1 auto;
+  }
+  .agora-main > .ago-head:has(> .ago-chan-edit) > .ago-head-actions {
+    grid-column: 1 / -1;
+    grid-row: 4;
   }
 
   .agora-main .chat-input, .agora-thread .chat-input { flex-wrap: wrap; padding: 10px; gap: 8px; }

@@ -1,4 +1,4 @@
-import type { Member } from "@agora/core";
+import type { Member } from "../api/types";
 
 /** A group admin can manage every scope. A channel admin can manage only
  * rows explicitly scoped to the channel they administer. */

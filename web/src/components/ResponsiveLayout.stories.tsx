@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, waitFor } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   fixtureAgents,
   fixtureChannelAgents,
@@ -130,6 +130,30 @@ export const PhoneMainPane: Story = {
     await waitFor(() => expect(element(canvasElement, "#agora-main")).toBeVisible());
     // The phone media query hides the sidebar; wait out any settling render.
     await waitFor(() => expect(element(canvasElement, "#agora-side")).not.toBeVisible());
+    await expectNoHorizontalOverflow(canvasElement);
+  },
+};
+
+export const PhoneChannelEditor: Story = {
+  globals: { viewport: { value: "phoneUpperBoundary", isRotated: false } },
+  parameters: {
+    viewport: { defaultViewport: "phoneUpperBoundary" },
+    setup: () => setup("channel"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(element(canvasElement, "#agora-main")).toBeVisible());
+    await waitFor(() => expect(element(canvasElement, "#agora-side")).not.toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: /Rename #storybook/i }));
+    await expect(canvas.findByLabelText("Channel name")).resolves.toBeVisible();
+    await expect(canvas.findByLabelText("Channel description")).resolves.toBeVisible();
+    const name = canvasElement.querySelector<HTMLInputElement>("#ago-edit-name");
+    const topic = canvasElement.querySelector<HTMLInputElement>("#ago-edit-topic");
+    if (!name || !topic) throw new Error("Missing channel edit inputs");
+    expect(Number.parseFloat(getComputedStyle(name).fontSize)).toBeGreaterThanOrEqual(16);
+    expect(Number.parseFloat(getComputedStyle(topic).fontSize)).toBeGreaterThanOrEqual(16);
+    await userEvent.clear(name);
+    await expect(canvas.findByRole("button", { name: "Save" })).resolves.toBeDisabled();
     await expectNoHorizontalOverflow(canvasElement);
   },
 };

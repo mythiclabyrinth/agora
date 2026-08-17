@@ -30,3 +30,4 @@ export * from "./lib/sections";
 export * from "./lib/features";
 export * from "./lib/links";
 export * from "./lib/requireAgent";
+export * from "./lib/membershipAccess";
