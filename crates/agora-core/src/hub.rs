@@ -90,7 +90,9 @@ fn normalize_button_style(style: Option<&str>) -> &'static str {
 }
 
 /// Cell values round-trip as JSON numbers (when the column is `number` and the
-/// payload parses) or clipped strings. Non-finite numbers fall back to "".
+/// payload parses as a finite number) or clipped strings. For `number`
+/// columns, unparseable agent-seeded values become `""` rather than a string
+/// that clients cannot display in a number input.
 fn normalize_table_cell_value(kind: &str, value: &Value) -> Value {
     match kind {
         "number" => {
@@ -98,12 +100,15 @@ fn normalize_table_cell_value(kind: &str, value: &Value) -> Value {
                 return json!(n);
             }
             if let Some(s) = value.as_str() {
-                if let Ok(n) = s.trim().parse::<f64>() {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return json!("");
+                }
+                if let Ok(n) = trimmed.parse::<f64>() {
                     if n.is_finite() {
                         return json!(n);
                     }
                 }
-                return json!(clip_meta_label(s, MAX_FORM_VALUE_CHARS));
             }
             json!("")
         }
@@ -180,7 +185,10 @@ pub fn sanitize_form(form: &Value) -> Option<Value> {
 /// Validate and normalize an agent-supplied interactive table into the stored
 /// `meta.table` shape: `columns` (`text`/`number`/`readonly`), `rows` with
 /// cells + up to two per-row actions, and up to two table-level `buttons`.
-/// Dropped entirely when no usable columns or rows survive sanitizing.
+/// Dropped entirely when no usable columns or rows survive sanitizing, or when
+/// there is no affordance left to resolve the table (no table-level buttons
+/// and no surviving row actions) — otherwise members could edit forever with
+/// no path back to the agent.
 pub fn sanitize_table(table: &Value) -> Option<Value> {
     let mut columns = Vec::new();
     let mut seen_cols = std::collections::HashSet::new();
@@ -273,6 +281,17 @@ pub fn sanitize_table(table: &Value) -> Option<Value> {
             "label": label,
             "style": normalize_button_style(b["style"].as_str()),
         }));
+    }
+    // Need at least one way to resolve: a table-level button, or a row action
+    // on some row. Mirrors sanitize_form's empty-buttons rejection.
+    let has_row_action = rows.iter().any(|r| {
+        r.get("actions")
+            .and_then(|a| a.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+    });
+    if buttons.is_empty() && !has_row_action {
+        return None;
     }
     Some(json!({"columns": columns, "rows": rows, "buttons": buttons}))
 }
@@ -1285,7 +1304,30 @@ impl Hub {
                 return Err("Value too long");
             }
         }
-        let normalized = normalize_table_cell_value(kind, value);
+        // Number columns must stay numeric on the wire: an unparseable value
+        // would render empty in <input type="number"> while still reaching the
+        // agent. Empty string clears the cell; anything else must be finite.
+        let normalized = if kind == "number" {
+            let cleared = value
+                .as_str()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(false)
+                || value.is_null();
+            if cleared {
+                json!("")
+            } else if let Some(n) = value.as_f64().filter(|n| n.is_finite()) {
+                json!(n)
+            } else if let Some(s) = value.as_str() {
+                match s.trim().parse::<f64>() {
+                    Ok(n) if n.is_finite() => json!(n),
+                    _ => return Err("Expected a number"),
+                }
+            } else {
+                return Err("Expected a number");
+            }
+        } else {
+            normalize_table_cell_value(kind, value)
+        };
         let updated = self
             .store
             .update_table_cell(message_id, row_id, column_id, &normalized)?;
@@ -2445,6 +2487,36 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_table_requires_a_resolve_affordance() {
+        // No buttons and no row actions → nowhere to lock / notify the agent.
+        assert!(sanitize_table(&json!({
+            "columns": [{"id": "a", "kind": "text", "label": "A"}],
+            "rows": [{"id": "r1", "cells": {"a": "x"}, "actions": []}],
+            "buttons": [],
+        }))
+        .is_none());
+        // Row actions that all fail validation also leave no affordance.
+        assert!(sanitize_table(&json!({
+            "columns": [{"id": "a", "kind": "text", "label": "A"}],
+            "rows": [{"id": "r1", "cells": {"a": "x"},
+                      "actions": [{"id": "bad id!", "label": "Nope"}]}],
+            "buttons": [],
+        }))
+        .is_none());
+
+        // Row-actions-only (no table-level buttons) is a valid shape.
+        let t = sanitize_table(&json!({
+            "columns": [{"id": "a", "kind": "text", "label": "A"}],
+            "rows": [{"id": "r1", "cells": {"a": "x"},
+                      "actions": [{"id": "ok", "label": "OK", "style": "primary"}]}],
+            "buttons": [],
+        }))
+        .unwrap();
+        assert!(t["buttons"].as_array().unwrap().is_empty());
+        assert_eq!(t["rows"][0]["actions"][0]["id"], "ok");
+    }
+
+    #[test]
     fn table_row_lock_leaves_sibling_editable() {
         let (h, mut rx, mid) = setup_table();
         h.update_table_cell(mid, "r1", "item", &json!("oranges")).unwrap();
@@ -2530,6 +2602,26 @@ mod tests {
         // Still editable after the rejection.
         let updated = h.update_table_cell(mid, "r1", "item", &json!("ok")).unwrap();
         assert_eq!(updated["meta"]["table_state"]["r1"]["item"], "ok");
+    }
+
+    #[test]
+    fn table_cell_rejects_non_numeric_number_column() {
+        let (h, _rx, mid) = setup_table();
+        assert_eq!(
+            h.update_table_cell(mid, "r1", "qty", &json!("twelve")),
+            Err("Expected a number")
+        );
+        assert_eq!(
+            h.update_table_cell(mid, "r1", "qty", &json!(true)),
+            Err("Expected a number")
+        );
+        // Empty clears; finite numbers (JSON or numeric string) stick.
+        let cleared = h.update_table_cell(mid, "r1", "qty", &json!("")).unwrap();
+        assert_eq!(cleared["meta"]["table_state"]["r1"]["qty"], "");
+        let n = h.update_table_cell(mid, "r1", "qty", &json!("3.5")).unwrap();
+        assert_eq!(n["meta"]["table_state"]["r1"]["qty"], 3.5);
+        let n = h.update_table_cell(mid, "r1", "qty", &json!(7)).unwrap();
+        assert_eq!(n["meta"]["table_state"]["r1"]["qty"], 7.0);
     }
 
     #[test]
