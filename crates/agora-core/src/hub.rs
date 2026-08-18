@@ -89,29 +89,37 @@ fn normalize_button_style(style: Option<&str>) -> &'static str {
     }
 }
 
+/// Parse a `number`-column cell value. Empty / null clears to `""`; a finite
+/// JSON number or numeric string becomes that number; anything else is `Err`.
+fn parse_number_cell(value: &Value) -> Result<Value, ()> {
+    if value.is_null() {
+        return Ok(json!(""));
+    }
+    if let Some(n) = value.as_f64().filter(|n| n.is_finite()) {
+        return Ok(json!(n));
+    }
+    if let Some(s) = value.as_str() {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Ok(json!(""));
+        }
+        if let Ok(n) = trimmed.parse::<f64>() {
+            if n.is_finite() {
+                return Ok(json!(n));
+            }
+        }
+        return Err(());
+    }
+    Err(())
+}
+
 /// Cell values round-trip as JSON numbers (when the column is `number` and the
 /// payload parses as a finite number) or clipped strings. For `number`
 /// columns, unparseable agent-seeded values become `""` rather than a string
 /// that clients cannot display in a number input.
 fn normalize_table_cell_value(kind: &str, value: &Value) -> Value {
     match kind {
-        "number" => {
-            if let Some(n) = value.as_f64().filter(|n| n.is_finite()) {
-                return json!(n);
-            }
-            if let Some(s) = value.as_str() {
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    return json!("");
-                }
-                if let Ok(n) = trimmed.parse::<f64>() {
-                    if n.is_finite() {
-                        return json!(n);
-                    }
-                }
-            }
-            json!("")
-        }
+        "number" => parse_number_cell(value).unwrap_or_else(|_| json!("")),
         _ => {
             let s = match value {
                 Value::String(s) => s.as_str(),
@@ -1308,23 +1316,7 @@ impl Hub {
         // would render empty in <input type="number"> while still reaching the
         // agent. Empty string clears the cell; anything else must be finite.
         let normalized = if kind == "number" {
-            let cleared = value
-                .as_str()
-                .map(|s| s.trim().is_empty())
-                .unwrap_or(false)
-                || value.is_null();
-            if cleared {
-                json!("")
-            } else if let Some(n) = value.as_f64().filter(|n| n.is_finite()) {
-                json!(n)
-            } else if let Some(s) = value.as_str() {
-                match s.trim().parse::<f64>() {
-                    Ok(n) if n.is_finite() => json!(n),
-                    _ => return Err("Expected a number"),
-                }
-            } else {
-                return Err("Expected a number");
-            }
+            parse_number_cell(value).map_err(|_| "Expected a number")?
         } else {
             normalize_table_cell_value(kind, value)
         };
@@ -2514,6 +2506,36 @@ mod tests {
         .unwrap();
         assert!(t["buttons"].as_array().unwrap().is_empty());
         assert_eq!(t["rows"][0]["actions"][0]["id"], "ok");
+    }
+
+    #[test]
+    fn sanitize_table_number_seeds_coerce_bad_values_to_empty() {
+        let t = sanitize_table(&json!({
+            "columns": [{"id": "qty", "kind": "number", "label": "Qty"}],
+            "rows": [{
+                "id": "r1",
+                "cells": {"qty": "n/a"},
+                "actions": [{"id": "ok", "label": "OK"}],
+            }, {
+                "id": "r2",
+                "cells": {"qty": true},
+                "actions": [{"id": "ok", "label": "OK"}],
+            }, {
+                "id": "r3",
+                "cells": {"qty": " "},
+                "actions": [{"id": "ok", "label": "OK"}],
+            }, {
+                "id": "r4",
+                "cells": {"qty": " 3.5 "},
+                "actions": [{"id": "ok", "label": "OK"}],
+            }],
+            "buttons": [],
+        }))
+        .unwrap();
+        assert_eq!(t["rows"][0]["cells"]["qty"], "");
+        assert_eq!(t["rows"][1]["cells"]["qty"], "");
+        assert_eq!(t["rows"][2]["cells"]["qty"], "");
+        assert_eq!(t["rows"][3]["cells"]["qty"], 3.5);
     }
 
     #[test]

@@ -297,7 +297,9 @@ OpenClaw wrapper, a shell script, whatever:
 // [A-Za-z0-9_-]{1,64} and unique, labels ≤ 120 chars, cell values ≤ 2000 chars.
 // Empty columns or rows after sanitizing drop the table entirely. A table
 // also needs at least one affordance to resolve it — one table-level button
-// or one surviving per-row action — otherwise it is dropped.
+// or one surviving per-row action — otherwise it is dropped. That guarantee
+// is per-table, not per-row: rows without their own actions still resolve
+// only via a table-level button (or stay unlocked until one is pressed).
 // Number-column edits: the value must be a finite number (JSON number or a
 // numeric string). An empty string clears the cell; any other non-numeric
 // value is rejected with 400 so it cannot sit invisible in a number input

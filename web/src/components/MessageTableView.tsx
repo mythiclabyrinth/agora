@@ -3,7 +3,7 @@
    confirms it. A row action locks only that row; a table-level button locks
    every still-unlocked row via meta.table_submitted. */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   useActOnTableRow,
   useSubmitTable,
@@ -24,12 +24,17 @@ function displayValue(v: string | number | undefined): string {
   return String(v);
 }
 
-function parseCommitValue(col: MessageTableColumn, draft: string): string | number {
+/** Parse a draft for the server. Invalid number drafts return null so callers
+    can skip the doomed request and show an inline error instead. */
+function parseCommitValue(
+  col: MessageTableColumn,
+  draft: string,
+): string | number | null {
   if (col.kind === "number") {
     const trimmed = draft.trim();
     if (trimmed === "") return "";
     const n = Number(trimmed);
-    return Number.isFinite(n) ? n : draft;
+    return Number.isFinite(n) ? n : null;
   }
   return draft;
 }
@@ -39,7 +44,9 @@ export function MessageTableView({ message }: { message: Message }) {
   const act = useActOnTableRow();
   const submit = useSubmitTable();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const meta = message.meta;
   const table = meta?.table && typeof meta.table === "object" ? meta.table : null;
@@ -51,12 +58,27 @@ export function MessageTableView({ message }: { message: Message }) {
   const buttons = Array.isArray(table.buttons) ? table.buttons : [];
   const tableLocked = !!tableDone;
 
+  const focusCell = (key: string) => {
+    const el = inputRefs.current[key];
+    if (el) {
+      el.focus();
+      el.select?.();
+    }
+  };
+
   const confirmCell = (rowId: string, col: MessageTableColumn) => {
     const key = cellKey(rowId, col.id);
     const draft = drafts[key];
     if (draft === undefined) return;
+    const parsed = parseCommitValue(col, draft);
+    if (parsed === null) {
+      setCellErrors(e => ({ ...e, [key]: "Enter a number" }));
+      focusCell(key);
+      return;
+    }
+    setCellErrors(e => { const n = { ...e }; delete n[key]; return n; });
     update.mutate(
-      { messageId: message.id, rowId, columnId: col.id, value: parseCommitValue(col, draft) },
+      { messageId: message.id, rowId, columnId: col.id, value: parsed },
       {
         onSuccess: () => setDrafts(d => { const n = { ...d }; delete n[key]; return n; }),
         onError: (e) => toast("Couldn't save: " + (e as Error).message, { variant: "warn" }),
@@ -64,31 +86,47 @@ export function MessageTableView({ message }: { message: Message }) {
     );
   };
 
-  const flushDrafts = async (rowId?: string) => {
+  /** Flush unlocked drafts. Returns false when an invalid number draft blocks
+      the action — that cell gets an inline error and focus. */
+  const flushDrafts = async (rowId?: string): Promise<boolean> => {
     const candidates = Object.entries(drafts).filter(([key]) =>
       rowId ? key.startsWith(`${rowId}:`) : true,
     );
-    // Locked-row drafts can never persist (409); drop them so they don't
-    // abort a table-level submit while still flushing unlocked cells.
     const stale: string[] = [];
-    const pending: [string, string][] = [];
+    const pending: [string, string, string | number][] = [];
+    const invalid: string[] = [];
     for (const [key, draft] of candidates) {
       const rid = key.split(":")[0];
       if (rid && rowLocks[rid]) {
         stale.push(key);
         continue;
       }
-      pending.push([key, draft]);
-    }
-    for (const [key, draft] of pending) {
-      const [rid, colId] = key.split(":");
+      const colId = key.slice(rid.length + 1);
       const col = table.columns.find(c => c.id === colId);
       if (!rid || !col) continue;
+      const parsed = parseCommitValue(col, draft);
+      if (parsed === null) {
+        invalid.push(key);
+        continue;
+      }
+      pending.push([key, rid, parsed]);
+    }
+    if (invalid.length) {
+      setCellErrors(e => {
+        const next = { ...e };
+        for (const key of invalid) next[key] = "Enter a number";
+        return next;
+      });
+      focusCell(invalid[0]);
+      return false;
+    }
+    for (const [key, rid, value] of pending) {
+      const colId = key.slice(rid.length + 1);
       await update.mutateAsync({
         messageId: message.id,
         rowId: rid,
-        columnId: col.id,
-        value: parseCommitValue(col, draft),
+        columnId: colId,
+        value,
       });
     }
     setDrafts(d => {
@@ -97,6 +135,13 @@ export function MessageTableView({ message }: { message: Message }) {
       for (const key of stale) delete next[key];
       return next;
     });
+    setCellErrors(e => {
+      const next = { ...e };
+      for (const [key] of pending) delete next[key];
+      for (const key of stale) delete next[key];
+      return next;
+    });
+    return true;
   };
 
   const pressRow = (rowId: string, actionId: string) => {
@@ -105,7 +150,7 @@ export function MessageTableView({ message }: { message: Message }) {
     setBusy(true);
     void (async () => {
       try {
-        await flushDrafts(rowId);
+        if (!(await flushDrafts(rowId))) return;
         await act.mutateAsync({ messageId: message.id, rowId, actionId });
       } catch (e) {
         toast("Action failed: " + (e as Error).message, { variant: "warn" });
@@ -120,7 +165,7 @@ export function MessageTableView({ message }: { message: Message }) {
     setBusy(true);
     void (async () => {
       try {
-        await flushDrafts();
+        if (!(await flushDrafts())) return;
         await submit.mutateAsync({ messageId: message.id, buttonId });
       } catch (e) {
         toast("Submit failed: " + (e as Error).message, { variant: "warn" });
@@ -163,16 +208,23 @@ export function MessageTableView({ message }: { message: Message }) {
                     const key = cellKey(row.id, col.id);
                     const draft = drafts[key];
                     const dirty = draft !== undefined && draft !== server;
+                    const err = cellErrors[key];
                     return (
                       <td key={col.id}>
                         <span className="ago-table-inwrap">
                           <input
-                            className="ago-table-input"
+                            ref={el => { inputRefs.current[key] = el; }}
+                            className={`ago-table-input${err ? " invalid" : ""}`}
                             type={col.kind === "number" ? "number" : "text"}
                             maxLength={2000}
                             aria-label={`${row.id} ${col.label}`}
+                            aria-invalid={!!err}
                             value={dirty || draft !== undefined ? draft : server}
-                            onChange={e => setDrafts(d => ({ ...d, [key]: e.target.value }))}
+                            onChange={e => {
+                              const v = e.target.value;
+                              setDrafts(d => ({ ...d, [key]: v }));
+                              if (err) setCellErrors(er => { const n = { ...er }; delete n[key]; return n; });
+                            }}
                             onKeyDown={e => {
                               if (e.key === "Enter") {
                                 e.preventDefault();
@@ -188,6 +240,7 @@ export function MessageTableView({ message }: { message: Message }) {
                             <Icon name="check" />
                           </button>
                         </span>
+                        {err ? <span className="ago-table-cell-err">{err}</span> : null}
                       </td>
                     );
                   })}
