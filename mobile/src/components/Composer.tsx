@@ -49,7 +49,13 @@ import {
 } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { OutgoingFile } from "@agora/core";
-import { fmtSize, MAX_MESSAGE_CHARS, slugify, uploadMaxBytes } from "@agora/core";
+import {
+  fmtSize,
+  isRequireAgentOn,
+  MAX_MESSAGE_CHARS,
+  slugify,
+  uploadMaxBytes,
+} from "@agora/core";
 import { toOutgoing, type LocalFile } from "../api/voice";
 import { useKeyboardVisible } from "../lib/keyboard";
 import { colors } from "../lib/theme";
@@ -241,7 +247,7 @@ export function Composer({
   );
   const showRequireAgent = !!requireAgentToggle && !!addressKey && agents.length > 0;
   const requireAgentOn = usePrefs((s) =>
-    showRequireAgent && addressKey ? s.requireAgentThreads.includes(addressKey) : false,
+    showRequireAgent && addressKey ? isRequireAgentOn(s.requireAgentOffThreads, addressKey) : false,
   );
   const toggleRequireAgent = usePrefs((s) => s.toggleRequireAgent);
   const toggleAddressed = (id: string) => {

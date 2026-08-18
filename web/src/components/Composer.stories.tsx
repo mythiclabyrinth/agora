@@ -348,7 +348,7 @@ export const ThreadReply: Story = {
   parameters: {
     docs: {
       description: {
-        story: "The composer inside an existing thread. It keeps a thread-scoped draft, omits the channel-level “reply in thread” toggle, and shows the sticky require-agent (@) control.",
+        story: "The composer inside an existing thread. It keeps a thread-scoped draft, omits the channel-level “reply in thread” toggle, and shows the sticky require-agent (@) control — on by default, so untagged replies are context rather than prompts.",
       },
     },
   },
@@ -356,13 +356,13 @@ export const ThreadReply: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByPlaceholderText("Reply in thread…")).resolves.toBeVisible();
     const toggle = await canvas.findByTitle(
-      "Agents may reply to my messages without an @mention",
+      "My replies here don't wake agents unless I tag one",
     );
-    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
   },
 };
 
-export const RequireAgentEnabled: Story = {
+export const RequireAgentDisabled: Story = {
   args: {
     threadId: 42,
     onSetReplyInThread: undefined,
@@ -370,18 +370,18 @@ export const RequireAgentEnabled: Story = {
   parameters: {
     docs: {
       description: {
-        story: "Thread composer with the sticky require-agent toggle on — untagged replies close the agent floor.",
+        story: "Thread composer with the sticky require-agent toggle switched off — the stored exception to the on-by-default behaviour, so agents answer untagged replies again.",
       },
     },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const toggle = await canvas.findByTitle(
-      "Agents may reply to my messages without an @mention",
+      "My replies here don't wake agents unless I tag one",
     );
     await userEvent.click(toggle);
     await expect(
-      canvas.findByTitle("My replies here don't wake agents unless I tag one"),
-    ).resolves.toHaveAttribute("aria-pressed", "true");
+      canvas.findByTitle("Agents may reply to my messages without an @mention"),
+    ).resolves.toHaveAttribute("aria-pressed", "false");
   },
 };

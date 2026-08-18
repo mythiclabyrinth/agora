@@ -6,9 +6,10 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { create } from "zustand";
 import {
-  disableRequireAgent,
-  enableRequireAgent,
+  forgetRequireAgentOff,
+  isRequireAgentOn,
   parseRequireAgentKeys,
+  rememberRequireAgentOff,
 } from "@agora/core";
 
 const PREFS_FILE = `${FileSystem.documentDirectory ?? ""}ui-prefs.json`;
@@ -22,8 +23,10 @@ interface PersistedPrefs {
   recentEmoji: string[];
   preferNativeApps: boolean;
   linkBrowser: LinkBrowser;
-  /** Conversation keys (`threadAddressKey`) where require-agent is on. */
-  requireAgentThreads: string[];
+  /** Conversation keys (`threadAddressKey`) where require-agent was switched
+      OFF. Absent = on, which is the default. Renamed from the old
+      `requireAgentThreads` on-list so stale blobs are ignored, not inverted. */
+  requireAgentOffThreads: string[];
 }
 
 export type LinkBrowser = "in-app" | "system" | "chrome";
@@ -39,7 +42,7 @@ interface PrefsState {
   recentEmoji: string[];
   preferNativeApps: boolean;
   linkBrowser: LinkBrowser;
-  requireAgentThreads: string[];
+  requireAgentOffThreads: string[];
   load: () => Promise<void>;
   toggleGroup: (groupId: string) => void;
   expandGroup: (groupId: string) => void;
@@ -61,7 +64,7 @@ function persist(state: PrefsState): void {
     recentEmoji: state.recentEmoji,
     preferNativeApps: state.preferNativeApps,
     linkBrowser: state.linkBrowser,
-    requireAgentThreads: state.requireAgentThreads,
+    requireAgentOffThreads: state.requireAgentOffThreads,
   };
   FileSystem.writeAsStringAsync(PREFS_FILE, JSON.stringify(data)).catch(() => {
     /* best-effort */
@@ -76,7 +79,7 @@ export const usePrefs = create<PrefsState>((set, get) => ({
   recentEmoji: [],
   preferNativeApps: true,
   linkBrowser: "in-app",
-  requireAgentThreads: [],
+  requireAgentOffThreads: [],
 
   async load() {
     try {
@@ -99,7 +102,7 @@ export const usePrefs = create<PrefsState>((set, get) => ({
         linkBrowser: ["in-app", "system", "chrome"].includes(data.linkBrowser ?? "")
           ? data.linkBrowser as LinkBrowser
           : "in-app",
-        requireAgentThreads: parseRequireAgentKeys(data.requireAgentThreads),
+        requireAgentOffThreads: parseRequireAgentKeys(data.requireAgentOffThreads),
       });
     } catch {
       set({ loaded: true }); // first run
@@ -150,14 +153,14 @@ export const usePrefs = create<PrefsState>((set, get) => ({
   },
 
   isRequireAgent(key) {
-    return get().requireAgentThreads.includes(key);
+    return isRequireAgentOn(get().requireAgentOffThreads, key);
   },
 
   setRequireAgent(key, on) {
-    const requireAgentThreads = on
-      ? enableRequireAgent(get().requireAgentThreads, key)
-      : disableRequireAgent(get().requireAgentThreads, key);
-    set({ requireAgentThreads });
+    const requireAgentOffThreads = on
+      ? forgetRequireAgentOff(get().requireAgentOffThreads, key)
+      : rememberRequireAgentOff(get().requireAgentOffThreads, key);
+    set({ requireAgentOffThreads });
     persist(get());
   },
 

@@ -19,7 +19,7 @@ beforeEach(() => {
     recentEmoji: [],
     preferNativeApps: true,
     linkBrowser: "in-app",
-    requireAgentThreads: [],
+    requireAgentOffThreads: [],
   });
 });
 
@@ -67,29 +67,42 @@ it("does not persist when the group is already expanded", () => {
   expect(mockWrite).not.toHaveBeenCalled();
 });
 
-it("persists require-agent threads with an LRU on-list", () => {
-  usePrefs.getState().setRequireAgent("general:t1", true);
-  usePrefs.getState().setRequireAgent("general:t2", true);
-  expect(usePrefs.getState().isRequireAgent("general:t1")).toBe(true);
-  const saved = JSON.parse(mockWrite.mock.calls.at(-1)![1]);
-  expect(saved.requireAgentThreads).toEqual(["general:t2", "general:t1"]);
+it("is on by default for a thread with no stored exception", () => {
+  expect(usePrefs.getState().isRequireAgent("general:t99")).toBe(true);
+});
+
+it("persists require-agent exceptions with an LRU off-list", () => {
   usePrefs.getState().setRequireAgent("general:t1", false);
+  usePrefs.getState().setRequireAgent("general:t2", false);
   expect(usePrefs.getState().isRequireAgent("general:t1")).toBe(false);
-  expect(JSON.parse(mockWrite.mock.calls.at(-1)![1]).requireAgentThreads).toEqual([
+  const saved = JSON.parse(mockWrite.mock.calls.at(-1)![1]);
+  expect(saved.requireAgentOffThreads).toEqual(["general:t2", "general:t1"]);
+  usePrefs.getState().setRequireAgent("general:t1", true);
+  expect(usePrefs.getState().isRequireAgent("general:t1")).toBe(true);
+  expect(JSON.parse(mockWrite.mock.calls.at(-1)![1]).requireAgentOffThreads).toEqual([
     "general:t2",
   ]);
 });
 
-it("loads require-agent threads defensively and defaults missing keys", async () => {
+it("loads require-agent exceptions defensively and defaults missing keys", async () => {
   mockRead.mockResolvedValue(
-    JSON.stringify({ requireAgentThreads: ["ok", 12, "", "also"] }),
+    JSON.stringify({ requireAgentOffThreads: ["ok", 12, "", "also"] }),
   );
   await usePrefs.getState().load();
-  expect(usePrefs.getState().requireAgentThreads).toEqual(["ok", "also"]);
+  expect(usePrefs.getState().requireAgentOffThreads).toEqual(["ok", "also"]);
 });
 
-it("defaults require-agent threads when an old prefs file has no key", async () => {
+it("ignores the legacy requireAgentThreads on-list instead of inverting it", async () => {
+  mockRead.mockResolvedValue(
+    JSON.stringify({ requireAgentThreads: ["general:t1"] }),
+  );
+  await usePrefs.getState().load();
+  expect(usePrefs.getState().requireAgentOffThreads).toEqual([]);
+  expect(usePrefs.getState().isRequireAgent("general:t1")).toBe(true);
+});
+
+it("defaults require-agent exceptions when an old prefs file has no key", async () => {
   mockRead.mockResolvedValue(JSON.stringify({ collapsedGroups: [], unreadsOnly: true }));
   await usePrefs.getState().load();
-  expect(usePrefs.getState().requireAgentThreads).toEqual([]);
+  expect(usePrefs.getState().requireAgentOffThreads).toEqual([]);
 });

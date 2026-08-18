@@ -112,7 +112,8 @@ export const ThreadReply: Story = {
   },
 };
 
-export const RequireAgentEnabled: Story = {
+/** Require-agent is on by default, so the interesting case is the exception. */
+export const RequireAgentDisabled: Story = {
   args: {
     placeholder: "Reply in thread",
     mentions,
@@ -124,6 +125,6 @@ export const RequireAgentEnabled: Story = {
     onSend: send,
   },
   parameters: {
-    setup: () => usePrefs.setState({ requireAgentThreads: ["general:t42"] }),
+    setup: () => usePrefs.setState({ requireAgentOffThreads: ["general:t42"] }),
   },
 };

@@ -1,15 +1,19 @@
-/* Sticky per-thread "require agent" toggle for the thread composer. Stores
-   only the conversation keys that are ON (absence = off), LRU-capped, under
-   agora_thread_require_agent — same key shape as Talk-to (`threadAddressKey`). */
+/* Sticky per-thread "require agent" toggle for the thread composer. The
+   toggle is ON by default, so this stores only the *exceptions* — keys the
+   user switched OFF (absence = on) — LRU-capped, under
+   agora_thread_require_agent_off. The storage key is deliberately new: the
+   old agora_thread_require_agent blob held ON keys, and reusing it would
+   invert every saved choice. Same key shape as Talk-to (`threadAddressKey`). */
 
 import { create } from "zustand";
 import {
-  disableRequireAgent,
-  enableRequireAgent,
+  forgetRequireAgentOff,
+  isRequireAgentOn,
   parseRequireAgentKeys,
+  rememberRequireAgentOff,
 } from "@agora/core";
 
-const STORAGE_KEY = "agora_thread_require_agent";
+const STORAGE_KEY = "agora_thread_require_agent_off";
 
 function readKeys(): string[] {
   try {
@@ -28,8 +32,8 @@ function writeKeys(keys: string[]): void {
 }
 
 interface RequireAgentState {
-  /** Conversation keys (`threadAddressKey`) where the toggle is on. */
-  onKeys: string[];
+  /** Conversation keys (`threadAddressKey`) where the toggle was switched off. */
+  offKeys: string[];
   isOn: (key: string) => boolean;
   setOn: (key: string, on: boolean) => void;
   toggle: (key: string) => void;
@@ -37,22 +41,22 @@ interface RequireAgentState {
 }
 
 export const useRequireAgent = create<RequireAgentState>((set, get) => ({
-  onKeys: typeof localStorage === "undefined" ? [] : readKeys(),
+  offKeys: typeof localStorage === "undefined" ? [] : readKeys(),
 
-  isOn: (key) => get().onKeys.includes(key),
+  isOn: (key) => isRequireAgentOn(get().offKeys, key),
 
   setOn: (key, on) => {
-    const onKeys = on
-      ? enableRequireAgent(get().onKeys, key)
-      : disableRequireAgent(get().onKeys, key);
-    writeKeys(onKeys);
-    set({ onKeys });
+    const offKeys = on
+      ? forgetRequireAgentOff(get().offKeys, key)
+      : rememberRequireAgentOff(get().offKeys, key);
+    writeKeys(offKeys);
+    set({ offKeys });
   },
 
   toggle: (key) => get().setOn(key, !get().isOn(key)),
 
   resetAll: () => {
     writeKeys([]);
-    set({ onKeys: [] });
+    set({ offKeys: [] });
   },
 }));

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   DroppedFileError, dropMaterializationLimit,
   droppedTooLargeMessage, uploadMaxBytes,
-  draftAttachmentPreviewUrl, materializeDroppedFile, MAX_MESSAGE_CHARS,
+  draftAttachmentPreviewUrl, isRequireAgentOn, materializeDroppedFile, MAX_MESSAGE_CHARS,
   mentionPrefix, threadAddressKey, useAgents, useAttachmentDrafts, useMe, useSendMessage,
   type ChannelAgent, type DraftAttachment, type OutgoingFile,
 } from "@agora/core";
@@ -144,7 +144,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const inThread = threadId != null;
   const requireAgentKey = inThread ? threadAddressKey(channelId, threadId) : null;
   const requireAgentOn = useRequireAgent(s =>
-    requireAgentKey ? s.onKeys.includes(requireAgentKey) : false,
+    requireAgentKey ? isRequireAgentOn(s.offKeys, requireAgentKey) : false,
   );
   const requireAgentToggle = useRequireAgent(s => s.toggle);
   const showRequireAgent = inThread && !isDm && agents.length > 0;
