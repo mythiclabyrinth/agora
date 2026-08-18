@@ -961,11 +961,11 @@ a.btn { text-decoration: none; }
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
 }
 .ago-table-actions { margin-top: 2px; }
-.ago-option-btn.pressed {
+.ago-table .ago-option-btn.pressed {
   background: rgba(72, 187, 120, .22); border-color: rgba(72, 187, 120, .55); color: #6ee7a0;
 }
-.ago-option-btn:disabled { opacity: .45; cursor: default; }
-.ago-option-btn.pressed:disabled { opacity: 1; }
+.ago-table .ago-option-btn:disabled { opacity: .45; cursor: default; }
+.ago-table .ago-option-btn.pressed:disabled { opacity: 1; }
 .ago-table-done.dim { color: var(--faint); font-size: 12px; font-weight: 500; }
 
 .ago-mention {

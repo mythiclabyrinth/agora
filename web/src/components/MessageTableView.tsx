@@ -65,9 +65,21 @@ export function MessageTableView({ message }: { message: Message }) {
   };
 
   const flushDrafts = async (rowId?: string) => {
-    const pending = Object.entries(drafts).filter(([key]) =>
+    const candidates = Object.entries(drafts).filter(([key]) =>
       rowId ? key.startsWith(`${rowId}:`) : true,
     );
+    // Locked-row drafts can never persist (409); drop them so they don't
+    // abort a table-level submit while still flushing unlocked cells.
+    const stale: string[] = [];
+    const pending: [string, string][] = [];
+    for (const [key, draft] of candidates) {
+      const rid = key.split(":")[0];
+      if (rid && rowLocks[rid]) {
+        stale.push(key);
+        continue;
+      }
+      pending.push([key, draft]);
+    }
     for (const [key, draft] of pending) {
       const [rid, colId] = key.split(":");
       const col = table.columns.find(c => c.id === colId);
@@ -80,15 +92,16 @@ export function MessageTableView({ message }: { message: Message }) {
       });
     }
     setDrafts(d => {
-      if (!rowId) return {};
       const next = { ...d };
       for (const [key] of pending) delete next[key];
+      for (const key of stale) delete next[key];
       return next;
     });
   };
 
   const pressRow = (rowId: string, actionId: string) => {
-    if (busy || tableLocked) return;
+    // Keep the pressed button enabled for styling, but don't re-POST.
+    if (busy || tableLocked || !!rowLocks[rowId]) return;
     setBusy(true);
     void (async () => {
       try {

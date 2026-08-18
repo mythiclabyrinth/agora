@@ -234,6 +234,48 @@ fields and two buttons. Option and form identifiers should be stable and unique
 for the interaction. See [PROTOCOL.md](PROTOCOL.md) for resolution frames and
 all validation limits.
 
+### Interactive tables
+
+Tables are a second interactive surface on a message: a grid of records with
+editable cells, per-row action buttons, and optional table-level buttons.
+
+```jsonc
+{
+  "type": "post",
+  "agent_id": "buyer",
+  "channel_id": "ops",
+  "text": "Approve or reject each line item.",
+  "table_id": "po-8841",
+  "table": {
+    "columns": [
+      {"id": "sku", "kind": "readonly", "label": "SKU"},
+      {"id": "qty", "kind": "number", "label": "Qty"},
+      {"id": "note", "kind": "text", "label": "Note"}
+    ],
+    "rows": [
+      {
+        "id": "line-1",
+        "cells": {"sku": "A-100", "qty": 3, "note": ""},
+        "actions": [
+          {"id": "approve", "label": "Approve", "style": "primary"},
+          {"id": "reject", "label": "Reject"}
+        ]
+      }
+    ],
+    "buttons": [{"id": "done", "label": "Submit remaining", "style": "primary"}]
+  }
+}
+```
+
+Cell edits share one live `table_state` among members. Pressing a row action
+locks **only that row** (`table_rows[row_id]`) and notifies the agent with
+`table_row_action` carrying that row's cells; siblings stay editable. A
+table-level button snapshots still-unlocked rows into `table_submitted`,
+locks the table, and notifies the agent with `table_submit` — already-resolved
+rows keep their prior lock. Caps: 8 columns, 50 rows, 2 actions per row, 2
+table buttons. See [PROTOCOL.md](PROTOCOL.md) for the frames and validation
+limits.
+
 ## Image attachments
 
 Use an attachment when the visual is already a raster image or cannot be

@@ -1278,14 +1278,14 @@ impl Hub {
         if kind == "readonly" {
             return Err("Column is read-only");
         }
-        let normalized = normalize_table_cell_value(kind, value);
-        if kind != "number" {
-            if let Some(s) = normalized.as_str() {
-                if s.chars().count() > MAX_FORM_VALUE_CHARS {
-                    return Err("Value too long");
-                }
+        // Reject over-long payloads before normalize clips them, matching
+        // the form field path's "Value too long" behaviour.
+        if let Some(s) = value.as_str() {
+            if s.chars().count() > MAX_FORM_VALUE_CHARS {
+                return Err("Value too long");
             }
         }
+        let normalized = normalize_table_cell_value(kind, value);
         let updated = self
             .store
             .update_table_cell(message_id, row_id, column_id, &normalized)?;
@@ -2518,6 +2518,18 @@ mod tests {
             h.act_on_row(mid, "r2", "approve", "tom"),
             Err("Table already submitted")
         );
+    }
+
+    #[test]
+    fn table_cell_rejects_overlong_value() {
+        let (h, _rx, mid) = setup_table();
+        assert_eq!(
+            h.update_table_cell(mid, "r1", "item", &json!("x".repeat(MAX_FORM_VALUE_CHARS + 1))),
+            Err("Value too long")
+        );
+        // Still editable after the rejection.
+        let updated = h.update_table_cell(mid, "r1", "item", &json!("ok")).unwrap();
+        assert_eq!(updated["meta"]["table_state"]["r1"]["item"], "ok");
     }
 
     #[test]
