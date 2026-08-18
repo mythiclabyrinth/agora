@@ -3,7 +3,7 @@
    keyboard return key (or the check icon) confirms it. A row action locks
    only that row; a table-level button locks every still-unlocked row. */
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   Alert,
   Pressable,
@@ -12,6 +12,7 @@ import {
   Text,
   TextInput,
   View,
+  type TextInput as TextInputType,
 } from "react-native";
 import { Check } from "lucide-react-native";
 import {
@@ -40,12 +41,17 @@ function displayValue(v: string | number | undefined): string {
   return String(v);
 }
 
-function parseCommitValue(col: MessageTableColumn, draft: string): string | number {
+/** Parse a draft for the server. Invalid number drafts return null so callers
+    can skip the doomed request and show an inline error instead. */
+function parseCommitValue(
+  col: MessageTableColumn,
+  draft: string,
+): string | number | null {
   if (col.kind === "number") {
     const trimmed = draft.trim();
     if (trimmed === "") return "";
     const n = Number(trimmed);
-    return Number.isFinite(n) ? n : draft;
+    return Number.isFinite(n) ? n : null;
   }
   return draft;
 }
@@ -55,7 +61,9 @@ export function MessageTable({ message }: { message: Message }) {
   const act = useActOnTableRow();
   const submit = useSubmitTable();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const inputRefs = useRef<Record<string, TextInputType | null>>({});
   // Inside a shrink-to-fit bubble nothing gives ScrollView a definite width,
   // so measure the bubble's inner width and cap the table to it.
   const [width, setWidth] = useState<number>();
@@ -95,12 +103,27 @@ export function MessageTable({ message }: { message: Message }) {
     return rest;
   };
 
+  const focusCell = (key: string) => {
+    inputRefs.current[key]?.focus();
+  };
+
   const confirmCell = (rowId: string, col: MessageTableColumn) => {
     const key = cellKey(rowId, col.id);
     const draft = drafts[key];
     if (draft === undefined) return;
+    const parsed = parseCommitValue(col, draft);
+    if (parsed === null) {
+      setCellErrors((e) => ({ ...e, [key]: "Enter a number" }));
+      focusCell(key);
+      return;
+    }
+    setCellErrors((e) => {
+      const next = { ...e };
+      delete next[key];
+      return next;
+    });
     update.mutate(
-      { messageId: message.id, rowId, columnId: col.id, value: parseCommitValue(col, draft) },
+      { messageId: message.id, rowId, columnId: col.id, value: parsed },
       {
         onSuccess: () => setDrafts((d) => dropDraft(d, key)),
         onError: (e) => fail(e, "Could not save the value"),
@@ -108,31 +131,47 @@ export function MessageTable({ message }: { message: Message }) {
     );
   };
 
-  const flushDrafts = async (rowId?: string) => {
+  /** Flush unlocked drafts. Returns false when an invalid number draft blocks
+      the action — that cell gets an inline error and focus. */
+  const flushDrafts = async (rowId?: string): Promise<boolean> => {
     const candidates = Object.entries(drafts).filter(([key]) =>
       rowId ? key.startsWith(`${rowId}:`) : true,
     );
-    // Locked-row drafts can never persist (409); drop them so they don't
-    // abort a table-level submit while still flushing unlocked cells.
     const stale: string[] = [];
-    const pending: [string, string][] = [];
+    const pending: [string, string, string | number][] = [];
+    const invalid: string[] = [];
     for (const [key, value] of candidates) {
       const rid = key.split(":")[0];
       if (rid && rowLocks[rid]) {
         stale.push(key);
         continue;
       }
-      pending.push([key, value]);
-    }
-    for (const [key, value] of pending) {
-      const [rid, columnId] = key.split(":");
-      const col = columns.find((c) => c.id === columnId);
+      const colId = key.slice(rid.length + 1);
+      const col = columns.find((c) => c.id === colId);
       if (!rid || !col) continue;
+      const parsed = parseCommitValue(col, value);
+      if (parsed === null) {
+        invalid.push(key);
+        continue;
+      }
+      pending.push([key, rid, parsed]);
+    }
+    if (invalid.length) {
+      setCellErrors((e) => {
+        const next = { ...e };
+        for (const key of invalid) next[key] = "Enter a number";
+        return next;
+      });
+      focusCell(invalid[0]);
+      return false;
+    }
+    for (const [key, rid, value] of pending) {
+      const colId = key.slice(rid.length + 1);
       await update.mutateAsync({
         messageId: message.id,
         rowId: rid,
-        columnId: col.id,
-        value: parseCommitValue(col, value),
+        columnId: colId,
+        value,
       });
     }
     setDrafts((d) => {
@@ -141,6 +180,13 @@ export function MessageTable({ message }: { message: Message }) {
       for (const key of stale) next = dropDraft(next, key);
       return next;
     });
+    setCellErrors((e) => {
+      const next = { ...e };
+      for (const [key] of pending) delete next[key];
+      for (const key of stale) delete next[key];
+      return next;
+    });
+    return true;
   };
 
   const pressRow = (rowId: string, actionId: string) => {
@@ -149,7 +195,7 @@ export function MessageTable({ message }: { message: Message }) {
     setBusy(true);
     void (async () => {
       try {
-        await flushDrafts(rowId);
+        if (!(await flushDrafts(rowId))) return;
         await act.mutateAsync({ messageId: message.id, rowId, actionId });
       } catch (e) {
         fail(e, "Could not run the action");
@@ -163,7 +209,7 @@ export function MessageTable({ message }: { message: Message }) {
     if (busy || tableLocked) return;
     setBusy(true);
     try {
-      await flushDrafts();
+      if (!(await flushDrafts())) return;
       await submit.mutateAsync({ messageId: message.id, buttonId });
     } catch (e) {
       fail(e, "Could not submit the table");
@@ -200,7 +246,7 @@ export function MessageTable({ message }: { message: Message }) {
               {};
             return (
               <View key={row.id} style={styles.tr}>
-                  {columns.map((col, i) => {
+                {columns.map((col, i) => {
                   const server = displayValue(values[col.id]);
                   if (rowLocked || col.kind === "readonly") {
                     return (
@@ -220,31 +266,52 @@ export function MessageTable({ message }: { message: Message }) {
                   const key = cellKey(row.id, col.id);
                   const draft = drafts[key];
                   const dirty = draft !== undefined && draft !== server;
+                  const err = cellErrors[key];
                   return (
                     <View key={col.id} style={[styles.editCell, { width: colWidths[i] }]}>
-                      <TextInput
-                        style={[styles.cell, styles.input, { flex: 1 }]}
-                        value={draft ?? server}
-                        editable={!busy}
-                        keyboardType={col.kind === "number" ? "numeric" : "default"}
-                        maxLength={2000}
-                        onChangeText={(text) =>
-                          setDrafts((d) =>
-                            text === server ? dropDraft(d, key) : { ...d, [key]: text },
-                          )
-                        }
-                        onSubmitEditing={() => confirmCell(row.id, col)}
-                      />
-                      {dirty ? (
-                        <Pressable
-                          style={styles.confirmBtn}
-                          onPress={() => confirmCell(row.id, col)}
-                          disabled={update.isPending || busy}
-                          hitSlop={6}
-                        >
-                          <Icon icon={Check} size={14} color="#6ee7a0" />
-                        </Pressable>
-                      ) : null}
+                      <View style={styles.editStack}>
+                        <View style={styles.editRow}>
+                          <TextInput
+                            ref={(el) => {
+                              inputRefs.current[key] = el;
+                            }}
+                            style={[
+                              styles.cell,
+                              styles.input,
+                              { flex: 1 },
+                              err ? styles.inputInvalid : null,
+                            ]}
+                            value={draft ?? server}
+                            editable={!busy}
+                            keyboardType={col.kind === "number" ? "numeric" : "default"}
+                            maxLength={2000}
+                            onChangeText={(text) => {
+                              setDrafts((d) =>
+                                text === server ? dropDraft(d, key) : { ...d, [key]: text },
+                              );
+                              if (err) {
+                                setCellErrors((e) => {
+                                  const next = { ...e };
+                                  delete next[key];
+                                  return next;
+                                });
+                              }
+                            }}
+                            onSubmitEditing={() => confirmCell(row.id, col)}
+                          />
+                          {dirty ? (
+                            <Pressable
+                              style={styles.confirmBtn}
+                              onPress={() => confirmCell(row.id, col)}
+                              disabled={update.isPending || busy}
+                              hitSlop={6}
+                            >
+                              <Icon icon={Check} size={14} color="#6ee7a0" />
+                            </Pressable>
+                          ) : null}
+                        </View>
+                        {err ? <Text style={styles.cellErr}>{err}</Text> : null}
+                      </View>
                     </View>
                   );
                 })}
@@ -358,17 +425,25 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     marginVertical: 2,
   },
+  inputInvalid: {
+    borderColor: "rgba(239,68,68,0.55)",
+  },
   locked: {
     color: colors.faint,
     backgroundColor: "transparent",
     borderColor: "transparent",
   },
   editCell: {
+    paddingRight: 4,
+    justifyContent: "center",
+  },
+  editStack: { flex: 1, gap: 2 },
+  editRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    paddingRight: 4,
   },
+  cellErr: { color: "#fca5a5", fontSize: 11, fontWeight: "500", paddingHorizontal: 4 },
   confirmBtn: {
     width: 28,
     height: 28,

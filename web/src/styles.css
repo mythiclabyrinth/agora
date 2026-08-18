@@ -956,6 +956,10 @@ a.btn { text-decoration: none; }
   border-radius: 6px; padding: 4px 8px; outline: none;
 }
 .ago-table-input:focus { border-color: var(--a1); }
+.ago-table-input.invalid { border-color: rgba(239, 68, 68, .55); }
+.ago-table-cell-err {
+  display: block; margin-top: 3px; font-size: 11px; color: #fca5a5; font-weight: 500;
+}
 .ago-table-actions-col { white-space: nowrap; }
 .ago-table-row-actions, .ago-table-actions {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
