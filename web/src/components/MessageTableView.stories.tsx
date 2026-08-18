@@ -97,15 +97,29 @@ export const EditingACell: Story = {
   },
 };
 
-/** Approving one row sends that row's values and leaves the rest alone.
-    (The client's "Enter a number" guard has no web story: `type="number"`
-    means the browser sanitizes a bad value before React sees it, so the
-    guard is only reachable on mobile, where `keyboardType` is a hint.) */
+/** Approving one row sends that row's values and leaves the rest alone. */
 export const ApprovingARow: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getAllByRole("button", { name: "Approve" })[0]);
     await expect(actOnRow).toHaveBeenCalled();
+  },
+};
+
+/** A number column refuses a value that isn't a number: the cell says why,
+    the row action is blocked, and no request goes out. Reachable only
+    because number cells are type="text" — a type="number" input would have
+    reported "" and silently cleared the cell instead. */
+export const InvalidNumber: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    saveCell.mockClear();
+    const amount = canvas.getByLabelText("txn_1 Amount");
+    await userEvent.clear(amount);
+    await userEvent.type(amount, "1,234");
+    await userEvent.click(canvas.getAllByRole("button", { name: "Approve" })[0]);
+    await expect(await canvas.findByText("Enter a number")).toBeInTheDocument();
+    await expect(saveCell).not.toHaveBeenCalled();
   },
 };
 

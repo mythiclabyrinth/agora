@@ -211,11 +211,19 @@ export function MessageTableView({ message }: { message: Message }) {
                     const err = cellErrors[key];
                     return (
                       <td key={col.id}>
+                        {/* Number columns use type="text" + inputMode, not
+                            type="number": a number input in the badInput
+                            state (paste "1,234", type "1e") reports value=""
+                            while still showing the text, so the raw draft
+                            never reached parseCommitValue and a bad value
+                            silently cleared the shared cell instead of
+                            raising "Enter a number". */}
                         <span className="ago-table-inwrap">
                           <input
                             ref={el => { inputRefs.current[key] = el; }}
                             className={`ago-table-input${err ? " invalid" : ""}`}
-                            type={col.kind === "number" ? "number" : "text"}
+                            type="text"
+                            inputMode={col.kind === "number" ? "decimal" : undefined}
                             maxLength={2000}
                             aria-label={`${row.id} ${col.label}`}
                             aria-invalid={!!err}
