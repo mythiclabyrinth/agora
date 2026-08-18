@@ -2102,6 +2102,184 @@ impl Store {
         self.message(message_id).ok_or("Message not found")
     }
 
+    /// Load a message's meta for a table mutation, or the error the caller
+    /// should surface: rows without a table can't take table writes, and a
+    /// table-level lock refuses everything. Callers hold the connection lock.
+    fn load_table_meta(
+        conn: &rusqlite::Connection,
+        message_id: i64,
+    ) -> Result<Value, &'static str> {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT meta FROM messages WHERE id = ?1",
+                params![message_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "Message not found")?;
+        let meta = raw
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or(Value::Null);
+        if !meta.get("table").map(|t| t.is_object()).unwrap_or(false) {
+            return Err("Message has no table");
+        }
+        if meta
+            .get("table_submitted")
+            .map(|r| !r.is_null())
+            .unwrap_or(false)
+        {
+            return Err("Table already submitted");
+        }
+        Ok(meta)
+    }
+
+    /// Set one cell in a message's shared table state and return the updated
+    /// message. Read-check-write under one connection lock so two members
+    /// editing different cells (or different rows) do not clobber each
+    /// other, and an edit cannot slip past a concurrent row/table lock.
+    pub fn update_table_cell(
+        &self,
+        message_id: i64,
+        row_id: &str,
+        column_id: &str,
+        value: &Value,
+    ) -> Result<Value, &'static str> {
+        {
+            let conn = self.conn.lock().unwrap();
+            let mut meta = Self::load_table_meta(&conn, message_id)?;
+            let rows_lock = meta.get("table_rows").cloned().unwrap_or_else(|| json!({}));
+            if rows_lock
+                .as_object()
+                .map(|m| m.contains_key(row_id))
+                .unwrap_or(false)
+            {
+                return Err("Row already resolved");
+            }
+            let obj = meta.as_object_mut().unwrap();
+            let state = obj.entry("table_state").or_insert_with(|| json!({}));
+            if !state.is_object() {
+                *state = json!({});
+            }
+            let row_state = state
+                .as_object_mut()
+                .unwrap()
+                .entry(row_id.to_string())
+                .or_insert_with(|| json!({}));
+            if !row_state.is_object() {
+                *row_state = json!({});
+            }
+            row_state
+                .as_object_mut()
+                .unwrap()
+                .insert(column_id.to_string(), value.clone());
+            conn.execute(
+                "UPDATE messages SET meta = ?1 WHERE id = ?2",
+                params![meta.to_string(), message_id],
+            )
+            .map_err(|_| "Failed to update message")?;
+        }
+        self.message(message_id).ok_or("Message not found")
+    }
+
+    /// Lock one table row: record the pressed action plus a snapshot of that
+    /// row's shared cells. Check-and-set under one connection lock so exactly
+    /// one presser wins — the loser gets "Row already resolved".
+    pub fn resolve_row(
+        &self,
+        message_id: i64,
+        row_id: &str,
+        action_id: &str,
+        by: &str,
+    ) -> Result<Value, &'static str> {
+        {
+            let conn = self.conn.lock().unwrap();
+            let mut meta = Self::load_table_meta(&conn, message_id)?;
+            let values = meta
+                .get("table_state")
+                .and_then(|s| s.get(row_id))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let obj = meta.as_object_mut().unwrap();
+            let table_rows = obj.entry("table_rows").or_insert_with(|| json!({}));
+            if !table_rows.is_object() {
+                *table_rows = json!({});
+            }
+            let rows_map = table_rows.as_object_mut().unwrap();
+            if rows_map.contains_key(row_id) {
+                return Err("Row already resolved");
+            }
+            rows_map.insert(
+                row_id.to_string(),
+                json!({
+                    "action_id": action_id,
+                    "by": by,
+                    "ts": now(),
+                    "values": values,
+                }),
+            );
+            conn.execute(
+                "UPDATE messages SET meta = ?1 WHERE id = ?2",
+                params![meta.to_string(), message_id],
+            )
+            .map_err(|_| "Failed to update message")?;
+        }
+        self.message(message_id).ok_or("Message not found")
+    }
+
+    /// Lock a table at the table level: snapshot every still-unlocked row's
+    /// shared cells into `table_submitted.rows`, leave already-resolved rows
+    /// as they were in `table_rows`, and return the updated message.
+    pub fn submit_table(
+        &self,
+        message_id: i64,
+        button_id: &str,
+        by: &str,
+    ) -> Result<Value, &'static str> {
+        {
+            let conn = self.conn.lock().unwrap();
+            let mut meta = Self::load_table_meta(&conn, message_id)?;
+            let resolved = meta
+                .get("table_rows")
+                .and_then(|r| r.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let state = meta
+                .get("table_state")
+                .and_then(|s| s.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let spec_rows = meta
+                .get("table")
+                .and_then(|t| t.get("rows"))
+                .and_then(|r| r.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut rows_snap = serde_json::Map::new();
+            for row in &spec_rows {
+                let Some(row_id) = row["id"].as_str() else { continue };
+                if resolved.contains_key(row_id) {
+                    continue;
+                }
+                let values = state.get(row_id).cloned().unwrap_or_else(|| json!({}));
+                rows_snap.insert(row_id.to_string(), values);
+            }
+            meta.as_object_mut().unwrap().insert(
+                "table_submitted".into(),
+                json!({
+                    "button_id": button_id,
+                    "by": by,
+                    "ts": now(),
+                    "rows": rows_snap,
+                }),
+            );
+            conn.execute(
+                "UPDATE messages SET meta = ?1 WHERE id = ?2",
+                params![meta.to_string(), message_id],
+            )
+            .map_err(|_| "Failed to update message")?;
+        }
+        self.message(message_id).ok_or("Message not found")
+    }
+
     /// Delete one message. A thread root takes its replies with it (replies
     /// pointing at a deleted root would dangle — same rule as
     /// [`Store::delete_user_data`]), along with everything keyed to the

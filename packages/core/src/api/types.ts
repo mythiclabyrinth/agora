@@ -142,6 +142,37 @@ export interface MessageForm {
   buttons: FormButton[];
 }
 
+/** One column of an interactive table (meta.table). */
+export interface MessageTableColumn {
+  id: string;
+  label: string;
+  kind: "text" | "number" | "readonly";
+  /** Optional CSS-px width hint from the agent. */
+  width?: number;
+}
+
+export interface MessageTableAction {
+  id: string;
+  label: string;
+  style?: "primary" | "secondary" | string;
+}
+
+export interface MessageTableRow {
+  id: string;
+  cells: Record<string, string | number>;
+  actions: MessageTableAction[];
+}
+
+/** An agent-authored editable table of records inside a message bubble.
+    Cell edits share `meta.table_state`; a row action locks that row in
+    `meta.table_rows`; a table-level button locks the rest via
+    `meta.table_submitted`. */
+export interface MessageTable {
+  columns: MessageTableColumn[];
+  rows: MessageTableRow[];
+  buttons: FormButton[];
+}
+
 /** Link metadata for source chips and unfurl cards. Entries start as bare
     URLs; the server enriches them asynchronously (title/description/image
     arrive on a message_update once the page is fetched). */
@@ -249,6 +280,25 @@ export interface MessageMeta {
     by?: string;
     ts?: number;
     values?: Record<string, string | boolean>;
+  } | null;
+  /* Interactive table: spec, shared live cells, per-row locks, table lock. */
+  table?: MessageTable;
+  table_id?: string;
+  table_state?: Record<string, Record<string, string | number>>;
+  table_rows?: Record<
+    string,
+    {
+      action_id: string;
+      by?: string;
+      ts?: number;
+      values?: Record<string, string | number>;
+    }
+  >;
+  table_submitted?: {
+    button_id: string;
+    by?: string;
+    ts?: number;
+    rows?: Record<string, Record<string, string | number>>;
   } | null;
   /* Agent-authored, server-sanitized presentation data. Clients dispatch on
      type + version and degrade visibly when they do not support a renderer. */

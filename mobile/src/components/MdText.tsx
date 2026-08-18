@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { normalizeEChart, parseMd, type NormalizedEChart, type Span } from "@agora/core";
 import { openLink } from "../lib/openLink";
 import { colors, mono } from "../lib/theme";
+import { columnWidths } from "../lib/tableLayout";
 import { MermaidBlock } from "./Mermaid";
 import { ChartModal, EChartBlock } from "./EChart";
 
@@ -37,47 +38,7 @@ function Spans({ spans }: { spans: Span[] }) {
   );
 }
 
-/* ---------------------------------------------------------- table columns
-   RN has no table layout: each row is an independent flex row, so cells that
-   size to their own content drift out of column alignment row by row. Fix
-   the width of every column up front, estimated from the content it holds:
-
-   - a column is sized to fit its widest *typical* value (and its header),
-   - a rare outlier — a value far wider than the column's 75th percentile —
-     does not drag the whole column wide; it wraps inside the column and the
-     row grows taller instead,
-   - everything is clamped to [MIN_COL, MAX_COL] so degenerate content can't
-     produce absurd columns. */
-
-const MIN_COL = 80;
-const MAX_COL = 260;
-const CELL_HPAD = 20; // styles.cell paddingHorizontal * 2
-const CHAR_W = 8; // ~average glyph width of the system font at fontSize 13.5
-
-function estimateWidth(spans: Span[]): number {
-  const chars = spans.reduce((n, s) => n + s.text.length, 0);
-  return chars * CHAR_W + CELL_HPAD;
-}
-
-export function columnWidths(head: Span[][], rows: Span[][][]): number[] {
-  const cols = Math.max(head.length, ...rows.map((r) => r.length), 0);
-  const widths: number[] = [];
-  for (let c = 0; c < cols; c++) {
-    const ests = rows
-      .map((r) => (r[c] ? estimateWidth(r[c]) : 0))
-      .filter((w) => w > 0)
-      .sort((a, b) => a - b);
-    const headerEst = head[c] ? estimateWidth(head[c]) : 0;
-    const p75 = ests.length ? ests[Math.max(0, Math.ceil(ests.length * 0.75) - 1)] : 0;
-    // Widest value that still counts as typical; anything beyond wraps.
-    const typicalMax = Math.min(ests.length ? ests[ests.length - 1] : 0, p75 * 1.5);
-    // Headers get full weight — a wrapped header reads worse than a slightly
-    // wide column of short values.
-    const target = Math.max(typicalMax, headerEst, MIN_COL);
-    widths.push(Math.ceil(Math.min(target, MAX_COL)));
-  }
-  return widths;
-}
+export { columnWidths } from "../lib/tableLayout";
 
 export function MdText({ text, onLongPress }: { text: string; onLongPress?: () => void }) {
   const blocks = React.useMemo(() => {

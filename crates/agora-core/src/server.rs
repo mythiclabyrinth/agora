@@ -395,6 +395,18 @@ pub fn router(state: AppState) -> Router {
             "/api/messages/{message_id}/form_submit",
             post(submit_message_form),
         )
+        .route(
+            "/api/messages/{message_id}/table_cell",
+            post(update_message_table_cell),
+        )
+        .route(
+            "/api/messages/{message_id}/table_action",
+            post(act_on_message_table_row),
+        )
+        .route(
+            "/api/messages/{message_id}/table_submit",
+            post(submit_message_table),
+        )
         .route("/api/messages/{message_id}/speech", get(message_speech))
         .route("/api/search", get(search))
         .route("/api/search/ask", post(search_ask))
@@ -2116,6 +2128,108 @@ async fn submit_message_form(
         Ok(message) => Ok(Json(message)),
         Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
         Err(msg @ "Form already submitted") => Err(err(StatusCode::CONFLICT, msg)),
+        Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
+    }
+}
+
+/// Persist one member's confirmed edit to a table cell. Fans out as
+/// `message_update`; the authoring agent hears nothing until a row action
+/// or table-level submit.
+async fn update_message_table_cell(
+    State(state): State<AppState>,
+    Path(message_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_message_visible(&state, &user, message_id)?;
+    let row_id = payload["row_id"].as_str().unwrap_or("").trim().to_string();
+    let column_id = payload["column_id"].as_str().unwrap_or("").trim().to_string();
+    if row_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "row_id required"));
+    }
+    if column_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "column_id required"));
+    }
+    let value = payload.get("value").cloned().unwrap_or(Value::Null);
+    let hub = Arc::clone(&state.hub);
+    let result = tokio::task::spawn_blocking(move || {
+        hub.update_table_cell(message_id, &row_id, &column_id, &value)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "table task failed"))?;
+    match result {
+        Ok(message) => Ok(Json(message)),
+        Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
+        Err(msg @ ("Table already submitted" | "Row already resolved")) => {
+            Err(err(StatusCode::CONFLICT, msg))
+        }
+        Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
+    }
+}
+
+/// Press a per-row table action: locks that row one-shot (the race loser
+/// gets a 409) and forwards `table_row_action` to the authoring agent.
+async fn act_on_message_table_row(
+    State(state): State<AppState>,
+    Path(message_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_message_visible(&state, &user, message_id)?;
+    let row_id = payload["row_id"].as_str().unwrap_or("").trim().to_string();
+    let action_id = payload["action_id"].as_str().unwrap_or("").trim().to_string();
+    if row_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "row_id required"));
+    }
+    if action_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "action_id required"));
+    }
+    let hub = Arc::clone(&state.hub);
+    let username = user.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        hub.act_on_row(message_id, &row_id, &action_id, &username)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "table action task failed"))?;
+    match result {
+        Ok(message) => Ok(Json(message)),
+        Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
+        Err(msg @ ("Table already submitted" | "Row already resolved")) => {
+            Err(err(StatusCode::CONFLICT, msg))
+        }
+        Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
+    }
+}
+
+/// Press a table-level button: snapshots still-unlocked rows, locks the
+/// table one-shot, and forwards `table_submit` to the authoring agent.
+async fn submit_message_table(
+    State(state): State<AppState>,
+    Path(message_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_message_visible(&state, &user, message_id)?;
+    let button_id = payload["button_id"].as_str().unwrap_or("").trim().to_string();
+    if button_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "button_id required"));
+    }
+    let hub = Arc::clone(&state.hub);
+    let username = user.username.clone();
+    let result =
+        tokio::task::spawn_blocking(move || hub.submit_table(message_id, &button_id, &username))
+            .await
+            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "table submit task failed"))?;
+    match result {
+        Ok(message) => Ok(Json(message)),
+        Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
+        Err(msg @ "Table already submitted") => Err(err(StatusCode::CONFLICT, msg)),
         Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
     }
 }
@@ -5042,6 +5156,8 @@ mod tests {
                 "buttons": [{"id": "log", "label": "Log it", "style": "primary"}],
             })),
             Some("daily-1"),
+            None,
+            None,
             None,
             vec![],
         );

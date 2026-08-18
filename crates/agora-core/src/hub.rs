@@ -65,47 +65,90 @@ pub const MAX_FORM_FIELDS: usize = 12;
 pub const MAX_FORM_BUTTONS: usize = 2;
 pub const MAX_FORM_LABEL_CHARS: usize = 120;
 pub const MAX_FORM_VALUE_CHARS: usize = 2_000;
+pub const MAX_TABLE_ROWS: usize = 50;
+pub const MAX_TABLE_COLUMNS: usize = 8;
+pub const MAX_ROW_ACTIONS: usize = 2;
+pub const MAX_TABLE_BUTTONS: usize = 2;
+
+fn clean_meta_id(v: &Value) -> Option<String> {
+    let id = v.as_str()?.trim();
+    let ok = !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    ok.then(|| id.to_string())
+}
+
+fn clip_meta_label(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn normalize_button_style(style: Option<&str>) -> &'static str {
+    match style {
+        Some("primary") => "primary",
+        _ => "secondary",
+    }
+}
+
+/// Cell values round-trip as JSON numbers (when the column is `number` and the
+/// payload parses) or clipped strings. Non-finite numbers fall back to "".
+fn normalize_table_cell_value(kind: &str, value: &Value) -> Value {
+    match kind {
+        "number" => {
+            if let Some(n) = value.as_f64().filter(|n| n.is_finite()) {
+                return json!(n);
+            }
+            if let Some(s) = value.as_str() {
+                if let Ok(n) = s.trim().parse::<f64>() {
+                    if n.is_finite() {
+                        return json!(n);
+                    }
+                }
+                return json!(clip_meta_label(s, MAX_FORM_VALUE_CHARS));
+            }
+            json!("")
+        }
+        _ => {
+            let s = match value {
+                Value::String(s) => s.as_str(),
+                Value::Number(n) => return json!(clip_meta_label(&n.to_string(), MAX_FORM_VALUE_CHARS)),
+                Value::Bool(b) => return json!(if *b { "true" } else { "false" }),
+                _ => "",
+            };
+            json!(clip_meta_label(s, MAX_FORM_VALUE_CHARS))
+        }
+    }
+}
 
 /// Validate and normalize an agent-supplied form spec into the stored
 /// `meta.form` shape: `fields` of kind `input`/`checkbox` (each with an id
 /// safe to round-trip, a label, and a typed initial `value`) plus one or two
 /// `buttons` whose `style` is normalized to `primary`/`secondary`.
 pub fn sanitize_form(form: &Value) -> Option<Value> {
-    fn clean_id(v: &Value) -> Option<String> {
-        let id = v.as_str()?.trim();
-        let ok = !id.is_empty()
-            && id.len() <= 64
-            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-        ok.then(|| id.to_string())
-    }
-    fn clip(s: &str, max: usize) -> String {
-        s.chars().take(max).collect()
-    }
     let mut fields = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for f in form.get("fields")?.as_array()? {
         if fields.len() == MAX_FORM_FIELDS {
             break;
         }
-        let Some(id) = clean_id(&f["id"]) else { continue };
+        let Some(id) = clean_meta_id(&f["id"]) else { continue };
         let kind = match f["kind"].as_str() {
             Some(k @ ("input" | "checkbox")) => k,
             _ => continue,
         };
-        let label = clip(f["label"].as_str().unwrap_or("").trim(), MAX_FORM_LABEL_CHARS);
+        let label = clip_meta_label(f["label"].as_str().unwrap_or("").trim(), MAX_FORM_LABEL_CHARS);
         if label.is_empty() || !seen.insert(id.clone()) {
             continue;
         }
         let mut field = json!({"id": id, "kind": kind, "label": label});
         if kind == "input" {
             if let Some(p) = f["placeholder"].as_str() {
-                let p = clip(p.trim(), MAX_FORM_LABEL_CHARS);
+                let p = clip_meta_label(p.trim(), MAX_FORM_LABEL_CHARS);
                 if !p.is_empty() {
                     field["placeholder"] = json!(p);
                 }
             }
             field["value"] =
-                json!(clip(f["value"].as_str().unwrap_or(""), MAX_FORM_VALUE_CHARS));
+                json!(clip_meta_label(f["value"].as_str().unwrap_or(""), MAX_FORM_VALUE_CHARS));
         } else {
             field["value"] = json!(f["value"].as_bool().unwrap_or(false));
         }
@@ -117,22 +160,125 @@ pub fn sanitize_form(form: &Value) -> Option<Value> {
         if buttons.len() == MAX_FORM_BUTTONS {
             break;
         }
-        let Some(id) = clean_id(&b["id"]) else { continue };
-        let label = clip(b["label"].as_str().unwrap_or("").trim(), MAX_FORM_LABEL_CHARS);
+        let Some(id) = clean_meta_id(&b["id"]) else { continue };
+        let label = clip_meta_label(b["label"].as_str().unwrap_or("").trim(), MAX_FORM_LABEL_CHARS);
         if label.is_empty() || !seen_buttons.insert(id.clone()) {
             continue;
         }
-        let style = match b["style"].as_str() {
-            Some("primary") => "primary",
-            _ => "secondary",
-        };
-        buttons.push(json!({"id": id, "label": label, "style": style}));
+        buttons.push(json!({
+            "id": id,
+            "label": label,
+            "style": normalize_button_style(b["style"].as_str()),
+        }));
     }
     if fields.is_empty() || buttons.is_empty() {
         return None;
     }
     Some(json!({"fields": fields, "buttons": buttons}))
 }
+
+/// Validate and normalize an agent-supplied interactive table into the stored
+/// `meta.table` shape: `columns` (`text`/`number`/`readonly`), `rows` with
+/// cells + up to two per-row actions, and up to two table-level `buttons`.
+/// Dropped entirely when no usable columns or rows survive sanitizing.
+pub fn sanitize_table(table: &Value) -> Option<Value> {
+    let mut columns = Vec::new();
+    let mut seen_cols = std::collections::HashSet::new();
+    for c in table.get("columns")?.as_array()? {
+        if columns.len() == MAX_TABLE_COLUMNS {
+            break;
+        }
+        let Some(id) = clean_meta_id(&c["id"]) else { continue };
+        let kind = match c["kind"].as_str() {
+            Some(k @ ("text" | "number" | "readonly")) => k,
+            _ => continue,
+        };
+        let label = clip_meta_label(c["label"].as_str().unwrap_or("").trim(), MAX_FORM_LABEL_CHARS);
+        if label.is_empty() || !seen_cols.insert(id.clone()) {
+            continue;
+        }
+        let mut col = json!({"id": id, "kind": kind, "label": label});
+        if let Some(w) = c.get("width").and_then(|v| v.as_u64()).filter(|&w| w > 0) {
+            col["width"] = json!(w.min(MAX_COL_WIDTH as u64));
+        }
+        columns.push(col);
+    }
+    if columns.is_empty() {
+        return None;
+    }
+
+    let mut rows = Vec::new();
+    let mut seen_rows = std::collections::HashSet::new();
+    for r in table.get("rows")?.as_array()? {
+        if rows.len() == MAX_TABLE_ROWS {
+            break;
+        }
+        let Some(id) = clean_meta_id(&r["id"]) else { continue };
+        if !seen_rows.insert(id.clone()) {
+            continue;
+        }
+        let mut cells = serde_json::Map::new();
+        let raw_cells = r.get("cells").and_then(|v| v.as_object());
+        for col in &columns {
+            let col_id = col["id"].as_str().unwrap();
+            let kind = col["kind"].as_str().unwrap();
+            let raw = raw_cells
+                .and_then(|m| m.get(col_id))
+                .cloned()
+                .unwrap_or(Value::Null);
+            cells.insert(col_id.to_string(), normalize_table_cell_value(kind, &raw));
+        }
+        let mut actions = Vec::new();
+        let mut seen_actions = std::collections::HashSet::new();
+        for a in r.get("actions").and_then(|v| v.as_array()).into_iter().flatten() {
+            if actions.len() == MAX_ROW_ACTIONS {
+                break;
+            }
+            let Some(aid) = clean_meta_id(&a["id"]) else { continue };
+            let label =
+                clip_meta_label(a["label"].as_str().unwrap_or("").trim(), MAX_FORM_LABEL_CHARS);
+            if label.is_empty() || !seen_actions.insert(aid.clone()) {
+                continue;
+            }
+            actions.push(json!({
+                "id": aid,
+                "label": label,
+                "style": normalize_button_style(a["style"].as_str()),
+            }));
+        }
+        rows.push(json!({"id": id, "cells": cells, "actions": actions}));
+    }
+    if rows.is_empty() {
+        return None;
+    }
+
+    let mut buttons = Vec::new();
+    let mut seen_buttons = std::collections::HashSet::new();
+    for b in table
+        .get("buttons")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if buttons.len() == MAX_TABLE_BUTTONS {
+            break;
+        }
+        let Some(id) = clean_meta_id(&b["id"]) else { continue };
+        let label = clip_meta_label(b["label"].as_str().unwrap_or("").trim(), MAX_FORM_LABEL_CHARS);
+        if label.is_empty() || !seen_buttons.insert(id.clone()) {
+            continue;
+        }
+        buttons.push(json!({
+            "id": id,
+            "label": label,
+            "style": normalize_button_style(b["style"].as_str()),
+        }));
+    }
+    Some(json!({"columns": columns, "rows": rows, "buttons": buttons}))
+}
+
+/// Soft cap for an optional agent-supplied column width hint (CSS px).
+const MAX_COL_WIDTH: usize = 480;
 
 /// Minimum gap between notifications for the same channel, so a burst of
 /// agent replies (or a bot exchange) becomes one banner, not a pile.
@@ -817,7 +963,7 @@ impl Hub {
     ) -> Value {
         self.post_agent_message_with_options(
             agent_id, agent_name, channel_id, text, thread_id, None, None, None, None, None, None,
-            None, vec![],
+            None, None, None, vec![],
         )
     }
 
@@ -857,6 +1003,8 @@ impl Hub {
         sources: Option<&Value>,
         form: Option<&Value>,
         form_id: Option<&str>,
+        table: Option<&Value>,
+        table_id: Option<&str>,
         artifacts: Option<&Value>,
         attachments: Vec<NewAttachment>,
     ) -> Value {
@@ -883,6 +1031,26 @@ impl Hub {
             meta_obj.insert("form_id".into(), json!(form_id.unwrap_or("")));
             meta_obj.insert("form_state".into(), Value::Object(state));
             meta_obj.insert("form_submitted".into(), Value::Null);
+        }
+        // An interactive table: sanitized columns/rows/buttons, shared live
+        // cell edits (seeded from each row's cells), per-row locks, and the
+        // not-yet-submitted table-level lock. A bad table is dropped while
+        // the post still lands.
+        if let Some(sanitized) = table.and_then(sanitize_table) {
+            let mut state = serde_json::Map::new();
+            for row in sanitized["rows"].as_array().into_iter().flatten() {
+                if let Some(row_id) = row["id"].as_str() {
+                    state.insert(
+                        row_id.to_string(),
+                        row.get("cells").cloned().unwrap_or_else(|| json!({})),
+                    );
+                }
+            }
+            meta_obj.insert("table".into(), sanitized);
+            meta_obj.insert("table_id".into(), json!(table_id.unwrap_or("")));
+            meta_obj.insert("table_state".into(), Value::Object(state));
+            meta_obj.insert("table_rows".into(), json!({}));
+            meta_obj.insert("table_submitted".into(), Value::Null);
         }
         if let Some(t) = tldr {
             meta_obj.insert("tldr".into(), json!(t));
@@ -1071,6 +1239,154 @@ impl Hub {
                 "channel_id": channel_id,
                 "thread_id": updated["thread_id"],
                 "values": updated["meta"]["form_submitted"]["values"],
+                "user": {"id": user, "name": user},
+            });
+            let _ = handle.tx.send(frame);
+        }
+        Ok(updated)
+    }
+
+    /// Persist one member's confirmed edit to a table cell and fan the
+    /// updated message out. Draft typing never reaches the authoring agent;
+    /// only [`Hub::act_on_row`] / [`Hub::submit_table`] do.
+    pub fn update_table_cell(
+        &self,
+        message_id: i64,
+        row_id: &str,
+        column_id: &str,
+        value: &Value,
+    ) -> Result<Value, &'static str> {
+        let message = self.store.message(message_id).ok_or("Message not found")?;
+        let meta = message.get("meta").cloned().unwrap_or(Value::Null);
+        let table = meta.get("table").ok_or("Message has no table")?;
+        let columns = table
+            .get("columns")
+            .and_then(|c| c.as_array())
+            .ok_or("Message has no table")?;
+        let rows = table
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .ok_or("Message has no table")?;
+        if !rows.iter().any(|r| r["id"].as_str() == Some(row_id)) {
+            return Err("Unknown row");
+        }
+        let column = columns
+            .iter()
+            .find(|c| c["id"].as_str() == Some(column_id))
+            .ok_or("Unknown column")?;
+        let kind = column["kind"].as_str().ok_or("Unknown column")?;
+        if kind == "readonly" {
+            return Err("Column is read-only");
+        }
+        let normalized = normalize_table_cell_value(kind, value);
+        if kind != "number" {
+            if let Some(s) = normalized.as_str() {
+                if s.chars().count() > MAX_FORM_VALUE_CHARS {
+                    return Err("Value too long");
+                }
+            }
+        }
+        let updated = self
+            .store
+            .update_table_cell(message_id, row_id, column_id, &normalized)?;
+        let channel_id = updated["channel_id"].as_str().unwrap_or_default();
+        self.broadcast(
+            channel_id,
+            &json!({"type": "message_update", "message": updated}),
+        );
+        Ok(updated)
+    }
+
+    /// Press one of a row's action buttons: lock that row with a snapshot of
+    /// its shared cells, update all UIs, and notify the authoring agent with
+    /// a ``table_row_action`` frame. Other rows stay editable.
+    pub fn act_on_row(
+        &self,
+        message_id: i64,
+        row_id: &str,
+        action_id: &str,
+        user: &str,
+    ) -> Result<Value, &'static str> {
+        let message = self.store.message(message_id).ok_or("Message not found")?;
+        let meta = message.get("meta").cloned().unwrap_or(Value::Null);
+        let rows = meta
+            .get("table")
+            .and_then(|t| t.get("rows"))
+            .and_then(|r| r.as_array())
+            .ok_or("Message has no table")?;
+        let row = rows
+            .iter()
+            .find(|r| r["id"].as_str() == Some(row_id))
+            .ok_or("Unknown row")?;
+        let actions = row
+            .get("actions")
+            .and_then(|a| a.as_array())
+            .ok_or("Unknown action")?;
+        if !actions.iter().any(|a| a["id"].as_str() == Some(action_id)) {
+            return Err("Unknown action");
+        }
+        let updated = self.store.resolve_row(message_id, row_id, action_id, user)?;
+        let channel_id = updated["channel_id"].as_str().unwrap_or_default().to_string();
+        self.broadcast(
+            &channel_id,
+            &json!({"type": "message_update", "message": updated}),
+        );
+        let agent_id = updated["author_id"].as_str().unwrap_or_default();
+        if let Some(handle) = self.agent_handle(agent_id) {
+            let values = updated["meta"]["table_rows"][row_id]["values"].clone();
+            let frame = json!({
+                "type": "table_row_action",
+                "agent_id": agent_id,
+                "table_id": updated["meta"]["table_id"],
+                "row_id": row_id,
+                "action_id": action_id,
+                "message_id": message_id,
+                "channel_id": channel_id,
+                "thread_id": updated["thread_id"],
+                "values": values,
+                "user": {"id": user, "name": user},
+            });
+            let _ = handle.tx.send(frame);
+        }
+        Ok(updated)
+    }
+
+    /// Press a table-level button: snapshot and lock every still-unlocked
+    /// row, update all UIs, and notify the authoring agent with a
+    /// ``table_submit`` frame. Already-resolved rows keep their prior lock.
+    pub fn submit_table(
+        &self,
+        message_id: i64,
+        button_id: &str,
+        user: &str,
+    ) -> Result<Value, &'static str> {
+        let message = self.store.message(message_id).ok_or("Message not found")?;
+        let meta = message.get("meta").cloned().unwrap_or(Value::Null);
+        let buttons = meta
+            .get("table")
+            .and_then(|t| t.get("buttons"))
+            .and_then(|b| b.as_array())
+            .ok_or("Message has no table")?;
+        if !buttons.iter().any(|b| b["id"].as_str() == Some(button_id)) {
+            return Err("Unknown button");
+        }
+        let updated = self.store.submit_table(message_id, button_id, user)?;
+        let channel_id = updated["channel_id"].as_str().unwrap_or_default().to_string();
+        self.broadcast(
+            &channel_id,
+            &json!({"type": "message_update", "message": updated}),
+        );
+        let agent_id = updated["author_id"].as_str().unwrap_or_default();
+        if let Some(handle) = self.agent_handle(agent_id) {
+            let frame = json!({
+                "type": "table_submit",
+                "agent_id": agent_id,
+                "table_id": updated["meta"]["table_id"],
+                "button_id": button_id,
+                "message_id": message_id,
+                "channel_id": channel_id,
+                "thread_id": updated["thread_id"],
+                "rows": updated["meta"]["table_submitted"]["rows"],
                 "user": {"id": user, "name": user},
             });
             let _ = handle.tx.send(frame);
@@ -1544,6 +1860,8 @@ impl Hub {
                         frame.get("sources"),
                         frame.get("form"),
                         frame["form_id"].as_str(),
+                        frame.get("table"),
+                        frame["table_id"].as_str(),
                         frame.get("artifacts"),
                         attachments,
                     );
@@ -2060,6 +2378,146 @@ mod tests {
         // The recorded submission still names the winner.
         let meta = &h.store.message(mid).unwrap()["meta"];
         assert_eq!(meta["form_submitted"]["by"], "tom");
+    }
+
+    fn sample_table() -> Value {
+        json!({
+            "columns": [
+                {"id": "item", "kind": "text", "label": "Item"},
+                {"id": "qty", "kind": "number", "label": "Qty"},
+                {"id": "note", "kind": "readonly", "label": "Note"},
+            ],
+            "rows": [
+                {
+                    "id": "r1",
+                    "cells": {"item": "apples", "qty": 2, "note": "fresh"},
+                    "actions": [
+                        {"id": "approve", "label": "Approve", "style": "primary"},
+                        {"id": "reject", "label": "Reject"},
+                    ],
+                },
+                {
+                    "id": "r2",
+                    "cells": {"item": "bread", "qty": 1, "note": "bakery"},
+                    "actions": [
+                        {"id": "approve", "label": "Approve", "style": "primary"},
+                        {"id": "reject", "label": "Reject"},
+                    ],
+                },
+            ],
+            "buttons": [
+                {"id": "done", "label": "Submit all", "style": "primary"},
+                {"id": "cancel", "label": "Cancel"},
+            ],
+        })
+    }
+
+    fn setup_table() -> (Hub, tokio::sync::mpsc::UnboundedReceiver<Value>, i64) {
+        let h = hub();
+        let rx = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "Review the order", "table_id": "order-1", "table": sample_table(),
+        }));
+        let mid = h.store.messages(&cid, None, None, 50)[0]["id"].as_i64().unwrap();
+        (h, rx, mid)
+    }
+
+    #[test]
+    fn sanitize_table_drops_empty_columns_or_rows() {
+        assert!(sanitize_table(&json!({})).is_none());
+        assert!(sanitize_table(&json!({
+            "columns": [],
+            "rows": [{"id": "r1", "cells": {}}],
+        }))
+        .is_none());
+        assert!(sanitize_table(&json!({
+            "columns": [{"id": "a", "kind": "text", "label": "A"}],
+            "rows": [],
+        }))
+        .is_none());
+        assert!(sanitize_table(&json!({
+            "columns": [{"id": "bad id!", "kind": "text", "label": "A"}],
+            "rows": [{"id": "r1", "cells": {}}],
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn table_row_lock_leaves_sibling_editable() {
+        let (h, mut rx, mid) = setup_table();
+        h.update_table_cell(mid, "r1", "item", &json!("oranges")).unwrap();
+        let updated = h.act_on_row(mid, "r1", "approve", "tom").unwrap();
+        assert_eq!(updated["meta"]["table_rows"]["r1"]["action_id"], "approve");
+        assert_eq!(updated["meta"]["table_rows"]["r1"]["values"]["item"], "oranges");
+        assert!(updated["meta"]["table_rows"].get("r2").is_none());
+
+        let frame = last_frame(&mut rx, "table_row_action").unwrap();
+        assert_eq!(frame["table_id"], "order-1");
+        assert_eq!(frame["row_id"], "r1");
+        assert_eq!(frame["action_id"], "approve");
+        assert_eq!(frame["values"]["item"], "oranges");
+
+        // Row A locked; row B still accepts edits and actions.
+        assert_eq!(
+            h.update_table_cell(mid, "r1", "item", &json!("pears")),
+            Err("Row already resolved")
+        );
+        let b = h.update_table_cell(mid, "r2", "item", &json!("baguette")).unwrap();
+        assert_eq!(b["meta"]["table_state"]["r2"]["item"], "baguette");
+        let b = h.act_on_row(mid, "r2", "reject", "ana").unwrap();
+        assert_eq!(b["meta"]["table_rows"]["r2"]["action_id"], "reject");
+        assert_eq!(b["meta"]["table_rows"]["r2"]["by"], "ana");
+    }
+
+    #[test]
+    fn table_row_concurrent_press_has_one_winner() {
+        let (h, _rx, mid) = setup_table();
+        let first = h.act_on_row(mid, "r1", "approve", "tom").unwrap();
+        assert_eq!(first["meta"]["table_rows"]["r1"]["by"], "tom");
+        assert_eq!(
+            h.act_on_row(mid, "r1", "reject", "ana"),
+            Err("Row already resolved")
+        );
+        let meta = &h.store.message(mid).unwrap()["meta"];
+        assert_eq!(meta["table_rows"]["r1"]["action_id"], "approve");
+        assert_eq!(meta["table_rows"]["r1"]["by"], "tom");
+    }
+
+    #[test]
+    fn table_submit_locks_only_unlocked_rows() {
+        let (h, mut rx, mid) = setup_table();
+        h.update_table_cell(mid, "r1", "qty", &json!(5)).unwrap();
+        h.act_on_row(mid, "r1", "approve", "tom").unwrap();
+        h.update_table_cell(mid, "r2", "item", &json!("sourdough")).unwrap();
+
+        let updated = h.submit_table(mid, "done", "ana").unwrap();
+        let submitted = &updated["meta"]["table_submitted"];
+        assert_eq!(submitted["button_id"], "done");
+        assert_eq!(submitted["by"], "ana");
+        // Only the still-unlocked row is snapshotted into table_submitted.rows.
+        assert!(submitted["rows"].get("r1").is_none());
+        assert_eq!(submitted["rows"]["r2"]["item"], "sourdough");
+        // Prior row lock is unchanged.
+        assert_eq!(updated["meta"]["table_rows"]["r1"]["action_id"], "approve");
+        assert_eq!(updated["meta"]["table_rows"]["r1"]["by"], "tom");
+
+        let frame = last_frame(&mut rx, "table_submit").unwrap();
+        assert_eq!(frame["table_id"], "order-1");
+        assert_eq!(frame["button_id"], "done");
+        assert_eq!(frame["rows"]["r2"]["item"], "sourdough");
+        assert!(frame["rows"].get("r1").is_none());
+
+        assert_eq!(h.submit_table(mid, "cancel", "tom"), Err("Table already submitted"));
+        assert_eq!(
+            h.update_table_cell(mid, "r2", "item", &json!("rye")),
+            Err("Table already submitted")
+        );
+        assert_eq!(
+            h.act_on_row(mid, "r2", "approve", "tom"),
+            Err("Table already submitted")
+        );
     }
 
     #[test]
@@ -3055,6 +3513,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                None,
                 vec![],
             );
         }
@@ -3114,6 +3574,8 @@ mod tests {
                 None,
                 Some(&json!([{"id": "yes", "label": "Yes"}])),
                 Some("shared-options"),
+                None,
+                None,
                 None,
                 None,
                 None,
