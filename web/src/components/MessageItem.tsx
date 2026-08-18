@@ -17,6 +17,7 @@ import { Attachments } from "./Attachments";
 import { Unfurls, urlHost } from "./Unfurls";
 import { MessageOptions } from "./MessageOptions";
 import { MessageFormView } from "./MessageFormView";
+import { MessageTableView } from "./MessageTableView";
 import { Reactions } from "./Reactions";
 import { useEmojiPicker } from "./EmojiPicker";
 import { ArtifactList } from "./artifacts/ArtifactList";
@@ -183,6 +184,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
       <Unfurls message={m} />
       <SourceChips message={m} />
       <MessageFormView message={m} />
+      <MessageTableView message={m} />
       <MessageOptions message={m} />
       <Reactions message={m} onPick={(anchor) => openPicker(m.id, anchor)} />
       <div className="ago-bubble-foot">

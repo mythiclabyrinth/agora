@@ -282,6 +282,54 @@ OpenClaw wrapper, a shell script, whatever:
  "button_id": "log", "message_id": 123, "channel_id": "...", "thread_id": null,
  "values": {"breakfast": "eggs", "ran_5k": true}, "user": {"id": "me", "name": "me"}}
 
+// interactive tables: a post can carry a `table` (editable cells, per-row
+// action buttons, and up to two table-level buttons) with a stable `table_id`.
+// Clients render it inside the message. Cell state is SHARED in
+// meta.table_state (seeded from each row's cells); any member can edit an
+// unlocked cell and every confirmed edit syncs to all clients. Pressing a
+// row action locks ONLY that row (meta.table_rows[row_id]) — siblings stay
+// editable. Pressing a table-level button snapshots still-unlocked rows into
+// meta.table_submitted and locks the whole table; already-resolved rows keep
+// their prior lock. Column `kind` is "text", "number", or "readonly"; optional
+// `width` is a CSS-px hint. Button/action `style` is "primary" or "secondary".
+// Guardrails (violations drop the table; the post still lands as text):
+// ≤ 8 columns, ≤ 50 rows, ≤ 2 actions per row, ≤ 2 table buttons, ids
+// [A-Za-z0-9_-]{1,64} and unique, labels ≤ 120 chars, cell values ≤ 2000 chars.
+// Empty columns or rows after sanitizing drop the table entirely.
+{"type": "post", "agent_id": "claw-1", "channel_id": "...", "text": "Review the order",
+ "table_id": "order-2026-08-18",
+ "table": {"columns": [{"id": "item", "kind": "text", "label": "Item"},
+                       {"id": "qty", "kind": "number", "label": "Qty"},
+                       {"id": "note", "kind": "readonly", "label": "Note"}],
+           "rows": [{"id": "r1",
+                     "cells": {"item": "apples", "qty": 2, "note": "fresh"},
+                     "actions": [{"id": "approve", "label": "Approve", "style": "primary"},
+                                 {"id": "reject", "label": "Reject"}]},
+                    {"id": "r2",
+                     "cells": {"item": "bread", "qty": 1, "note": "bakery"},
+                     "actions": [{"id": "approve", "label": "Approve", "style": "primary"},
+                                 {"id": "reject", "label": "Reject"}]}],
+           "buttons": [{"id": "done", "label": "Submit all", "style": "primary"},
+                       {"id": "cancel", "label": "Cancel"}]}}
+
+// Agora → you, when someone presses a per-row action. `values` is that row's
+// shared cells at press time. The row locks for everyone; other rows stay
+// open. Later presses on the same row are refused (at most one of these per
+// row). Offline agents miss the frame; the lock stays on the message.
+{"type": "table_row_action", "agent_id": "claw-1", "table_id": "order-2026-08-18",
+ "row_id": "r1", "action_id": "approve", "message_id": 124, "channel_id": "...",
+ "thread_id": null, "values": {"item": "oranges", "qty": 2, "note": "fresh"},
+ "user": {"id": "me", "name": "me"}}
+
+// Agora → you, when someone presses a table-level button. `rows` is a map of
+// still-unlocked row_id → cell values at submit time (already-resolved rows
+// are omitted here — their locks live in meta.table_rows). Submission is
+// one-shot for the table; later edits/actions/submits are refused.
+{"type": "table_submit", "agent_id": "claw-1", "table_id": "order-2026-08-18",
+ "button_id": "done", "message_id": 124, "channel_id": "...", "thread_id": null,
+ "rows": {"r2": {"item": "sourdough", "qty": 1, "note": "bakery"}},
+ "user": {"id": "me", "name": "me"}}
+
 // you → Agora, to read a channel's (or one thread's) earlier messages on demand.
 // Cursor-paged, newest-first: no before_id = the most recent `limit` messages
 // (default 20, capped at 50); before_id = the `limit` messages strictly older

@@ -395,6 +395,18 @@ pub fn router(state: AppState) -> Router {
             "/api/messages/{message_id}/form_submit",
             post(submit_message_form),
         )
+        .route(
+            "/api/messages/{message_id}/table_cell",
+            post(update_message_table_cell),
+        )
+        .route(
+            "/api/messages/{message_id}/table_action",
+            post(act_on_message_table_row),
+        )
+        .route(
+            "/api/messages/{message_id}/table_submit",
+            post(submit_message_table),
+        )
         .route("/api/messages/{message_id}/speech", get(message_speech))
         .route("/api/search", get(search))
         .route("/api/search/ask", post(search_ask))
@@ -2116,6 +2128,108 @@ async fn submit_message_form(
         Ok(message) => Ok(Json(message)),
         Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
         Err(msg @ "Form already submitted") => Err(err(StatusCode::CONFLICT, msg)),
+        Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
+    }
+}
+
+/// Persist one member's confirmed edit to a table cell. Fans out as
+/// `message_update`; the authoring agent hears nothing until a row action
+/// or table-level submit.
+async fn update_message_table_cell(
+    State(state): State<AppState>,
+    Path(message_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_message_visible(&state, &user, message_id)?;
+    let row_id = payload["row_id"].as_str().unwrap_or("").trim().to_string();
+    let column_id = payload["column_id"].as_str().unwrap_or("").trim().to_string();
+    if row_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "row_id required"));
+    }
+    if column_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "column_id required"));
+    }
+    let value = payload.get("value").cloned().unwrap_or(Value::Null);
+    let hub = Arc::clone(&state.hub);
+    let result = tokio::task::spawn_blocking(move || {
+        hub.update_table_cell(message_id, &row_id, &column_id, &value)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "table task failed"))?;
+    match result {
+        Ok(message) => Ok(Json(message)),
+        Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
+        Err(msg @ ("Table already submitted" | "Row already resolved")) => {
+            Err(err(StatusCode::CONFLICT, msg))
+        }
+        Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
+    }
+}
+
+/// Press a per-row table action: locks that row one-shot (the race loser
+/// gets a 409) and forwards `table_row_action` to the authoring agent.
+async fn act_on_message_table_row(
+    State(state): State<AppState>,
+    Path(message_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_message_visible(&state, &user, message_id)?;
+    let row_id = payload["row_id"].as_str().unwrap_or("").trim().to_string();
+    let action_id = payload["action_id"].as_str().unwrap_or("").trim().to_string();
+    if row_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "row_id required"));
+    }
+    if action_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "action_id required"));
+    }
+    let hub = Arc::clone(&state.hub);
+    let username = user.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        hub.act_on_row(message_id, &row_id, &action_id, &username)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "table action task failed"))?;
+    match result {
+        Ok(message) => Ok(Json(message)),
+        Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
+        Err(msg @ ("Table already submitted" | "Row already resolved")) => {
+            Err(err(StatusCode::CONFLICT, msg))
+        }
+        Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
+    }
+}
+
+/// Press a table-level button: snapshots still-unlocked rows, locks the
+/// table one-shot, and forwards `table_submit` to the authoring agent.
+async fn submit_message_table(
+    State(state): State<AppState>,
+    Path(message_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_message_visible(&state, &user, message_id)?;
+    let button_id = payload["button_id"].as_str().unwrap_or("").trim().to_string();
+    if button_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "button_id required"));
+    }
+    let hub = Arc::clone(&state.hub);
+    let username = user.username.clone();
+    let result =
+        tokio::task::spawn_blocking(move || hub.submit_table(message_id, &button_id, &username))
+            .await
+            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "table submit task failed"))?;
+    match result {
+        Ok(message) => Ok(Json(message)),
+        Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
+        Err(msg @ "Table already submitted") => Err(err(StatusCode::CONFLICT, msg)),
         Err(msg) => Err(err(StatusCode::BAD_REQUEST, msg)),
     }
 }
@@ -5043,6 +5157,8 @@ mod tests {
             })),
             Some("daily-1"),
             None,
+            None,
+            None,
             vec![],
         );
         let mid = m["id"].as_i64().unwrap();
@@ -5119,6 +5235,180 @@ mod tests {
             q(),
             ana,
             Json(json!({"field_id": "breakfast", "value": "toast"})),
+        )
+        .await;
+        assert_eq!(locked.unwrap_err().0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn table_endpoints_gate_membership_and_lock() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "", None, "member").unwrap();
+        store.create_user("mal", "", None, "member").unwrap();
+        let g = store.create_group("Team", "", Some("ana"));
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "ana", "admin", None);
+        let c = store.create_channel(gid, "general", "");
+        let cid = c["id"].as_str().unwrap().to_string();
+        let m = state.hub.post_agent_message_with_options(
+            "bot-a",
+            "Bot A",
+            &cid,
+            "Review the order",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&json!({
+                "columns": [
+                    {"id": "item", "kind": "text", "label": "Item"},
+                    {"id": "qty", "kind": "number", "label": "Qty"},
+                ],
+                "rows": [
+                    {
+                        "id": "r1",
+                        "cells": {"item": "apples", "qty": 2},
+                        "actions": [{"id": "approve", "label": "Approve", "style": "primary"}],
+                    },
+                    {
+                        "id": "r2",
+                        "cells": {"item": "bread", "qty": 1},
+                        "actions": [{"id": "approve", "label": "Approve", "style": "primary"}],
+                    },
+                ],
+                "buttons": [{"id": "done", "label": "Submit all", "style": "primary"}],
+            })),
+            Some("order-1"),
+            None,
+            vec![],
+        );
+        let mid = m["id"].as_i64().unwrap();
+        let q = || Query(HashMap::new());
+
+        // Non-members can't touch the table.
+        let denied = update_message_table_cell(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            session_headers(&state, "mal"),
+            Json(json!({"row_id": "r1", "column_id": "item", "value": "oranges"})),
+        )
+        .await;
+        assert!(denied.is_err());
+        let denied = act_on_message_table_row(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            session_headers(&state, "mal"),
+            Json(json!({"row_id": "r1", "action_id": "approve"})),
+        )
+        .await;
+        assert!(denied.is_err());
+        let denied = submit_message_table(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            session_headers(&state, "mal"),
+            Json(json!({"button_id": "done"})),
+        )
+        .await;
+        assert!(denied.is_err());
+
+        // A member's cell edit persists; bad ids are 400s.
+        let ana = session_headers(&state, "ana");
+        let res = update_message_table_cell(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"row_id": "r1", "column_id": "item", "value": "oranges"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.0["meta"]["table_state"]["r1"]["item"], "oranges");
+        let bad = update_message_table_cell(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"row_id": "nope", "column_id": "item", "value": "x"})),
+        )
+        .await;
+        assert_eq!(bad.unwrap_err().0, StatusCode::BAD_REQUEST);
+
+        // Row action locks that row; a second press is a 409.
+        let res = act_on_message_table_row(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"row_id": "r1", "action_id": "approve"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.0["meta"]["table_rows"]["r1"]["by"], "ana");
+        let locked = act_on_message_table_row(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"row_id": "r1", "action_id": "approve"})),
+        )
+        .await;
+        assert_eq!(locked.unwrap_err().0, StatusCode::CONFLICT);
+        let locked = update_message_table_cell(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"row_id": "r1", "column_id": "item", "value": "pears"})),
+        )
+        .await;
+        assert_eq!(locked.unwrap_err().0, StatusCode::CONFLICT);
+
+        // Sibling row stays editable; table submit locks the rest.
+        let res = update_message_table_cell(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"row_id": "r2", "column_id": "item", "value": "sourdough"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.0["meta"]["table_state"]["r2"]["item"], "sourdough");
+        let res = submit_message_table(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"button_id": "done"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.0["meta"]["table_submitted"]["by"], "ana");
+        assert!(res.0["meta"]["table_submitted"]["rows"].get("r1").is_none());
+        assert_eq!(res.0["meta"]["table_submitted"]["rows"]["r2"]["item"], "sourdough");
+
+        let locked = submit_message_table(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana.clone(),
+            Json(json!({"button_id": "done"})),
+        )
+        .await;
+        assert_eq!(locked.unwrap_err().0, StatusCode::CONFLICT);
+        let locked = update_message_table_cell(
+            State(state.clone()),
+            Path(mid),
+            q(),
+            ana,
+            Json(json!({"row_id": "r2", "column_id": "item", "value": "rye"})),
         )
         .await;
         assert_eq!(locked.unwrap_err().0, StatusCode::CONFLICT);

@@ -478,6 +478,74 @@ export function useSubmitForm() {
   });
 }
 
+/** Persist one confirmed cell edit on a message's shared table state. */
+export function useUpdateTableCell() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (v: {
+      messageId: number;
+      rowId: string;
+      columnId: string;
+      value: string | number;
+    }) =>
+      api.post<Message>(`/api/messages/${v.messageId}/table_cell`, {
+        row_id: v.rowId,
+        column_id: v.columnId,
+        value: v.value,
+      }),
+    onSuccess: (message) => {
+      qc.setQueryData<MessagePages>(
+        keys.messages(message.channel_id, message.thread_id),
+        (data) => replaceMessage(data, message),
+      );
+    },
+  });
+}
+
+/** Press a per-row table action: locks that row one-shot and notifies the
+    authoring agent with the row's current cell values. */
+export function useActOnTableRow() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (v: {
+      messageId: number;
+      rowId: string;
+      actionId: string;
+    }) =>
+      api.post<Message>(`/api/messages/${v.messageId}/table_action`, {
+        row_id: v.rowId,
+        action_id: v.actionId,
+      }),
+    onSuccess: (message) => {
+      qc.setQueryData<MessagePages>(
+        keys.messages(message.channel_id, message.thread_id),
+        (data) => replaceMessage(data, message),
+      );
+    },
+  });
+}
+
+/** Press a table-level button: snapshots still-unlocked rows, locks the
+    table one-shot, and forwards the submission to the authoring agent. */
+export function useSubmitTable() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (v: { messageId: number; buttonId: string }) =>
+      api.post<Message>(`/api/messages/${v.messageId}/table_submit`, {
+        button_id: v.buttonId,
+      }),
+    onSuccess: (message) => {
+      qc.setQueryData<MessagePages>(
+        keys.messages(message.channel_id, message.thread_id),
+        (data) => replaceMessage(data, message),
+      );
+    },
+  });
+}
+
 /** Toggle the caller's emoji reaction on a message. The server returns the
     updated message, which is patched into the cache in place; the
     message_update broadcast then merges as a no-op. */

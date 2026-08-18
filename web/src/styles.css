@@ -927,6 +927,47 @@ a.btn { text-decoration: none; }
 .ago-form-done .ico { width: 13px; height: 13px; flex: none; }
 .ago-form-done .dim { color: var(--faint); font-weight: 500; }
 
+/* ---------- interactive tables (meta.table) ---------- */
+.ago-table {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 10px;
+  padding: 10px; border: 1px solid var(--border); border-radius: 10px;
+  background: rgba(255,255,255,.03);
+}
+.ago-table-scroll { overflow-x: auto; max-width: 100%; }
+.ago-table table {
+  border-collapse: collapse; width: max-content; min-width: 100%;
+  font-size: 12.5px;
+}
+.ago-table th, .ago-table td {
+  border-bottom: 1px solid var(--border); padding: 6px 8px;
+  text-align: left; vertical-align: middle;
+}
+.ago-table th {
+  color: var(--faint); font-weight: 600; white-space: nowrap;
+  background: rgba(255,255,255,.03);
+}
+.ago-table td { color: var(--text); }
+.ago-table td.ro { color: var(--faint); }
+.ago-table tr.locked td { color: var(--faint); }
+.ago-table-inwrap { display: flex; align-items: center; gap: 4px; min-width: 120px; }
+.ago-table-input {
+  flex: 1; min-width: 0; font: inherit; font-size: 12.5px; color: var(--text);
+  background: var(--panel-strong); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 8px; outline: none;
+}
+.ago-table-input:focus { border-color: var(--a1); }
+.ago-table-actions-col { white-space: nowrap; }
+.ago-table-row-actions, .ago-table-actions {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.ago-table-actions { margin-top: 2px; }
+.ago-table .ago-option-btn.pressed {
+  background: rgba(72, 187, 120, .22); border-color: rgba(72, 187, 120, .55); color: #6ee7a0;
+}
+.ago-table .ago-option-btn:disabled { opacity: .45; cursor: default; }
+.ago-table .ago-option-btn.pressed:disabled { opacity: 1; }
+.ago-table-done.dim { color: var(--faint); font-size: 12px; font-weight: 500; }
+
 .ago-mention {
   display: inline; padding: 1px 4px; border-radius: 5px;
   background: rgba(139,124,255,.18); color: #b3a8ff; font-weight: 600;
