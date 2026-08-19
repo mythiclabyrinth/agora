@@ -18,15 +18,6 @@ import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 
-function sourceLabel(source: string): string {
-  switch (source) {
-    case "config": return "saved in instance settings";
-    case "env": return "from server environment";
-    case "default": return "default";
-    default: return "not set";
-  }
-}
-
 function SectionHead({
   title, enabled, onEnabled,
 }: {
@@ -262,11 +253,6 @@ function KeyRow({
     <div className="ai-section">
       <h4>{label}</h4>
       <div className="ai-key">
-        <span className="dim">
-          {field.configured
-            ? `${field.hint} · ${sourceLabel(field.source)}`
-            : sourceLabel(field.source)}
-        </span>
         <input
           type="password"
           autoComplete="off"
@@ -387,88 +373,101 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
         })}
       />
 
-      <div className="ai-section">
-        <h4>Codex</h4>
-        <div className="ai-key">
-          <span className="dim">
-            {oauth.configured
-              ? `${oauth.hint || "linked"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
-              : "not linked"}
-          </span>
-          <div className="ai-key-actions">
-            <button className="btn sm primary" disabled={startOauth.isPending}
-              onClick={() => {
-                const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-                const mode = local ? "loopback" : "paste";
-                startOauth.mutate(mode, {
-                  onSuccess: res => {
-                    setOauthMode(res.mode);
-                    setAuthorizeUrl(res.authorize_url);
-                    // Keep a window handle so we can close it on success.
-                    // Do not use noopener — that makes window.open return null.
-                    oauthWinRef.current = window.open(res.authorize_url, "agora-codex-oauth");
-                    toast(mode === "loopback"
-                      ? "Sign in opened — finish in the Codex OAuth window"
-                      : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
-                  },
-                  onError: err("Couldn't start Codex OAuth"),
-                });
-              }}>
-              {oauth.configured ? "Reconnect" : "Connect"}
-            </button>
-            {oauth.configured && (
-              <button className="btn sm" disabled={test.isPending}
-                onClick={() => test.mutate("codex", {
-                  onSuccess: () => toast("Codex OAuth credentials work", { variant: "ok" }),
-                  onError: err("Codex OAuth test failed"),
-                })}>
-                {test.isPending ? "Testing…" : "Test"}
+      <div className="ai-oauth">
+        <div className="ai-oauth-head">OAuth</div>
+        <div className="ai-oauth-card">
+          <div className="ai-oauth-label">
+            <h4>OpenAI Codex</h4>
+            <p>Sign in to your ChatGPT subscription.</p>
+          </div>
+          <div className="ai-oauth-body">
+            <div className="ai-oauth-status">
+              {oauth.configured ? (
+                <>
+                  <span className="ai-oauth-badge on">connected</span>
+                  {oauth.account_id ? <span className="dim">{oauth.account_id}</span> : null}
+                  <span className="dim">tokens refresh automatically</span>
+                </>
+              ) : (
+                <span className="ai-oauth-badge">not connected</span>
+              )}
+            </div>
+            <div className="ai-oauth-actions">
+              {oauth.configured && (
+                <button className="btn sm danger" disabled={disconnectOauth.isPending}
+                  onClick={() => disconnectOauth.mutate(undefined, {
+                    onSuccess: () => toast("Codex OAuth disconnected", { variant: "ok" }),
+                    onError: err("Couldn't disconnect"),
+                  })}>
+                  Disconnect
+                </button>
+              )}
+              {oauth.configured && (
+                <button className="btn sm" disabled={test.isPending}
+                  onClick={() => test.mutate("codex", {
+                    onSuccess: () => toast("Codex OAuth credentials work", { variant: "ok" }),
+                    onError: err("Codex OAuth test failed"),
+                  })}>
+                  {test.isPending ? "Testing…" : "Test"}
+                </button>
+              )}
+              <button className="btn sm primary" disabled={startOauth.isPending}
+                onClick={() => {
+                  const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+                  const mode = local ? "loopback" : "paste";
+                  startOauth.mutate(mode, {
+                    onSuccess: res => {
+                      setOauthMode(res.mode);
+                      setAuthorizeUrl(res.authorize_url);
+                      // Keep a window handle so we can close it on success.
+                      // Do not use noopener — that makes window.open return null.
+                      oauthWinRef.current = window.open(res.authorize_url, "agora-codex-oauth");
+                      toast(mode === "loopback"
+                        ? "Sign in opened — finish in the Codex OAuth window"
+                        : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
+                    },
+                    onError: err("Couldn't start Codex OAuth"),
+                  });
+                }}>
+                {oauth.configured ? "Re-authenticate" : "Connect account"}
               </button>
+            </div>
+            {oauthMode === "loopback" && (
+              <p className="conn-hint">Waiting for redirect on {oauth.redirect_uri}…</p>
             )}
-            {oauth.configured && (
-              <button className="btn sm danger" disabled={disconnectOauth.isPending}
-                onClick={() => disconnectOauth.mutate(undefined, {
-                  onSuccess: () => toast("Codex OAuth disconnected", { variant: "ok" }),
-                  onError: err("Couldn't disconnect"),
-                })}>
-                Clear
-              </button>
+            {oauthMode === "paste" && (
+              <div className="ai-oauth-paste">
+                <label htmlFor="codex-redirect-url">Redirect URL</label>
+                <div className="ai-key">
+                  <input
+                    id="codex-redirect-url"
+                    value={redirectPaste}
+                    onChange={e => setRedirectPaste(e.target.value)}
+                    placeholder="http://localhost:1455/auth/callback?code=…"
+                    autoComplete="off"
+                  />
+                  <button className="btn sm primary" disabled={!redirectPaste.trim() || completeOauth.isPending}
+                    onClick={() => completeOauth.mutate(redirectPaste.trim(), {
+                      onSuccess: () => {
+                        toast("Codex OAuth complete", { variant: "ok" });
+                        closeOauthWindow();
+                        setOauthMode(null);
+                        setRedirectPaste("");
+                      },
+                      onError: err("Couldn't complete sign-in"),
+                    })}>
+                    Complete
+                  </button>
+                </div>
+                {authorizeUrl && (
+                  <p className="conn-hint">
+                    If the window didn&apos;t open: <a href={authorizeUrl} target="agora-codex-oauth" rel="noreferrer">open authorize URL</a>
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </div>
-        {oauthMode === "loopback" && (
-          <p className="conn-hint">Waiting for redirect on {oauth.redirect_uri}…</p>
-        )}
-        {oauthMode === "paste" && (
-          <div className="ai-row">
-            <label>Redirect URL</label>
-            <div className="ai-key">
-              <input
-                value={redirectPaste}
-                onChange={e => setRedirectPaste(e.target.value)}
-                placeholder="http://localhost:1455/auth/callback?code=…"
-                autoComplete="off"
-              />
-              <button className="btn sm primary" disabled={!redirectPaste.trim() || completeOauth.isPending}
-                onClick={() => completeOauth.mutate(redirectPaste.trim(), {
-                  onSuccess: () => {
-                    toast("Codex OAuth complete", { variant: "ok" });
-                    closeOauthWindow();
-                    setOauthMode(null);
-                    setRedirectPaste("");
-                  },
-                  onError: err("Couldn't complete sign-in"),
-                })}>
-                Complete
-              </button>
-            </div>
-            {authorizeUrl && (
-              <p className="conn-hint">
-                If the window didn&apos;t open: <a href={authorizeUrl} target="agora-codex-oauth" rel="noreferrer">open authorize URL</a>
-              </p>
-            )}
-          </div>
-        )}
       </div>
     </>
   );

@@ -179,7 +179,7 @@ retrieves the best-matching messages via the same index and has Claude write
 a short answer citing them as `[1]`, `[2]`, … (`sources` in the response, in
 citation order — the UIs render the citations as jump-links to the original
 messages). The desktop palette and the mobile search screen both surface it
-as an "Ask Agora AI" row whenever the feature is available (`search_ai` in
+as an "Ask Agora AI" row whenever Ask AI is Enabled (`search_ai` in
 `/api/me`). The model comes from instance Settings (per provider), else the
 provider default (`claude-sonnet-5` for Anthropic, etc.). Voice works the same
 way with OpenAI (`OPENAI_API_KEY` / saved instance key). Keys may live in

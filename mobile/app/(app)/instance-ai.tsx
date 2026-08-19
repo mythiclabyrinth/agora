@@ -29,15 +29,6 @@ import * as Linking from "expo-linking";
 
 const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 
-function sourceLabel(source: string): string {
-  switch (source) {
-    case "config": return "saved in instance settings";
-    case "env": return "from server environment";
-    case "default": return "default";
-    default: return "not set";
-  }
-}
-
 function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
   const [sttProvider, setSttProvider] = useState(data.stt_provider);
@@ -264,11 +255,6 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
     <>
       <View style={styles.card}>
         <Text style={styles.cardTitle}>OpenAI</Text>
-        <Text style={styles.meta}>
-          {data.credentials.openai.configured
-            ? `${data.credentials.openai.hint} · ${sourceLabel(data.credentials.openai.source)}`
-            : sourceLabel(data.credentials.openai.source)}
-        </Text>
         <TextInput
           style={styles.input}
           value={openaiKey}
@@ -319,11 +305,6 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Groq</Text>
-        <Text style={styles.meta}>
-          {data.credentials.groq.configured
-            ? `${data.credentials.groq.hint} · ${sourceLabel(data.credentials.groq.source)}`
-            : sourceLabel(data.credentials.groq.source)}
-        </Text>
         <TextInput
           style={styles.input}
           value={groqKey}
@@ -374,11 +355,6 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Anthropic</Text>
-        <Text style={styles.meta}>
-          {data.credentials.anthropic.configured
-            ? `${data.credentials.anthropic.hint} · ${sourceLabel(data.credentials.anthropic.source)}`
-            : sourceLabel(data.credentials.anthropic.source)}
-        </Text>
         <TextInput
           style={styles.input}
           value={anthropicKey}
@@ -427,84 +403,94 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
         </View>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Codex</Text>
-        <Text style={styles.meta}>
-          {oauth.configured
-            ? `${oauth.hint || "linked"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
-            : "not linked"}
-        </Text>
-        <View style={styles.rowBtns}>
-          <Pressable
-            style={[styles.btn, styles.btnPrimary]}
-            disabled={startOauth.isPending}
-            onPress={() => {
-              startOauth.mutate("paste", {
-                onSuccess: async (res) => {
-                  setAwaitingPaste(true);
-                  await Linking.openURL(res.authorize_url);
-                  toast("Finish sign-in, then paste the redirected URL");
-                },
-                onError: (e) => toastErr("Couldn't start", e as Error),
-              });
-            }}
-          >
-            <Text style={styles.btnPrimaryText}>
-              {oauth.configured ? "Reconnect" : "Connect"}
+      <View style={styles.oauthSection}>
+        <Text style={styles.oauthHead}>OAuth</Text>
+        <View style={styles.oauthCard}>
+          <Text style={styles.cardTitle}>OpenAI Codex</Text>
+          <Text style={styles.hint}>Sign in to your ChatGPT subscription.</Text>
+          <View style={styles.oauthStatus}>
+            <Text style={[styles.oauthBadge, oauth.configured && styles.oauthBadgeOn]}>
+              {oauth.configured ? "connected" : "not connected"}
             </Text>
-          </Pressable>
-          {oauth.configured ? (
+            {oauth.configured && oauth.account_id ? (
+              <Text style={styles.meta}>{oauth.account_id}</Text>
+            ) : null}
+            {oauth.configured ? (
+              <Text style={styles.meta}>tokens refresh automatically</Text>
+            ) : null}
+          </View>
+          <View style={styles.rowBtns}>
+            {oauth.configured ? (
+              <Pressable
+                style={[styles.btn, styles.btnDanger]}
+                disabled={disconnectOauth.isPending}
+                onPress={() => disconnectOauth.mutate(undefined, {
+                  onSuccess: () => toast("Disconnected"),
+                  onError: (e) => toastErr("Couldn't disconnect", e as Error),
+                })}
+              >
+                <Text style={styles.btnDangerText}>Disconnect</Text>
+              </Pressable>
+            ) : null}
+            {oauth.configured ? (
+              <Pressable
+                style={[styles.btn, test.isPending && styles.btnDisabled]}
+                disabled={test.isPending}
+                onPress={() => test.mutate("codex", {
+                  onSuccess: () => toast("Codex OAuth credentials work"),
+                  onError: (e) => toastErr("Codex OAuth test failed", e as Error),
+                })}
+              >
+                <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
+              </Pressable>
+            ) : null}
             <Pressable
-              style={[styles.btn, test.isPending && styles.btnDisabled]}
-              disabled={test.isPending}
-              onPress={() => test.mutate("codex", {
-                onSuccess: () => toast("Codex OAuth credentials work"),
-                onError: (e) => toastErr("Codex OAuth test failed", e as Error),
-              })}
+              style={[styles.btn, styles.btnPrimary]}
+              disabled={startOauth.isPending}
+              onPress={() => {
+                startOauth.mutate("paste", {
+                  onSuccess: async (res) => {
+                    setAwaitingPaste(true);
+                    await Linking.openURL(res.authorize_url);
+                    toast("Finish sign-in, then paste the redirected URL");
+                  },
+                  onError: (e) => toastErr("Couldn't start", e as Error),
+                });
+              }}
             >
-              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
+              <Text style={styles.btnPrimaryText}>
+                {oauth.configured ? "Re-authenticate" : "Connect account"}
+              </Text>
             </Pressable>
-          ) : null}
-          {oauth.configured ? (
-            <Pressable
-              style={[styles.btn, styles.btnDanger]}
-              disabled={disconnectOauth.isPending}
-              onPress={() => disconnectOauth.mutate(undefined, {
-                onSuccess: () => toast("Disconnected"),
-                onError: (e) => toastErr("Couldn't disconnect", e as Error),
-              })}
-            >
-              <Text style={styles.btnDangerText}>Clear</Text>
-            </Pressable>
+          </View>
+          {awaitingPaste ? (
+            <>
+              <Text style={styles.label}>Redirect URL</Text>
+              <TextInput
+                style={styles.input}
+                value={redirectPaste}
+                onChangeText={setRedirectPaste}
+                placeholder="http://localhost:1455/auth/callback?code=…"
+                placeholderTextColor={colors.faint}
+                autoCapitalize="none"
+              />
+              <Pressable
+                style={[styles.btn, styles.btnPrimary, !redirectPaste.trim() && styles.btnDisabled]}
+                disabled={!redirectPaste.trim() || completeOauth.isPending}
+                onPress={() => completeOauth.mutate(redirectPaste.trim(), {
+                  onSuccess: () => {
+                    toast("Codex OAuth linked");
+                    setAwaitingPaste(false);
+                    setRedirectPaste("");
+                  },
+                  onError: (e) => toastErr("Couldn't complete", e as Error),
+                })}
+              >
+                <Text style={styles.btnPrimaryText}>Complete</Text>
+              </Pressable>
+            </>
           ) : null}
         </View>
-        {awaitingPaste ? (
-          <>
-            <Text style={styles.label}>Redirect URL</Text>
-            <TextInput
-              style={styles.input}
-              value={redirectPaste}
-              onChangeText={setRedirectPaste}
-              placeholder="http://localhost:1455/auth/callback?code=…"
-              placeholderTextColor={colors.faint}
-              autoCapitalize="none"
-            />
-            <Pressable
-              style={[styles.btn, styles.btnPrimary, !redirectPaste.trim() && styles.btnDisabled]}
-              disabled={!redirectPaste.trim() || completeOauth.isPending}
-              onPress={() => completeOauth.mutate(redirectPaste.trim(), {
-                onSuccess: () => {
-                  toast("Codex OAuth linked");
-                  setAwaitingPaste(false);
-                  setRedirectPaste("");
-                },
-                onError: (e) => toastErr("Couldn't complete", e as Error),
-              })}
-            >
-              <Text style={styles.btnPrimaryText}>Complete</Text>
-            </Pressable>
-          </>
-        ) : null}
       </View>
     </>
   );
@@ -614,4 +600,38 @@ const styles = StyleSheet.create({
   btnDanger: { borderColor: colors.red },
   btnDangerText: { color: colors.red, fontWeight: "600", fontSize: 13 },
   btnDisabled: { opacity: 0.4 },
+  oauthSection: { marginTop: 8, gap: 10 },
+  oauthHead: {
+    color: colors.text,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+    borderLeftWidth: 3,
+    borderLeftColor: colors.a1,
+    paddingLeft: 10,
+  },
+  oauthCard: {
+    backgroundColor: colors.panel,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
+  },
+  oauthStatus: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
+  oauthBadge: {
+    color: colors.dim,
+    backgroundColor: colors.panelStrong,
+    overflow: "hidden",
+    borderRadius: 7,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  oauthBadgeOn: {
+    color: "#6ecbf5",
+    backgroundColor: "rgba(54,197,240,0.13)",
+  },
 });

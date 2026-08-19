@@ -133,7 +133,9 @@ export const Empty: Story = {
     await expect(canvas.findByText("OpenAI")).resolves.toBeVisible();
     await expect(canvas.findByText("Groq")).resolves.toBeVisible();
     await expect(canvas.findByText("Anthropic")).resolves.toBeVisible();
-    await expect(canvas.findByRole("button", { name: "Connect" })).resolves.toBeVisible();
+    await expect(canvas.findByRole("button", { name: "Connect account" })).resolves.toBeVisible();
+    await expect(canvas.findByText("OpenAI Codex")).resolves.toBeVisible();
+    await expect(canvas.findByText("not connected")).resolves.toBeVisible();
   },
 };
 
@@ -177,8 +179,11 @@ export const InheritedFromEnv: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
-    await expect(canvas.findAllByText(/from server environment/)).resolves.toHaveLength(2);
+    // Env-backed keys show Test but not Clear (Clear only clears config-stored keys).
+    await expect(canvas.findAllByRole("button", { name: "Test" })).resolves.toHaveLength(2);
     await expect(canvas.queryByRole("button", { name: "Clear" })).toBeNull();
+    await expect(canvas.queryByText(/from server environment/)).toBeNull();
+    await expect(canvas.queryByText(/saved in instance settings/)).toBeNull();
   },
 };
 
@@ -195,12 +200,14 @@ export const Configured: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
-    await expect(canvas.findByText(/sk-a…mnop/)).resolves.toBeVisible();
-    await expect(canvas.getByText(/from server environment/)).toBeVisible();
+    await expect(canvas.queryByText(/sk-a…mnop/)).toBeNull();
+    await expect(canvas.queryByText(/from server environment/)).toBeNull();
+    await expect(canvas.queryByText(/saved in instance settings/)).toBeNull();
     const testButtons = canvas.getAllByRole("button", { name: "Test" });
     await userEvent.click(testButtons[0]);
     await expect(testAi).toHaveBeenCalledWith({ provider: "openai" });
     await userEvent.click(testButtons[1]);
     await expect(testAi).toHaveBeenCalledWith({ provider: "anthropic" });
+    await expect(canvas.getByRole("button", { name: "Clear" })).toBeVisible();
   },
 };
