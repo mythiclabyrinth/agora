@@ -9,6 +9,7 @@ export * from "./api/keys";
 export * from "./api/context";
 export * from "./api/queries";
 export * from "./ws/reducer";
+export * from "./ws/socket";
 export * from "./state/live";
 export * from "./state/tldr";
 export * from "./state/addressed";
