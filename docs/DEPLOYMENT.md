@@ -209,8 +209,9 @@ run the first command, then flip the desktop app to remote mode
 Voice / Ask AI keys may be set by instance admins in the **Settings** UI
 (`ai` in `config.json`) or supplied as process-env fallbacks
 (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). Ask AI also supports provider
-`codex` (ChatGPT OAuth via PKCE in Settings → Credentials). Models are set
-per provider in Settings → Features (or the hard-coded provider default).
+`codex` (**Codex OAuth** via PKCE in Settings → Credentials). Models are set
+per provider in Settings → Features; for Codex OAuth the dropdown prefers the
+live Codex catalog when linked (else a hard-coded fallback).
 Env key fallbacks are **not** folded into `config.json` at boot — see
 [configuration.md](site/configuration.md#voice-and-ask-ai).
 

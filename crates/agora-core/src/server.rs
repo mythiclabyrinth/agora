@@ -124,9 +124,14 @@ pub struct AppState {
     pub restart_handler: Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     /// TTS output per message id (see [`SPEECH_CACHE_MAX`]).
     pub speech_cache: Arc<SpeechCache>,
-    /// In-flight Codex ChatGPT OAuth (PKCE). Single slot, TTL, bound to the
+    /// In-flight Codex OAuth (PKCE). Single slot, TTL, bound to the
     /// admin username that started it.
     pub codex_oauth: Arc<std::sync::Mutex<Option<PendingCodexOauth>>>,
+    /// Cached live Codex model catalog (from ChatGPT backend). Served
+    /// immediately; refreshed in the background when stale/missing.
+    pub codex_models_cache: Arc<std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>>>,
+    /// Dedupes concurrent background Codex model refreshes.
+    pub codex_models_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
     /// Per-client fixed-window limiter for the Google sign-in surface.
     pub auth_limiter: Arc<RateLimiter>,
     /// Per-client fixed-window limiter for the upload surface.
@@ -1614,7 +1619,7 @@ async fn search_ask(
     if !search.available() {
         let hint = match search.provider.as_str() {
             crate::config::SEARCH_PROVIDER_CODEX => {
-                "Authorize ChatGPT under AI & voice → Credentials"
+                "Authorize Codex OAuth under Settings → Credentials"
             }
             crate::config::SEARCH_PROVIDER_OPENAI => {
                 "Add an OpenAI API key under AI & voice → Credentials"
@@ -3204,6 +3209,7 @@ fn instance_ai_payload(state: &AppState) -> Value {
         let snap = state.config.snapshot();
         crate::config::resolve_secret(&snap.ai.search.api_key, anthropic_env.as_deref())
     };
+    let codex_models = resolve_codex_suggested_models(state, &search);
     json!({
         "voice": {
             "enabled": voice.enabled,
@@ -3230,7 +3236,7 @@ fn instance_ai_payload(state: &AppState) -> Value {
                 },
                 {
                     "id": crate::config::SEARCH_PROVIDER_CODEX,
-                    "label": "OpenAI via ChatGPT sign-in",
+                    "label": "Codex OAuth",
                 },
             ],
             "model": ai_value_field(&search.model, search.model_source),
@@ -3239,11 +3245,15 @@ fn instance_ai_payload(state: &AppState) -> Value {
                 "openai": ai_value_field(&search.models.openai.0, search.models.openai.1),
                 "codex": ai_value_field(&search.models.codex.0, search.models.codex.1),
             },
-            "suggested_models": crate::config::suggested_models_for_search_provider(&search.provider),
+            "suggested_models": if search.provider == crate::config::SEARCH_PROVIDER_CODEX {
+                json!(codex_models)
+            } else {
+                json!(crate::config::suggested_models_for_search_provider(&search.provider))
+            },
             "suggested_models_by_provider": {
                 "anthropic": crate::ai::SUGGESTED_ANTHROPIC_MODELS,
                 "openai": crate::ai::SUGGESTED_OPENAI_MODELS,
-                "codex": crate::codex_oauth::SUGGESTED_CODEX_MODELS,
+                "codex": codex_models,
             },
         },
         "credentials": {
@@ -3262,6 +3272,74 @@ fn instance_ai_payload(state: &AppState) -> Value {
             },
         },
     })
+}
+
+const CODEX_MODELS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Return cached Codex models immediately (or the static fallback). When OAuth
+/// is linked and the cache is missing/stale, kick a background refresh — never
+/// block the request path on ChatGPT.
+fn resolve_codex_suggested_models(
+    state: &AppState,
+    search: &crate::config::ResolvedSearchAi,
+) -> Vec<String> {
+    let fallback: Vec<String> = crate::codex_oauth::SUGGESTED_CODEX_MODELS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    if !search.oauth_configured && search.access_token.is_none() {
+        return fallback;
+    }
+    let (cached, stale) = {
+        let cache = state.codex_models_cache.lock().unwrap();
+        match cache.as_ref() {
+            Some((when, models)) if !models.is_empty() => {
+                (Some(models.clone()), when.elapsed() >= CODEX_MODELS_CACHE_TTL)
+            }
+            _ => (None, true),
+        }
+    };
+    if stale {
+        schedule_codex_models_refresh(state);
+    }
+    cached.unwrap_or(fallback)
+}
+
+/// Fire-and-forget catalog refresh. Deduped so a Settings open + save burst
+/// only pays for one ChatGPT round-trip.
+fn schedule_codex_models_refresh(state: &AppState) {
+    use std::sync::atomic::Ordering;
+    if state
+        .codex_models_refresh_inflight
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let state_bg = state.clone();
+    tokio::spawn(async move {
+        let fetched = tokio::task::spawn_blocking({
+            let state_bg = state_bg.clone();
+            move || -> Option<Vec<String>> {
+                let search = resolved_search_ai(&state_bg);
+                if !search.oauth_configured && search.access_token.is_none() {
+                    return None;
+                }
+                let (access, account) = refresh_codex_if_needed(&state_bg, &search).ok()?;
+                crate::codex_oauth::list_models(&access, &account).ok()
+            }
+        })
+        .await;
+        if let Ok(Some(models)) = fetched {
+            if !models.is_empty() {
+                *state_bg.codex_models_cache.lock().unwrap() =
+                    Some((std::time::Instant::now(), models));
+            }
+        }
+        state_bg
+            .codex_models_refresh_inflight
+            .store(false, Ordering::SeqCst);
+    });
 }
 
 /// GET /api/instance/ai — instance-admin view of voice + Ask-AI settings.
@@ -3603,6 +3681,8 @@ async fn codex_oauth_start(
                             match result {
                                 Ok(Ok(tokens)) => {
                                     state_bg.config.store_codex_tokens(&tokens);
+                                    *state_bg.codex_models_cache.lock().unwrap() = None;
+                                    schedule_codex_models_refresh(&state_bg);
                                     let mut slot = state_bg.codex_oauth.lock().unwrap();
                                     if let Some(p) = slot.as_mut() {
                                         if p.state == expected_state {
@@ -3685,7 +3765,7 @@ async fn capture_codex_loopback(expected_state: &str) -> Result<String, String> 
             .await;
         return Err("OAuth state mismatch on loopback callback".into());
     }
-    let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<!doctype html><title>Agora</title><p>ChatGPT sign-in complete. You can close this tab.</p>";
+    let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<!doctype html><title>Agora</title><p>Codex OAuth complete. This tab should close automatically.</p><script>window.close();</script>";
     let _ = socket.write_all(body).await;
     Ok(code)
 }
@@ -3758,6 +3838,8 @@ async fn codex_oauth_complete(
     .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "exchange task failed"))?
     .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Codex OAuth exchange failed: {e:#}")))?;
     state.config.store_codex_tokens(&tokens);
+    *state.codex_models_cache.lock().unwrap() = None;
+    schedule_codex_models_refresh(&state);
     Ok(Json(json!({ "ok": true, "account_id": tokens.account_id })))
 }
 
@@ -3769,6 +3851,7 @@ async fn codex_oauth_disconnect(
     let user = require_user(&state, &headers, &q)?;
     require_instance_admin(&user)?;
     *state.codex_oauth.lock().unwrap() = None;
+    *state.codex_models_cache.lock().unwrap() = None;
     state.config.update(|c| {
         c.ai.search.codex_refresh_token.clear();
         c.ai.search.codex_access_token.clear();
@@ -4593,6 +4676,8 @@ mod tests {
             restart_handler: Arc::new(std::sync::Mutex::new(None)),
             speech_cache: Arc::new(std::sync::Mutex::new(Vec::new())),
             codex_oauth: Arc::new(std::sync::Mutex::new(None)),
+            codex_models_cache: Arc::new(std::sync::Mutex::new(None)),
+            codex_models_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             auth_limiter,
             upload_limiter,
         };

@@ -65,9 +65,6 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         </View>
         <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
       </View>
-      {!data.available && data.enabled ? (
-        <Text style={styles.hint}>Add an OpenAI API key under Credentials.</Text>
-      ) : null}
       <Text style={styles.label}>STT model</Text>
       <View style={styles.rowBtns}>
         {[...STT_MODELS, ...(stt && !STT_MODELS.includes(stt) ? [stt] : [])].map((m) => (
@@ -130,7 +127,7 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
     : [
         { id: "anthropic", label: "Anthropic" },
         { id: "openai", label: "OpenAI" },
-        { id: "codex", label: "ChatGPT" },
+        { id: "codex", label: "Codex OAuth" },
       ];
   const suggested = data.suggested_models_by_provider?.[provider] || data.suggested_models || [];
   const selectedModel = modelField.value;
@@ -144,9 +141,6 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
         </View>
         <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
       </View>
-      {!data.available && data.enabled ? (
-        <Text style={styles.hint}>Configure credentials under the Credentials tab.</Text>
-      ) : null}
       <Text style={styles.label}>Provider</Text>
       <View style={styles.rowBtns}>
         {providers.map((p) => (
@@ -303,8 +297,8 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>ChatGPT sign-in</Text>
-        <Text style={styles.hint}>Used by Ask AI when provider is ChatGPT sign-in.</Text>
+        <Text style={styles.cardTitle}>Codex OAuth</Text>
+        <Text style={styles.hint}>Used by Ask AI when provider is Codex OAuth.</Text>
         <Text style={styles.meta}>
           {oauth.configured
             ? `Linked · ${oauth.hint || "token"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
@@ -326,7 +320,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
             }}
           >
             <Text style={styles.btnPrimaryText}>
-              {oauth.configured ? "Re-authorize" : "Authorize ChatGPT"}
+              {oauth.configured ? "Re-authorize" : "Authorize Codex"}
             </Text>
           </Pressable>
           {oauth.configured ? (
@@ -334,11 +328,11 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
               style={[styles.btn, test.isPending && styles.btnDisabled]}
               disabled={test.isPending}
               onPress={() => test.mutate("codex", {
-                onSuccess: () => toast("ChatGPT credentials work"),
-                onError: (e) => toastErr("ChatGPT test failed", e as Error),
+                onSuccess: () => toast("Codex OAuth credentials work"),
+                onError: (e) => toastErr("Codex OAuth test failed", e as Error),
               })}
             >
-              <Text style={styles.btnText}>Test ChatGPT</Text>
+              <Text style={styles.btnText}>Test Codex OAuth</Text>
             </Pressable>
           ) : null}
           {oauth.configured ? (
@@ -370,7 +364,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
               disabled={!redirectPaste.trim() || completeOauth.isPending}
               onPress={() => completeOauth.mutate(redirectPaste.trim(), {
                 onSuccess: () => {
-                  toast("ChatGPT linked");
+                  toast("Codex OAuth linked");
                   setAwaitingPaste(false);
                   setRedirectPaste("");
                 },
@@ -430,7 +424,7 @@ export default function InstanceAiScreen() {
         {q.data && tab === "features" ? (
           <>
             <Text style={styles.hint}>
-              Choose providers and models. Keys and ChatGPT sign-in live under Credentials.
+              Choose providers and models. Keys and Codex OAuth live under Credentials.
             </Text>
             <VoiceFeatures data={q.data.voice} />
             <SearchFeatures data={q.data.search} />

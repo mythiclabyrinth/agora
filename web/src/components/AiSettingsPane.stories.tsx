@@ -22,19 +22,22 @@ const emptySettings = {
     providers: [
       { id: "anthropic", label: "Anthropic (API key)" },
       { id: "openai", label: "OpenAI (API key)" },
-      { id: "codex", label: "OpenAI via ChatGPT sign-in" },
+      { id: "codex", label: "Codex OAuth" },
     ],
     model: { value: "claude-sonnet-5", source: "default" },
     models: {
       anthropic: { value: "claude-sonnet-5", source: "default" },
       openai: { value: "gpt-4.1-mini", source: "default" },
-      codex: { value: "gpt-5.1", source: "default" },
+      codex: { value: "gpt-5.6-sol", source: "default" },
     },
     suggested_models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
     suggested_models_by_provider: {
       anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
       openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"],
-      codex: ["gpt-5.1", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-4.1"],
+      codex: [
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+        "gpt-5.3-codex-spark", "codex-auto-review",
+      ],
     },
   },
   credentials: {
@@ -107,7 +110,7 @@ export const Empty: Story = {
     await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
     await expect(canvas.findByText("OpenAI API key")).resolves.toBeVisible();
     await expect(canvas.findByText("Anthropic API key")).resolves.toBeVisible();
-    await expect(canvas.findByRole("button", { name: /Authorize ChatGPT/ })).resolves.toBeVisible();
+    await expect(canvas.findByRole("button", { name: /Authorize Codex/ })).resolves.toBeVisible();
   },
 };
 

@@ -20,19 +20,22 @@ const emptySettings = {
     providers: [
       { id: "anthropic", label: "Anthropic" },
       { id: "openai", label: "OpenAI" },
-      { id: "codex", label: "ChatGPT" },
+      { id: "codex", label: "Codex OAuth" },
     ],
     model: { value: "claude-sonnet-5", source: "default" },
     models: {
       anthropic: { value: "claude-sonnet-5", source: "default" },
       openai: { value: "gpt-4.1-mini", source: "default" },
-      codex: { value: "gpt-5.1", source: "default" },
+      codex: { value: "gpt-5.6-sol", source: "default" },
     },
     suggested_models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
     suggested_models_by_provider: {
       anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
       openai: ["gpt-4.1-mini", "gpt-4.1"],
-      codex: ["gpt-5.1", "gpt-4.1"],
+      codex: [
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+        "gpt-5.3-codex-spark", "codex-auto-review",
+      ],
     },
   },
   credentials: {

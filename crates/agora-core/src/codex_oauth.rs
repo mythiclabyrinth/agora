@@ -33,14 +33,32 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ANSWER_TOKENS: u32 = 1024;
 
 /// Default Ask-AI model when provider is `codex`.
-pub const DEFAULT_CODEX_MODEL: &str = "gpt-5.1";
+pub const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
 
+/// Client version the Codex CLI sends when listing models. Required by
+/// `GET …/codex/models` (`client_version` query param). Bump when updating
+/// the fallback catalog from a newer CLI cache.
+pub const CODEX_CLIENT_VERSION: &str = "0.147.0";
+
+/// Fallback suggestions when the live Codex catalog cannot be fetched
+/// (OAuth not linked, network error, cold cache, etc.). Prefer live
+/// `/models?client_version=…` when linked.
 pub const SUGGESTED_CODEX_MODELS: &[&str] = &[
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex-spark",
+    "codex-auto-review",
     "gpt-5.1",
     "gpt-5.1-codex",
     "gpt-5.1-codex-mini",
     "gpt-4.1",
 ];
+
+const CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
 
 #[derive(Clone, Debug)]
 pub struct CodexTokens {
@@ -283,6 +301,77 @@ pub fn test_connection(access_token: &str, account_id: &str, model: &str) -> any
     Ok(())
 }
 
+/// Fetch the live Codex model catalog (same source the Codex CLI caches).
+/// Requires `client_version` — without it the ChatGPT backend returns 400.
+/// Filters to list-visible / API-supported entries when those flags are present.
+pub fn list_models(access_token: &str, account_id: &str) -> anyhow::Result<Vec<String>> {
+    let access_token = access_token.trim();
+    anyhow::ensure!(!access_token.is_empty(), "access token required");
+    let models = fetch_models_json(&models_list_url(), access_token, account_id)?;
+    anyhow::ensure!(!models.is_empty(), "empty Codex models list");
+    Ok(models)
+}
+
+pub fn models_list_url() -> String {
+    format!(
+        "{CODEX_MODELS_URL}?client_version={}",
+        urlencoding_form(CODEX_CLIENT_VERSION)
+    )
+}
+
+fn fetch_models_json(
+    url: &str,
+    access_token: &str,
+    account_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut req = ureq::get(url)
+        .timeout(Duration::from_secs(30))
+        .set("Authorization", &format!("Bearer {access_token}"))
+        .set("OpenAI-Beta", "responses=experimental")
+        .set("User-Agent", "agora/codex-oauth");
+    if !account_id.trim().is_empty() {
+        req = req.set("ChatGPT-Account-Id", account_id.trim());
+    }
+    let response = req.call().map_err(flatten_http_error)?;
+    let parsed: Value = response.into_json()?;
+    Ok(parse_models_payload(&parsed))
+}
+
+fn parse_models_payload(parsed: &Value) -> Vec<String> {
+    let entries = parsed
+        .get("models")
+        .and_then(|v| v.as_array())
+        .or_else(|| parsed.get("data").and_then(|v| v.as_array()))
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for entry in entries {
+        let slug = entry
+            .get("slug")
+            .or_else(|| entry.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let Some(slug) = slug else { continue };
+        // When the catalog advertises visibility / API support, honour it —
+        // otherwise keep the entry (older response shapes).
+        if let Some(vis) = entry.get("visibility").and_then(|v| v.as_str()) {
+            if vis != "list" {
+                continue;
+            }
+        }
+        if let Some(api) = entry.get("supported_in_api") {
+            if api.as_bool() == Some(false) {
+                continue;
+            }
+        }
+        if !out.iter().any(|s| s == slug) {
+            out.push(slug.to_string());
+        }
+    }
+    out
+}
+
 fn extract_responses_text(parsed: &Value) -> String {
     if let Some(arr) = parsed["output"].as_array() {
         let mut out = String::new();
@@ -435,5 +524,30 @@ mod tests {
     fn tokens_from_auth_json_requires_refresh() {
         let auth = json!({"tokens": {"access_token": "at"}});
         assert!(tokens_from_auth_json(&auth).is_err());
+    }
+
+    #[test]
+    fn models_list_url_includes_required_client_version() {
+        let url = models_list_url();
+        assert!(url.starts_with("https://chatgpt.com/backend-api/codex/models?"));
+        assert!(url.contains(&format!("client_version={CODEX_CLIENT_VERSION}")));
+        assert!(!url.contains("/v1/models"));
+    }
+
+    #[test]
+    fn parse_models_payload_filters_visibility_and_api_flags() {
+        let payload = json!({
+            "models": [
+                {"slug": "gpt-5.6-sol", "visibility": "list", "supported_in_api": true},
+                {"slug": "gpt-5.6-terra", "visibility": "list", "supported_in_api": true},
+                {"slug": "hidden", "visibility": "hide", "supported_in_api": true},
+                {"slug": "spark", "visibility": "list", "supported_in_api": false},
+                {"id": "gpt-4.1"},
+            ]
+        });
+        assert_eq!(
+            parse_models_payload(&payload),
+            vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-4.1"]
+        );
     }
 }

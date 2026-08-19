@@ -48,7 +48,7 @@ Ask AI **providers** (set in the UI Features tab):
 | --- | --- |
 | `anthropic` | Anthropic API key (config or `ANTHROPIC_API_KEY`) |
 | `openai` | OpenAI API key shared with voice (config or `OPENAI_API_KEY`) |
-| `codex` | ChatGPT OAuth via PKCE — **Authorize ChatGPT** in Credentials (loopback on desktop/localhost; paste the redirected URL when hosted) |
+| `codex` | **Codex OAuth** via PKCE — **Authorize Codex** in Credentials (loopback on desktop/localhost; paste the redirected URL when hosted). Model list is fetched live from the Codex catalog when linked. |
 
 Models are chosen per provider in the Features tab. If a call fails (bad key, expired OAuth, unknown model), Ask AI / voice returns an explicit error naming the provider and model.
 

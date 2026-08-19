@@ -1,7 +1,7 @@
 /* Instance-admin Settings: shell for instance-wide options.
    Today: Features + Credentials for voice / Ask AI. More tabs can land here later. */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useCompleteCodexOauth,
   useDisconnectCodexOauth,
@@ -28,13 +28,12 @@ function sourceLabel(source: string): string {
 }
 
 function SectionHead({
-  title, available, enabled, onEnabled, hint,
+  title, available, enabled, onEnabled,
 }: {
   title: string;
   available: boolean;
   enabled: boolean;
   onEnabled: (v: boolean) => void;
-  hint?: string;
 }) {
   return (
     <div className="ai-section-head">
@@ -48,7 +47,6 @@ function SectionHead({
         <input type="checkbox" checked={enabled} onChange={e => onEnabled(e.target.checked)} />
         Enabled
       </label>
-      {hint && !available && enabled && <p className="conn-hint">{hint}</p>}
     </div>
   );
 }
@@ -78,7 +76,6 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         available={data.available}
         enabled={data.enabled}
         onEnabled={enabled => save({ enabled })}
-        hint="Add an OpenAI API key under Credentials."
       />
       <p className="conn-hint">Provider OpenAI — voice notes, speak-aloud, live voice.</p>
       <div className="ai-row">
@@ -139,7 +136,7 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
     : [
         { id: "anthropic", label: "Anthropic (API key)" },
         { id: "openai", label: "OpenAI (API key)" },
-        { id: "codex", label: "OpenAI via ChatGPT sign-in" },
+        { id: "codex", label: "Codex OAuth" },
       ];
   const suggested = data.suggested_models_by_provider?.[provider]
     || data.suggested_models
@@ -153,7 +150,6 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
         available={data.available}
         enabled={data.enabled}
         onEnabled={enabled => save({ enabled })}
-        hint="Configure credentials under the Credentials tab."
       />
       <div className="ai-row">
         <label>Provider</label>
@@ -241,15 +237,23 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
   const [oauthMode, setOauthMode] = useState<"loopback" | "paste" | null>(null);
   const [authorizeUrl, setAuthorizeUrl] = useState("");
   const [redirectPaste, setRedirectPaste] = useState("");
+  const oauthWinRef = useRef<Window | null>(null);
   const statusQ = useCodexOauthStatus(oauthMode === "loopback");
+
+  const closeOauthWindow = () => {
+    try { oauthWinRef.current?.close(); } catch { /* ignore */ }
+    oauthWinRef.current = null;
+  };
 
   useEffect(() => {
     if (statusQ.data?.status === "completed") {
-      toast("ChatGPT sign-in complete", { variant: "ok" });
+      toast("Codex OAuth complete", { variant: "ok" });
+      closeOauthWindow();
       setOauthMode(null);
       setAuthorizeUrl("");
     } else if (statusQ.data?.status === "failed") {
-      toast(`ChatGPT sign-in failed: ${statusQ.data.error || "unknown"}`, { variant: "warn" });
+      toast(`Codex OAuth failed: ${statusQ.data.error || "unknown"}`, { variant: "warn" });
+      closeOauthWindow();
       setOauthMode(null);
     }
   }, [statusQ.data?.status, statusQ.data?.error]);
@@ -310,10 +314,10 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
       </div>
 
       <div className="ai-section">
-        <h4>ChatGPT sign-in (Codex)</h4>
+        <h4>Codex OAuth</h4>
         <p className="conn-hint">
-          Uses your ChatGPT account via the Codex CLI OAuth client. Used by Ask AI when
-          its provider is ChatGPT sign-in.
+          ChatGPT account via the Codex CLI OAuth client. Used by Ask AI when its provider
+          is Codex OAuth.
           {oauth.configured
             ? ` Linked · ${oauth.hint || "token saved"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
             : " Not linked."}
@@ -327,29 +331,31 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
                 onSuccess: res => {
                   setOauthMode(res.mode);
                   setAuthorizeUrl(res.authorize_url);
-                  window.open(res.authorize_url, "_blank", "noopener,noreferrer");
+                  // Keep a window handle so we can close it on success.
+                  // Do not use noopener — that makes window.open return null.
+                  oauthWinRef.current = window.open(res.authorize_url, "agora-codex-oauth");
                   toast(mode === "loopback"
-                    ? "Sign in opened — finish in the ChatGPT window"
+                    ? "Sign in opened — finish in the Codex OAuth window"
                     : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
                 },
-                onError: err("Couldn't start ChatGPT sign-in"),
+                onError: err("Couldn't start Codex OAuth"),
               });
             }}>
-            {oauth.configured ? "Re-authorize ChatGPT" : "Authorize ChatGPT"}
+            {oauth.configured ? "Re-authorize Codex" : "Authorize Codex"}
           </button>
           {oauth.configured && (
             <button className="btn sm" disabled={test.isPending}
               onClick={() => test.mutate("codex", {
-                onSuccess: () => toast("ChatGPT credentials work", { variant: "ok" }),
-                onError: err("ChatGPT test failed"),
+                onSuccess: () => toast("Codex OAuth credentials work", { variant: "ok" }),
+                onError: err("Codex OAuth test failed"),
               })}>
-              {test.isPending ? "Testing…" : "Test ChatGPT"}
+              {test.isPending ? "Testing…" : "Test Codex OAuth"}
             </button>
           )}
           {oauth.configured && (
             <button className="btn sm danger" disabled={disconnectOauth.isPending}
               onClick={() => disconnectOauth.mutate(undefined, {
-                onSuccess: () => toast("ChatGPT disconnected", { variant: "ok" }),
+                onSuccess: () => toast("Codex OAuth disconnected", { variant: "ok" }),
                 onError: err("Couldn't disconnect"),
               })}>
               Disconnect
@@ -372,7 +378,8 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
               <button className="btn sm primary" disabled={!redirectPaste.trim() || completeOauth.isPending}
                 onClick={() => completeOauth.mutate(redirectPaste.trim(), {
                   onSuccess: () => {
-                    toast("ChatGPT sign-in complete", { variant: "ok" });
+                    toast("Codex OAuth complete", { variant: "ok" });
+                    closeOauthWindow();
                     setOauthMode(null);
                     setRedirectPaste("");
                   },
@@ -383,7 +390,7 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
             </div>
             {authorizeUrl && (
               <p className="conn-hint">
-                If the window didn&apos;t open: <a href={authorizeUrl} target="_blank" rel="noreferrer">open authorize URL</a>
+                If the window didn&apos;t open: <a href={authorizeUrl} target="agora-codex-oauth" rel="noreferrer">open authorize URL</a>
               </p>
             )}
           </div>
@@ -426,7 +433,7 @@ export function AiSettingsPane() {
           {q.data && tab === "features" && (
             <>
               <p className="conn-hint">
-                Choose providers and models. Keys and ChatGPT sign-in live under Credentials.
+                Choose providers and models. Keys and Codex OAuth live under Credentials.
               </p>
               <VoiceFeatures data={q.data.voice} />
               <SearchFeatures data={q.data.search} />
