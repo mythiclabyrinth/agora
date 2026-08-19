@@ -7,6 +7,7 @@
 //! Token endpoints and the Codex responses URL stay hard-coded (no
 //! admin-settable base URL — SSRF / key-exfiltration risk).
 
+use std::io::Read;
 use std::time::Duration;
 
 use base64::engine::general_purpose::{URL_SAFE_NO_PAD, STANDARD as B64};
@@ -30,7 +31,6 @@ const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/respons
 const OAUTH_SCOPES: &str = "openid profile email offline_access";
 
 const TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_ANSWER_TOKENS: u32 = 1024;
 
 /// Default Ask-AI model when provider is `codex`.
 pub const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
@@ -251,7 +251,32 @@ pub fn tokens_from_auth_json(auth: &Value) -> anyhow::Result<CodexTokens> {
     })
 }
 
+/// Body for a Codex `/responses` call. Two constraints this backend enforces
+/// and the plain OpenAI Responses API does not, both verified against the live
+/// endpoint — a request violating either is rejected with a 400 before any
+/// tokens are produced:
+///
+/// - `stream` must be `true` ("Stream must be set to true").
+/// - `max_output_tokens` must be absent ("Unsupported parameter"), so answer
+///   length is steered by the system prompt alone. The Anthropic path still
+///   caps properly.
+fn answer_request_body(model: &str, prompt: &str) -> Value {
+    json!({
+        "model": model,
+        "store": false,
+        "stream": true,
+        "instructions": crate::ai::SYSTEM_PROMPT,
+        "input": [{
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}]
+        }],
+    })
+}
+
 /// Ask Codex (ChatGPT backend) to answer from numbered excerpts.
+///
+/// Streams because the endpoint requires it (see [`answer_request_body`]), but
+/// returns one completed string — Ask AI's UI is not a live typewriter.
 pub fn answer(
     access_token: &str,
     account_id: &str,
@@ -266,25 +291,20 @@ pub fn answer(
         .timeout(TIMEOUT)
         .set("Authorization", &format!("Bearer {access_token}"))
         .set("Content-Type", "application/json")
+        .set("Accept", "text/event-stream")
         .set("OpenAI-Beta", "responses=experimental");
     if !account_id.trim().is_empty() {
         req = req.set("ChatGPT-Account-Id", account_id.trim());
     }
     let response = req
-        .send_json(json!({
-            "model": model,
-            "store": false,
-            "instructions": crate::ai::SYSTEM_PROMPT,
-            "input": [{
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}]
-            }],
-            "max_output_tokens": MAX_ANSWER_TOKENS,
-        }))
+        .send_json(answer_request_body(model, &prompt))
         .map_err(flatten_http_error)?;
-    let parsed: Value = response.into_json()?;
-    let text = extract_responses_text(&parsed);
-    anyhow::ensure!(!text.trim().is_empty(), "empty answer from Codex");
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(8 * 1024 * 1024)
+        .read_to_string(&mut body)?;
+    let text = extract_sse_text(&body)?;
     Ok(text.trim().to_string())
 }
 
@@ -393,6 +413,77 @@ fn extract_responses_text(parsed: &Value) -> String {
         .or_else(|| parsed["text"].as_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// Collect assistant text from a Codex/OpenAI Responses SSE body.
+/// Prefer concatenated `output_text.delta` events; fall back to the completed
+/// response object when deltas were omitted.
+fn extract_sse_text(body: &str) -> anyhow::Result<String> {
+    let mut deltas = String::new();
+    let mut completed = String::new();
+    let mut stream_error: Option<String> = None;
+    for payload in sse_data_payloads(body) {
+        if payload == "[DONE]" {
+            break;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&payload) else {
+            continue;
+        };
+        if let Some(msg) = v
+            .pointer("/error/message")
+            .and_then(|x| x.as_str())
+            .or_else(|| v["message"].as_str().filter(|_| v["type"].as_str() == Some("error")))
+        {
+            stream_error = Some(msg.to_string());
+            continue;
+        }
+        let ty = v["type"].as_str().unwrap_or("");
+        if ty.ends_with("output_text.delta") {
+            if let Some(d) = v["delta"].as_str() {
+                deltas.push_str(d);
+            }
+        } else if ty == "response.completed" || ty.ends_with("response.completed") {
+            let resp = v.get("response").unwrap_or(&v);
+            let text = extract_responses_text(resp);
+            if !text.is_empty() {
+                completed = text;
+            }
+        }
+    }
+    if let Some(err) = stream_error {
+        anyhow::bail!("Codex stream error: {err}");
+    }
+    let text = if !deltas.trim().is_empty() {
+        deltas
+    } else {
+        completed
+    };
+    anyhow::ensure!(!text.trim().is_empty(), "empty answer from Codex stream");
+    Ok(text)
+}
+
+/// Yield each SSE `data:` payload (multi-line data joined with `\n`).
+fn sse_data_payloads(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut data_lines: Vec<String> = Vec::new();
+    for raw in body.split('\n') {
+        let line = raw.trim_end_matches('\r');
+        if line.is_empty() {
+            if !data_lines.is_empty() {
+                out.push(data_lines.join("\n"));
+                data_lines.clear();
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
+        }
+        // Ignore event:/id:/comment lines — type lives inside the JSON.
+    }
+    if !data_lines.is_empty() {
+        out.push(data_lines.join("\n"));
+    }
+    out
 }
 
 fn flatten_http_error(e: ureq::Error) -> anyhow::Error {
@@ -532,6 +623,49 @@ mod tests {
         assert!(url.starts_with("https://chatgpt.com/backend-api/codex/models?"));
         assert!(url.contains(&format!("client_version={CODEX_CLIENT_VERSION}")));
         assert!(!url.contains("/v1/models"));
+    }
+
+    #[test]
+    fn answer_request_streams_and_omits_max_output_tokens() {
+        // Both of these were live 400s from the Codex backend, one hiding
+        // behind the other. Pin them so a "tidy-up" can't reintroduce either.
+        let body = answer_request_body("gpt-5.6-sol", "Question: hi");
+        assert_eq!(body["stream"], true);
+        assert!(body.get("max_output_tokens").is_none());
+        assert_eq!(body["model"], "gpt-5.6-sol");
+        assert_eq!(body["store"], false);
+    }
+
+    #[test]
+    fn extract_sse_text_concatenates_output_text_deltas() {
+        let body = "\
+event: response.output_text.delta\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\
+\n\
+event: response.output_text.delta\n\
+data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\
+\n\
+event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\
+\n";
+        assert_eq!(extract_sse_text(body).unwrap(), "Hello world");
+    }
+
+    #[test]
+    fn extract_sse_text_falls_back_to_completed_response() {
+        let body = "\
+data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"content\":[{\"text\":\"from completed\"}]}]}}\n\
+\n";
+        assert_eq!(extract_sse_text(body).unwrap(), "from completed");
+    }
+
+    #[test]
+    fn extract_sse_text_surfaces_stream_errors() {
+        let body = "\
+data: {\"type\":\"error\",\"error\":{\"message\":\"Stream must be set to true\"}}\n\
+\n";
+        let err = extract_sse_text(body).unwrap_err().to_string();
+        assert!(err.contains("Stream must be set to true"));
     }
 
     #[test]
