@@ -276,6 +276,27 @@ export interface WsContext {
   onAgentMessage?: (message: Message) => void;
 }
 
+/** Per-QueryClient set of message ids already applied via applyWsEvent.
+    Written only here — never from optimistic mutation paths — so the WS
+    echo of an own reply still runs bumpReplyCount. Caps at SEEN_CAP with
+    FIFO eviction so a burst of duplicate sockets can't grow unbounded. */
+const SEEN_CAP = 512;
+const seenMessageIds = new WeakMap<QueryClient, Set<number>>();
+
+function claimMessageId(qc: QueryClient, id: number): boolean {
+  let seen = seenMessageIds.get(qc);
+  if (!seen) {
+    seen = new Set();
+    seenMessageIds.set(qc, seen);
+  }
+  if (seen.has(id)) return false;
+  seen.add(id);
+  if (seen.size > SEEN_CAP) {
+    seen.delete(seen.values().next().value!);
+  }
+  return true;
+}
+
 export function applyWsEvent(
   qc: QueryClient,
   ev: WsEvent,
@@ -284,6 +305,10 @@ export function applyWsEvent(
   switch (ev.type) {
     case "message": {
       const { message } = ev as MessageEvent;
+      // Duplicate frames (leaked sockets) must not re-bump reply/unread
+      // counters — appendMessage already dedupes the list, but the bump
+      // helpers do not.
+      if (!claimMessageId(qc, message.id)) return;
       qc.setQueryData<MessagePages>(
         keys.messages(message.channel_id, message.thread_id),
         (data) => appendMessage(data, message),

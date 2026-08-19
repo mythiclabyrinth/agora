@@ -102,3 +102,31 @@ describe("attachment browser invalidation", () => {
     expect(qc.getQueryState(keys.attachments("c1", 42))?.isInvalidated).toBe(true);
   });
 });
+
+describe("applyWsEvent message dedupe", () => {
+  it("applies a duplicate message frame only once", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 0 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), pages());
+    const reply = { ...msg(11), thread_id: 5 };
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", 5))!.pages[0].map(m => m.id)).toEqual([11]);
+  });
+
+  it("still bumps after an optimistic append that never touched the seen-set", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 0 }]],
+      pageParams: [undefined],
+    });
+    const reply = { ...msg(11), thread_id: 5 };
+    qc.setQueryData(keys.messages("c1", 5), appendMessage(pages(), reply));
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
+});

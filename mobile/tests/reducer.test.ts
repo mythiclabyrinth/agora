@@ -285,6 +285,46 @@ describe("applyWsEvent", () => {
     expect(top.pages[0][0].reply_count).toBe(1);
   });
 
+  it("ignores a duplicate message frame (leaked sockets) without re-bumping counters", () => {
+    qc.setQueryData(keys.messages("general-1a2b", null), pages([msg({ id: 5, reply_count: 0 })]));
+    qc.setQueryData(keys.messages("general-1a2b", 5), pages([]));
+    qc.setQueryData(keys.groups, groups());
+    qc.setQueryData<ThreadRow[]>(keys.threads, [threadRow()]);
+    const reply = msg({ id: 11, thread_id: 5, text: "ping @me" });
+    const frame = { type: "message" as const, message: reply };
+    const notified: Message[] = [];
+    applyWsEvent(qc, frame, { username: "me", onAgentMessage: (m) => notified.push(m) });
+    applyWsEvent(qc, frame, { username: "me", onAgentMessage: (m) => notified.push(m) });
+    applyWsEvent(qc, frame, { username: "me", onAgentMessage: (m) => notified.push(m) });
+
+    expect(qc.getQueryData<MessagePages>(keys.messages("general-1a2b", 5))!.pages[0].map((m) => m.id))
+      .toEqual([11]);
+    expect(qc.getQueryData<MessagePages>(keys.messages("general-1a2b", null))!.pages[0][0].reply_count)
+      .toBe(1);
+    expect(qc.getQueryData<ThreadRow[]>(keys.threads)![0]).toMatchObject({
+      reply_count: 2, // threadRow starts at 1
+      unread: 1,
+    });
+    expect(qc.getQueryData<Group[]>(keys.groups)![0].channels[0].mentions).toBe(1);
+    expect(notified).toHaveLength(1);
+  });
+
+  it("still bumps reply_count for the WS echo after an optimistic append", () => {
+    // useSendMessage appends + updates groups but never writes the seen-set
+    // or bumpReplyCount — the echo must still land.
+    const reply = msg({ id: 11, thread_id: 5, author_type: "user", author_id: "me" });
+    qc.setQueryData(keys.messages("general-1a2b", null), pages([msg({ id: 5, reply_count: 0 })]));
+    qc.setQueryData(
+      keys.messages("general-1a2b", 5),
+      appendMessage(pages([]), reply),
+    );
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("general-1a2b", null))!.pages[0][0].reply_count)
+      .toBe(1);
+    expect(qc.getQueryData<MessagePages>(keys.messages("general-1a2b", 5))!.pages[0].map((m) => m.id))
+      .toEqual([11]);
+  });
+
   it("tracks typing on and off, clearing that agent's progress too", () => {
     // Frame shape from hub.rs tests.
     const typing: TypingEvent = {
