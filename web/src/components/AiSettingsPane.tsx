@@ -10,6 +10,16 @@ import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 
+/* Model inputs hold the *override*, not the resolved value: empty means
+   "follow the server env / built-in default", and the resolved value shows as
+   the placeholder. Pre-filling them would make an unchanged save pin the stock
+   model into config.json and permanently shadow AGORA_AI_MODEL. */
+const override = (f: { value: string; source: string }) =>
+  f.source === "config" ? f.value : "";
+
+const inherited = (f: { value: string; source: string }) =>
+  `${f.value} (${f.source === "env" ? "from env" : "default"})`;
+
 function sourceLabel(source: string): string {
   switch (source) {
     case "config": return "saved in instance settings";
@@ -47,14 +57,14 @@ function VoiceForm({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
   const test = useTestInstanceAi();
   const [key, setKey] = useState("");
-  const [stt, setStt] = useState(data.stt_model.value);
-  const [tts, setTts] = useState(data.tts_model.value);
-  const [voice, setVoice] = useState(data.tts_voice.value);
+  const [stt, setStt] = useState(override(data.stt_model));
+  const [tts, setTts] = useState(override(data.tts_model));
+  const [voice, setVoice] = useState(override(data.tts_voice));
 
   useEffect(() => {
-    setStt(data.stt_model.value);
-    setTts(data.tts_model.value);
-    setVoice(data.tts_voice.value);
+    setStt(override(data.stt_model));
+    setTts(override(data.tts_model));
+    setVoice(override(data.tts_voice));
     setKey("");
   }, [data]);
 
@@ -109,21 +119,25 @@ function VoiceForm({ data }: { data: InstanceAiSettings["voice"] }) {
       </div>
       <div className="ai-row">
         <label>STT model</label>
-        <input value={stt} onChange={e => setStt(e.target.value)} />
+        <input value={stt} placeholder={inherited(data.stt_model)}
+          onChange={e => setStt(e.target.value)} />
       </div>
       <div className="ai-row">
         <label>TTS model</label>
-        <input value={tts} onChange={e => setTts(e.target.value)} />
+        <input value={tts} placeholder={inherited(data.tts_model)}
+          onChange={e => setTts(e.target.value)} />
       </div>
       <div className="ai-row">
         <label>TTS voice</label>
         <select value={voice} onChange={e => setVoice(e.target.value)}>
-          {(data.suggested_tts_voices.includes(voice)
+          <option value="">{inherited(data.tts_voice)}</option>
+          {(data.suggested_tts_voices.includes(voice) || !voice
             ? data.suggested_tts_voices
             : [voice, ...data.suggested_tts_voices]
           ).map(v => <option key={v} value={v}>{v}</option>)}
         </select>
       </div>
+      <p className="conn-hint">Leave a field empty to follow the server environment or the built-in default.</p>
       <div className="ai-actions">
         <button className="btn sm primary" disabled={update.isPending}
           onClick={() => save({
@@ -149,10 +163,10 @@ function SearchForm({ data }: { data: InstanceAiSettings["search"] }) {
   const update = useUpdateInstanceAi();
   const test = useTestInstanceAi();
   const [key, setKey] = useState("");
-  const [model, setModel] = useState(data.model.value);
+  const [model, setModel] = useState(override(data.model));
 
   useEffect(() => {
-    setModel(data.model.value);
+    setModel(override(data.model));
     setKey("");
   }, [data]);
 
@@ -207,11 +221,13 @@ function SearchForm({ data }: { data: InstanceAiSettings["search"] }) {
       </div>
       <div className="ai-row">
         <label>Model</label>
-        <input list="ai-search-models" value={model} onChange={e => setModel(e.target.value)} />
+        <input list="ai-search-models" value={model} placeholder={inherited(data.model)}
+          onChange={e => setModel(e.target.value)} />
         <datalist id="ai-search-models">
           {data.suggested_models.map(m => <option key={m} value={m} />)}
         </datalist>
       </div>
+      <p className="conn-hint">Leave empty to follow <code>AGORA_AI_MODEL</code> or the built-in default.</p>
       <div className="ai-actions">
         <button className="btn sm primary" disabled={update.isPending}
           onClick={() => save({ model: model.trim() })}>

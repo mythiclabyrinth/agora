@@ -1559,18 +1559,18 @@ async fn search_ask(
         return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many AI requests — slow down"));
     }
     let search = resolved_search_ai(&state);
-    let Some(key) = search.api_key.clone() else {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "AI answers are not configured (set an Anthropic key in instance AI settings)",
-        ));
-    };
     if !search.enabled {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "AI answers are disabled for this instance",
         ));
     }
+    let Some(key) = search.api_key.clone() else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "AI answers are not configured (set an Anthropic key in instance AI settings)",
+        ));
+    };
     let question = payload["q"].as_str().unwrap_or("").trim().to_string();
     if question.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "Question required"));
@@ -1773,18 +1773,18 @@ async fn post_voice_message(
     }
     require_channel_postable(&state, &user, &channel_id)?;
     let voice = resolved_voice(&state);
-    let Some(key) = voice.api_key.clone() else {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "Voice input is not configured (set an OpenAI key in instance AI settings)",
-        ));
-    };
     if !voice.enabled {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "Voice input is disabled for this instance",
         ));
     }
+    let Some(key) = voice.api_key.clone() else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "Voice input is not configured (set an OpenAI key in instance AI settings)",
+        ));
+    };
     let stt_model = voice.stt_model.clone();
     let mut audio: Vec<u8> = Vec::new();
     let mut filename = String::new();
@@ -1892,18 +1892,18 @@ async fn message_speech(
     let user = require_user(&state, &headers, &q)?;
     let message = require_message_visible(&state, &user, message_id)?;
     let voice = resolved_voice(&state);
-    let Some(key) = voice.api_key.clone() else {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "Spoken replies are not configured (set an OpenAI key in instance AI settings)",
-        ));
-    };
     if !voice.enabled {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "Spoken replies are disabled for this instance",
         ));
     }
+    let Some(key) = voice.api_key.clone() else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "Spoken replies are not configured (set an OpenAI key in instance AI settings)",
+        ));
+    };
     let tts_model = voice.tts_model.clone();
     let tts_voice = voice.tts_voice.clone();
     let cached = {
@@ -3146,25 +3146,23 @@ async fn update_instance_ai(
                     c.ai.voice.api_key = key.to_string();
                 }
             }
+            // Model fields are overrides, not values: an explicit "" clears
+            // the override so resolution falls back to env/default. Omitting
+            // the field leaves it alone. Without this there is no way back to
+            // `default`, and saving a pre-filled form would silently pin the
+            // stock model into config and shadow `AGORA_AI_MODEL` forever.
             if let Some(m) = v.get("stt_model").and_then(|x| x.as_str()) {
-                let m = m.trim();
-                if !m.is_empty() {
-                    c.ai.voice.stt_model = m.chars().take(120).collect();
-                }
+                c.ai.voice.stt_model = m.trim().chars().take(120).collect();
             }
             if let Some(m) = v.get("tts_model").and_then(|x| x.as_str()) {
-                let m = m.trim();
-                if !m.is_empty() {
-                    c.ai.voice.tts_model = m.chars().take(120).collect();
-                    clear_speech = true;
-                }
+                let next: String = m.trim().chars().take(120).collect();
+                clear_speech |= next != c.ai.voice.tts_model;
+                c.ai.voice.tts_model = next;
             }
             if let Some(voice) = v.get("tts_voice").and_then(|x| x.as_str()) {
-                let voice = voice.trim();
-                if !voice.is_empty() {
-                    c.ai.voice.tts_voice = voice.chars().take(40).collect();
-                    clear_speech = true;
-                }
+                let next: String = voice.trim().chars().take(40).collect();
+                clear_speech |= next != c.ai.voice.tts_voice;
+                c.ai.voice.tts_voice = next;
             }
         }
         if let Some(s) = payload.get("search") {
@@ -3185,11 +3183,9 @@ async fn update_instance_ai(
                     c.ai.search.api_key = key.to_string();
                 }
             }
+            // Same override semantics as the voice models above.
             if let Some(m) = s.get("model").and_then(|x| x.as_str()) {
-                let m = m.trim();
-                if !m.is_empty() {
-                    c.ai.search.model = m.chars().take(120).collect();
-                }
+                c.ai.search.model = m.trim().chars().take(120).collect();
             }
         }
     });
@@ -4236,6 +4232,67 @@ mod tests {
         .await
         .unwrap();
         assert!(state.speech_cache.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_model_clears_the_override_so_env_and_defaults_win_again() {
+        // Model fields are overrides. Saving "" must return the field to
+        // default/env resolution — otherwise a pre-filled admin form pins the
+        // stock model into config on first save and AGORA_AI_MODEL is dead.
+        let (state, _dir) = test_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let set = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "voice": {"stt_model": "whisper-1"},
+                "search": {"model": "claude-opus-5"},
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(set["voice"]["stt_model"]["source"], "config");
+        assert_eq!(set["search"]["model"]["source"], "config");
+
+        let cleared = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({
+                "voice": {"stt_model": ""},
+                "search": {"model": "   "},
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(cleared["voice"]["stt_model"]["source"], "default");
+        assert_eq!(
+            cleared["voice"]["stt_model"]["value"],
+            crate::config::DEFAULT_STT_MODEL
+        );
+        assert_eq!(cleared["search"]["model"]["source"], "default");
+        assert_eq!(
+            cleared["search"]["model"]["value"],
+            crate::config::DEFAULT_SEARCH_MODEL
+        );
+        // The stored override really is empty, so env can win on next resolve.
+        let snap = state.config.snapshot();
+        assert!(snap.ai.voice.stt_model.is_empty());
+        assert!(snap.ai.search.model.is_empty());
+        assert_eq!(
+            state
+                .config
+                .search_ai(Some("ant-key"), Some("claude-sonnet-5"))
+                .model_source,
+            crate::config::AiFieldSource::Env
+        );
     }
 
     #[tokio::test]

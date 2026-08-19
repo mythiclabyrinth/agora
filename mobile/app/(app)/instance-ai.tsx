@@ -23,6 +23,16 @@ import {
 import { toast, toastErr } from "../../src/components/Toast";
 import { colors } from "../../src/lib/theme";
 
+/* Model inputs hold the *override*, not the resolved value: empty means
+   "follow the server env / built-in default", shown as the placeholder.
+   Pre-filling them would make an unchanged save pin the stock model into
+   config.json and permanently shadow AGORA_AI_MODEL. */
+const override = (f: { value: string; source: string }) =>
+  f.source === "config" ? f.value : "";
+
+const inherited = (f: { value: string; source: string }) =>
+  `${f.value} (${f.source === "env" ? "from env" : "default"})`;
+
 function sourceLabel(source: string): string {
   switch (source) {
     case "config": return "saved in instance settings";
@@ -36,14 +46,14 @@ function VoiceBlock({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
   const test = useTestInstanceAi();
   const [key, setKey] = useState("");
-  const [stt, setStt] = useState(data.stt_model.value);
-  const [tts, setTts] = useState(data.tts_model.value);
-  const [voice, setVoice] = useState(data.tts_voice.value);
+  const [stt, setStt] = useState(override(data.stt_model));
+  const [tts, setTts] = useState(override(data.tts_model));
+  const [voice, setVoice] = useState(override(data.tts_voice));
 
   useEffect(() => {
-    setStt(data.stt_model.value);
-    setTts(data.tts_model.value);
-    setVoice(data.tts_voice.value);
+    setStt(override(data.stt_model));
+    setTts(override(data.tts_model));
+    setVoice(override(data.tts_voice));
     setKey("");
   }, [data]);
 
@@ -106,11 +116,20 @@ function VoiceBlock({ data }: { data: InstanceAiSettings["voice"] }) {
         ) : null}
       </View>
       <Text style={styles.label}>STT model</Text>
-      <TextInput style={styles.input} value={stt} onChangeText={setStt} autoCapitalize="none" />
+      <TextInput style={styles.input} value={stt} onChangeText={setStt} autoCapitalize="none"
+        placeholder={inherited(data.stt_model)} placeholderTextColor={colors.faint} />
       <Text style={styles.label}>TTS model</Text>
-      <TextInput style={styles.input} value={tts} onChangeText={setTts} autoCapitalize="none" />
+      <TextInput style={styles.input} value={tts} onChangeText={setTts} autoCapitalize="none"
+        placeholder={inherited(data.tts_model)} placeholderTextColor={colors.faint} />
       <Text style={styles.label}>TTS voice</Text>
-      <TextInput style={styles.input} value={voice} onChangeText={setVoice} autoCapitalize="none" />
+      <TextInput style={styles.input} value={voice} onChangeText={setVoice} autoCapitalize="none"
+        placeholder={inherited(data.tts_voice)} placeholderTextColor={colors.faint} />
+      <Text style={styles.meta}>
+        Suggested voices: {(data.suggested_tts_voices || []).join(", ")}
+      </Text>
+      <Text style={styles.meta}>
+        Leave a field empty to follow the server environment or the built-in default.
+      </Text>
       <View style={styles.rowBtns}>
         <Pressable
           style={[styles.btn, styles.btnPrimary]}
@@ -142,10 +161,10 @@ function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
   const update = useUpdateInstanceAi();
   const test = useTestInstanceAi();
   const [key, setKey] = useState("");
-  const [model, setModel] = useState(data.model.value);
+  const [model, setModel] = useState(override(data.model));
 
   useEffect(() => {
-    setModel(data.model.value);
+    setModel(override(data.model));
     setKey("");
   }, [data]);
 
@@ -208,9 +227,13 @@ function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
         ) : null}
       </View>
       <Text style={styles.label}>Model</Text>
-      <TextInput style={styles.input} value={model} onChangeText={setModel} autoCapitalize="none" />
+      <TextInput style={styles.input} value={model} onChangeText={setModel} autoCapitalize="none"
+        placeholder={inherited(data.model)} placeholderTextColor={colors.faint} />
       <Text style={styles.meta}>
         Suggested: {(data.suggested_models || []).join(", ")}
+      </Text>
+      <Text style={styles.meta}>
+        Leave empty to follow AGORA_AI_MODEL or the built-in default.
       </Text>
       <View style={styles.rowBtns}>
         <Pressable

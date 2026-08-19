@@ -67,10 +67,60 @@ type Story = StoryObj<typeof meta>;
 export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // The panel header renders before the settings query resolves, so every
+    // assertion on loaded content has to be a findBy*.
     await expect(canvas.findByText("AI & voice")).resolves.toBeVisible();
-    await expect(canvas.getByText("openai")).toBeVisible();
-    await expect(canvas.getByText("anthropic")).toBeVisible();
-    await expect(canvas.getAllByRole("button", { name: "Test connection" })[0]).toBeDisabled();
+    await expect(canvas.findByText("openai")).resolves.toBeVisible();
+    await expect(canvas.findByText("anthropic")).resolves.toBeVisible();
+    await expect(
+      (await canvas.findAllByRole("button", { name: "Test connection" }))[0],
+    ).toBeDisabled();
+    // Inherited models show as placeholders, never as pre-filled values —
+    // saving an untouched form must not pin the default into config.json.
+    await expect(canvas.findByPlaceholderText(/gpt-4o-mini-transcribe \(default\)/))
+      .resolves.toHaveValue("");
+    await userEvent.click(canvas.getByRole("button", { name: "Save models" }));
+    await expect(putAi).toHaveBeenCalledWith({
+      voice: { stt_model: "", tts_model: "", tts_voice: "" },
+    });
+  },
+};
+
+/* Keys and models supplied by the deployment env, plus the voice kill-switch
+   turned off: nothing is stored in config.json, so there is no "Clear saved
+   key" and every model field is inherited. */
+const envBackedSettings = {
+  voice: {
+    ...emptySettings.voice,
+    enabled: false,
+    available: false,
+    api_key: { configured: true, hint: "sk-p…9f2c", source: "env" },
+  },
+  search: {
+    ...emptySettings.search,
+    available: true,
+    api_key: { configured: true, hint: "ant-…here", source: "env" },
+    model: { value: "claude-opus-5", source: "env" },
+  },
+};
+
+export const InheritedFromEnv: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": { ...fixtureMe, instance_admin: true },
+      "GET /api/instance/ai": envBackedSettings,
+      "PUT /api/instance/ai": putAi,
+      "POST /api/instance/ai/test": testAi,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // Env-sourced keys are not stored here, so clearing must not be offered.
+    await expect(canvas.findAllByText(/from server environment/)).resolves.toHaveLength(2);
+    await expect(canvas.queryByRole("button", { name: "Clear saved key" })).toBeNull();
+    // The env model shows as a placeholder, leaving the override empty.
+    await expect(canvas.findByPlaceholderText("claude-opus-5 (from env)"))
+      .resolves.toHaveValue("");
   },
 };
 
