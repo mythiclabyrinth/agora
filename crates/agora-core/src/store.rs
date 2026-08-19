@@ -3187,7 +3187,8 @@ impl Store {
     }
 
     /// Dismiss a thread from the user's inbox/sidebar. The messages stay in
-    /// the channel; the row just stops coming back from `my_threads`.
+    /// the channel; the row just stops coming back from `my_threads` until
+    /// the user posts in the thread again (see hub `post_user_message_opts`).
     pub fn hide_thread(&self, username: &str, thread_id: i64) {
         let conn = self.conn.lock().unwrap();
         conn.execute(

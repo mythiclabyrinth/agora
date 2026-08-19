@@ -961,6 +961,10 @@ impl Hub {
         if let Some(tid) = thread_id {
             self.store
                 .mark_thread_read(username, tid, message["id"].as_i64());
+            // Continuing a dismissed thread restores it to the inbox before
+            // the message broadcast so clients' threads-cache invalidation
+            // refetches a list that already includes the row.
+            let _ = self.store.unhide_thread(username, tid);
         }
         self.record_mentions(&message);
         self.broadcast(channel_id, &json!({"type": "message", "message": message}));
@@ -3323,6 +3327,83 @@ mod tests {
         let threads = h.store.my_threads("tom", 10);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0]["unread"], 0);
+    }
+
+    #[test]
+    fn own_thread_reply_restores_hidden_inbox_row() {
+        let h = hub();
+        let cid = setup_channel(&h, &["bot-a"]);
+        let root = h.post_user_message(&cid, "root", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        h.post_user_message(&cid, "first reply", "tom", None, Some(root_id), vec![]);
+        h.store.hide_thread("tom", root_id);
+        assert!(h.store.my_threads("tom", 10).is_empty());
+
+        h.post_user_message_opts(
+            &cid, "continuing", "tom", Some("Tom"), Some(root_id), vec![], false, None, false,
+            false,
+        );
+        let threads = h.store.my_threads("tom", 10);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0]["root"]["id"], root_id);
+    }
+
+    #[test]
+    fn agent_thread_reply_keeps_hidden_inbox_row() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        let root = h.post_user_message(&cid, "root", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        h.post_user_message(&cid, "first reply", "tom", None, Some(root_id), vec![]);
+        h.store.hide_thread("tom", root_id);
+        assert!(h.store.my_threads("tom", 10).is_empty());
+
+        h.post_agent_message("bot-a", "Bot A", &cid, "still here", Some(root_id));
+        assert!(h.store.my_threads("tom", 10).is_empty());
+    }
+
+    #[test]
+    fn top_level_post_keeps_hidden_inbox_row() {
+        let h = hub();
+        let cid = setup_channel(&h, &[]);
+        let root = h.post_user_message(&cid, "root", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        h.post_user_message(&cid, "first reply", "tom", None, Some(root_id), vec![]);
+        h.store.hide_thread("tom", root_id);
+        assert!(h.store.my_threads("tom", 10).is_empty());
+
+        h.post_user_message_opts(
+            &cid, "unrelated top-level", "tom", Some("Tom"), None, vec![], false, None, false,
+            false,
+        );
+        assert!(h.store.my_threads("tom", 10).is_empty());
+    }
+
+    #[test]
+    fn peer_thread_reply_keeps_hidden_inbox_row() {
+        let h = hub();
+        let cid = setup_channel(&h, &[]);
+        h.store.add_member(
+            h.store.channel(&cid).unwrap()["group_id"].as_str().unwrap(),
+            "user",
+            "alice",
+            "member",
+            None,
+        );
+        let root = h.post_user_message(&cid, "root", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        h.post_user_message(&cid, "first reply", "tom", None, Some(root_id), vec![]);
+        h.store.hide_thread("tom", root_id);
+        assert!(h.store.my_threads("tom", 10).is_empty());
+
+        // Alice posts on the same path that restores *her* dismissals —
+        // tom's hide row must stay put because unhide is keyed by username.
+        h.post_user_message_opts(
+            &cid, "alice continuing", "alice", Some("Alice"), Some(root_id), vec![], false, None,
+            false, false,
+        );
+        assert!(h.store.my_threads("tom", 10).is_empty());
     }
 
     #[test]

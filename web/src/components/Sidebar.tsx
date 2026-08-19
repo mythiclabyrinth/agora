@@ -84,7 +84,7 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
           },
         )} />}
       <button className={`ago-x ${armed ? "armed" : ""}`}
-        title={armed ? "Click again to remove this thread" : "Remove thread from your sidebar (messages stay in the channel)"}
+        title={armed ? "Click again to remove this thread" : "Remove thread from your sidebar (messages stay in the channel; posting again restores it)"}
         onClick={e => {
           e.stopPropagation();
           if (!armed) { arm(`thr:${t.root.id}`); return; }
