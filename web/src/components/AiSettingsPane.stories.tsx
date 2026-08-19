@@ -74,7 +74,7 @@ const configuredSettings = {
 };
 
 const putAi = fn(async (_body: unknown) => configuredSettings);
-const testAi = fn(async () => ({ ok: true, section: "voice" }));
+const testAi = fn(async () => ({ ok: true, provider: "openai" }));
 
 const meta = {
   title: "Web/Connected/Instance settings",
@@ -168,6 +168,8 @@ export const Configured: Story = {
     await expect(canvas.findByText(/sk-a…mnop/)).resolves.toBeVisible();
     await expect(canvas.getByText(/from server environment/)).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "Test OpenAI" }));
-    await expect(testAi).toHaveBeenCalledWith({ section: "voice" });
+    await expect(testAi).toHaveBeenCalledWith({ provider: "openai" });
+    await userEvent.click(canvas.getByRole("button", { name: "Test Anthropic" }));
+    await expect(testAi).toHaveBeenCalledWith({ provider: "anthropic" });
   },
 };

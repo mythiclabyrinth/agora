@@ -27,11 +27,8 @@ import { toast, toastErr } from "../../src/components/Toast";
 import { colors } from "../../src/lib/theme";
 import * as Linking from "expo-linking";
 
-const override = (f: { value: string; source: string }) =>
-  f.source === "config" ? f.value : "";
-
-const inherited = (f: { value: string; source: string }) =>
-  `${f.value} (${f.source === "env" ? "from env" : "default"})`;
+const STT_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];
+const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 
 function sourceLabel(source: string): string {
   switch (source) {
@@ -44,15 +41,6 @@ function sourceLabel(source: string): string {
 
 function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
-  const [stt, setStt] = useState(override(data.stt_model));
-  const [tts, setTts] = useState(override(data.tts_model));
-  const [voice, setVoice] = useState(override(data.tts_voice));
-
-  useEffect(() => {
-    setStt(override(data.stt_model));
-    setTts(override(data.tts_model));
-    setVoice(override(data.tts_voice));
-  }, [data]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
@@ -60,6 +48,11 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
       onError: (e) => toastErr("Couldn't save voice settings", e as Error),
     });
   };
+
+  const stt = data.stt_model.value;
+  const tts = data.tts_model.value;
+  const voice = data.tts_voice.value;
+  const voices = data.suggested_tts_voices;
 
   return (
     <View style={styles.card}>
@@ -76,25 +69,44 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         <Text style={styles.hint}>Add an OpenAI API key under Credentials.</Text>
       ) : null}
       <Text style={styles.label}>STT model</Text>
-      <TextInput style={styles.input} value={stt} onChangeText={setStt} autoCapitalize="none"
-        placeholder={inherited(data.stt_model)} placeholderTextColor={colors.faint} />
+      <View style={styles.rowBtns}>
+        {[...STT_MODELS, ...(stt && !STT_MODELS.includes(stt) ? [stt] : [])].map((m) => (
+          <Pressable
+            key={m}
+            style={[styles.btn, stt === m && styles.btnPrimary]}
+            disabled={update.isPending}
+            onPress={() => save({ stt_model: m })}
+          >
+            <Text style={stt === m ? styles.btnPrimaryText : styles.btnText}>{m}</Text>
+          </Pressable>
+        ))}
+      </View>
       <Text style={styles.label}>TTS model</Text>
-      <TextInput style={styles.input} value={tts} onChangeText={setTts} autoCapitalize="none"
-        placeholder={inherited(data.tts_model)} placeholderTextColor={colors.faint} />
+      <View style={styles.rowBtns}>
+        {[...TTS_MODELS, ...(tts && !TTS_MODELS.includes(tts) ? [tts] : [])].map((m) => (
+          <Pressable
+            key={m}
+            style={[styles.btn, tts === m && styles.btnPrimary]}
+            disabled={update.isPending}
+            onPress={() => save({ tts_model: m })}
+          >
+            <Text style={tts === m ? styles.btnPrimaryText : styles.btnText}>{m}</Text>
+          </Pressable>
+        ))}
+      </View>
       <Text style={styles.label}>TTS voice</Text>
-      <TextInput style={styles.input} value={voice} onChangeText={setVoice} autoCapitalize="none"
-        placeholder={inherited(data.tts_voice)} placeholderTextColor={colors.faint} />
-      <Pressable
-        style={[styles.btn, styles.btnPrimary]}
-        disabled={update.isPending}
-        onPress={() => save({
-          stt_model: stt.trim(),
-          tts_model: tts.trim(),
-          tts_voice: voice.trim(),
-        })}
-      >
-        <Text style={styles.btnPrimaryText}>Save models</Text>
-      </Pressable>
+      <View style={styles.rowBtns}>
+        {[...voices, ...(voice && !voices.includes(voice) ? [voice] : [])].map((v) => (
+          <Pressable
+            key={v}
+            style={[styles.btn, voice === v && styles.btnPrimary]}
+            disabled={update.isPending}
+            onPress={() => save({ tts_voice: v })}
+          >
+            <Text style={voice === v ? styles.btnPrimaryText : styles.btnText}>{v}</Text>
+          </Pressable>
+        ))}
+      </View>
     </View>
   );
 }
@@ -184,6 +196,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
     <>
       <View style={styles.card}>
         <Text style={styles.cardTitle}>OpenAI API key</Text>
+        <Text style={styles.hint}>Shared by Voice and Ask AI (OpenAI provider).</Text>
         <Text style={styles.meta}>
           {data.credentials.openai.configured
             ? `${data.credentials.openai.hint} · ${sourceLabel(data.credentials.openai.source)}`
@@ -225,18 +238,19 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
           <Pressable
             style={[styles.btn, (!data.credentials.openai.configured || test.isPending) && styles.btnDisabled]}
             disabled={!data.credentials.openai.configured || test.isPending}
-            onPress={() => test.mutate("voice", {
-              onSuccess: () => toast("OpenAI key works"),
-              onError: (e) => toastErr("Test failed", e as Error),
+            onPress={() => test.mutate("openai", {
+              onSuccess: () => toast("OpenAI credentials work"),
+              onError: (e) => toastErr("OpenAI test failed", e as Error),
             })}
           >
-            <Text style={styles.btnText}>Test</Text>
+            <Text style={styles.btnText}>Test OpenAI</Text>
           </Pressable>
         </View>
       </View>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Anthropic API key</Text>
+        <Text style={styles.hint}>Used by Ask AI when provider is Anthropic.</Text>
         <Text style={styles.meta}>
           {data.credentials.anthropic.configured
             ? `${data.credentials.anthropic.hint} · ${sourceLabel(data.credentials.anthropic.source)}`
@@ -275,11 +289,22 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
               <Text style={styles.btnDangerText}>Clear saved</Text>
             </Pressable>
           ) : null}
+          <Pressable
+            style={[styles.btn, (!data.credentials.anthropic.configured || test.isPending) && styles.btnDisabled]}
+            disabled={!data.credentials.anthropic.configured || test.isPending}
+            onPress={() => test.mutate("anthropic", {
+              onSuccess: () => toast("Anthropic credentials work"),
+              onError: (e) => toastErr("Anthropic test failed", e as Error),
+            })}
+          >
+            <Text style={styles.btnText}>Test Anthropic</Text>
+          </Pressable>
         </View>
       </View>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>ChatGPT sign-in</Text>
+        <Text style={styles.hint}>Used by Ask AI when provider is ChatGPT sign-in.</Text>
         <Text style={styles.meta}>
           {oauth.configured
             ? `Linked · ${oauth.hint || "token"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
@@ -304,6 +329,18 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
               {oauth.configured ? "Re-authorize" : "Authorize ChatGPT"}
             </Text>
           </Pressable>
+          {oauth.configured ? (
+            <Pressable
+              style={[styles.btn, test.isPending && styles.btnDisabled]}
+              disabled={test.isPending}
+              onPress={() => test.mutate("codex", {
+                onSuccess: () => toast("ChatGPT credentials work"),
+                onError: (e) => toastErr("ChatGPT test failed", e as Error),
+              })}
+            >
+              <Text style={styles.btnText}>Test ChatGPT</Text>
+            </Pressable>
+          ) : null}
           {oauth.configured ? (
             <Pressable
               style={[styles.btn, styles.btnDanger]}
@@ -402,7 +439,9 @@ export default function InstanceAiScreen() {
         {q.data && tab === "credentials" ? (
           <>
             <Text style={styles.hint}>
-              Env keys show masked. Saving overrides env for this instance; clear restores env.
+              Provider credentials are shared by any feature that needs them. Env keys show
+              masked; saving overrides env, clear restores it. Test checks the provider accepts
+              the credential.
             </Text>
             <CredentialsPane data={q.data} />
           </>

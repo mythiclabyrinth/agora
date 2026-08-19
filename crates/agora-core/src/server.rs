@@ -3453,8 +3453,9 @@ async fn update_instance_ai(
     Ok(Json(instance_ai_payload(&state)))
 }
 
-/// POST /api/instance/ai/test {"section":"voice"|"search"} — cheap round-trip
-/// against the resolved key/model so a typo surfaces before members hit 502.
+/// POST /api/instance/ai/test {"provider":"openai"|"anthropic"|"codex"} —
+/// cheap round-trip against that provider's credential. Independent of which
+/// feature (Voice / Ask AI) currently uses it.
 async fn test_instance_ai(
     State(state): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
@@ -3467,9 +3468,9 @@ async fn test_instance_ai(
     if !state.upload_limiter.allow(&rate_key(&peer)) {
         return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many AI requests — slow down"));
     }
-    let section = payload["section"].as_str().unwrap_or("").trim();
-    match section {
-        "voice" => {
+    let provider = payload["provider"].as_str().unwrap_or("").trim();
+    match provider {
+        crate::config::SEARCH_PROVIDER_OPENAI => {
             let voice = resolved_voice(&state);
             let Some(key) = voice.api_key.clone() else {
                 return Err(err(StatusCode::BAD_REQUEST, "No OpenAI key configured"));
@@ -3478,48 +3479,50 @@ async fn test_instance_ai(
                 .await
                 .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
                 .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
-            Ok(Json(json!({"ok": true, "section": "voice", "provider": voice.provider})))
+            Ok(Json(json!({"ok": true, "provider": "openai"})))
         }
-        "search" => {
+        crate::config::SEARCH_PROVIDER_ANTHROPIC => {
             let search = resolved_search_ai(&state);
-            let model = search.model.clone();
-            let provider = search.provider.clone();
-            let state_for_job = state.clone();
-            let resp_provider = provider.clone();
+            let model = search.models.anthropic.0.clone();
             let resp_model = model.clone();
-            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                match provider.as_str() {
-                    crate::config::SEARCH_PROVIDER_OPENAI => {
-                        let key = search
-                            .api_key
-                            .clone()
-                            .ok_or_else(|| anyhow::anyhow!("No OpenAI key configured"))?;
-                        crate::ai::test_connection_openai(&key, &model)
-                    }
-                    crate::config::SEARCH_PROVIDER_CODEX => {
-                        let (access, account) = refresh_codex_if_needed(&state_for_job, &search)?;
-                        crate::codex_oauth::test_connection(&access, &account, &model)
-                    }
-                    _ => {
-                        let key = search
-                            .api_key
-                            .clone()
-                            .ok_or_else(|| anyhow::anyhow!("No Anthropic key configured"))?;
-                        crate::ai::test_connection_anthropic(&key, &model)
-                    }
-                }
+            // Prefer the Anthropic credential even if Ask AI is currently on
+            // another provider — this button tests the key, not the feature.
+            let snap = state.config.snapshot();
+            let env = env_opt("ANTHROPIC_API_KEY");
+            let Some(key) =
+                crate::config::resolve_secret(&snap.ai.search.api_key, env.as_deref()).0
+            else {
+                return Err(err(StatusCode::BAD_REQUEST, "No Anthropic key configured"));
+            };
+            tokio::task::spawn_blocking(move || {
+                crate::ai::test_connection_anthropic(&key, &model)
             })
             .await
             .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
             .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
-            Ok(Json(json!({
-                "ok": true,
-                "section": "search",
-                "provider": resp_provider,
-                "model": resp_model,
-            })))
+            Ok(Json(json!({"ok": true, "provider": "anthropic", "model": resp_model})))
         }
-        _ => Err(err(StatusCode::BAD_REQUEST, "section must be \"voice\" or \"search\"")),
+        crate::config::SEARCH_PROVIDER_CODEX => {
+            let search = resolved_search_ai(&state);
+            if !search.oauth_configured && search.access_token.is_none() {
+                return Err(err(StatusCode::BAD_REQUEST, "ChatGPT / Codex is not linked"));
+            }
+            let model = search.models.codex.0.clone();
+            let resp_model = model.clone();
+            let state_for_job = state.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let (access, account) = refresh_codex_if_needed(&state_for_job, &search)?;
+                crate::codex_oauth::test_connection(&access, &account, &model)
+            })
+            .await
+            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
+            Ok(Json(json!({"ok": true, "provider": "codex", "model": resp_model})))
+        }
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            "provider must be \"openai\", \"anthropic\", or \"codex\"",
+        )),
     }
 }
 

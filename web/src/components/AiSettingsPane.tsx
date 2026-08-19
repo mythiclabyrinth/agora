@@ -18,12 +18,6 @@ import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 
-const override = (f: { value: string; source: string }) =>
-  f.source === "config" ? f.value : "";
-
-const inherited = (f: { value: string; source: string }) =>
-  `${f.value} (${f.source === "env" ? "from env" : "default"})`;
-
 function sourceLabel(source: string): string {
   switch (source) {
     case "config": return "saved in instance settings";
@@ -59,17 +53,11 @@ function SectionHead({
   );
 }
 
+const STT_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];
+const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
+
 function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
-  const [stt, setStt] = useState(override(data.stt_model));
-  const [tts, setTts] = useState(override(data.tts_model));
-  const [voice, setVoice] = useState(override(data.tts_voice));
-
-  useEffect(() => {
-    setStt(override(data.stt_model));
-    setTts(override(data.tts_model));
-    setVoice(override(data.tts_voice));
-  }, [data]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
@@ -77,6 +65,11 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
       onError: e => toast(`Couldn't save: ${(e as Error).message || e}`, { variant: "warn" }),
     });
   };
+
+  const stt = data.stt_model.value;
+  const tts = data.tts_model.value;
+  const voice = data.tts_voice.value;
+  const voices = data.suggested_tts_voices;
 
   return (
     <div className="ai-section">
@@ -90,40 +83,36 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
       <p className="conn-hint">Provider OpenAI — voice notes, speak-aloud, live voice.</p>
       <div className="ai-row">
         <label>STT model</label>
-        <input list="ai-stt-models" value={stt} placeholder={inherited(data.stt_model)}
-          onChange={e => setStt(e.target.value)} />
-        <datalist id="ai-stt-models">
-          <option value="gpt-4o-mini-transcribe" />
-          <option value="whisper-1" />
-        </datalist>
+        <select
+          value={stt}
+          disabled={update.isPending}
+          onChange={e => save({ stt_model: e.target.value })}
+        >
+          {STT_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
+          {stt && !STT_MODELS.includes(stt) && <option value={stt}>{stt}</option>}
+        </select>
       </div>
       <div className="ai-row">
         <label>TTS model</label>
-        <input list="ai-tts-models" value={tts} placeholder={inherited(data.tts_model)}
-          onChange={e => setTts(e.target.value)} />
-        <datalist id="ai-tts-models">
-          <option value="gpt-4o-mini-tts" />
-          <option value="tts-1" />
-          <option value="tts-1-hd" />
-        </datalist>
+        <select
+          value={tts}
+          disabled={update.isPending}
+          onChange={e => save({ tts_model: e.target.value })}
+        >
+          {TTS_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
+          {tts && !TTS_MODELS.includes(tts) && <option value={tts}>{tts}</option>}
+        </select>
       </div>
       <div className="ai-row">
         <label>TTS voice</label>
-        <input list="ai-tts-voices" value={voice} placeholder={inherited(data.tts_voice)}
-          onChange={e => setVoice(e.target.value)} />
-        <datalist id="ai-tts-voices">
-          {data.suggested_tts_voices.map(v => <option key={v} value={v} />)}
-        </datalist>
-      </div>
-      <div className="ai-actions">
-        <button className="btn sm primary" disabled={update.isPending}
-          onClick={() => save({
-            stt_model: stt.trim(),
-            tts_model: tts.trim(),
-            tts_voice: voice.trim(),
-          })}>
-          Save models
-        </button>
+        <select
+          value={voice}
+          disabled={update.isPending}
+          onChange={e => save({ tts_voice: e.target.value })}
+        >
+          {voices.map(v => <option key={v} value={v}>{v}</option>)}
+          {voice && !voices.includes(voice) && <option value={voice}>{voice}</option>}
+        </select>
       </div>
     </div>
   );
@@ -285,11 +274,12 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
           onError: err("Couldn't clear OpenAI key"),
         })}
       />
+      <p className="conn-hint">Shared by Voice and by Ask AI when its provider is OpenAI.</p>
       <div className="ai-actions">
         <button className="btn sm" disabled={test.isPending || !data.credentials.openai.configured}
-          onClick={() => test.mutate("voice", {
-            onSuccess: () => toast("OpenAI key works", { variant: "ok" }),
-            onError: err("Voice test failed"),
+          onClick={() => test.mutate("openai", {
+            onSuccess: () => toast("OpenAI credentials work", { variant: "ok" }),
+            onError: err("OpenAI test failed"),
           })}>
           {test.isPending ? "Testing…" : "Test OpenAI"}
         </button>
@@ -308,20 +298,22 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
           onError: err("Couldn't clear Anthropic key"),
         })}
       />
+      <p className="conn-hint">Used by Ask AI when its provider is Anthropic.</p>
       <div className="ai-actions">
         <button className="btn sm" disabled={test.isPending || !data.credentials.anthropic.configured}
-          onClick={() => test.mutate("search", {
-            onSuccess: () => toast("Anthropic / Ask AI works", { variant: "ok" }),
-            onError: err("Ask AI test failed"),
+          onClick={() => test.mutate("anthropic", {
+            onSuccess: () => toast("Anthropic credentials work", { variant: "ok" }),
+            onError: err("Anthropic test failed"),
           })}>
-          Test Ask AI
+          {test.isPending ? "Testing…" : "Test Anthropic"}
         </button>
       </div>
 
       <div className="ai-section">
         <h4>ChatGPT sign-in (Codex)</h4>
         <p className="conn-hint">
-          Uses your ChatGPT account via the Codex CLI OAuth client.
+          Uses your ChatGPT account via the Codex CLI OAuth client. Used by Ask AI when
+          its provider is ChatGPT sign-in.
           {oauth.configured
             ? ` Linked · ${oauth.hint || "token saved"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
             : " Not linked."}
@@ -345,6 +337,15 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
             }}>
             {oauth.configured ? "Re-authorize ChatGPT" : "Authorize ChatGPT"}
           </button>
+          {oauth.configured && (
+            <button className="btn sm" disabled={test.isPending}
+              onClick={() => test.mutate("codex", {
+                onSuccess: () => toast("ChatGPT credentials work", { variant: "ok" }),
+                onError: err("ChatGPT test failed"),
+              })}>
+              {test.isPending ? "Testing…" : "Test ChatGPT"}
+            </button>
+          )}
           {oauth.configured && (
             <button className="btn sm danger" disabled={disconnectOauth.isPending}
               onClick={() => disconnectOauth.mutate(undefined, {
@@ -434,8 +435,9 @@ export function AiSettingsPane() {
           {q.data && tab === "credentials" && (
             <>
               <p className="conn-hint">
-                Environment keys show masked. Saving a key here overrides env for this instance;
-                clear restores the env fallback.
+                Provider credentials are shared by any feature that needs them. Environment
+                keys show masked; saving here overrides env for this instance, clear restores
+                the env fallback. Test checks that the provider accepts the credential.
               </p>
               <CredentialsTab data={q.data} />
             </>

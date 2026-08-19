@@ -1063,8 +1063,8 @@ export function useUpdateInstanceAi() {
 export function useTestInstanceAi() {
   const api = useApi();
   return useMutation({
-    mutationFn: (section: "voice" | "search") =>
-      api.post<{ ok: boolean; section: string }>("/api/instance/ai/test", { section }),
+    mutationFn: (provider: "openai" | "anthropic" | "codex") =>
+      api.post<{ ok: boolean; provider: string }>("/api/instance/ai/test", { provider }),
   });
 }
 
