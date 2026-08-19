@@ -27,10 +27,25 @@ boot, so unsetting one later keeps the last value.
 | `apple_bundle_id` | `""` | iOS bundle id for Apple sign-in; empty means the App Store app. |
 | `public_url` | `""` | Public https origin, used to build the OAuth redirect URI. |
 | `map_style_url` | `""` | MapLibre style URL for map artifacts; empty uses the built-in default, `"none"` disables external tiles. |
+| `ai.voice` / `ai.search` | defaults | Instance-admin AI settings (keys, models, enable flags). Set from the **AI & voice** panel in the clients, or leave empty and supply process-env fallbacks. |
 
-Two optional AI keys live in the **process env only**, never in
-`config.json`: `OPENAI_API_KEY` enables voice transcription and spoken
-replies, `ANTHROPIC_API_KEY` enables the search screen's Ask AI answers.
+### Voice and Ask AI
+
+Instance admins configure these in the product (**AI & voice** on web/desktop,
+**Settings → AI & voice** on mobile). Values persist under `ai` in
+`config.json`. Process-env fallbacks are resolved at *read* time only — they
+are **never** folded into `config.json` on boot (so a Railway restart cannot
+overwrite a UI-set key):
+
+| Env (fallback) | Feature |
+| --- | --- |
+| `OPENAI_API_KEY` | Voice notes, speak-aloud, live voice (OpenAI STT/TTS) |
+| `ANTHROPIC_API_KEY` | Search screen Ask AI answers |
+| `AGORA_AI_MODEL` | Ask AI model when none is saved in settings (default `claude-sonnet-5`) |
+
+`enabled: false` in settings turns a feature off even when an env key is still
+present. Clearing a saved key removes only the config value and falls back to
+env. Provider base URLs are not configurable (SSRF risk).
 
 ## Sign in with Google and Apple
 

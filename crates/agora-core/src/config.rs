@@ -152,6 +152,189 @@ pub struct ConfigData {
     /// hosting/licensing stays out of the agent protocol.
     #[serde(default)]
     pub map_style_url: String,
+    /// Instance-admin AI settings (voice STT/TTS + Ask AI). Keys may also come
+    /// from process env at *read* time — they are never folded into this file
+    /// by `apply_env_overrides` (a boot write would clobber UI-set values).
+    #[serde(default)]
+    pub ai: AiSettings,
+}
+
+/// Where a resolved AI field came from. Exposed per-field on the admin API so
+/// an env-backed key and a config-backed model can coexist cleanly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiFieldSource {
+    Config,
+    Env,
+    Default,
+    None,
+}
+
+/// Voice feature defaults (OpenAI audio APIs). Provider is fixed in v1; the
+/// field stays in the schema so clients don't invent a free-form endpoint.
+pub const DEFAULT_VOICE_PROVIDER: &str = "openai";
+pub const DEFAULT_STT_MODEL: &str = "gpt-4o-mini-transcribe";
+pub const DEFAULT_TTS_MODEL: &str = "gpt-4o-mini-tts";
+pub const DEFAULT_TTS_VOICE: &str = "alloy";
+
+/// Ask-AI defaults (Anthropic Messages API).
+pub const DEFAULT_SEARCH_PROVIDER: &str = "anthropic";
+pub const DEFAULT_SEARCH_MODEL: &str = "claude-sonnet-5";
+
+fn default_voice_provider() -> String {
+    DEFAULT_VOICE_PROVIDER.to_string()
+}
+fn default_search_provider() -> String {
+    DEFAULT_SEARCH_PROVIDER.to_string()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiVoiceSettings {
+    /// Admin kill-switch: false hides voice even when a key is present (env
+    /// or config). Clearing the config key alone cannot express that when
+    /// Railway still exports `OPENAI_API_KEY`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_voice_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: String,
+    /// Empty means "use the built-in default at resolve time" so an
+    /// env-only deploy can still override via process env without the
+    /// first `config.json` write baking the stock model in as `config`.
+    #[serde(default)]
+    pub stt_model: String,
+    #[serde(default)]
+    pub tts_model: String,
+    #[serde(default)]
+    pub tts_voice: String,
+}
+
+impl Default for AiVoiceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: default_voice_provider(),
+            api_key: String::new(),
+            stt_model: String::new(),
+            tts_model: String::new(),
+            tts_voice: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiSearchSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_search_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: String,
+    /// Empty → resolve via `AGORA_AI_MODEL` env, else [`DEFAULT_SEARCH_MODEL`].
+    #[serde(default)]
+    pub model: String,
+}
+
+impl Default for AiSearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: default_search_provider(),
+            api_key: String::new(),
+            model: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AiSettings {
+    #[serde(default)]
+    pub voice: AiVoiceSettings,
+    #[serde(default)]
+    pub search: AiSearchSettings,
+}
+
+/// Runtime voice settings after config/env/default resolution.
+#[derive(Clone, Debug)]
+pub struct ResolvedVoice {
+    pub enabled: bool,
+    pub provider: String,
+    pub api_key: Option<String>,
+    pub api_key_source: AiFieldSource,
+    pub stt_model: String,
+    pub stt_model_source: AiFieldSource,
+    pub tts_model: String,
+    pub tts_model_source: AiFieldSource,
+    pub tts_voice: String,
+    pub tts_voice_source: AiFieldSource,
+}
+
+impl ResolvedVoice {
+    /// Feature is on for clients: admin enabled it *and* a usable key exists.
+    pub fn available(&self) -> bool {
+        self.enabled && self.api_key.is_some()
+    }
+}
+
+/// Runtime Ask-AI settings after config/env/default resolution.
+#[derive(Clone, Debug)]
+pub struct ResolvedSearchAi {
+    pub enabled: bool,
+    pub provider: String,
+    pub api_key: Option<String>,
+    pub api_key_source: AiFieldSource,
+    pub model: String,
+    pub model_source: AiFieldSource,
+}
+
+impl ResolvedSearchAi {
+    pub fn available(&self) -> bool {
+        self.enabled && self.api_key.is_some()
+    }
+}
+
+/// Config-first secret: non-empty config wins, else env, else none.
+/// Deterministic — callers pass the env value in so tests never touch ambient
+/// process state.
+pub fn resolve_secret(config_value: &str, env_value: Option<&str>) -> (Option<String>, AiFieldSource) {
+    let cfg = config_value.trim();
+    if !cfg.is_empty() {
+        return (Some(cfg.to_string()), AiFieldSource::Config);
+    }
+    match env_value.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(v) => (Some(v.to_string()), AiFieldSource::Env),
+        None => (None, AiFieldSource::None),
+    }
+}
+
+/// Config-first setting with a hard-coded default when both config and env
+/// are empty.
+pub fn resolve_setting(
+    config_value: &str,
+    env_value: Option<&str>,
+    default: &str,
+) -> (String, AiFieldSource) {
+    let cfg = config_value.trim();
+    if !cfg.is_empty() {
+        return (cfg.to_string(), AiFieldSource::Config);
+    }
+    match env_value.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(v) => (v.to_string(), AiFieldSource::Env),
+        None => (default.to_string(), AiFieldSource::Default),
+    }
+}
+
+/// Mask a secret for admin UI: keep a short head/tail, never the middle.
+pub fn key_hint(key: &str) -> String {
+    let k = key.trim();
+    let chars: Vec<char> = k.chars().collect();
+    if chars.len() <= 8 {
+        return "••••".to_string();
+    }
+    let head: String = chars.iter().take(4).collect();
+    let tail: String = chars.iter().rev().take(4).rev().collect();
+    format!("{head}…{tail}")
 }
 
 /// OpenFreeMap's Liberty style: free vector tiles, no API key, MapLibre
@@ -196,6 +379,7 @@ impl Default for ConfigData {
             apple_bundle_id: String::new(),
             public_url: String::new(),
             map_style_url: String::new(),
+            ai: AiSettings::default(),
         }
     }
 }
@@ -362,10 +546,96 @@ impl Config {
         configured
     }
 
+    /// Resolve voice settings. Env values are passed in (never read here) so
+    /// unit tests stay deterministic — see [`resolve_secret`].
+    ///
+    /// `openai_api_key_env` is typically `std::env::var("OPENAI_API_KEY").ok()`.
+    /// These env vars are deliberately *not* folded into config.json at boot
+    /// (`apply_env_overrides` must never touch them): a Railway restart would
+    /// otherwise overwrite an admin's UI-set key.
+    pub fn voice(&self, openai_api_key_env: Option<&str>) -> ResolvedVoice {
+        let data = self.data.lock().unwrap();
+        let v = &data.ai.voice;
+        let (api_key, api_key_source) = resolve_secret(&v.api_key, openai_api_key_env);
+        let (stt_model, stt_model_source) =
+            resolve_setting(&v.stt_model, None, DEFAULT_STT_MODEL);
+        let (tts_model, tts_model_source) =
+            resolve_setting(&v.tts_model, None, DEFAULT_TTS_MODEL);
+        let (tts_voice, tts_voice_source) =
+            resolve_setting(&v.tts_voice, None, DEFAULT_TTS_VOICE);
+        let provider = {
+            let p = v.provider.trim();
+            if p.is_empty() {
+                DEFAULT_VOICE_PROVIDER.to_string()
+            } else {
+                p.to_string()
+            }
+        };
+        ResolvedVoice {
+            enabled: v.enabled,
+            provider,
+            api_key,
+            api_key_source,
+            stt_model,
+            stt_model_source,
+            tts_model,
+            tts_model_source,
+            tts_voice,
+            tts_voice_source,
+        }
+    }
+
+    /// Resolve Ask-AI settings. `anthropic_api_key_env` /
+    /// `agora_ai_model_env` are typically the matching process env vars —
+    /// never folded into config.json at boot (same rule as voice).
+    pub fn search_ai(
+        &self,
+        anthropic_api_key_env: Option<&str>,
+        agora_ai_model_env: Option<&str>,
+    ) -> ResolvedSearchAi {
+        let data = self.data.lock().unwrap();
+        let s = &data.ai.search;
+        let (api_key, api_key_source) = resolve_secret(&s.api_key, anthropic_api_key_env);
+        let (model, model_source) =
+            resolve_setting(&s.model, agora_ai_model_env, DEFAULT_SEARCH_MODEL);
+        let provider = {
+            let p = s.provider.trim();
+            if p.is_empty() {
+                DEFAULT_SEARCH_PROVIDER.to_string()
+            } else {
+                p.to_string()
+            }
+        };
+        ResolvedSearchAi {
+            enabled: s.enabled,
+            provider,
+            api_key,
+            api_key_source,
+            model,
+            model_source,
+        }
+    }
+
+    /// Atomic write: temp file + rename, mode 0600 on Unix. A torn
+    /// `fs::write` onto the live path used to leave unparseable JSON; load
+    /// then falls back to `ConfigData::default()` and regenerates
+    /// `admin_key` / `session_secret` (total lockout).
     fn save(&self) {
         let data = self.data.lock().unwrap();
-        if let Ok(text) = serde_json::to_string_pretty(&*data) {
-            std::fs::write(&self.path, text).ok();
+        let Ok(text) = serde_json::to_string_pretty(&*data) else {
+            return;
+        };
+        let tmp = self.path.with_extension("json.tmp");
+        if std::fs::write(&tmp, text.as_bytes()).is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        }
+        if std::fs::rename(&tmp, &self.path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 }
@@ -521,5 +791,98 @@ mod tests {
         assert!(!first.is_empty()); assert_ne!(first,"secret");
         let second=Config::load(dir.path()).unwrap().snapshot().pairing_tokens[0].id.clone();
         assert_eq!(first,second);
+    }
+
+    #[test]
+    fn resolve_secret_is_config_first_then_env() {
+        assert_eq!(
+            resolve_secret("cfg-key", Some("env-key")),
+            (Some("cfg-key".into()), AiFieldSource::Config)
+        );
+        assert_eq!(
+            resolve_secret("  ", Some("env-key")),
+            (Some("env-key".into()), AiFieldSource::Env)
+        );
+        assert_eq!(resolve_secret("", None), (None, AiFieldSource::None));
+        assert_eq!(resolve_secret("  ", Some("  ")), (None, AiFieldSource::None));
+    }
+
+    #[test]
+    fn resolve_setting_falls_through_to_default() {
+        assert_eq!(
+            resolve_setting("m1", Some("m2"), "def"),
+            ("m1".into(), AiFieldSource::Config)
+        );
+        assert_eq!(
+            resolve_setting("", Some("m2"), "def"),
+            ("m2".into(), AiFieldSource::Env)
+        );
+        assert_eq!(
+            resolve_setting("", None, "def"),
+            ("def".into(), AiFieldSource::Default)
+        );
+    }
+
+    #[test]
+    fn voice_resolver_honors_enabled_and_env_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        // Env key alone: available when enabled (default).
+        let v = cfg.voice(Some("sk-env"));
+        assert!(v.available());
+        assert_eq!(v.api_key_source, AiFieldSource::Env);
+        assert_eq!(v.stt_model, DEFAULT_STT_MODEL);
+        // Kill-switch beats a present key.
+        cfg.update(|c| c.ai.voice.enabled = false);
+        assert!(!cfg.voice(Some("sk-env")).available());
+        // Config key wins over env.
+        cfg.update(|c| {
+            c.ai.voice.enabled = true;
+            c.ai.voice.api_key = "sk-cfg".into();
+            c.ai.voice.tts_voice = "shimmer".into();
+        });
+        let v = cfg.voice(Some("sk-env"));
+        assert_eq!(v.api_key.as_deref(), Some("sk-cfg"));
+        assert_eq!(v.api_key_source, AiFieldSource::Config);
+        assert_eq!(v.tts_voice, "shimmer");
+        assert_eq!(v.tts_voice_source, AiFieldSource::Config);
+    }
+
+    #[test]
+    fn search_ai_resolver_uses_agora_ai_model_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        let s = cfg.search_ai(Some("ant-key"), Some("claude-opus-5"));
+        assert!(s.available());
+        assert_eq!(s.model, "claude-opus-5");
+        assert_eq!(s.model_source, AiFieldSource::Env);
+        cfg.update(|c| c.ai.search.model = "claude-haiku-4-5-20251001".into());
+        let s = cfg.search_ai(Some("ant-key"), Some("claude-opus-5"));
+        assert_eq!(s.model, "claude-haiku-4-5-20251001");
+        assert_eq!(s.model_source, AiFieldSource::Config);
+    }
+
+    #[test]
+    fn save_is_atomic_and_unix_mode_is_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| c.instance_name = "Safe".into());
+        let path = dir.path().join("config.json");
+        assert!(path.is_file());
+        assert!(!dir.path().join("config.json.tmp").exists());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"instance_name\": \"Safe\""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn key_hint_masks_middle() {
+        assert_eq!(key_hint("sk-abcdefghijklmnop"), "sk-a…mnop");
+        assert_eq!(key_hint("short"), "••••");
     }
 }

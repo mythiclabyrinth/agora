@@ -448,6 +448,11 @@ pub fn router(state: AppState) -> Router {
             put(update_connection).delete(remove_connection),
         )
         .route("/api/instance", put(update_instance))
+        .route(
+            "/api/instance/ai",
+            get(get_instance_ai).put(update_instance_ai),
+        )
+        .route("/api/instance/ai/test", post(test_instance_ai))
         .route("/api/export", get(export_data))
         .route(
             "/api/import",
@@ -631,12 +636,10 @@ async fn me(
         // copying a promised file into the webview heap.
         "max_file_mb": config.max_file_mb,
         "max_video_mb": config.max_video_mb,
-        // Voice features (voice notes, speak-aloud, live voice) need an
-        // OPENAI_API_KEY in the server env; clients hide the controls without it.
-        "voice": crate::voice::api_key().is_some(),
-        // AI search answers (/api/search/ask) need an ANTHROPIC_API_KEY in the
-        // server env; clients hide their "Ask AI" controls without it.
-        "search_ai": crate::ai::api_key().is_some(),
+        // Voice / Ask AI: resolved from config.json (UI) with process-env
+        // fallback at read time — never folded into config at boot.
+        "voice": resolved_voice(&state).available(),
+        "search_ai": resolved_search_ai(&state).available(),
         // MapLibre style URL for map artifacts; empty when the operator has
         // not configured tiles, in which case clients draw the SVG fallback.
         "map_style_url": state.config.map_style_url(),
@@ -1540,8 +1543,8 @@ async fn delete_attachment(
 /// distill the question to keywords, retrieve the best-matching messages via
 /// the FTS index, and have Claude write a short answer citing them as [1],
 /// [2], …. `sources` come back in citation order ([1] = sources[0]). Needs
-/// ANTHROPIC_API_KEY in the server env; `/api/me` advertises it as
-/// `search_ai` so clients can hide the control.
+/// Ask-AI configured (instance settings or `ANTHROPIC_API_KEY`); `/api/me`
+/// advertises it as `search_ai` so clients can hide the control.
 async fn search_ask(
     State(state): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
@@ -1555,12 +1558,19 @@ async fn search_ask(
     if !state.upload_limiter.allow(&rate_key(&peer)) {
         return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many AI requests — slow down"));
     }
-    let Some(key) = crate::ai::api_key() else {
+    let search = resolved_search_ai(&state);
+    let Some(key) = search.api_key.clone() else {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "AI answers need ANTHROPIC_API_KEY set on the server",
+            "AI answers are not configured (set an Anthropic key in instance AI settings)",
         ));
     };
+    if !search.enabled {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "AI answers are disabled for this instance",
+        ));
+    }
     let question = payload["q"].as_str().unwrap_or("").trim().to_string();
     if question.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "Question required"));
@@ -1596,7 +1606,7 @@ async fn search_ask(
             "detail": "No matching messages to answer from",
         })));
     }
-    let model = crate::ai::model();
+    let model = search.model.clone();
     let answer = {
         let (question, sources, model) = (question.clone(), sources.clone(), model.clone());
         tokio::task::spawn_blocking(move || crate::ai::answer(&key, &model, &question, &sources))
@@ -1762,12 +1772,20 @@ async fn post_voice_message(
         return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many uploads — slow down"));
     }
     require_channel_postable(&state, &user, &channel_id)?;
-    let Some(key) = crate::voice::api_key() else {
+    let voice = resolved_voice(&state);
+    let Some(key) = voice.api_key.clone() else {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "Voice input needs OPENAI_API_KEY on the server (speech-to-text is not configured)",
+            "Voice input is not configured (set an OpenAI key in instance AI settings)",
         ));
     };
+    if !voice.enabled {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "Voice input is disabled for this instance",
+        ));
+    }
+    let stt_model = voice.stt_model.clone();
     let mut audio: Vec<u8> = Vec::new();
     let mut filename = String::new();
     let mut thread_id: Option<i64> = None;
@@ -1814,13 +1832,15 @@ async fn post_voice_message(
         return Err(err(StatusCode::BAD_REQUEST, "Voice recording too large"));
     }
     let thread_id = resolve_thread(&state, &channel_id, thread_id)?;
-    let text = tokio::task::spawn_blocking(move || crate::voice::transcribe(&key, &audio, &filename))
-        .await
-        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed"))?
-        .map_err(|e| {
-            tracing::error!("voice transcription failed: {e}");
-            err(StatusCode::BAD_GATEWAY, "Transcription failed — try again")
-        })?;
+    let text = tokio::task::spawn_blocking(move || {
+        crate::voice::transcribe(&key, &audio, &filename, &stt_model)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed"))?
+    .map_err(|e| {
+        tracing::error!("voice transcription failed: {e}");
+        err(StatusCode::BAD_GATEWAY, "Transcription failed — try again")
+    })?;
     if text.is_empty() {
         return Err(err(
             StatusCode::BAD_REQUEST,
@@ -1871,12 +1891,21 @@ async fn message_speech(
 ) -> Result<Response, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     let message = require_message_visible(&state, &user, message_id)?;
-    let Some(key) = crate::voice::api_key() else {
+    let voice = resolved_voice(&state);
+    let Some(key) = voice.api_key.clone() else {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "Spoken replies need OPENAI_API_KEY on the server (text-to-speech is not configured)",
+            "Spoken replies are not configured (set an OpenAI key in instance AI settings)",
         ));
     };
+    if !voice.enabled {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "Spoken replies are disabled for this instance",
+        ));
+    }
+    let tts_model = voice.tts_model.clone();
+    let tts_voice = voice.tts_voice.clone();
     let cached = {
         let mut cache = state.speech_cache.lock().unwrap();
         match cache.iter().position(|(id, _)| *id == message_id) {
@@ -1896,13 +1925,15 @@ async fn message_speech(
             if crate::voice::clip_for_tts(&text).is_empty() {
                 return Err(err(StatusCode::BAD_REQUEST, "Nothing to speak"));
             }
-            let audio = tokio::task::spawn_blocking(move || crate::voice::synthesize(&key, &text))
-                .await
-                .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Speech task failed"))?
-                .map_err(|e| {
-                    tracing::error!("speech synthesis failed: {e}");
-                    err(StatusCode::BAD_GATEWAY, "Speech synthesis failed — try again")
-                })?;
+            let audio = tokio::task::spawn_blocking(move || {
+                crate::voice::synthesize(&key, &text, &tts_model, &tts_voice)
+            })
+            .await
+            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Speech task failed"))?
+            .map_err(|e| {
+                tracing::error!("speech synthesis failed: {e}");
+                err(StatusCode::BAD_GATEWAY, "Speech synthesis failed — try again")
+            })?;
             let mut cache = state.speech_cache.lock().unwrap();
             cache.retain(|(id, _)| *id != message_id);
             cache.push((message_id, audio.clone()));
@@ -2981,6 +3012,243 @@ async fn update_instance(
     Ok(Json(json!({"ok": true})))
 }
 
+fn env_opt(key: &str) -> Option<String> {
+    std::env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+fn resolved_voice(state: &AppState) -> crate::config::ResolvedVoice {
+    let env_key = env_opt("OPENAI_API_KEY");
+    state.config.voice(env_key.as_deref())
+}
+
+fn resolved_search_ai(state: &AppState) -> crate::config::ResolvedSearchAi {
+    let env_key = env_opt("ANTHROPIC_API_KEY");
+    let env_model = env_opt("AGORA_AI_MODEL");
+    state
+        .config
+        .search_ai(env_key.as_deref(), env_model.as_deref())
+}
+
+fn ai_secret_field(key: Option<&str>, source: crate::config::AiFieldSource) -> Value {
+    match key {
+        Some(k) => json!({
+            "configured": true,
+            "hint": crate::config::key_hint(k),
+            "source": source,
+        }),
+        None => json!({
+            "configured": false,
+            "hint": Value::Null,
+            "source": source,
+        }),
+    }
+}
+
+fn ai_value_field(value: &str, source: crate::config::AiFieldSource) -> Value {
+    json!({ "value": value, "source": source })
+}
+
+fn instance_ai_payload(state: &AppState) -> Value {
+    let voice = resolved_voice(state);
+    let search = resolved_search_ai(state);
+    json!({
+        "voice": {
+            "enabled": voice.enabled,
+            "available": voice.available(),
+            "provider": voice.provider,
+            "api_key": ai_secret_field(voice.api_key.as_deref(), voice.api_key_source),
+            "stt_model": ai_value_field(&voice.stt_model, voice.stt_model_source),
+            "tts_model": ai_value_field(&voice.tts_model, voice.tts_model_source),
+            "tts_voice": ai_value_field(&voice.tts_voice, voice.tts_voice_source),
+            "suggested_tts_voices": ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
+        },
+        "search": {
+            "enabled": search.enabled,
+            "available": search.available(),
+            "provider": search.provider,
+            "api_key": ai_secret_field(search.api_key.as_deref(), search.api_key_source),
+            "model": ai_value_field(&search.model, search.model_source),
+            "suggested_models": crate::ai::SUGGESTED_SEARCH_MODELS,
+        },
+    })
+}
+
+/// GET /api/instance/ai — instance-admin view of voice + Ask-AI settings.
+/// Secrets never leave the server as plaintext; only a masked hint + source.
+async fn get_instance_ai(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    Ok(Json(instance_ai_payload(&state)))
+}
+
+/// PUT /api/instance/ai — partial update. Omitting `api_key` leaves it;
+/// `clear_key: true` clears the *config* value (env fallback still applies).
+/// `enabled` is the kill-switch that can turn a feature off even when env
+/// still exports a key. Changing TTS settings clears the speech cache so
+/// members don't keep hearing the previous voice.
+async fn update_instance_ai(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+
+    if let Some(p) = payload
+        .pointer("/voice/provider")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if p != crate::config::DEFAULT_VOICE_PROVIDER {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("unsupported voice provider `{p}` (only openai)"),
+            ));
+        }
+    }
+    if let Some(p) = payload
+        .pointer("/search/provider")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if p != crate::config::DEFAULT_SEARCH_PROVIDER {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("unsupported search provider `{p}` (only anthropic)"),
+            ));
+        }
+    }
+
+    let mut clear_speech = false;
+    state.config.update(|c| {
+        if let Some(v) = payload.get("voice") {
+            if let Some(enabled) = v.get("enabled").and_then(|x| x.as_bool()) {
+                c.ai.voice.enabled = enabled;
+            }
+            if let Some(provider) = v.get("provider").and_then(|x| x.as_str()) {
+                let p = provider.trim();
+                if !p.is_empty() {
+                    c.ai.voice.provider = p.to_string();
+                }
+            }
+            if v.get("clear_key").and_then(|x| x.as_bool()) == Some(true) {
+                c.ai.voice.api_key.clear();
+            } else if let Some(key) = v.get("api_key").and_then(|x| x.as_str()) {
+                let key = key.trim();
+                if !key.is_empty() {
+                    c.ai.voice.api_key = key.to_string();
+                }
+            }
+            if let Some(m) = v.get("stt_model").and_then(|x| x.as_str()) {
+                let m = m.trim();
+                if !m.is_empty() {
+                    c.ai.voice.stt_model = m.chars().take(120).collect();
+                }
+            }
+            if let Some(m) = v.get("tts_model").and_then(|x| x.as_str()) {
+                let m = m.trim();
+                if !m.is_empty() {
+                    c.ai.voice.tts_model = m.chars().take(120).collect();
+                    clear_speech = true;
+                }
+            }
+            if let Some(voice) = v.get("tts_voice").and_then(|x| x.as_str()) {
+                let voice = voice.trim();
+                if !voice.is_empty() {
+                    c.ai.voice.tts_voice = voice.chars().take(40).collect();
+                    clear_speech = true;
+                }
+            }
+        }
+        if let Some(s) = payload.get("search") {
+            if let Some(enabled) = s.get("enabled").and_then(|x| x.as_bool()) {
+                c.ai.search.enabled = enabled;
+            }
+            if let Some(provider) = s.get("provider").and_then(|x| x.as_str()) {
+                let p = provider.trim();
+                if !p.is_empty() {
+                    c.ai.search.provider = p.to_string();
+                }
+            }
+            if s.get("clear_key").and_then(|x| x.as_bool()) == Some(true) {
+                c.ai.search.api_key.clear();
+            } else if let Some(key) = s.get("api_key").and_then(|x| x.as_str()) {
+                let key = key.trim();
+                if !key.is_empty() {
+                    c.ai.search.api_key = key.to_string();
+                }
+            }
+            if let Some(m) = s.get("model").and_then(|x| x.as_str()) {
+                let m = m.trim();
+                if !m.is_empty() {
+                    c.ai.search.model = m.chars().take(120).collect();
+                }
+            }
+        }
+    });
+
+    if clear_speech {
+        state.speech_cache.lock().unwrap().clear();
+    }
+
+    Ok(Json(instance_ai_payload(&state)))
+}
+
+/// POST /api/instance/ai/test {"section":"voice"|"search"} — cheap round-trip
+/// against the resolved key/model so a typo surfaces before members hit 502.
+async fn test_instance_ai(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    if !state.upload_limiter.allow(&rate_key(&peer)) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many AI requests — slow down"));
+    }
+    let section = payload["section"].as_str().unwrap_or("").trim();
+    match section {
+        "voice" => {
+            let voice = resolved_voice(&state);
+            let Some(key) = voice.api_key.clone() else {
+                return Err(err(StatusCode::BAD_REQUEST, "No OpenAI key configured"));
+            };
+            tokio::task::spawn_blocking(move || crate::voice::test_connection(&key))
+                .await
+                .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
+                .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
+            Ok(Json(json!({"ok": true, "section": "voice", "provider": voice.provider})))
+        }
+        "search" => {
+            let search = resolved_search_ai(&state);
+            let Some(key) = search.api_key.clone() else {
+                return Err(err(StatusCode::BAD_REQUEST, "No Anthropic key configured"));
+            };
+            let model = search.model.clone();
+            tokio::task::spawn_blocking(move || crate::ai::test_connection(&key, &model))
+                .await
+                .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
+                .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
+            Ok(Json(json!({
+                "ok": true,
+                "section": "search",
+                "provider": search.provider,
+                "model": search.model,
+            })))
+        }
+        _ => Err(err(StatusCode::BAD_REQUEST, "section must be \"voice\" or \"search\"")),
+    }
+}
+
 // -------------------------------------------------------- export / import
 
 async fn export_data(
@@ -3837,6 +4105,156 @@ mod tests {
         assert_eq!(auth_config(State(state.clone())).await.0["admin"]["enabled"], true);
         state.config.update(|c| c.admin_login_enabled = false);
         assert_eq!(auth_config(State(state)).await.0["admin"]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn instance_ai_settings_are_admin_only_and_mask_secrets() {
+        let (state, _dir) = test_state();
+        state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
+
+        // Members are rejected.
+        let denied = get_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            session_headers(&state, "ana"),
+        )
+        .await;
+        assert_eq!(denied.unwrap_err().0, StatusCode::FORBIDDEN);
+
+        // Admin sees empty defaults (no ambient key assumed in tests).
+        let admin_headers = {
+            let mut h = HeaderMap::new();
+            h.insert(
+                "authorization",
+                format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+            );
+            h
+        };
+        let got = get_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            admin_headers.clone(),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(got["voice"]["enabled"], true);
+        assert_eq!(got["voice"]["available"], false);
+        assert_eq!(got["voice"]["api_key"]["configured"], false);
+        assert_eq!(got["voice"]["provider"], "openai");
+        assert_eq!(got["search"]["provider"], "anthropic");
+
+        // Set a config key + TTS voice; response masks the secret.
+        let updated = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            admin_headers.clone(),
+            Json(json!({
+                "voice": {
+                    "api_key": "sk-abcdefghijklmnop",
+                    "tts_voice": "shimmer",
+                    "enabled": true,
+                },
+                "search": {
+                    "api_key": "ant-secret-key-here",
+                    "model": "claude-haiku-4-5-20251001",
+                }
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(updated["voice"]["available"], true);
+        assert_eq!(updated["voice"]["api_key"]["configured"], true);
+        assert_eq!(updated["voice"]["api_key"]["hint"], "sk-a…mnop");
+        assert_eq!(updated["voice"]["api_key"]["source"], "config");
+        assert_eq!(updated["voice"]["tts_voice"]["value"], "shimmer");
+        assert_eq!(updated["search"]["model"]["value"], "claude-haiku-4-5-20251001");
+        // Raw secret never appears in the payload.
+        let dumped = updated.to_string();
+        assert!(!dumped.contains("sk-abcdefghijklmnop"));
+        assert!(!dumped.contains("ant-secret-key-here"));
+
+        // /api/me reflects availability.
+        let me_body = me(State(state.clone()), Query(HashMap::new()), admin_headers.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(me_body["voice"], true);
+        assert_eq!(me_body["search_ai"], true);
+
+        // Kill-switch hides the feature even with a stored key.
+        update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            admin_headers.clone(),
+            Json(json!({"voice": {"enabled": false}})),
+        )
+        .await
+        .unwrap();
+        let me_body = me(State(state.clone()), Query(HashMap::new()), admin_headers.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(me_body["voice"], false);
+
+        // clear_key drops the config value (feature stays unavailable without env).
+        update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            admin_headers.clone(),
+            Json(json!({"voice": {"enabled": true, "clear_key": true}})),
+        )
+        .await
+        .unwrap();
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), admin_headers)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(got["voice"]["api_key"]["configured"], false);
+        assert_eq!(got["voice"]["available"], false);
+    }
+
+    #[tokio::test]
+    async fn updating_tts_voice_clears_speech_cache() {
+        let (state, _dir) = test_state();
+        {
+            let mut cache = state.speech_cache.lock().unwrap();
+            cache.push((42, vec![1, 2, 3]));
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({"voice": {"tts_voice": "nova"}})),
+        )
+        .await
+        .unwrap();
+        assert!(state.speech_cache.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn instance_ai_rejects_unknown_providers() {
+        let (state, _dir) = test_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let err = update_instance_ai(
+            State(state),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({"voice": {"provider": "evil.com"}})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
     }
 
     #[test]

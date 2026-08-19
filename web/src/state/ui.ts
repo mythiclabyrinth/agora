@@ -15,7 +15,7 @@ export type MainView =
   | { kind: "inbox" }
   | { kind: "group" };
 
-export type Panel = "people" | "connections" | null;
+export type Panel = "people" | "connections" | "ai" | null;
 
 interface Selection { g?: string | null; c?: string | null; }
 

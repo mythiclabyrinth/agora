@@ -2,17 +2,13 @@
 //! FTS index, then have Claude synthesize a short, cited answer from those
 //! excerpts. Powers `POST /api/search/ask`.
 //!
-//! Enabled by setting `ANTHROPIC_API_KEY` in the server's environment (same
-//! pattern as voice's `OPENAI_API_KEY`: secrets live in the deployment env,
-//! not config.json); without it the endpoint returns a clear 400 and the
-//! clients hide their "Ask AI" controls (`search_ai: false` in `/api/me`).
+//! Pure HTTP client: keys and models come from the caller
+//! ([`crate::config::Config::search_ai`]). The Anthropic URL stays hard-coded
+//! — an admin-settable endpoint would be an SSRF / key-exfiltration path.
 
 use std::time::Duration;
 
 use serde_json::{json, Value};
-
-/// Default model for answer synthesis; override with `AGORA_AI_MODEL`.
-const DEFAULT_MODEL: &str = "claude-sonnet-5";
 
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -24,21 +20,12 @@ pub const CONTEXT_MESSAGES: usize = 30;
 /// Cap on keywords extracted from the question for retrieval.
 const MAX_KEYWORDS: usize = 12;
 
-/// The key that enables AI answers, straight from the process env.
-pub fn api_key() -> Option<String> {
-    std::env::var("ANTHROPIC_API_KEY")
-        .ok()
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-}
-
-pub fn model() -> String {
-    std::env::var("AGORA_AI_MODEL")
-        .ok()
-        .map(|m| m.trim().to_string())
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
-}
+/// Curated Ask-AI models shown in the admin UI (free-text still allowed).
+pub const SUGGESTED_SEARCH_MODELS: &[&str] = &[
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5-20251001",
+];
 
 /// Question words that carry no retrieval signal. Small on purpose: a missed
 /// stopword just adds one low-weight OR term.
@@ -128,6 +115,22 @@ pub fn answer(key: &str, model: &str, question: &str, context: &[Value]) -> anyh
     Ok(text.trim().to_string())
 }
 
+/// Cheap auth/connectivity probe for the admin "Test connection" button.
+pub fn test_connection(key: &str, model: &str) -> anyhow::Result<()> {
+    let response = ureq::post(ANTHROPIC_URL)
+        .timeout(Duration::from_secs(30))
+        .set("x-api-key", key)
+        .set("anthropic-version", ANTHROPIC_VERSION)
+        .send_json(json!({
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }))
+        .map_err(flatten_api_error)?;
+    let _ = response.into_string()?;
+    Ok(())
+}
+
 /// Pull the API's error message out of a non-2xx response so logs say
 /// "invalid x-api-key" instead of just "status 401".
 fn flatten_api_error(e: ureq::Error) -> anyhow::Error {
@@ -159,12 +162,5 @@ mod tests {
         );
         assert_eq!(retrieval_keywords("what is the of"), None);
         assert_eq!(retrieval_keywords(""), None);
-    }
-
-    #[test]
-    fn api_key_requires_non_empty_env() {
-        if std::env::var("ANTHROPIC_API_KEY").is_err() {
-            assert!(api_key().is_none());
-        }
     }
 }

@@ -54,17 +54,18 @@ to:
   an AI agent rather than a person. Messages you send in a channel an agent
   listens to are delivered to that agent, which may process them with the AI
   provider its operator configured.
-- **Voice transcription and speech.** If the server operator has configured
-  an OpenAI API key, voice messages you record are transcribed by OpenAI's
-  speech-to-text API, and agent replies can be spoken aloud using OpenAI's
-  text-to-speech API. Audio is sent by **your server** to OpenAI for this
-  processing; OpenAI states that API data is not used to train its models.
-  If no key is configured, these features are unavailable and no audio
-  leaves your server.
-- **Search answers.** If the operator has configured an Anthropic API key,
-  the search screen can generate an AI summary of your own messages using
-  Anthropic's Claude API. The matching message text is sent by your server
-  to Anthropic only when you use this feature.
+- **Voice transcription and speech.** If voice is configured (instance AI
+  settings or an OpenAI API key in the server environment), voice messages
+  you record are transcribed by OpenAI's speech-to-text API, and agent
+  replies can be spoken aloud using OpenAI's text-to-speech API. Audio is
+  sent by **your server** to OpenAI for this processing; OpenAI states that
+  API data is not used to train its models. If no key is configured, these
+  features are unavailable and no audio leaves your server.
+- **Search answers.** If Ask AI is configured (instance AI settings or an
+  Anthropic API key in the server environment), the search screen can
+  generate an AI summary of your own messages using Anthropic's Claude API.
+  The matching message text is sent by your server to Anthropic only when
+  you use this feature.
 
 In every case the data flow is: your app sends content only to the Agora
 server you chose; that server (run by you or someone you trust) may then use

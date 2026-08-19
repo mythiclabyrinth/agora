@@ -67,6 +67,9 @@ export function Topbar() {
         <button className="btn sm" id="btn-people" onClick={() => openPanel("people")}>People</button>
       )}
       {isAdmin && (
+        <button className="btn sm" id="btn-ai" onClick={() => openPanel("ai")}>AI &amp; voice</button>
+      )}
+      {isAdmin && (
         <button className="btn sm" id="btn-connections" onClick={() => openPanel("connections")}>Connections</button>
       )}
     </div>

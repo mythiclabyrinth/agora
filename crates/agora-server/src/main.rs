@@ -65,6 +65,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Fold the `AGORA_*` env overrides into config.json before boot.
+///
+/// Deliberately does **not** fold `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
+/// `AGORA_AI_MODEL`. Those are resolved at read time (config-first, then env)
+/// so a Railway restart cannot overwrite an instance-admin's UI-set keys.
+/// Do not "fix the inconsistency" by adding them here.
 fn apply_env_overrides(data_dir: &std::path::Path) -> anyhow::Result<()> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let bind = env("AGORA_BIND");

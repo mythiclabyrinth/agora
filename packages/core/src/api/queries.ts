@@ -34,6 +34,8 @@ import type {
   Connection,
   Group,
   InstanceInfo,
+  InstanceAiSettings,
+  InstanceAiUpdate,
   InstanceMembership,
   Invite,
   InviteLink,
@@ -1032,6 +1034,37 @@ export function useRenameInstance() {
   return useMutation({
     mutationFn: (name: string) => api.put("/api/instance", { name }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.connectionsInfo }),
+  });
+}
+
+/** Instance-admin voice + Ask-AI settings (keys masked). */
+export function useInstanceAi(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.instanceAi,
+    queryFn: () => api.get<InstanceAiSettings>("/api/instance/ai"),
+    enabled,
+  });
+}
+
+export function useUpdateInstanceAi() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: InstanceAiUpdate) =>
+      api.put<InstanceAiSettings>("/api/instance/ai", patch),
+    onSuccess: (data) => {
+      qc.setQueryData(keys.instanceAi, data);
+      void qc.invalidateQueries({ queryKey: keys.me });
+    },
+  });
+}
+
+export function useTestInstanceAi() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (section: "voice" | "search") =>
+      api.post<{ ok: boolean; section: string }>("/api/instance/ai/test", { section }),
   });
 }
 

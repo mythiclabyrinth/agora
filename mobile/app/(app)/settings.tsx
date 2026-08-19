@@ -222,6 +222,19 @@ export default function SettingsScreen() {
             </Pressable>
           </Link>
         ) : null}
+        {instanceAdmin ? (
+          <Link href="/(app)/instance-ai" asChild>
+            <Pressable style={styles.agentHub} accessibilityRole="button">
+              <View style={{ flex: 1 }}>
+                <Text style={styles.agentHubTitle}>AI & voice</Text>
+                <Text style={styles.meta}>
+                  OpenAI voice keys/models and Anthropic Ask AI for this instance.
+                </Text>
+              </View>
+              <Text style={styles.agentHubArrow}>›</Text>
+            </Pressable>
+          </Link>
+        ) : null}
         <Section title="Session">
           <DisplayNameRow />
           <View style={styles.row}>

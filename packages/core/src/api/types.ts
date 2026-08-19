@@ -12,9 +12,9 @@ export interface Me {
   max_file_mb?: number;
   /** Per-video upload limit advertised by current servers. */
   max_video_mb?: number;
-  /** Server has OPENAI_API_KEY: voice notes / speak-aloud / live voice work. */
+  /** Server has voice STT/TTS available (instance AI settings or env key). */
   voice?: boolean;
-  /** Server has ANTHROPIC_API_KEY: /api/search/ask (Ask AI) works. */
+  /** Server has Ask AI available (instance AI settings or env key). */
   search_ai?: boolean;
   /** Operator-configured MapLibre style URL for map artifacts; empty/absent
       means clients fall back to the coordinate-only SVG map. */
@@ -611,6 +611,65 @@ export interface InviteLink {
   used_by?: string | null;
   expires_at: number;
 }
+
+/** Where a resolved AI field came from (admin API). */
+export type AiFieldSource = "config" | "env" | "default" | "none";
+
+export interface AiSecretField {
+  configured: boolean;
+  hint: string | null;
+  source: AiFieldSource;
+}
+
+export interface AiValueField {
+  value: string;
+  source: AiFieldSource;
+}
+
+export interface InstanceAiVoice {
+  enabled: boolean;
+  available: boolean;
+  provider: string;
+  api_key: AiSecretField;
+  stt_model: AiValueField;
+  tts_model: AiValueField;
+  tts_voice: AiValueField;
+  suggested_tts_voices: string[];
+}
+
+export interface InstanceAiSearch {
+  enabled: boolean;
+  available: boolean;
+  provider: string;
+  api_key: AiSecretField;
+  model: AiValueField;
+  suggested_models: string[];
+}
+
+/** GET /api/instance/ai — instance-admin voice + Ask-AI settings. */
+export interface InstanceAiSettings {
+  voice: InstanceAiVoice;
+  search: InstanceAiSearch;
+}
+
+export type InstanceAiUpdate = {
+  voice?: {
+    enabled?: boolean;
+    provider?: string;
+    api_key?: string;
+    clear_key?: boolean;
+    stt_model?: string;
+    tts_model?: string;
+    tts_voice?: string;
+  };
+  search?: {
+    enabled?: boolean;
+    provider?: string;
+    api_key?: string;
+    clear_key?: boolean;
+    model?: string;
+  };
+};
 
 /* The server rejects messages and templates longer than this (MAX_MESSAGE_CHARS
    in agora-core), so both clients cap their inputs at the same number. */
