@@ -130,9 +130,10 @@ export const Empty: Story = {
     await expect(canvas.findByRole("tab", { name: "Features" })).resolves.toBeVisible();
     await expect(canvas.findByDisplayValue(/Anthropic \(API key\)/)).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
-    await expect(canvas.findByText("OpenAI")).resolves.toBeVisible();
-    await expect(canvas.findByText("Groq")).resolves.toBeVisible();
-    await expect(canvas.findByText("Anthropic")).resolves.toBeVisible();
+    await expect(canvas.findByText("API keys")).resolves.toBeVisible();
+    await expect(canvas.findByText("OPENAI API KEY")).resolves.toBeVisible();
+    await expect(canvas.findByText("GROQ API KEY")).resolves.toBeVisible();
+    await expect(canvas.findByText("ANTHROPIC API KEY")).resolves.toBeVisible();
     await expect(canvas.findByRole("button", { name: "Connect account" })).resolves.toBeVisible();
     await expect(canvas.findByText("OpenAI Codex")).resolves.toBeVisible();
     await expect(canvas.findByText("not connected")).resolves.toBeVisible();

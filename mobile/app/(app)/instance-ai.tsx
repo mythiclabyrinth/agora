@@ -237,6 +237,60 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
   );
 }
 
+function KeyCard({
+  envName, configured, canClear, value, onChange, placeholder, onSave, onTest, onClear, testing, saving,
+}: {
+  envName: string;
+  configured: boolean;
+  canClear: boolean;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  onSave: () => void;
+  onTest: () => void;
+  onClear: () => void;
+  testing: boolean;
+  saving: boolean;
+}) {
+  return (
+    <View style={styles.keyCard}>
+      <Text style={styles.envName}>{envName}</Text>
+      <TextInput
+        style={styles.input}
+        value={value}
+        onChangeText={onChange}
+        placeholder={configured ? "Replace key…" : placeholder}
+        placeholderTextColor={colors.faint}
+        autoCapitalize="none"
+        secureTextEntry
+      />
+      <View style={styles.rowBtns}>
+        <Pressable
+          style={[styles.btn, styles.btnPrimary, !value.trim() && styles.btnDisabled]}
+          disabled={!value.trim() || saving}
+          onPress={onSave}
+        >
+          <Text style={styles.btnPrimaryText}>Save</Text>
+        </Pressable>
+        {configured ? (
+          <Pressable
+            style={[styles.btn, testing && styles.btnDisabled]}
+            disabled={testing}
+            onPress={onTest}
+          >
+            <Text style={styles.btnText}>{testing ? "Testing…" : "Test"}</Text>
+          </Pressable>
+        ) : null}
+        {canClear ? (
+          <Pressable style={[styles.btn, styles.btnDanger]} onPress={onClear}>
+            <Text style={styles.btnDangerText}>Clear</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 function CredentialsPane({ data }: { data: InstanceAiSettings }) {
   const update = useUpdateInstanceAi();
   const test = useTestInstanceAi();
@@ -253,154 +307,83 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
 
   return (
     <>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>OpenAI</Text>
-        <TextInput
-          style={styles.input}
+      <View style={styles.keysSection}>
+        <View style={styles.keysHead}>
+          <Text style={styles.oauthHead}>API keys</Text>
+          <Text style={styles.hint}>Provider keys used for model calls. Values are write-only.</Text>
+        </View>
+        <KeyCard
+          envName="OPENAI API KEY"
+          configured={data.credentials.openai.configured}
+          canClear={data.credentials.openai.source === "config"}
           value={openaiKey}
-          onChangeText={setOpenaiKey}
-          placeholder={data.credentials.openai.configured ? "replace key…" : "sk-…"}
-          placeholderTextColor={colors.faint}
-          autoCapitalize="none"
-          secureTextEntry
+          onChange={setOpenaiKey}
+          placeholder="Paste key…"
+          saving={update.isPending}
+          testing={test.isPending}
+          onSave={() => {
+            update.mutate({ credentials: { openai: { api_key: openaiKey.trim() } } }, {
+              onSuccess: () => { toast("OpenAI key saved"); setOpenaiKey(""); },
+              onError: (e) => toastErr("Couldn't save", e as Error),
+            });
+          }}
+          onTest={() => test.mutate("openai", {
+            onSuccess: () => toast("OpenAI credentials work"),
+            onError: (e) => toastErr("OpenAI test failed", e as Error),
+          })}
+          onClear={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
+            onSuccess: () => toast("Cleared"),
+            onError: (e) => toastErr("Couldn't clear", e as Error),
+          })}
         />
-        <View style={styles.rowBtns}>
-          <Pressable
-            style={[styles.btn, styles.btnPrimary, !openaiKey.trim() && styles.btnDisabled]}
-            disabled={!openaiKey.trim() || update.isPending}
-            onPress={() => {
-              update.mutate({ credentials: { openai: { api_key: openaiKey.trim() } } }, {
-                onSuccess: () => { toast("OpenAI key saved"); setOpenaiKey(""); },
-                onError: (e) => toastErr("Couldn't save", e as Error),
-              });
-            }}
-          >
-            <Text style={styles.btnPrimaryText}>Save</Text>
-          </Pressable>
-          {data.credentials.openai.configured ? (
-            <Pressable
-              style={[styles.btn, test.isPending && styles.btnDisabled]}
-              disabled={test.isPending}
-              onPress={() => test.mutate("openai", {
-                onSuccess: () => toast("OpenAI credentials work"),
-                onError: (e) => toastErr("OpenAI test failed", e as Error),
-              })}
-            >
-              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
-            </Pressable>
-          ) : null}
-          {data.credentials.openai.source === "config" ? (
-            <Pressable
-              style={[styles.btn, styles.btnDanger]}
-              onPress={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
-                onSuccess: () => toast("Cleared"),
-                onError: (e) => toastErr("Couldn't clear", e as Error),
-              })}
-            >
-              <Text style={styles.btnDangerText}>Clear</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Groq</Text>
-        <TextInput
-          style={styles.input}
+        <KeyCard
+          envName="GROQ API KEY"
+          configured={data.credentials.groq.configured}
+          canClear={data.credentials.groq.source === "config"}
           value={groqKey}
-          onChangeText={setGroqKey}
-          placeholder={data.credentials.groq.configured ? "replace key…" : "gsk-…"}
-          placeholderTextColor={colors.faint}
-          autoCapitalize="none"
-          secureTextEntry
+          onChange={setGroqKey}
+          placeholder="Paste key…"
+          saving={update.isPending}
+          testing={test.isPending}
+          onSave={() => {
+            update.mutate({ credentials: { groq: { api_key: groqKey.trim() } } }, {
+              onSuccess: () => { toast("Groq key saved"); setGroqKey(""); },
+              onError: (e) => toastErr("Couldn't save", e as Error),
+            });
+          }}
+          onTest={() => test.mutate("groq", {
+            onSuccess: () => toast("Groq credentials work"),
+            onError: (e) => toastErr("Groq test failed", e as Error),
+          })}
+          onClear={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
+            onSuccess: () => toast("Cleared"),
+            onError: (e) => toastErr("Couldn't clear", e as Error),
+          })}
         />
-        <View style={styles.rowBtns}>
-          <Pressable
-            style={[styles.btn, styles.btnPrimary, !groqKey.trim() && styles.btnDisabled]}
-            disabled={!groqKey.trim() || update.isPending}
-            onPress={() => {
-              update.mutate({ credentials: { groq: { api_key: groqKey.trim() } } }, {
-                onSuccess: () => { toast("Groq key saved"); setGroqKey(""); },
-                onError: (e) => toastErr("Couldn't save", e as Error),
-              });
-            }}
-          >
-            <Text style={styles.btnPrimaryText}>Save</Text>
-          </Pressable>
-          {data.credentials.groq.configured ? (
-            <Pressable
-              style={[styles.btn, test.isPending && styles.btnDisabled]}
-              disabled={test.isPending}
-              onPress={() => test.mutate("groq", {
-                onSuccess: () => toast("Groq credentials work"),
-                onError: (e) => toastErr("Groq test failed", e as Error),
-              })}
-            >
-              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
-            </Pressable>
-          ) : null}
-          {data.credentials.groq.source === "config" ? (
-            <Pressable
-              style={[styles.btn, styles.btnDanger]}
-              onPress={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
-                onSuccess: () => toast("Cleared"),
-                onError: (e) => toastErr("Couldn't clear", e as Error),
-              })}
-            >
-              <Text style={styles.btnDangerText}>Clear</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Anthropic</Text>
-        <TextInput
-          style={styles.input}
+        <KeyCard
+          envName="ANTHROPIC API KEY"
+          configured={data.credentials.anthropic.configured}
+          canClear={data.credentials.anthropic.source === "config"}
           value={anthropicKey}
-          onChangeText={setAnthropicKey}
-          placeholder={data.credentials.anthropic.configured ? "replace key…" : "sk-ant-…"}
-          placeholderTextColor={colors.faint}
-          autoCapitalize="none"
-          secureTextEntry
+          onChange={setAnthropicKey}
+          placeholder="Paste key…"
+          saving={update.isPending}
+          testing={test.isPending}
+          onSave={() => {
+            update.mutate({ credentials: { anthropic: { api_key: anthropicKey.trim() } } }, {
+              onSuccess: () => { toast("Anthropic key saved"); setAnthropicKey(""); },
+              onError: (e) => toastErr("Couldn't save", e as Error),
+            });
+          }}
+          onTest={() => test.mutate("anthropic", {
+            onSuccess: () => toast("Anthropic credentials work"),
+            onError: (e) => toastErr("Anthropic test failed", e as Error),
+          })}
+          onClear={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
+            onSuccess: () => toast("Cleared"),
+            onError: (e) => toastErr("Couldn't clear", e as Error),
+          })}
         />
-        <View style={styles.rowBtns}>
-          <Pressable
-            style={[styles.btn, styles.btnPrimary, !anthropicKey.trim() && styles.btnDisabled]}
-            disabled={!anthropicKey.trim() || update.isPending}
-            onPress={() => {
-              update.mutate({ credentials: { anthropic: { api_key: anthropicKey.trim() } } }, {
-                onSuccess: () => { toast("Anthropic key saved"); setAnthropicKey(""); },
-                onError: (e) => toastErr("Couldn't save", e as Error),
-              });
-            }}
-          >
-            <Text style={styles.btnPrimaryText}>Save</Text>
-          </Pressable>
-          {data.credentials.anthropic.configured ? (
-            <Pressable
-              style={[styles.btn, test.isPending && styles.btnDisabled]}
-              disabled={test.isPending}
-              onPress={() => test.mutate("anthropic", {
-                onSuccess: () => toast("Anthropic credentials work"),
-                onError: (e) => toastErr("Anthropic test failed", e as Error),
-              })}
-            >
-              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
-            </Pressable>
-          ) : null}
-          {data.credentials.anthropic.source === "config" ? (
-            <Pressable
-              style={[styles.btn, styles.btnDanger]}
-              onPress={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
-                onSuccess: () => toast("Cleared"),
-                onError: (e) => toastErr("Couldn't clear", e as Error),
-              })}
-            >
-              <Text style={styles.btnDangerText}>Clear</Text>
-            </Pressable>
-          ) : null}
-        </View>
       </View>
 
       <View style={styles.oauthSection}>
@@ -548,12 +531,7 @@ export default function InstanceAiScreen() {
           </>
         ) : null}
         {q.data && tab === "credentials" ? (
-          <>
-            <Text style={styles.hint}>
-              Add a key for each provider you use, then press Test to make sure it works.
-            </Text>
-            <CredentialsPane data={q.data} />
-          </>
+          <CredentialsPane data={q.data} />
         ) : null}
       </ScrollView>
     </>
@@ -600,6 +578,22 @@ const styles = StyleSheet.create({
   btnDanger: { borderColor: colors.red },
   btnDangerText: { color: colors.red, fontWeight: "600", fontSize: 13 },
   btnDisabled: { opacity: 0.4 },
+  keysSection: { gap: 10 },
+  keysHead: { gap: 4, marginBottom: 2 },
+  keyCard: {
+    backgroundColor: colors.panel,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
+  },
+  envName: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+  },
   oauthSection: { marginTop: 8, gap: 10 },
   oauthHead: {
     color: colors.text,

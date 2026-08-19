@@ -1584,11 +1584,48 @@ select {
 .ai-key-actions { display: flex; flex-wrap: nowrap; gap: 6px; flex: 0 0 auto; }
 .ai-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
-/* Codex OAuth card — Pantheo-style row: label | status + actions */
-.ai-oauth { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+/* Credentials: Pantheo-style API keys + OAuth sections */
+.ai-keys { margin-top: 4px; }
+.ai-keys-head {
+  margin: 0 0 12px; padding: 0 2px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.ai-keys-head h3 {
+  margin: 0; font-size: 11px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text);
+}
+.ai-keys-head h3::before {
+  content: ""; display: inline-block; width: 3px; height: 11px; margin-right: 9px;
+  vertical-align: -1px; border-radius: 2px; background: var(--grad);
+}
+.ai-keys-head p {
+  margin: 0; font-size: 12.5px; color: var(--faint); flex: 1; min-width: 180px;
+}
+.ai-keys-stack { display: flex; flex-direction: column; gap: 10px; }
+.ai-key-card {
+  background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 14px;
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.ai-key-card-label h4 {
+  margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .02em;
+}
+.ai-key-card-body { min-width: 0; }
+.ai-key-row { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.ai-key-row input {
+  flex: 1; min-width: 140px; background: rgba(0,0,0,.25); border: 1px solid var(--border-strong);
+  border-radius: 10px; padding: 8px 12px; color: var(--text); font: inherit; font-size: 12.5px;
+  font-family: var(--mono); letter-spacing: .04em; outline: none;
+}
+.ai-key-row input::placeholder {
+  font-family: inherit; letter-spacing: 0; color: var(--faint);
+}
+.ai-key-row input:focus { border-color: var(--a1); }
+.ai-key-row .btn { flex-shrink: 0; align-self: center; }
+
+.ai-oauth { margin-top: 22px; }
 .ai-oauth-head {
   margin: 0 0 12px; padding: 0 2px;
-  font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--text);
+  font-size: 11px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text);
 }
 .ai-oauth-head::before {
   content: ""; display: inline-block; width: 3px; height: 11px; margin-right: 9px;
@@ -1613,7 +1650,7 @@ select {
 .ai-oauth-paste { display: grid; gap: 6px; }
 .ai-oauth-paste > label { font-size: 12px; color: var(--dim); }
 @media (max-width: 640px) {
-  .ai-oauth-card { grid-template-columns: 1fr; gap: 14px; }
+  .ai-oauth-card { grid-template-columns: 1fr; gap: 12px; }
   .ai-oauth-actions { justify-content: flex-start; }
 }
 .conn-tabs {

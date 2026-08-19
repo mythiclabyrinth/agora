@@ -238,9 +238,9 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
 }
 
 function KeyRow({
-  label, field, placeholder, onSave, onClear, onTest, testing,
+  envName, field, placeholder, onSave, onClear, onTest, testing,
 }: {
-  label: string;
+  envName: string;
   field: InstanceAiSettings["credentials"]["openai"];
   placeholder: string;
   onSave: (key: string) => void;
@@ -250,17 +250,19 @@ function KeyRow({
 }) {
   const [key, setKey] = useState("");
   return (
-    <div className="ai-section">
-      <h4>{label}</h4>
-      <div className="ai-key">
-        <input
-          type="password"
-          autoComplete="off"
-          placeholder={field.configured ? "replace key…" : placeholder}
-          value={key}
-          onChange={e => setKey(e.target.value)}
-        />
-        <div className="ai-key-actions">
+    <div className="ai-key-card">
+      <div className="ai-key-card-label">
+        <h4>{envName}</h4>
+      </div>
+      <div className="ai-key-card-body">
+        <div className="ai-key-row">
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={field.configured ? "Replace key…" : placeholder}
+            value={key}
+            onChange={e => setKey(e.target.value)}
+          />
           <button className="btn sm primary" disabled={!key.trim()}
             onClick={() => { onSave(key.trim()); setKey(""); }}>
             Save
@@ -316,63 +318,70 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
 
   return (
     <>
-      <KeyRow
-        label="OpenAI"
-        field={data.credentials.openai}
-        placeholder="sk-…"
-        testing={test.isPending}
-        onSave={api_key => update.mutate({ credentials: { openai: { api_key } } }, {
-          onSuccess: () => toast("OpenAI key saved", { variant: "ok" }),
-          onError: err("Couldn't save OpenAI key"),
-        })}
-        onClear={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
-          onSuccess: () => toast("OpenAI key cleared", { variant: "ok" }),
-          onError: err("Couldn't clear OpenAI key"),
-        })}
-        onTest={() => test.mutate("openai", {
-          onSuccess: () => toast("OpenAI credentials work", { variant: "ok" }),
-          onError: err("OpenAI test failed"),
-        })}
-      />
+      <div className="ai-keys">
+        <div className="ai-keys-head">
+          <h3>API keys</h3>
+          <p>Provider keys used for model calls. Values are write-only.</p>
+        </div>
+        <div className="ai-keys-stack">
+          <KeyRow
+            envName="OPENAI API KEY"
+            field={data.credentials.openai}
+            placeholder="Paste key…"
+            testing={test.isPending}
+            onSave={api_key => update.mutate({ credentials: { openai: { api_key } } }, {
+              onSuccess: () => toast("OpenAI key saved", { variant: "ok" }),
+              onError: err("Couldn't save OpenAI key"),
+            })}
+            onClear={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
+              onSuccess: () => toast("OpenAI key cleared", { variant: "ok" }),
+              onError: err("Couldn't clear OpenAI key"),
+            })}
+            onTest={() => test.mutate("openai", {
+              onSuccess: () => toast("OpenAI credentials work", { variant: "ok" }),
+              onError: err("OpenAI test failed"),
+            })}
+          />
 
-      <KeyRow
-        label="Groq"
-        field={data.credentials.groq}
-        placeholder="gsk-…"
-        testing={test.isPending}
-        onSave={api_key => update.mutate({ credentials: { groq: { api_key } } }, {
-          onSuccess: () => toast("Groq key saved", { variant: "ok" }),
-          onError: err("Couldn't save Groq key"),
-        })}
-        onClear={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
-          onSuccess: () => toast("Groq key cleared", { variant: "ok" }),
-          onError: err("Couldn't clear Groq key"),
-        })}
-        onTest={() => test.mutate("groq", {
-          onSuccess: () => toast("Groq credentials work", { variant: "ok" }),
-          onError: err("Groq test failed"),
-        })}
-      />
+          <KeyRow
+            envName="GROQ API KEY"
+            field={data.credentials.groq}
+            placeholder="Paste key…"
+            testing={test.isPending}
+            onSave={api_key => update.mutate({ credentials: { groq: { api_key } } }, {
+              onSuccess: () => toast("Groq key saved", { variant: "ok" }),
+              onError: err("Couldn't save Groq key"),
+            })}
+            onClear={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
+              onSuccess: () => toast("Groq key cleared", { variant: "ok" }),
+              onError: err("Couldn't clear Groq key"),
+            })}
+            onTest={() => test.mutate("groq", {
+              onSuccess: () => toast("Groq credentials work", { variant: "ok" }),
+              onError: err("Groq test failed"),
+            })}
+          />
 
-      <KeyRow
-        label="Anthropic"
-        field={data.credentials.anthropic}
-        placeholder="sk-ant-…"
-        testing={test.isPending}
-        onSave={api_key => update.mutate({ credentials: { anthropic: { api_key } } }, {
-          onSuccess: () => toast("Anthropic key saved", { variant: "ok" }),
-          onError: err("Couldn't save Anthropic key"),
-        })}
-        onClear={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
-          onSuccess: () => toast("Anthropic key cleared", { variant: "ok" }),
-          onError: err("Couldn't clear Anthropic key"),
-        })}
-        onTest={() => test.mutate("anthropic", {
-          onSuccess: () => toast("Anthropic credentials work", { variant: "ok" }),
-          onError: err("Anthropic test failed"),
-        })}
-      />
-
+          <KeyRow
+            envName="ANTHROPIC API KEY"
+            field={data.credentials.anthropic}
+            placeholder="Paste key…"
+            testing={test.isPending}
+            onSave={api_key => update.mutate({ credentials: { anthropic: { api_key } } }, {
+              onSuccess: () => toast("Anthropic key saved", { variant: "ok" }),
+              onError: err("Couldn't save Anthropic key"),
+            })}
+            onClear={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
+              onSuccess: () => toast("Anthropic key cleared", { variant: "ok" }),
+              onError: err("Couldn't clear Anthropic key"),
+            })}
+            onTest={() => test.mutate("anthropic", {
+              onSuccess: () => toast("Anthropic credentials work", { variant: "ok" }),
+              onError: err("Anthropic test failed"),
+            })}
+          />
+        </div>
+      </div>
       <div className="ai-oauth">
         <div className="ai-oauth-head">OAuth</div>
         <div className="ai-oauth-card">
@@ -514,12 +523,7 @@ export function AiSettingsPane() {
             </>
           )}
           {q.data && tab === "credentials" && (
-            <>
-              <p className="conn-hint">
-                Add a key for each provider you use, then press Test to make sure it works.
-              </p>
-              <CredentialsTab data={q.data} />
-            </>
+            <CredentialsTab data={q.data} />
           )}
         </div>
       </div>
