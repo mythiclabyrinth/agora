@@ -1068,6 +1068,66 @@ export function useTestInstanceAi() {
   });
 }
 
+export type CodexOauthStartResult = {
+  ok: boolean;
+  mode: "loopback" | "paste";
+  authorize_url: string;
+  redirect_uri: string;
+};
+
+export type CodexOauthStatusResult = {
+  status: "idle" | "pending" | "completed" | "failed" | "expired";
+  mode?: "loopback" | "paste";
+  error?: string | null;
+};
+
+export function useStartCodexOauth() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (mode: "loopback" | "paste") =>
+      api.post<CodexOauthStartResult>("/api/instance/ai/codex/oauth/start", { mode }),
+  });
+}
+
+export function useCodexOauthStatus(enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...keys.instanceAi, "codex-oauth-status"] as const,
+    queryFn: () => api.get<CodexOauthStatusResult>("/api/instance/ai/codex/oauth/status"),
+    enabled,
+    refetchInterval: enabled ? 1500 : false,
+  });
+}
+
+export function useCompleteCodexOauth() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (redirect_url: string) =>
+      api.post<{ ok: boolean; account_id?: string }>(
+        "/api/instance/ai/codex/oauth/complete",
+        { redirect_url },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.instanceAi });
+      void qc.invalidateQueries({ queryKey: keys.me });
+    },
+  });
+}
+
+export function useDisconnectCodexOauth() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean }>("/api/instance/ai/codex/oauth/disconnect", {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.instanceAi });
+      void qc.invalidateQueries({ queryKey: keys.me });
+    },
+  });
+}
+
 /* ------------------------------------------------------------- users & invites */
 
 /** Change a user's instance role or disable/enable the account. */

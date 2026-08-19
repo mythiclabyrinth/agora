@@ -637,27 +637,43 @@ export interface InstanceAiVoice {
   suggested_tts_voices: string[];
 }
 
+export interface InstanceAiProviderOption {
+  id: string;
+  label: string;
+}
+
 export interface InstanceAiSearch {
   enabled: boolean;
   available: boolean;
   provider: string;
-  /** Supported Ask-AI providers advertised by the server. */
-  providers: string[];
-  api_key: AiSecretField;
+  providers: InstanceAiProviderOption[];
+  model: AiValueField;
+  models: {
+    anthropic: AiValueField;
+    openai: AiValueField;
+    codex: AiValueField;
+  };
+  suggested_models: string[];
+  suggested_models_by_provider: Record<string, string[]>;
+}
+
+export interface InstanceAiCredentials {
+  openai: AiSecretField;
+  anthropic: AiSecretField;
   oauth: {
     configured: boolean;
     source: AiFieldSource;
     hint: string | null;
     account_id: string | null;
+    redirect_uri: string;
   };
-  model: AiValueField;
-  suggested_models: string[];
 }
 
 /** GET /api/instance/ai — instance-admin voice + Ask-AI settings. */
 export interface InstanceAiSettings {
   voice: InstanceAiVoice;
   search: InstanceAiSearch;
+  credentials: InstanceAiCredentials;
 }
 
 export type InstanceAiUpdate = {
@@ -676,13 +692,13 @@ export type InstanceAiUpdate = {
     api_key?: string;
     clear_key?: boolean;
     model?: string;
-    /** Paste of ~/.codex/auth.json (stringified). */
-    codex_auth_json?: string;
-    /** Paste a ChatGPT refresh token directly. */
-    codex_refresh_token?: string;
-    codex_account_id?: string;
-    /** Read ~/.codex/auth.json on the server host (desktop / same-machine). */
-    import_local_codex_auth?: boolean;
+    model_provider?: string;
+    models?: Partial<Record<"anthropic" | "openai" | "codex", string>>;
+    clear_oauth?: boolean;
+  };
+  credentials?: {
+    openai?: { api_key?: string; clear_key?: boolean };
+    anthropic?: { api_key?: string; clear_key?: boolean };
     clear_oauth?: boolean;
   };
 };

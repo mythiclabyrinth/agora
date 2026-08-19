@@ -1,19 +1,24 @@
-/* Instance-admin AI & voice settings: keys (masked), models, enable toggles,
-   and a Test connection probe. Secrets never round-trip in plaintext. */
+/* Instance-admin AI & voice settings.
+   Features tab = provider + models (no secrets).
+   Credentials tab = OpenAI/Anthropic keys + ChatGPT OAuth. */
 
 import { useEffect, useState } from "react";
 import {
-  useInstanceAi, useMe, useTestInstanceAi, useUpdateInstanceAi,
-  type InstanceAiSettings, type InstanceAiUpdate,
+  useCompleteCodexOauth,
+  useDisconnectCodexOauth,
+  useInstanceAi,
+  useMe,
+  useStartCodexOauth,
+  useCodexOauthStatus,
+  useTestInstanceAi,
+  useUpdateInstanceAi,
+  type InstanceAiSettings,
+  type InstanceAiUpdate,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 
-/* Model inputs hold the *override*, not the resolved value: empty means
-   "follow the server env / built-in default", and the resolved value shows as
-   the placeholder. Pre-filling them would make an unchanged save pin the stock
-   model into config.json and permanently shadow AGORA_AI_MODEL. */
 const override = (f: { value: string; source: string }) =>
   f.source === "config" ? f.value : "";
 
@@ -30,12 +35,13 @@ function sourceLabel(source: string): string {
 }
 
 function SectionHead({
-  title, available, enabled, onEnabled,
+  title, available, enabled, onEnabled, hint,
 }: {
   title: string;
   available: boolean;
   enabled: boolean;
   onEnabled: (v: boolean) => void;
+  hint?: string;
 }) {
   return (
     <div className="ai-section-head">
@@ -49,14 +55,13 @@ function SectionHead({
         <input type="checkbox" checked={enabled} onChange={e => onEnabled(e.target.checked)} />
         Enabled
       </label>
+      {hint && !available && enabled && <p className="conn-hint">{hint}</p>}
     </div>
   );
 }
 
-function VoiceForm({ data }: { data: InstanceAiSettings["voice"] }) {
+function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
-  const test = useTestInstanceAi();
-  const [key, setKey] = useState("");
   const [stt, setStt] = useState(override(data.stt_model));
   const [tts, setTts] = useState(override(data.tts_model));
   const [voice, setVoice] = useState(override(data.tts_voice));
@@ -65,16 +70,12 @@ function VoiceForm({ data }: { data: InstanceAiSettings["voice"] }) {
     setStt(override(data.stt_model));
     setTts(override(data.tts_model));
     setVoice(override(data.tts_voice));
-    setKey("");
   }, [data]);
-
-  const err = (msg: string) => (e: unknown) =>
-    toast(`${msg}: ${(e as Error).message || e}`, { variant: "warn" });
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
       onSuccess: () => toast("Voice settings saved", { variant: "ok" }),
-      onError: err("Couldn't save voice settings"),
+      onError: e => toast(`Couldn't save: ${(e as Error).message || e}`, { variant: "warn" }),
     });
   };
 
@@ -85,59 +86,36 @@ function VoiceForm({ data }: { data: InstanceAiSettings["voice"] }) {
         available={data.available}
         enabled={data.enabled}
         onEnabled={enabled => save({ enabled })}
+        hint="Add an OpenAI API key under Credentials."
       />
-      <p className="conn-hint">
-        Provider <b>{data.provider}</b> — voice notes, speak-aloud, and live voice.
-        Endpoints are fixed (OpenAI); base URLs are not configurable.
-      </p>
-      <div className="ai-row">
-        <label>API key</label>
-        <div className="ai-key">
-          <span className="dim">
-            {data.api_key.configured
-              ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
-              : sourceLabel(data.api_key.source)}
-          </span>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={data.api_key.configured ? "replace key…" : "sk-…"}
-            value={key}
-            onChange={e => setKey(e.target.value)}
-          />
-          <button className="btn sm primary" disabled={!key.trim() || update.isPending}
-            onClick={() => { save({ api_key: key.trim() }); setKey(""); }}>
-            Save key
-          </button>
-          {data.api_key.source === "config" && (
-            <button className="btn sm danger" disabled={update.isPending}
-              onClick={() => save({ clear_key: true })}>
-              Clear saved key
-            </button>
-          )}
-        </div>
-      </div>
+      <p className="conn-hint">Provider OpenAI — voice notes, speak-aloud, live voice.</p>
       <div className="ai-row">
         <label>STT model</label>
-        <input value={stt} placeholder={inherited(data.stt_model)}
+        <input list="ai-stt-models" value={stt} placeholder={inherited(data.stt_model)}
           onChange={e => setStt(e.target.value)} />
+        <datalist id="ai-stt-models">
+          <option value="gpt-4o-mini-transcribe" />
+          <option value="whisper-1" />
+        </datalist>
       </div>
       <div className="ai-row">
         <label>TTS model</label>
-        <input value={tts} placeholder={inherited(data.tts_model)}
+        <input list="ai-tts-models" value={tts} placeholder={inherited(data.tts_model)}
           onChange={e => setTts(e.target.value)} />
+        <datalist id="ai-tts-models">
+          <option value="gpt-4o-mini-tts" />
+          <option value="tts-1" />
+          <option value="tts-1-hd" />
+        </datalist>
       </div>
       <div className="ai-row">
         <label>TTS voice</label>
-        <select value={voice} onChange={e => setVoice(e.target.value)}>
-          <option value="">{inherited(data.tts_voice)}</option>
-          {(data.suggested_tts_voices.includes(voice) || !voice
-            ? data.suggested_tts_voices
-            : [voice, ...data.suggested_tts_voices]
-          ).map(v => <option key={v} value={v}>{v}</option>)}
-        </select>
+        <input list="ai-tts-voices" value={voice} placeholder={inherited(data.tts_voice)}
+          onChange={e => setVoice(e.target.value)} />
+        <datalist id="ai-tts-voices">
+          {data.suggested_tts_voices.map(v => <option key={v} value={v} />)}
+        </datalist>
       </div>
-      <p className="conn-hint">Leave a field empty to follow the server environment or the built-in default.</p>
       <div className="ai-actions">
         <button className="btn sm primary" disabled={update.isPending}
           onClick={() => save({
@@ -147,201 +125,271 @@ function VoiceForm({ data }: { data: InstanceAiSettings["voice"] }) {
           })}>
           Save models
         </button>
-        <button className="btn sm" disabled={test.isPending || !data.api_key.configured}
-          onClick={() => test.mutate("voice", {
-            onSuccess: () => toast("OpenAI key works", { variant: "ok" }),
-            onError: err("Voice test failed"),
-          })}>
-          {test.isPending ? "Testing…" : "Test connection"}
-        </button>
       </div>
     </div>
   );
 }
 
-function SearchForm({ data }: { data: InstanceAiSettings["search"] }) {
+function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
   const update = useUpdateInstanceAi();
-  const test = useTestInstanceAi();
-  const [key, setKey] = useState("");
-  const [model, setModel] = useState(override(data.model));
   const [provider, setProvider] = useState(data.provider);
-  const [authPaste, setAuthPaste] = useState("");
-  const [refreshPaste, setRefreshPaste] = useState("");
+  const modelField = data.models?.[provider as "anthropic" | "openai" | "codex"] || data.model;
 
   useEffect(() => {
-    setModel(override(data.model));
     setProvider(data.provider);
-    setKey("");
-    setAuthPaste("");
-    setRefreshPaste("");
-  }, [data]);
-
-  const err = (msg: string) => (e: unknown) =>
-    toast(`${msg}: ${(e as Error).message || e}`, { variant: "warn" });
+  }, [data.provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["search"]>) => {
     update.mutate({ search: patch }, {
       onSuccess: () => toast("Ask AI settings saved", { variant: "ok" }),
-      onError: err("Couldn't save Ask AI settings"),
+      onError: e => toast(`Couldn't save: ${(e as Error).message || e}`, { variant: "warn" }),
     });
   };
 
-  const isCodex = provider === "codex";
-  const isOpenAi = provider === "openai";
-  const keyPlaceholder = isOpenAi ? "sk-…" : "sk-ant-…";
-  const canTest = isCodex ? data.oauth.configured : data.api_key.configured;
   const providers = data.providers?.length
     ? data.providers
-    : ["anthropic", "openai", "codex"];
+    : [
+        { id: "anthropic", label: "Anthropic (API key)" },
+        { id: "openai", label: "OpenAI (API key)" },
+        { id: "codex", label: "OpenAI via ChatGPT sign-in" },
+      ];
+  const suggested = data.suggested_models_by_provider?.[provider]
+    || data.suggested_models
+    || [];
+  const selectedModel = modelField.value;
 
   return (
     <div className="ai-section">
       <SectionHead
-        title="Ask AI (search answers)"
+        title="Ask AI"
         available={data.available}
         enabled={data.enabled}
         onEnabled={enabled => save({ enabled })}
+        hint="Configure credentials under the Credentials tab."
       />
-      <p className="conn-hint">
-        Synthesizes cited answers over FTS hits. Plain search needs no key.
-        Endpoints are fixed per provider (no custom base URL).
-      </p>
       <div className="ai-row">
         <label>Provider</label>
         <select
           value={provider}
+          disabled={update.isPending}
           onChange={e => {
             const next = e.target.value;
             setProvider(next);
             save({ provider: next });
           }}
-          disabled={update.isPending}
         >
           {providers.map(p => (
-            <option key={p} value={p}>
-              {p === "codex" ? "codex (ChatGPT OAuth)" : p === "openai" ? "openai (API key)" : "anthropic (API key)"}
-            </option>
+            <option key={p.id} value={p.id}>{p.label}</option>
           ))}
         </select>
       </div>
-      {isCodex ? (
-        <>
-          <div className="ai-row">
-            <label>ChatGPT OAuth</label>
-            <div className="ai-key">
-              <span className="dim">
-                {data.oauth.configured
-                  ? `${data.oauth.hint || "linked"} · ${sourceLabel(data.oauth.source)}${
-                      data.oauth.account_id ? ` · ${data.oauth.account_id}` : ""
-                    }`
-                  : "not set — import from `codex login`"}
-              </span>
-              <button className="btn sm" disabled={update.isPending}
-                title="Reads ~/.codex/auth.json on this server host"
-                onClick={() => save({ import_local_codex_auth: true, provider: "codex" })}>
-                Import from ~/.codex
-              </button>
-              {data.oauth.configured && (
-                <button className="btn sm danger" disabled={update.isPending}
-                  onClick={() => save({ clear_oauth: true })}>
-                  Clear OAuth
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="ai-row">
-            <label>Paste auth.json</label>
-            <textarea
-              rows={3}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder='{"tokens":{"access_token":"…","refresh_token":"…","account_id":"…"}}'
-              value={authPaste}
-              onChange={e => setAuthPaste(e.target.value)}
-            />
-            <button className="btn sm primary" disabled={!authPaste.trim() || update.isPending}
-              onClick={() => {
-                save({ codex_auth_json: authPaste.trim(), provider: "codex" });
-                setAuthPaste("");
-              }}>
-              Import paste
-            </button>
-          </div>
-          <div className="ai-row">
-            <label>Or refresh token</label>
-            <div className="ai-key">
-              <input
-                type="password"
-                autoComplete="off"
-                placeholder="rt_…"
-                value={refreshPaste}
-                onChange={e => setRefreshPaste(e.target.value)}
-              />
-              <button className="btn sm primary" disabled={!refreshPaste.trim() || update.isPending}
-                onClick={() => {
-                  save({ codex_refresh_token: refreshPaste.trim(), provider: "codex" });
-                  setRefreshPaste("");
-                }}>
-                Save token
-              </button>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="ai-row">
-          <label>API key</label>
-          <div className="ai-key">
-            <span className="dim">
-              {data.api_key.configured
-                ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
-                : sourceLabel(data.api_key.source)}
-            </span>
-            <input
-              type="password"
-              autoComplete="off"
-              placeholder={data.api_key.configured ? "replace key…" : keyPlaceholder}
-              value={key}
-              onChange={e => setKey(e.target.value)}
-            />
-            <button className="btn sm primary" disabled={!key.trim() || update.isPending}
-              onClick={() => { save({ api_key: key.trim() }); setKey(""); }}>
-              Save key
-            </button>
-            {data.api_key.source === "config" && (
-              <button className="btn sm danger" disabled={update.isPending}
-                onClick={() => save({ clear_key: true })}>
-                Clear saved key
-              </button>
-            )}
-          </div>
-        </div>
-      )}
       <div className="ai-row">
         <label>Model</label>
-        <input list="ai-search-models" value={model} placeholder={inherited(data.model)}
-          onChange={e => setModel(e.target.value)} />
-        <datalist id="ai-search-models">
-          {data.suggested_models.map(m => <option key={m} value={m} />)}
-        </datalist>
-      </div>
-      <p className="conn-hint">Leave empty to follow <code>AGORA_AI_MODEL</code> or the built-in default.</p>
-      <div className="ai-actions">
-        <button className="btn sm primary" disabled={update.isPending}
-          onClick={() => save({ model: model.trim() })}>
-          Save model
-        </button>
-        <button className="btn sm" disabled={test.isPending || !canTest}
-          onClick={() => test.mutate("search", {
-            onSuccess: () => toast(
-              isCodex ? "Codex OAuth works" : isOpenAi ? "OpenAI key works" : "Anthropic key works",
-              { variant: "ok" },
-            ),
-            onError: err("Ask AI test failed"),
-          })}>
-          {test.isPending ? "Testing…" : "Test connection"}
-        </button>
+        <select
+          value={selectedModel}
+          disabled={update.isPending}
+          onChange={e => {
+            const next = e.target.value;
+            save({ model: next, model_provider: provider });
+          }}
+        >
+          {suggested.map(m => <option key={m} value={m}>{m}</option>)}
+          {selectedModel && !suggested.includes(selectedModel) && (
+            <option value={selectedModel}>{selectedModel}</option>
+          )}
+        </select>
       </div>
     </div>
+  );
+}
+
+function KeyRow({
+  label, field, placeholder, onSave, onClear,
+}: {
+  label: string;
+  field: InstanceAiSettings["credentials"]["openai"];
+  placeholder: string;
+  onSave: (key: string) => void;
+  onClear: () => void;
+}) {
+  const [key, setKey] = useState("");
+  return (
+    <div className="ai-section">
+      <h4>{label}</h4>
+      <div className="ai-key">
+        <span className="dim">
+          {field.configured
+            ? `${field.hint} · ${sourceLabel(field.source)}`
+            : sourceLabel(field.source)}
+        </span>
+        <input
+          type="password"
+          autoComplete="off"
+          placeholder={field.configured ? "replace key…" : placeholder}
+          value={key}
+          onChange={e => setKey(e.target.value)}
+        />
+        <button className="btn sm primary" disabled={!key.trim()}
+          onClick={() => { onSave(key.trim()); setKey(""); }}>
+          Save key
+        </button>
+        {field.source === "config" && (
+          <button className="btn sm danger" onClick={onClear}>Clear saved key</button>
+        )}
+      </div>
+      {field.source === "env" && (
+        <p className="conn-hint">From the server environment — saving a key here overrides it for this instance.</p>
+      )}
+    </div>
+  );
+}
+
+function CredentialsTab({ data }: { data: InstanceAiSettings }) {
+  const update = useUpdateInstanceAi();
+  const test = useTestInstanceAi();
+  const startOauth = useStartCodexOauth();
+  const completeOauth = useCompleteCodexOauth();
+  const disconnectOauth = useDisconnectCodexOauth();
+  const [oauthMode, setOauthMode] = useState<"loopback" | "paste" | null>(null);
+  const [authorizeUrl, setAuthorizeUrl] = useState("");
+  const [redirectPaste, setRedirectPaste] = useState("");
+  const statusQ = useCodexOauthStatus(oauthMode === "loopback");
+
+  useEffect(() => {
+    if (statusQ.data?.status === "completed") {
+      toast("ChatGPT sign-in complete", { variant: "ok" });
+      setOauthMode(null);
+      setAuthorizeUrl("");
+    } else if (statusQ.data?.status === "failed") {
+      toast(`ChatGPT sign-in failed: ${statusQ.data.error || "unknown"}`, { variant: "warn" });
+      setOauthMode(null);
+    }
+  }, [statusQ.data?.status, statusQ.data?.error]);
+
+  const err = (msg: string) => (e: unknown) =>
+    toast(`${msg}: ${(e as Error).message || e}`, { variant: "warn" });
+
+  const oauth = data.credentials.oauth;
+
+  return (
+    <>
+      <KeyRow
+        label="OpenAI API key"
+        field={data.credentials.openai}
+        placeholder="sk-…"
+        onSave={api_key => update.mutate({ credentials: { openai: { api_key } } }, {
+          onSuccess: () => toast("OpenAI key saved", { variant: "ok" }),
+          onError: err("Couldn't save OpenAI key"),
+        })}
+        onClear={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
+          onSuccess: () => toast("OpenAI key cleared", { variant: "ok" }),
+          onError: err("Couldn't clear OpenAI key"),
+        })}
+      />
+      <div className="ai-actions">
+        <button className="btn sm" disabled={test.isPending || !data.credentials.openai.configured}
+          onClick={() => test.mutate("voice", {
+            onSuccess: () => toast("OpenAI key works", { variant: "ok" }),
+            onError: err("Voice test failed"),
+          })}>
+          {test.isPending ? "Testing…" : "Test OpenAI"}
+        </button>
+      </div>
+
+      <KeyRow
+        label="Anthropic API key"
+        field={data.credentials.anthropic}
+        placeholder="sk-ant-…"
+        onSave={api_key => update.mutate({ credentials: { anthropic: { api_key } } }, {
+          onSuccess: () => toast("Anthropic key saved", { variant: "ok" }),
+          onError: err("Couldn't save Anthropic key"),
+        })}
+        onClear={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
+          onSuccess: () => toast("Anthropic key cleared", { variant: "ok" }),
+          onError: err("Couldn't clear Anthropic key"),
+        })}
+      />
+      <div className="ai-actions">
+        <button className="btn sm" disabled={test.isPending || !data.credentials.anthropic.configured}
+          onClick={() => test.mutate("search", {
+            onSuccess: () => toast("Anthropic / Ask AI works", { variant: "ok" }),
+            onError: err("Ask AI test failed"),
+          })}>
+          Test Ask AI
+        </button>
+      </div>
+
+      <div className="ai-section">
+        <h4>ChatGPT sign-in (Codex)</h4>
+        <p className="conn-hint">
+          Uses your ChatGPT account via the Codex CLI OAuth client.
+          {oauth.configured
+            ? ` Linked · ${oauth.hint || "token saved"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
+            : " Not linked."}
+        </p>
+        <div className="ai-actions">
+          <button className="btn sm primary" disabled={startOauth.isPending}
+            onClick={() => {
+              const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+              const mode = local ? "loopback" : "paste";
+              startOauth.mutate(mode, {
+                onSuccess: res => {
+                  setOauthMode(res.mode);
+                  setAuthorizeUrl(res.authorize_url);
+                  window.open(res.authorize_url, "_blank", "noopener,noreferrer");
+                  toast(mode === "loopback"
+                    ? "Sign in opened — finish in the ChatGPT window"
+                    : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
+                },
+                onError: err("Couldn't start ChatGPT sign-in"),
+              });
+            }}>
+            {oauth.configured ? "Re-authorize ChatGPT" : "Authorize ChatGPT"}
+          </button>
+          {oauth.configured && (
+            <button className="btn sm danger" disabled={disconnectOauth.isPending}
+              onClick={() => disconnectOauth.mutate(undefined, {
+                onSuccess: () => toast("ChatGPT disconnected", { variant: "ok" }),
+                onError: err("Couldn't disconnect"),
+              })}>
+              Disconnect
+            </button>
+          )}
+        </div>
+        {oauthMode === "loopback" && (
+          <p className="conn-hint">Waiting for redirect on {oauth.redirect_uri}…</p>
+        )}
+        {oauthMode === "paste" && (
+          <div className="ai-row">
+            <label>Redirect URL</label>
+            <div className="ai-key">
+              <input
+                value={redirectPaste}
+                onChange={e => setRedirectPaste(e.target.value)}
+                placeholder="http://localhost:1455/auth/callback?code=…"
+                autoComplete="off"
+              />
+              <button className="btn sm primary" disabled={!redirectPaste.trim() || completeOauth.isPending}
+                onClick={() => completeOauth.mutate(redirectPaste.trim(), {
+                  onSuccess: () => {
+                    toast("ChatGPT sign-in complete", { variant: "ok" });
+                    setOauthMode(null);
+                    setRedirectPaste("");
+                  },
+                  onError: err("Couldn't complete sign-in"),
+                })}>
+                Complete
+              </button>
+            </div>
+            {authorizeUrl && (
+              <p className="conn-hint">
+                If the window didn&apos;t open: <a href={authorizeUrl} target="_blank" rel="noreferrer">open authorize URL</a>
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -350,6 +398,7 @@ export function AiSettingsPane() {
   const me = useMe().data;
   const open = ui.panel === "ai";
   const q = useInstanceAi(open && !!me?.instance_admin);
+  const [tab, setTab] = useState<"features" | "credentials">("features");
 
   if (!open) return null;
 
@@ -361,17 +410,35 @@ export function AiSettingsPane() {
           <b>AI &amp; voice</b>
           <button className="btn sm" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
         </div>
+        <div className="conn-tabs" role="tablist">
+          <button type="button" role="tab" className={`conn-tab${tab === "features" ? " active" : ""}`}
+            aria-selected={tab === "features"} onClick={() => setTab("features")}>
+            Features
+          </button>
+          <button type="button" role="tab" className={`conn-tab${tab === "credentials" ? " active" : ""}`}
+            aria-selected={tab === "credentials"} onClick={() => setTab("credentials")}>
+            Credentials
+          </button>
+        </div>
         <div className="conn-body">
-          <p className="conn-hint">
-            Instance-admin settings for voice transcription/speech and Ask AI over search.
-            Keys may also come from the server environment; clearing a saved key falls back to env.
-          </p>
           {q.isLoading && <div className="dim conn-empty">Loading…</div>}
           {q.isError && <div className="dim conn-empty">Couldn&apos;t load AI settings.</div>}
-          {q.data && (
+          {q.data && tab === "features" && (
             <>
-              <VoiceForm data={q.data.voice} />
-              <SearchForm data={q.data.search} />
+              <p className="conn-hint">
+                Choose providers and models. Keys and ChatGPT sign-in live under Credentials.
+              </p>
+              <VoiceFeatures data={q.data.voice} />
+              <SearchFeatures data={q.data.search} />
+            </>
+          )}
+          {q.data && tab === "credentials" && (
+            <>
+              <p className="conn-hint">
+                Environment keys show masked. Saving a key here overrides env for this instance;
+                clear restores the env fallback.
+              </p>
+              <CredentialsTab data={q.data} />
             </>
           )}
         </div>

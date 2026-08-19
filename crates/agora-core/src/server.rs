@@ -124,11 +124,43 @@ pub struct AppState {
     pub restart_handler: Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     /// TTS output per message id (see [`SPEECH_CACHE_MAX`]).
     pub speech_cache: Arc<SpeechCache>,
+    /// In-flight Codex ChatGPT OAuth (PKCE). Single slot, TTL, bound to the
+    /// admin username that started it.
+    pub codex_oauth: Arc<std::sync::Mutex<Option<PendingCodexOauth>>>,
     /// Per-client fixed-window limiter for the Google sign-in surface.
     pub auth_limiter: Arc<RateLimiter>,
     /// Per-client fixed-window limiter for the upload surface.
     pub upload_limiter: Arc<RateLimiter>,
 }
+
+/// Pending authorization_code + PKCE exchange for Codex OAuth.
+#[derive(Clone, Debug)]
+pub struct PendingCodexOauth {
+    pub admin_username: String,
+    pub state: String,
+    pub verifier: String,
+    pub mode: CodexOauthMode,
+    pub created: std::time::Instant,
+    pub status: CodexOauthStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexOauthMode {
+    /// Bind `127.0.0.1:1455` and capture the redirect (desktop / same-host).
+    Loopback,
+    /// Admin pastes the redirected localhost URL (hosted servers).
+    Paste,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexOauthStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
+const CODEX_OAUTH_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl AppState {
     /// Build the two rate limiters an [`AppState`] needs, with the standard
@@ -453,6 +485,22 @@ pub fn router(state: AppState) -> Router {
             get(get_instance_ai).put(update_instance_ai),
         )
         .route("/api/instance/ai/test", post(test_instance_ai))
+        .route(
+            "/api/instance/ai/codex/oauth/start",
+            post(codex_oauth_start),
+        )
+        .route(
+            "/api/instance/ai/codex/oauth/status",
+            get(codex_oauth_status),
+        )
+        .route(
+            "/api/instance/ai/codex/oauth/complete",
+            post(codex_oauth_complete),
+        )
+        .route(
+            "/api/instance/ai/codex/oauth/disconnect",
+            post(codex_oauth_disconnect),
+        )
         .route("/api/export", get(export_data))
         .route(
             "/api/import",
@@ -1564,9 +1612,18 @@ async fn search_ask(
         ));
     }
     if !search.available() {
+        let hint = match search.provider.as_str() {
+            crate::config::SEARCH_PROVIDER_CODEX => {
+                "Authorize ChatGPT under AI & voice → Credentials"
+            }
+            crate::config::SEARCH_PROVIDER_OPENAI => {
+                "Add an OpenAI API key under AI & voice → Credentials"
+            }
+            _ => "Add an Anthropic API key under AI & voice → Credentials",
+        };
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "AI answers are not configured (set a provider key or Codex OAuth in instance AI settings)",
+            &format!("Ask AI is not configured ({hint})"),
         ));
     }
     let question = payload["q"].as_str().unwrap_or("").trim().to_string();
@@ -1605,11 +1662,15 @@ async fn search_ask(
     }
     let model = search.model.clone();
     let provider = search.provider.clone();
+    let err_provider = provider.clone();
+    let err_model = model.clone();
     let answer = {
         let state = state.clone();
         let search = search.clone();
-        let (question, sources, model, provider) =
-            (question.clone(), sources.clone(), model.clone(), provider.clone());
+        let question = question.clone();
+        let sources = sources.clone();
+        let model = model.clone();
+        let provider = provider.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
             match provider.as_str() {
                 crate::config::SEARCH_PROVIDER_OPENAI => {
@@ -1634,7 +1695,15 @@ async fn search_ask(
         })
         .await
         .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "answer task failed"))?
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?
+        .map_err(|e| {
+            err(
+                StatusCode::BAD_GATEWAY,
+                &format!(
+                    "Ask AI failed ({err_provider} / {err_model}): {}",
+                    truncate_err(&format!("{e:#}"), 280)
+                ),
+            )
+        })?
     };
     Ok(Json(json!({"answer": answer, "model": model, "provider": provider, "sources": sources})))
 }
@@ -1808,6 +1877,7 @@ async fn post_voice_message(
         ));
     };
     let stt_model = voice.stt_model.clone();
+    let stt_model_label = stt_model.clone();
     let mut audio: Vec<u8> = Vec::new();
     let mut filename = String::new();
     let mut thread_id: Option<i64> = None;
@@ -1861,7 +1931,13 @@ async fn post_voice_message(
     .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed"))?
     .map_err(|e| {
         tracing::error!("voice transcription failed: {e}");
-        err(StatusCode::BAD_GATEWAY, "Transcription failed — try again")
+        err(
+            StatusCode::BAD_GATEWAY,
+            &format!(
+                "Voice transcription failed (OpenAI / {stt_model_label}): {}",
+                truncate_err(&format!("{e:#}"), 200)
+            ),
+        )
     })?;
     if text.is_empty() {
         return Err(err(
@@ -1947,6 +2023,7 @@ async fn message_speech(
             if crate::voice::clip_for_tts(&text).is_empty() {
                 return Err(err(StatusCode::BAD_REQUEST, "Nothing to speak"));
             }
+            let tts_model_label = tts_model.clone();
             let audio = tokio::task::spawn_blocking(move || {
                 crate::voice::synthesize(&key, &text, &tts_model, &tts_voice)
             })
@@ -1954,7 +2031,13 @@ async fn message_speech(
             .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Speech task failed"))?
             .map_err(|e| {
                 tracing::error!("speech synthesis failed: {e}");
-                err(StatusCode::BAD_GATEWAY, "Speech synthesis failed — try again")
+                err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!(
+                        "Speech synthesis failed (OpenAI / {tts_model_label}): {}",
+                        truncate_err(&format!("{e:#}"), 200)
+                    ),
+                )
             })?;
             let mut cache = state.speech_cache.lock().unwrap();
             cache.retain(|(id, _)| *id != message_id);
@@ -3082,6 +3165,15 @@ fn refresh_codex_if_needed(
     Ok((access, account))
 }
 
+fn truncate_err(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
+}
+
 fn ai_secret_field(key: Option<&str>, source: crate::config::AiFieldSource) -> Value {
     match key {
         Some(k) => json!({
@@ -3104,13 +3196,18 @@ fn ai_value_field(value: &str, source: crate::config::AiFieldSource) -> Value {
 fn instance_ai_payload(state: &AppState) -> Value {
     let voice = resolved_voice(state);
     let search = resolved_search_ai(state);
-    let suggested = crate::config::suggested_models_for_search_provider(&search.provider);
     let oauth_hint = if search.oauth_configured {
         let snap = state.config.snapshot();
         let rt = snap.ai.search.codex_refresh_token.trim();
         Some(crate::config::key_hint(rt))
     } else {
         None
+    };
+    // Anthropic key lives on search; OpenAI key is shared with voice.
+    let anthropic_env = env_opt("ANTHROPIC_API_KEY");
+    let (anthropic_key, anthropic_source) = {
+        let snap = state.config.snapshot();
+        crate::config::resolve_secret(&snap.ai.search.api_key, anthropic_env.as_deref())
     };
     json!({
         "voice": {
@@ -3128,11 +3225,35 @@ fn instance_ai_payload(state: &AppState) -> Value {
             "available": search.available(),
             "provider": search.provider,
             "providers": [
-                crate::config::SEARCH_PROVIDER_ANTHROPIC,
-                crate::config::SEARCH_PROVIDER_OPENAI,
-                crate::config::SEARCH_PROVIDER_CODEX,
+                {
+                    "id": crate::config::SEARCH_PROVIDER_ANTHROPIC,
+                    "label": "Anthropic (API key)",
+                },
+                {
+                    "id": crate::config::SEARCH_PROVIDER_OPENAI,
+                    "label": "OpenAI (API key)",
+                },
+                {
+                    "id": crate::config::SEARCH_PROVIDER_CODEX,
+                    "label": "OpenAI via ChatGPT sign-in",
+                },
             ],
-            "api_key": ai_secret_field(search.api_key.as_deref(), search.api_key_source),
+            "model": ai_value_field(&search.model, search.model_source),
+            "models": {
+                "anthropic": ai_value_field(&search.models.anthropic.0, search.models.anthropic.1),
+                "openai": ai_value_field(&search.models.openai.0, search.models.openai.1),
+                "codex": ai_value_field(&search.models.codex.0, search.models.codex.1),
+            },
+            "suggested_models": crate::config::suggested_models_for_search_provider(&search.provider),
+            "suggested_models_by_provider": {
+                "anthropic": crate::ai::SUGGESTED_ANTHROPIC_MODELS,
+                "openai": crate::ai::SUGGESTED_OPENAI_MODELS,
+                "codex": crate::codex_oauth::SUGGESTED_CODEX_MODELS,
+            },
+        },
+        "credentials": {
+            "openai": ai_secret_field(voice.api_key.as_deref(), voice.api_key_source),
+            "anthropic": ai_secret_field(anthropic_key.as_deref(), anthropic_source),
             "oauth": {
                 "configured": search.oauth_configured,
                 "source": search.oauth_source,
@@ -3142,9 +3263,8 @@ fn instance_ai_payload(state: &AppState) -> Value {
                 } else {
                     json!(search.account_id)
                 },
+                "redirect_uri": crate::codex_oauth::CODEX_OAUTH_REDIRECT_URI,
             },
-            "model": ai_value_field(&search.model, search.model_source),
-            "suggested_models": suggested,
         },
     })
 }
@@ -3199,56 +3319,6 @@ async fn update_instance_ai(
                 StatusCode::BAD_REQUEST,
                 &format!("unsupported search provider `{p}` (anthropic, openai, or codex)"),
             ));
-        }
-    }
-
-    // Codex OAuth import runs before the locked config update so we can
-    // parse JSON / read ~/.codex/auth.json without holding the mutex across I/O.
-    let mut imported_codex: Option<crate::codex_oauth::CodexTokens> = None;
-    if let Some(s) = payload.get("search") {
-        if s.get("import_local_codex_auth").and_then(|x| x.as_bool()) == Some(true) {
-            let home = std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "could not resolve home directory"))?;
-            let path = std::path::PathBuf::from(home).join(".codex").join("auth.json");
-            let text = std::fs::read_to_string(&path).map_err(|e| {
-                err(
-                    StatusCode::BAD_REQUEST,
-                    &format!("could not read {}: {e}", path.display()),
-                )
-            })?;
-            let auth: Value = serde_json::from_str(&text).map_err(|e| {
-                err(StatusCode::BAD_REQUEST, &format!("invalid auth.json: {e}"))
-            })?;
-            imported_codex = Some(crate::codex_oauth::tokens_from_auth_json(&auth).map_err(
-                |e| err(StatusCode::BAD_REQUEST, &format!("invalid Codex auth: {e:#}")),
-            )?);
-        } else if let Some(raw) = s.get("codex_auth_json").and_then(|x| x.as_str()) {
-            let raw = raw.trim();
-            if !raw.is_empty() {
-                let auth: Value = serde_json::from_str(raw).map_err(|e| {
-                    err(StatusCode::BAD_REQUEST, &format!("invalid auth.json paste: {e}"))
-                })?;
-                imported_codex = Some(crate::codex_oauth::tokens_from_auth_json(&auth).map_err(
-                    |e| err(StatusCode::BAD_REQUEST, &format!("invalid Codex auth: {e:#}")),
-                )?);
-            }
-        } else if let Some(rt) = s.get("codex_refresh_token").and_then(|x| x.as_str()) {
-            let rt = rt.trim();
-            if !rt.is_empty() {
-                imported_codex = Some(crate::codex_oauth::CodexTokens {
-                    access_token: String::new(),
-                    refresh_token: rt.chars().take(4096).collect(),
-                    account_id: s
-                        .get("codex_account_id")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .trim()
-                        .chars()
-                        .take(120)
-                        .collect(),
-                });
-            }
         }
     }
 
@@ -3315,33 +3385,75 @@ async fn update_instance_ai(
                 c.ai.search.codex_account_id.clear();
                 c.ai.search.codex_last_refresh = 0.0;
             }
-            if let Some(tokens) = &imported_codex {
-                c.ai.search.codex_refresh_token = tokens.refresh_token.clone();
-                c.ai.search.codex_access_token = tokens.access_token.clone();
-                if !tokens.account_id.is_empty() {
-                    c.ai.search.codex_account_id = tokens.account_id.clone();
+            // Per-provider model overrides. `model` writes the *active*
+            // provider slot (or `model_provider` when set).
+            let model_provider = s
+                .get("model_provider")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|p| crate::config::is_supported_search_provider(p))
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| {
+                    let p = c.ai.search.provider.trim();
+                    if crate::config::is_supported_search_provider(p) {
+                        p.to_string()
+                    } else {
+                        crate::config::DEFAULT_SEARCH_PROVIDER.to_string()
+                    }
+                });
+            if let Some(models) = s.get("models").and_then(|x| x.as_object()) {
+                for (prov, val) in models {
+                    if !crate::config::is_supported_search_provider(prov) {
+                        continue;
+                    }
+                    if let Some(m) = val.as_str() {
+                        c.ai.search
+                            .models
+                            .set(prov, m.trim().chars().take(120).collect());
+                    }
+                }
+                c.ai.search.model.clear();
+            } else if let Some(m) = s.get("model").and_then(|x| x.as_str()) {
+                c.ai.search
+                    .models
+                    .set(&model_provider, m.trim().chars().take(120).collect());
+                c.ai.search.model.clear();
+            }
+        }
+        if let Some(cred) = payload.get("credentials") {
+            if let Some(openai) = cred.get("openai") {
+                if openai.get("clear_key").and_then(|x| x.as_bool()) == Some(true) {
+                    c.ai.voice.api_key.clear();
+                } else if let Some(key) = openai.get("api_key").and_then(|x| x.as_str()) {
+                    let key = key.trim();
+                    if !key.is_empty() {
+                        c.ai.voice.api_key = key.to_string();
+                    }
                 }
             }
-            // Same override semantics as the voice models above.
-            if let Some(m) = s.get("model").and_then(|x| x.as_str()) {
-                c.ai.search.model = m.trim().chars().take(120).collect();
+            if let Some(anthropic) = cred.get("anthropic") {
+                if anthropic.get("clear_key").and_then(|x| x.as_bool()) == Some(true) {
+                    c.ai.search.api_key.clear();
+                } else if let Some(key) = anthropic.get("api_key").and_then(|x| x.as_str()) {
+                    let key = key.trim();
+                    if !key.is_empty() {
+                        c.ai.search.api_key = key.to_string();
+                    }
+                }
+            }
+            if cred
+                .pointer("/oauth/clear")
+                .and_then(|x| x.as_bool())
+                == Some(true)
+                || cred.get("clear_oauth").and_then(|x| x.as_bool()) == Some(true)
+            {
+                c.ai.search.codex_refresh_token.clear();
+                c.ai.search.codex_access_token.clear();
+                c.ai.search.codex_account_id.clear();
+                c.ai.search.codex_last_refresh = 0.0;
             }
         }
     });
-
-    // If OAuth was imported and the client didn't set a provider, prefer codex.
-    if imported_codex.is_some()
-        && payload
-            .pointer("/search/provider")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .is_none()
-    {
-        state.config.update(|c| {
-            c.ai.search.provider = crate::config::SEARCH_PROVIDER_CODEX.to_string();
-        });
-    }
 
     if clear_speech {
         state.speech_cache.lock().unwrap().clear();
@@ -3418,6 +3530,258 @@ async fn test_instance_ai(
         }
         _ => Err(err(StatusCode::BAD_REQUEST, "section must be \"voice\" or \"search\"")),
     }
+}
+
+fn take_valid_pending_oauth(
+    state: &AppState,
+    admin_username: &str,
+) -> Result<PendingCodexOauth, ApiError> {
+    let mut slot = state.codex_oauth.lock().unwrap();
+    let pending = slot.take().ok_or_else(|| {
+        err(StatusCode::BAD_REQUEST, "No Codex OAuth flow in progress")
+    })?;
+    if pending.created.elapsed() > CODEX_OAUTH_TTL {
+        return Err(err(StatusCode::BAD_REQUEST, "Codex OAuth flow expired — start again"));
+    }
+    if pending.admin_username != admin_username {
+        // Put it back so the rightful admin can finish.
+        *slot = Some(pending);
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "Codex OAuth was started by another admin",
+        ));
+    }
+    Ok(pending)
+}
+
+/// POST /api/instance/ai/codex/oauth/start {"mode":"loopback"|"paste"}
+async fn codex_oauth_start(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    let mode = match payload["mode"].as_str().unwrap_or("paste").trim() {
+        "loopback" => CodexOauthMode::Loopback,
+        "paste" => CodexOauthMode::Paste,
+        other => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("mode must be \"loopback\" or \"paste\" (got `{other}`)"),
+            ));
+        }
+    };
+    let pkce = crate::codex_oauth::generate_pkce();
+    let authorize_url = crate::codex_oauth::build_authorize_url(&pkce.challenge, &pkce.state);
+    {
+        let mut slot = state.codex_oauth.lock().unwrap();
+        *slot = Some(PendingCodexOauth {
+            admin_username: user.username.clone(),
+            state: pkce.state.clone(),
+            verifier: pkce.verifier.clone(),
+            mode,
+            created: std::time::Instant::now(),
+            status: CodexOauthStatus::Pending,
+            error: None,
+        });
+    }
+    if mode == CodexOauthMode::Loopback {
+        let state_bg = state.clone();
+        let expected_state = pkce.state.clone();
+        let admin = user.username.clone();
+        tokio::spawn(async move {
+            match capture_codex_loopback(&expected_state).await {
+                Ok(code) => {
+                    let pending = {
+                        let mut slot = state_bg.codex_oauth.lock().unwrap();
+                        slot.clone()
+                    };
+                    if let Some(pending) = pending {
+                        if pending.admin_username == admin && pending.state == expected_state {
+                            let result = tokio::task::spawn_blocking({
+                                let verifier = pending.verifier.clone();
+                                let code = code.clone();
+                                move || crate::codex_oauth::exchange_code(&code, &verifier)
+                            })
+                            .await;
+                            match result {
+                                Ok(Ok(tokens)) => {
+                                    state_bg.config.store_codex_tokens(&tokens);
+                                    let mut slot = state_bg.codex_oauth.lock().unwrap();
+                                    if let Some(p) = slot.as_mut() {
+                                        if p.state == expected_state {
+                                            p.status = CodexOauthStatus::Completed;
+                                            p.verifier.clear();
+                                        }
+                                    }
+                                }
+                                Ok(Err(e)) => {
+                                    let mut slot = state_bg.codex_oauth.lock().unwrap();
+                                    if let Some(p) = slot.as_mut() {
+                                        if p.state == expected_state {
+                                            p.status = CodexOauthStatus::Failed;
+                                            p.error = Some(format!("{e:#}"));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let mut slot = state_bg.codex_oauth.lock().unwrap();
+                                    if let Some(p) = slot.as_mut() {
+                                        if p.state == expected_state {
+                                            p.status = CodexOauthStatus::Failed;
+                                            p.error = Some(format!("exchange task failed: {e}"));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let mut slot = state_bg.codex_oauth.lock().unwrap();
+                    if let Some(p) = slot.as_mut() {
+                        if p.state == expected_state {
+                            p.status = CodexOauthStatus::Failed;
+                            p.error = Some(e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "mode": match mode {
+            CodexOauthMode::Loopback => "loopback",
+            CodexOauthMode::Paste => "paste",
+        },
+        "authorize_url": authorize_url,
+        "redirect_uri": crate::codex_oauth::CODEX_OAUTH_REDIRECT_URI,
+    })))
+}
+
+/// Capture `GET /auth/callback` on the Codex CLI loopback port.
+async fn capture_codex_loopback(expected_state: &str) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:1455")
+        .await
+        .map_err(|e| format!("could not bind 127.0.0.1:1455 (is Codex CLI login open?): {e}"))?;
+    let accept = tokio::time::timeout(CODEX_OAUTH_TTL, listener.accept());
+    let (mut socket, _) = accept
+        .await
+        .map_err(|_| "timed out waiting for ChatGPT redirect".to_string())?
+        .map_err(|e| format!("accept failed: {e}"))?;
+    let mut buf = vec![0u8; 8192];
+    let n = socket
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("read failed: {e}"))?;
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let first_line = req.lines().next().unwrap_or("");
+    // GET /auth/callback?code=...&state=... HTTP/1.1
+    let path = first_line.split_whitespace().nth(1).unwrap_or("");
+    let url = format!("http://localhost:1455{path}");
+    let (code, state) = crate::codex_oauth::parse_redirect_callback(&url)
+        .map_err(|e| format!("{e:#}"))?;
+    if state != expected_state {
+        let _ = socket
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nState mismatch")
+            .await;
+        return Err("OAuth state mismatch on loopback callback".into());
+    }
+    let body = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<!doctype html><title>Agora</title><p>ChatGPT sign-in complete. You can close this tab.</p>";
+    let _ = socket.write_all(body).await;
+    Ok(code)
+}
+
+async fn codex_oauth_status(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    let slot = state.codex_oauth.lock().unwrap();
+    let Some(pending) = slot.as_ref() else {
+        return Ok(Json(json!({ "status": "idle" })));
+    };
+    if pending.admin_username != user.username {
+        return Ok(Json(json!({ "status": "idle" })));
+    }
+    if pending.created.elapsed() > CODEX_OAUTH_TTL && pending.status == CodexOauthStatus::Pending {
+        return Ok(Json(json!({ "status": "expired" })));
+    }
+    Ok(Json(json!({
+        "status": match pending.status {
+            CodexOauthStatus::Pending => "pending",
+            CodexOauthStatus::Completed => "completed",
+            CodexOauthStatus::Failed => "failed",
+        },
+        "mode": match pending.mode {
+            CodexOauthMode::Loopback => "loopback",
+            CodexOauthMode::Paste => "paste",
+        },
+        "error": pending.error,
+    })))
+}
+
+/// POST /api/instance/ai/codex/oauth/complete {"redirect_url":"..."} — paste mode.
+async fn codex_oauth_complete(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    let redirect = payload["redirect_url"]
+        .as_str()
+        .or_else(|| payload["url"].as_str())
+        .unwrap_or("")
+        .trim();
+    if redirect.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "redirect_url required"));
+    }
+    let (code, state_param) = crate::codex_oauth::parse_redirect_callback(redirect)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, &format!("{e:#}")))?;
+    let pending = take_valid_pending_oauth(&state, &user.username)?;
+    let verifier = pending.verifier.clone();
+    let expected_state = pending.state.clone();
+    if state_param != expected_state {
+        // Restore so a stale/truncated paste doesn't force a full restart.
+        *state.codex_oauth.lock().unwrap() = Some(pending);
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "OAuth state mismatch — paste the latest redirect URL from this Authorize attempt, or start again",
+        ));
+    }
+    let tokens = tokio::task::spawn_blocking(move || {
+        crate::codex_oauth::exchange_code(&code, &verifier)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "exchange task failed"))?
+    .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("Codex OAuth exchange failed: {e:#}")))?;
+    state.config.store_codex_tokens(&tokens);
+    Ok(Json(json!({ "ok": true, "account_id": tokens.account_id })))
+}
+
+async fn codex_oauth_disconnect(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    *state.codex_oauth.lock().unwrap() = None;
+    state.config.update(|c| {
+        c.ai.search.codex_refresh_token.clear();
+        c.ai.search.codex_access_token.clear();
+        c.ai.search.codex_account_id.clear();
+        c.ai.search.codex_last_refresh = 0.0;
+    });
+    Ok(Json(json!({ "ok": true })))
 }
 
 // -------------------------------------------------------- export / import
@@ -4234,6 +4598,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             restart_handler: Arc::new(std::sync::Mutex::new(None)),
             speech_cache: Arc::new(std::sync::Mutex::new(Vec::new())),
+            codex_oauth: Arc::new(std::sync::Mutex::new(None)),
             auth_limiter,
             upload_limiter,
         };
@@ -4461,6 +4826,7 @@ mod tests {
         let snap = state.config.snapshot();
         assert!(snap.ai.voice.stt_model.is_empty());
         assert!(snap.ai.search.model.is_empty());
+        assert!(snap.ai.search.models.anthropic.is_empty());
         assert_eq!(
             state
                 .config
@@ -4500,62 +4866,109 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn instance_ai_imports_codex_oauth_from_auth_json() {
+    async fn instance_ai_codex_oauth_disconnect_clears_tokens() {
+        let (state, _dir) = test_state();
+        state.config.update(|c| {
+            c.ai.search.provider = "codex".into();
+            c.ai.search.codex_refresh_token = "rt-abcdefghijklmnop".into();
+            c.ai.search.codex_access_token = "at-abcdefghijklmnop".into();
+            c.ai.search.codex_account_id = "acct_123".into();
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), headers.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(got["search"]["provider"], "codex");
+        assert_eq!(got["search"]["available"], true);
+        assert_eq!(got["credentials"]["oauth"]["configured"], true);
+        assert_eq!(got["credentials"]["oauth"]["account_id"], "acct_123");
+        let dumped = got.to_string();
+        assert!(!dumped.contains("rt-abcdefghijklmnop"));
+        assert!(!dumped.contains("at-abcdefghijklmnop"));
+
+        let cleared = codex_oauth_disconnect(State(state.clone()), Query(HashMap::new()), headers)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(cleared["ok"], true);
+        let snap = state.config.snapshot();
+        assert!(snap.ai.search.codex_refresh_token.is_empty());
+        assert!(snap.ai.search.codex_access_token.is_empty());
+        assert!(!resolved_search_ai(&state).available());
+    }
+
+    #[tokio::test]
+    async fn instance_ai_provider_switch_keeps_per_provider_models() {
         let (state, _dir) = test_state();
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
             format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
         );
-        let got = update_instance_ai(
+        update_instance_ai(
             State(state.clone()),
             Query(HashMap::new()),
-            headers,
+            headers.clone(),
             Json(json!({
                 "search": {
-                    "provider": "codex",
-                    "codex_auth_json": serde_json::to_string(&json!({
-                        "tokens": {
-                            "access_token": "at-abcdefghijklmnop",
-                            "refresh_token": "rt-abcdefghijklmnop",
-                            "account_id": "acct_123"
-                        }
-                    })).unwrap(),
+                    "provider": "anthropic",
+                    "model": "claude-opus-5",
                 }
             })),
         )
         .await
-        .unwrap()
-        .0;
-        assert_eq!(got["search"]["provider"], "codex");
-        assert_eq!(got["search"]["available"], true);
-        assert_eq!(got["search"]["oauth"]["configured"], true);
-        assert_eq!(got["search"]["oauth"]["account_id"], "acct_123");
-        assert_eq!(got["search"]["oauth"]["source"], "config");
-        let dumped = got.to_string();
-        assert!(!dumped.contains("rt-abcdefghijklmnop"));
-        assert!(!dumped.contains("at-abcdefghijklmnop"));
-        assert_eq!(
-            got["search"]["suggested_models"][0],
-            crate::codex_oauth::DEFAULT_CODEX_MODEL
-        );
+        .unwrap();
+        update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "search": {
+                    "provider": "openai",
+                    "model": "gpt-4.1",
+                }
+            })),
+        )
+        .await
+        .unwrap();
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), headers)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(got["search"]["provider"], "openai");
+        assert_eq!(got["search"]["model"]["value"], "gpt-4.1");
+        assert_eq!(got["search"]["models"]["anthropic"]["value"], "claude-opus-5");
+        assert_eq!(got["search"]["models"]["openai"]["value"], "gpt-4.1");
+        assert_ne!(got["search"]["model"]["value"], "claude-opus-5");
+    }
 
+    #[tokio::test]
+    async fn codex_oauth_start_returns_authorize_url_without_network() {
+        let (state, _dir) = test_state();
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
             format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
         );
-        let cleared = update_instance_ai(
+        let got = codex_oauth_start(
             State(state.clone()),
             Query(HashMap::new()),
             headers,
-            Json(json!({"search": {"clear_oauth": true}})),
+            Json(json!({"mode": "paste"})),
         )
         .await
         .unwrap()
         .0;
-        assert_eq!(cleared["search"]["oauth"]["configured"], false);
-        assert_eq!(cleared["search"]["available"], false);
+        assert_eq!(got["mode"], "paste");
+        let url = got["authorize_url"].as_str().unwrap();
+        assert!(url.contains("auth.openai.com/oauth/authorize"));
+        assert!(url.contains("code_challenge"));
+        assert!(state.codex_oauth.lock().unwrap().is_some());
     }
 
     #[test]

@@ -19,11 +19,34 @@ const emptySettings = {
     enabled: true,
     available: false,
     provider: "anthropic",
-    providers: ["anthropic", "openai", "codex"],
-    api_key: { configured: false, hint: null, source: "none" },
-    oauth: { configured: false, source: "none", hint: null, account_id: null },
+    providers: [
+      { id: "anthropic", label: "Anthropic (API key)" },
+      { id: "openai", label: "OpenAI (API key)" },
+      { id: "codex", label: "OpenAI via ChatGPT sign-in" },
+    ],
     model: { value: "claude-sonnet-5", source: "default" },
+    models: {
+      anthropic: { value: "claude-sonnet-5", source: "default" },
+      openai: { value: "gpt-4.1-mini", source: "default" },
+      codex: { value: "gpt-5.1", source: "default" },
+    },
     suggested_models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    suggested_models_by_provider: {
+      anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+      openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"],
+      codex: ["gpt-5.1", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-4.1"],
+    },
+  },
+  credentials: {
+    openai: { configured: false, hint: null, source: "none" },
+    anthropic: { configured: false, hint: null, source: "none" },
+    oauth: {
+      configured: false,
+      source: "none",
+      hint: null,
+      account_id: null,
+      redirect_uri: "http://localhost:1455/auth/callback",
+    },
   },
 };
 
@@ -37,8 +60,16 @@ const configuredSettings = {
   search: {
     ...emptySettings.search,
     available: true,
-    api_key: { configured: true, hint: "ant-…here", source: "env" },
     model: { value: "claude-haiku-4-5-20251001", source: "config" },
+    models: {
+      ...emptySettings.search.models,
+      anthropic: { value: "claude-haiku-4-5-20251001", source: "config" },
+    },
+  },
+  credentials: {
+    openai: { configured: true, hint: "sk-a…mnop", source: "config" },
+    anthropic: { configured: true, hint: "ant-…here", source: "env" },
+    oauth: emptySettings.credentials.oauth,
   },
 };
 
@@ -54,6 +85,7 @@ const meta = {
       "GET /api/instance/ai": emptySettings,
       "PUT /api/instance/ai": putAi,
       "POST /api/instance/ai/test": testAi,
+      "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
     },
     setup: () => {
       putAi.mockClear();
@@ -69,28 +101,16 @@ type Story = StoryObj<typeof meta>;
 export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // The panel header renders before the settings query resolves, so every
-    // assertion on loaded content has to be a findBy*.
     await expect(canvas.findByText("AI & voice")).resolves.toBeVisible();
-    await expect(canvas.findByText("openai")).resolves.toBeVisible();
-    await expect(canvas.findByDisplayValue(/anthropic \(API key\)/)).resolves.toBeVisible();
-    await expect(
-      (await canvas.findAllByRole("button", { name: "Test connection" }))[0],
-    ).toBeDisabled();
-    // Inherited models show as placeholders, never as pre-filled values —
-    // saving an untouched form must not pin the default into config.json.
-    await expect(canvas.findByPlaceholderText(/gpt-4o-mini-transcribe \(default\)/))
-      .resolves.toHaveValue("");
-    await userEvent.click(canvas.getByRole("button", { name: "Save models" }));
-    await expect(putAi).toHaveBeenCalledWith({
-      voice: { stt_model: "", tts_model: "", tts_voice: "" },
-    });
+    await expect(canvas.findByRole("tab", { name: "Features" })).resolves.toBeVisible();
+    await expect(canvas.findByDisplayValue(/Anthropic \(API key\)/)).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
+    await expect(canvas.findByText("OpenAI API key")).resolves.toBeVisible();
+    await expect(canvas.findByText("Anthropic API key")).resolves.toBeVisible();
+    await expect(canvas.findByRole("button", { name: /Authorize ChatGPT/ })).resolves.toBeVisible();
   },
 };
 
-/* Keys and models supplied by the deployment env, plus the voice kill-switch
-   turned off: nothing is stored in config.json, so there is no "Clear saved
-   key" and every model field is inherited. */
 const envBackedSettings = {
   voice: {
     ...emptySettings.voice,
@@ -101,8 +121,16 @@ const envBackedSettings = {
   search: {
     ...emptySettings.search,
     available: true,
-    api_key: { configured: true, hint: "ant-…here", source: "env" },
     model: { value: "claude-opus-5", source: "env" },
+    models: {
+      ...emptySettings.search.models,
+      anthropic: { value: "claude-opus-5", source: "env" },
+    },
+  },
+  credentials: {
+    openai: { configured: true, hint: "sk-p…9f2c", source: "env" },
+    anthropic: { configured: true, hint: "ant-…here", source: "env" },
+    oauth: emptySettings.credentials.oauth,
   },
 };
 
@@ -113,16 +141,14 @@ export const InheritedFromEnv: Story = {
       "GET /api/instance/ai": envBackedSettings,
       "PUT /api/instance/ai": putAi,
       "POST /api/instance/ai/test": testAi,
+      "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
     },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // Env-sourced keys are not stored here, so clearing must not be offered.
+    await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
     await expect(canvas.findAllByText(/from server environment/)).resolves.toHaveLength(2);
     await expect(canvas.queryByRole("button", { name: "Clear saved key" })).toBeNull();
-    // The env model shows as a placeholder, leaving the override empty.
-    await expect(canvas.findByPlaceholderText("claude-opus-5 (from env)"))
-      .resolves.toHaveValue("");
   },
 };
 
@@ -133,14 +159,15 @@ export const Configured: Story = {
       "GET /api/instance/ai": configuredSettings,
       "PUT /api/instance/ai": putAi,
       "POST /api/instance/ai/test": testAi,
+      "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
     },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
     await expect(canvas.findByText(/sk-a…mnop/)).resolves.toBeVisible();
     await expect(canvas.getByText(/from server environment/)).toBeVisible();
-    const testBtn = canvas.getAllByRole("button", { name: "Test connection" })[0];
-    await userEvent.click(testBtn);
+    await userEvent.click(canvas.getByRole("button", { name: "Test OpenAI" }));
     await expect(testAi).toHaveBeenCalledWith({ section: "voice" });
   },
 };

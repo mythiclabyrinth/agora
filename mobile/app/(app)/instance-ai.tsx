@@ -13,8 +13,11 @@ import {
 } from "react-native";
 import { Stack } from "expo-router";
 import {
+  useCompleteCodexOauth,
+  useDisconnectCodexOauth,
   useInstanceAi,
   useMe,
+  useStartCodexOauth,
   useTestInstanceAi,
   useUpdateInstanceAi,
   type InstanceAiSettings,
@@ -22,11 +25,8 @@ import {
 } from "@agora/core";
 import { toast, toastErr } from "../../src/components/Toast";
 import { colors } from "../../src/lib/theme";
+import * as Linking from "expo-linking";
 
-/* Model inputs hold the *override*, not the resolved value: empty means
-   "follow the server env / built-in default", shown as the placeholder.
-   Pre-filling them would make an unchanged save pin the stock model into
-   config.json and permanently shadow AGORA_AI_MODEL. */
 const override = (f: { value: string; source: string }) =>
   f.source === "config" ? f.value : "";
 
@@ -42,10 +42,8 @@ function sourceLabel(source: string): string {
   }
 }
 
-function VoiceBlock({ data }: { data: InstanceAiSettings["voice"] }) {
+function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
-  const test = useTestInstanceAi();
-  const [key, setKey] = useState("");
   const [stt, setStt] = useState(override(data.stt_model));
   const [tts, setTts] = useState(override(data.tts_model));
   const [voice, setVoice] = useState(override(data.tts_voice));
@@ -54,7 +52,6 @@ function VoiceBlock({ data }: { data: InstanceAiSettings["voice"] }) {
     setStt(override(data.stt_model));
     setTts(override(data.tts_model));
     setVoice(override(data.tts_voice));
-    setKey("");
   }, [data]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
@@ -70,51 +67,14 @@ function VoiceBlock({ data }: { data: InstanceAiSettings["voice"] }) {
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Voice</Text>
           <Text style={styles.meta}>
-            Provider {data.provider} · {data.available ? "available" : "off"}
+            OpenAI · {data.available ? "available" : "off"}
           </Text>
         </View>
-        <Switch
-          value={data.enabled}
-          onValueChange={(enabled) => save({ enabled })}
-        />
+        <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
       </View>
-      <Text style={styles.hint}>
-        Voice notes, speak-aloud, and live voice. Endpoints are fixed (OpenAI).
-      </Text>
-      <Text style={styles.label}>API key</Text>
-      <Text style={styles.meta}>
-        {data.api_key.configured
-          ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
-          : sourceLabel(data.api_key.source)}
-      </Text>
-      <TextInput
-        style={styles.input}
-        value={key}
-        onChangeText={setKey}
-        placeholder={data.api_key.configured ? "replace key…" : "sk-…"}
-        placeholderTextColor={colors.faint}
-        autoCapitalize="none"
-        autoCorrect={false}
-        secureTextEntry
-      />
-      <View style={styles.rowBtns}>
-        <Pressable
-          style={[styles.btn, styles.btnPrimary, (!key.trim() || update.isPending) && styles.btnDisabled]}
-          disabled={!key.trim() || update.isPending}
-          onPress={() => { save({ api_key: key.trim() }); setKey(""); }}
-        >
-          <Text style={styles.btnPrimaryText}>Save key</Text>
-        </Pressable>
-        {data.api_key.source === "config" ? (
-          <Pressable
-            style={[styles.btn, styles.btnDanger]}
-            disabled={update.isPending}
-            onPress={() => save({ clear_key: true })}
-          >
-            <Text style={styles.btnDangerText}>Clear saved</Text>
-          </Pressable>
-        ) : null}
-      </View>
+      {!data.available && data.enabled ? (
+        <Text style={styles.hint}>Add an OpenAI API key under Credentials.</Text>
+      ) : null}
       <Text style={styles.label}>STT model</Text>
       <TextInput style={styles.input} value={stt} onChangeText={setStt} autoCapitalize="none"
         placeholder={inherited(data.stt_model)} placeholderTextColor={colors.faint} />
@@ -124,55 +84,27 @@ function VoiceBlock({ data }: { data: InstanceAiSettings["voice"] }) {
       <Text style={styles.label}>TTS voice</Text>
       <TextInput style={styles.input} value={voice} onChangeText={setVoice} autoCapitalize="none"
         placeholder={inherited(data.tts_voice)} placeholderTextColor={colors.faint} />
-      <Text style={styles.meta}>
-        Suggested voices: {(data.suggested_tts_voices || []).join(", ")}
-      </Text>
-      <Text style={styles.meta}>
-        Leave a field empty to follow the server environment or the built-in default.
-      </Text>
-      <View style={styles.rowBtns}>
-        <Pressable
-          style={[styles.btn, styles.btnPrimary]}
-          disabled={update.isPending}
-          onPress={() => save({
-            stt_model: stt.trim(),
-            tts_model: tts.trim(),
-            tts_voice: voice.trim(),
-          })}
-        >
-          <Text style={styles.btnPrimaryText}>Save models</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.btn, (!data.api_key.configured || test.isPending) && styles.btnDisabled]}
-          disabled={!data.api_key.configured || test.isPending}
-          onPress={() => test.mutate("voice", {
-            onSuccess: () => toast("OpenAI key works"),
-            onError: (e) => toastErr("Voice test failed", e as Error),
-          })}
-        >
-          <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test connection"}</Text>
-        </Pressable>
-      </View>
+      <Pressable
+        style={[styles.btn, styles.btnPrimary]}
+        disabled={update.isPending}
+        onPress={() => save({
+          stt_model: stt.trim(),
+          tts_model: tts.trim(),
+          tts_voice: voice.trim(),
+        })}
+      >
+        <Text style={styles.btnPrimaryText}>Save models</Text>
+      </Pressable>
     </View>
   );
 }
 
-function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
+function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
   const update = useUpdateInstanceAi();
-  const test = useTestInstanceAi();
-  const [key, setKey] = useState("");
-  const [model, setModel] = useState(override(data.model));
   const [provider, setProvider] = useState(data.provider);
-  const [authPaste, setAuthPaste] = useState("");
-  const [refreshPaste, setRefreshPaste] = useState("");
+  const modelField = data.models?.[provider as "anthropic" | "openai" | "codex"] || data.model;
 
-  useEffect(() => {
-    setModel(override(data.model));
-    setProvider(data.provider);
-    setKey("");
-    setAuthPaste("");
-    setRefreshPaste("");
-  }, [data]);
+  useEffect(() => { setProvider(data.provider); }, [data.provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["search"]>) => {
     update.mutate({ search: patch }, {
@@ -181,187 +113,239 @@ function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
     });
   };
 
-  const isCodex = provider === "codex";
-  const isOpenAi = provider === "openai";
-  const canTest = isCodex ? data.oauth.configured : data.api_key.configured;
   const providers = data.providers?.length
     ? data.providers
-    : ["anthropic", "openai", "codex"];
+    : [
+        { id: "anthropic", label: "Anthropic" },
+        { id: "openai", label: "OpenAI" },
+        { id: "codex", label: "ChatGPT" },
+      ];
+  const suggested = data.suggested_models_by_provider?.[provider] || data.suggested_models || [];
+  const selectedModel = modelField.value;
 
   return (
     <View style={styles.card}>
       <View style={styles.cardHead}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Ask AI</Text>
-          <Text style={styles.meta}>
-            {data.available ? "available" : "off"}
-          </Text>
+          <Text style={styles.meta}>{data.available ? "available" : "off"}</Text>
         </View>
-        <Switch
-          value={data.enabled}
-          onValueChange={(enabled) => save({ enabled })}
-        />
+        <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
       </View>
-      <Text style={styles.hint}>
-        Cited answers over search hits. Endpoints are fixed per provider.
-      </Text>
+      {!data.available && data.enabled ? (
+        <Text style={styles.hint}>Configure credentials under the Credentials tab.</Text>
+      ) : null}
       <Text style={styles.label}>Provider</Text>
       <View style={styles.rowBtns}>
         {providers.map((p) => (
           <Pressable
-            key={p}
-            style={[styles.btn, provider === p && styles.btnPrimary]}
+            key={p.id}
+            style={[styles.btn, provider === p.id && styles.btnPrimary]}
             disabled={update.isPending}
-            onPress={() => {
-              setProvider(p);
-              save({ provider: p });
-            }}
+            onPress={() => { setProvider(p.id); save({ provider: p.id }); }}
           >
-            <Text style={provider === p ? styles.btnPrimaryText : styles.btnText}>
-              {p === "codex" ? "codex OAuth" : p}
+            <Text style={provider === p.id ? styles.btnPrimaryText : styles.btnText}>
+              {p.label}
             </Text>
           </Pressable>
         ))}
       </View>
-      {isCodex ? (
-        <>
-          <Text style={styles.label}>ChatGPT OAuth</Text>
-          <Text style={styles.meta}>
-            {data.oauth.configured
-              ? `${data.oauth.hint || "linked"} · ${sourceLabel(data.oauth.source)}${
-                  data.oauth.account_id ? ` · ${data.oauth.account_id}` : ""
-                }`
-              : "not set — paste auth.json from `codex login`"}
-          </Text>
-          <View style={styles.rowBtns}>
-            <Pressable
-              style={[styles.btn]}
-              disabled={update.isPending}
-              onPress={() => save({ import_local_codex_auth: true, provider: "codex" })}
-            >
-              <Text style={styles.btnText}>Import ~/.codex</Text>
-            </Pressable>
-            {data.oauth.configured ? (
-              <Pressable
-                style={[styles.btn, styles.btnDanger]}
-                disabled={update.isPending}
-                onPress={() => save({ clear_oauth: true })}
-              >
-                <Text style={styles.btnDangerText}>Clear OAuth</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          <Text style={styles.label}>Paste auth.json</Text>
-          <TextInput
-            style={[styles.input, styles.multiline]}
-            value={authPaste}
-            onChangeText={setAuthPaste}
-            placeholder='{"tokens":{…}}'
-            placeholderTextColor={colors.faint}
-            autoCapitalize="none"
-            autoCorrect={false}
-            multiline
-          />
-          <Pressable
-            style={[styles.btn, styles.btnPrimary, (!authPaste.trim() || update.isPending) && styles.btnDisabled]}
-            disabled={!authPaste.trim() || update.isPending}
-            onPress={() => {
-              save({ codex_auth_json: authPaste.trim(), provider: "codex" });
-              setAuthPaste("");
-            }}
-          >
-            <Text style={styles.btnPrimaryText}>Import paste</Text>
-          </Pressable>
-          <Text style={styles.label}>Or refresh token</Text>
-          <TextInput
-            style={styles.input}
-            value={refreshPaste}
-            onChangeText={setRefreshPaste}
-            placeholder="rt_…"
-            placeholderTextColor={colors.faint}
-            autoCapitalize="none"
-            secureTextEntry
-          />
-          <Pressable
-            style={[styles.btn, styles.btnPrimary, (!refreshPaste.trim() || update.isPending) && styles.btnDisabled]}
-            disabled={!refreshPaste.trim() || update.isPending}
-            onPress={() => {
-              save({ codex_refresh_token: refreshPaste.trim(), provider: "codex" });
-              setRefreshPaste("");
-            }}
-          >
-            <Text style={styles.btnPrimaryText}>Save token</Text>
-          </Pressable>
-        </>
-      ) : (
-        <>
-          <Text style={styles.label}>API key</Text>
-          <Text style={styles.meta}>
-            {data.api_key.configured
-              ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
-              : sourceLabel(data.api_key.source)}
-          </Text>
-          <TextInput
-            style={styles.input}
-            value={key}
-            onChangeText={setKey}
-            placeholder={data.api_key.configured ? "replace key…" : isOpenAi ? "sk-…" : "sk-ant-…"}
-            placeholderTextColor={colors.faint}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-          />
-          <View style={styles.rowBtns}>
-            <Pressable
-              style={[styles.btn, styles.btnPrimary, (!key.trim() || update.isPending) && styles.btnDisabled]}
-              disabled={!key.trim() || update.isPending}
-              onPress={() => { save({ api_key: key.trim() }); setKey(""); }}
-            >
-              <Text style={styles.btnPrimaryText}>Save key</Text>
-            </Pressable>
-            {data.api_key.source === "config" ? (
-              <Pressable
-                style={[styles.btn, styles.btnDanger]}
-                disabled={update.isPending}
-                onPress={() => save({ clear_key: true })}
-              >
-                <Text style={styles.btnDangerText}>Clear saved</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        </>
-      )}
       <Text style={styles.label}>Model</Text>
-      <TextInput style={styles.input} value={model} onChangeText={setModel} autoCapitalize="none"
-        placeholder={inherited(data.model)} placeholderTextColor={colors.faint} />
-      <Text style={styles.meta}>
-        Suggested: {(data.suggested_models || []).join(", ")}
-      </Text>
-      <Text style={styles.meta}>
-        Leave empty to follow AGORA_AI_MODEL or the built-in default.
-      </Text>
       <View style={styles.rowBtns}>
-        <Pressable
-          style={[styles.btn, styles.btnPrimary]}
-          disabled={update.isPending}
-          onPress={() => save({ model: model.trim() })}
-        >
-          <Text style={styles.btnPrimaryText}>Save model</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.btn, (!canTest || test.isPending) && styles.btnDisabled]}
-          disabled={!canTest || test.isPending}
-          onPress={() => test.mutate("search", {
-            onSuccess: () => toast(
-              isCodex ? "Codex OAuth works" : isOpenAi ? "OpenAI key works" : "Anthropic key works",
-            ),
-            onError: (e) => toastErr("Ask AI test failed", e as Error),
-          })}
-        >
-          <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test connection"}</Text>
-        </Pressable>
+        {suggested.map((m) => (
+          <Pressable
+            key={m}
+            style={[styles.btn, selectedModel === m && styles.btnPrimary]}
+            disabled={update.isPending}
+            onPress={() => save({ model: m, model_provider: provider })}
+          >
+            <Text style={selectedModel === m ? styles.btnPrimaryText : styles.btnText}>{m}</Text>
+          </Pressable>
+        ))}
       </View>
     </View>
+  );
+}
+
+function CredentialsPane({ data }: { data: InstanceAiSettings }) {
+  const update = useUpdateInstanceAi();
+  const test = useTestInstanceAi();
+  const startOauth = useStartCodexOauth();
+  const completeOauth = useCompleteCodexOauth();
+  const disconnectOauth = useDisconnectCodexOauth();
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [redirectPaste, setRedirectPaste] = useState("");
+  const [awaitingPaste, setAwaitingPaste] = useState(false);
+
+  const oauth = data.credentials.oauth;
+
+  return (
+    <>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>OpenAI API key</Text>
+        <Text style={styles.meta}>
+          {data.credentials.openai.configured
+            ? `${data.credentials.openai.hint} · ${sourceLabel(data.credentials.openai.source)}`
+            : sourceLabel(data.credentials.openai.source)}
+        </Text>
+        <TextInput
+          style={styles.input}
+          value={openaiKey}
+          onChangeText={setOpenaiKey}
+          placeholder={data.credentials.openai.configured ? "replace key…" : "sk-…"}
+          placeholderTextColor={colors.faint}
+          autoCapitalize="none"
+          secureTextEntry
+        />
+        <View style={styles.rowBtns}>
+          <Pressable
+            style={[styles.btn, styles.btnPrimary, !openaiKey.trim() && styles.btnDisabled]}
+            disabled={!openaiKey.trim() || update.isPending}
+            onPress={() => {
+              update.mutate({ credentials: { openai: { api_key: openaiKey.trim() } } }, {
+                onSuccess: () => { toast("OpenAI key saved"); setOpenaiKey(""); },
+                onError: (e) => toastErr("Couldn't save", e as Error),
+              });
+            }}
+          >
+            <Text style={styles.btnPrimaryText}>Save key</Text>
+          </Pressable>
+          {data.credentials.openai.source === "config" ? (
+            <Pressable
+              style={[styles.btn, styles.btnDanger]}
+              onPress={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
+                onSuccess: () => toast("Cleared"),
+                onError: (e) => toastErr("Couldn't clear", e as Error),
+              })}
+            >
+              <Text style={styles.btnDangerText}>Clear saved</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            style={[styles.btn, (!data.credentials.openai.configured || test.isPending) && styles.btnDisabled]}
+            disabled={!data.credentials.openai.configured || test.isPending}
+            onPress={() => test.mutate("voice", {
+              onSuccess: () => toast("OpenAI key works"),
+              onError: (e) => toastErr("Test failed", e as Error),
+            })}
+          >
+            <Text style={styles.btnText}>Test</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Anthropic API key</Text>
+        <Text style={styles.meta}>
+          {data.credentials.anthropic.configured
+            ? `${data.credentials.anthropic.hint} · ${sourceLabel(data.credentials.anthropic.source)}`
+            : sourceLabel(data.credentials.anthropic.source)}
+        </Text>
+        <TextInput
+          style={styles.input}
+          value={anthropicKey}
+          onChangeText={setAnthropicKey}
+          placeholder={data.credentials.anthropic.configured ? "replace key…" : "sk-ant-…"}
+          placeholderTextColor={colors.faint}
+          autoCapitalize="none"
+          secureTextEntry
+        />
+        <View style={styles.rowBtns}>
+          <Pressable
+            style={[styles.btn, styles.btnPrimary, !anthropicKey.trim() && styles.btnDisabled]}
+            disabled={!anthropicKey.trim() || update.isPending}
+            onPress={() => {
+              update.mutate({ credentials: { anthropic: { api_key: anthropicKey.trim() } } }, {
+                onSuccess: () => { toast("Anthropic key saved"); setAnthropicKey(""); },
+                onError: (e) => toastErr("Couldn't save", e as Error),
+              });
+            }}
+          >
+            <Text style={styles.btnPrimaryText}>Save key</Text>
+          </Pressable>
+          {data.credentials.anthropic.source === "config" ? (
+            <Pressable
+              style={[styles.btn, styles.btnDanger]}
+              onPress={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
+                onSuccess: () => toast("Cleared"),
+                onError: (e) => toastErr("Couldn't clear", e as Error),
+              })}
+            >
+              <Text style={styles.btnDangerText}>Clear saved</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>ChatGPT sign-in</Text>
+        <Text style={styles.meta}>
+          {oauth.configured
+            ? `Linked · ${oauth.hint || "token"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
+            : "Not linked — authorize from this device (paste redirect URL)."}
+        </Text>
+        <View style={styles.rowBtns}>
+          <Pressable
+            style={[styles.btn, styles.btnPrimary]}
+            disabled={startOauth.isPending}
+            onPress={() => {
+              startOauth.mutate("paste", {
+                onSuccess: async (res) => {
+                  setAwaitingPaste(true);
+                  await Linking.openURL(res.authorize_url);
+                  toast("Finish sign-in, then paste the redirected URL");
+                },
+                onError: (e) => toastErr("Couldn't start", e as Error),
+              });
+            }}
+          >
+            <Text style={styles.btnPrimaryText}>
+              {oauth.configured ? "Re-authorize" : "Authorize ChatGPT"}
+            </Text>
+          </Pressable>
+          {oauth.configured ? (
+            <Pressable
+              style={[styles.btn, styles.btnDanger]}
+              disabled={disconnectOauth.isPending}
+              onPress={() => disconnectOauth.mutate(undefined, {
+                onSuccess: () => toast("Disconnected"),
+                onError: (e) => toastErr("Couldn't disconnect", e as Error),
+              })}
+            >
+              <Text style={styles.btnDangerText}>Disconnect</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {awaitingPaste ? (
+          <>
+            <Text style={styles.label}>Redirect URL</Text>
+            <TextInput
+              style={styles.input}
+              value={redirectPaste}
+              onChangeText={setRedirectPaste}
+              placeholder="http://localhost:1455/auth/callback?code=…"
+              placeholderTextColor={colors.faint}
+              autoCapitalize="none"
+            />
+            <Pressable
+              style={[styles.btn, styles.btnPrimary, !redirectPaste.trim() && styles.btnDisabled]}
+              disabled={!redirectPaste.trim() || completeOauth.isPending}
+              onPress={() => completeOauth.mutate(redirectPaste.trim(), {
+                onSuccess: () => {
+                  toast("ChatGPT linked");
+                  setAwaitingPaste(false);
+                  setRedirectPaste("");
+                },
+                onError: (e) => toastErr("Couldn't complete", e as Error),
+              })}
+            >
+              <Text style={styles.btnPrimaryText}>Complete</Text>
+            </Pressable>
+          </>
+        ) : null}
+      </View>
+    </>
   );
 }
 
@@ -369,6 +353,7 @@ export default function InstanceAiScreen() {
   const me = useMe();
   const isAdmin = me.data?.instance_admin === true;
   const q = useInstanceAi(isAdmin);
+  const [tab, setTab] = useState<"features" | "credentials">("features");
 
   if (me.isSuccess && !isAdmin) {
     return (
@@ -389,16 +374,37 @@ export default function InstanceAiScreen() {
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.hint}>
-          Configure voice transcription/speech and Ask AI for this Agora.
-          Clearing a saved key falls back to the server environment.
-        </Text>
+        <View style={styles.rowBtns}>
+          <Pressable
+            style={[styles.btn, tab === "features" && styles.btnPrimary]}
+            onPress={() => setTab("features")}
+          >
+            <Text style={tab === "features" ? styles.btnPrimaryText : styles.btnText}>Features</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.btn, tab === "credentials" && styles.btnPrimary]}
+            onPress={() => setTab("credentials")}
+          >
+            <Text style={tab === "credentials" ? styles.btnPrimaryText : styles.btnText}>Credentials</Text>
+          </Pressable>
+        </View>
         {q.isLoading ? <ActivityIndicator color={colors.dim} /> : null}
         {q.isError ? <Text style={styles.hint}>Couldn&apos;t load AI settings.</Text> : null}
-        {q.data ? (
+        {q.data && tab === "features" ? (
           <>
-            <VoiceBlock data={q.data.voice} />
-            <SearchBlock data={q.data.search} />
+            <Text style={styles.hint}>
+              Choose providers and models. Keys and ChatGPT sign-in live under Credentials.
+            </Text>
+            <VoiceFeatures data={q.data.voice} />
+            <SearchFeatures data={q.data.search} />
+          </>
+        ) : null}
+        {q.data && tab === "credentials" ? (
+          <>
+            <Text style={styles.hint}>
+              Env keys show masked. Saving overrides env for this instance; clear restores env.
+            </Text>
+            <CredentialsPane data={q.data} />
           </>
         ) : null}
       </ScrollView>
@@ -432,7 +438,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 14,
   },
-  multiline: { minHeight: 72, textAlignVertical: "top" },
   rowBtns: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
   btn: {
     borderWidth: 1,

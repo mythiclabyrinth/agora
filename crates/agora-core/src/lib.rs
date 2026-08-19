@@ -96,6 +96,7 @@ pub async fn run(data_dir: PathBuf, ui_dir: Option<PathBuf>) -> anyhow::Result<A
         data_dir,
         restart_handler: Arc::new(std::sync::Mutex::new(None)),
         speech_cache: Arc::new(std::sync::Mutex::new(Vec::new())),
+        codex_oauth: Arc::new(std::sync::Mutex::new(None)),
         auth_limiter,
         upload_limiter,
     };
