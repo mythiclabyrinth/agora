@@ -31,11 +31,13 @@ boot, so unsetting one later keeps the last value.
 
 ### Voice and Ask AI
 
-Instance admins configure these in the product (**AI & voice** on web/desktop,
-**Settings → AI & voice** on mobile). Values persist under `ai` in
-`config.json`. Process-env fallbacks are resolved at *read* time only — they
-are **never** folded into `config.json` on boot (so a Railway restart cannot
-overwrite a UI-set key):
+Instance admins configure these in the product (**Settings** on web/desktop,
+**Settings → AI & voice** on mobile): **Features** for providers/models and
+Enabled toggles, **Credentials** for API keys and Codex OAuth. Values persist
+under `ai` in `config.json`. Process-env fallbacks are resolved at *read* time
+only — they are **never** folded into `config.json` on boot (so a Railway
+restart cannot overwrite a UI-set key). Clients advertise voice / Ask AI from
+the Enabled flags alone; missing credentials fail with a clear error when used.
 
 | Env (fallback) | Feature |
 | --- | --- |

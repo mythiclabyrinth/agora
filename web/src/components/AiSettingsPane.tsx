@@ -18,15 +18,6 @@ import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 
-function sourceLabel(source: string): string {
-  switch (source) {
-    case "config": return "saved in instance settings";
-    case "env": return "from server environment";
-    case "default": return "default";
-    default: return "not set";
-  }
-}
-
 function SectionHead({
   title, enabled, onEnabled,
 }: {
@@ -247,9 +238,9 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
 }
 
 function KeyRow({
-  label, field, placeholder, onSave, onClear, onTest, testing,
+  envName, field, placeholder, onSave, onClear, onTest, testing,
 }: {
-  label: string;
+  envName: string;
   field: InstanceAiSettings["credentials"]["openai"];
   placeholder: string;
   onSave: (key: string) => void;
@@ -259,22 +250,19 @@ function KeyRow({
 }) {
   const [key, setKey] = useState("");
   return (
-    <div className="ai-section">
-      <h4>{label}</h4>
-      <div className="ai-key">
-        <span className="dim">
-          {field.configured
-            ? `${field.hint} · ${sourceLabel(field.source)}`
-            : sourceLabel(field.source)}
-        </span>
-        <input
-          type="password"
-          autoComplete="off"
-          placeholder={field.configured ? "replace key…" : placeholder}
-          value={key}
-          onChange={e => setKey(e.target.value)}
-        />
-        <div className="ai-key-actions">
+    <div className="ai-key-card">
+      <div className="ai-key-card-label">
+        <h4>{envName}</h4>
+      </div>
+      <div className="ai-key-card-body">
+        <div className="ai-key-row">
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={field.configured ? "Replace key…" : placeholder}
+            value={key}
+            onChange={e => setKey(e.target.value)}
+          />
           <button className="btn sm primary" disabled={!key.trim()}
             onClick={() => { onSave(key.trim()); setKey(""); }}>
             Save
@@ -330,145 +318,165 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
 
   return (
     <>
-      <KeyRow
-        label="OpenAI"
-        field={data.credentials.openai}
-        placeholder="sk-…"
-        testing={test.isPending}
-        onSave={api_key => update.mutate({ credentials: { openai: { api_key } } }, {
-          onSuccess: () => toast("OpenAI key saved", { variant: "ok" }),
-          onError: err("Couldn't save OpenAI key"),
-        })}
-        onClear={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
-          onSuccess: () => toast("OpenAI key cleared", { variant: "ok" }),
-          onError: err("Couldn't clear OpenAI key"),
-        })}
-        onTest={() => test.mutate("openai", {
-          onSuccess: () => toast("OpenAI credentials work", { variant: "ok" }),
-          onError: err("OpenAI test failed"),
-        })}
-      />
+      <div className="ai-keys">
+        <div className="ai-keys-head">
+          <h3>API keys</h3>
+          <p>Provider keys used for model calls. Values are write-only.</p>
+        </div>
+        <div className="ai-keys-stack">
+          <KeyRow
+            envName="OPENAI API KEY"
+            field={data.credentials.openai}
+            placeholder="Paste key…"
+            testing={test.isPending}
+            onSave={api_key => update.mutate({ credentials: { openai: { api_key } } }, {
+              onSuccess: () => toast("OpenAI key saved", { variant: "ok" }),
+              onError: err("Couldn't save OpenAI key"),
+            })}
+            onClear={() => update.mutate({ credentials: { openai: { clear_key: true } } }, {
+              onSuccess: () => toast("OpenAI key cleared", { variant: "ok" }),
+              onError: err("Couldn't clear OpenAI key"),
+            })}
+            onTest={() => test.mutate("openai", {
+              onSuccess: () => toast("OpenAI credentials work", { variant: "ok" }),
+              onError: err("OpenAI test failed"),
+            })}
+          />
 
-      <KeyRow
-        label="Groq"
-        field={data.credentials.groq}
-        placeholder="gsk-…"
-        testing={test.isPending}
-        onSave={api_key => update.mutate({ credentials: { groq: { api_key } } }, {
-          onSuccess: () => toast("Groq key saved", { variant: "ok" }),
-          onError: err("Couldn't save Groq key"),
-        })}
-        onClear={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
-          onSuccess: () => toast("Groq key cleared", { variant: "ok" }),
-          onError: err("Couldn't clear Groq key"),
-        })}
-        onTest={() => test.mutate("groq", {
-          onSuccess: () => toast("Groq credentials work", { variant: "ok" }),
-          onError: err("Groq test failed"),
-        })}
-      />
+          <KeyRow
+            envName="GROQ API KEY"
+            field={data.credentials.groq}
+            placeholder="Paste key…"
+            testing={test.isPending}
+            onSave={api_key => update.mutate({ credentials: { groq: { api_key } } }, {
+              onSuccess: () => toast("Groq key saved", { variant: "ok" }),
+              onError: err("Couldn't save Groq key"),
+            })}
+            onClear={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
+              onSuccess: () => toast("Groq key cleared", { variant: "ok" }),
+              onError: err("Couldn't clear Groq key"),
+            })}
+            onTest={() => test.mutate("groq", {
+              onSuccess: () => toast("Groq credentials work", { variant: "ok" }),
+              onError: err("Groq test failed"),
+            })}
+          />
 
-      <KeyRow
-        label="Anthropic"
-        field={data.credentials.anthropic}
-        placeholder="sk-ant-…"
-        testing={test.isPending}
-        onSave={api_key => update.mutate({ credentials: { anthropic: { api_key } } }, {
-          onSuccess: () => toast("Anthropic key saved", { variant: "ok" }),
-          onError: err("Couldn't save Anthropic key"),
-        })}
-        onClear={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
-          onSuccess: () => toast("Anthropic key cleared", { variant: "ok" }),
-          onError: err("Couldn't clear Anthropic key"),
-        })}
-        onTest={() => test.mutate("anthropic", {
-          onSuccess: () => toast("Anthropic credentials work", { variant: "ok" }),
-          onError: err("Anthropic test failed"),
-        })}
-      />
-
-      <div className="ai-section">
-        <h4>Codex</h4>
-        <div className="ai-key">
-          <span className="dim">
-            {oauth.configured
-              ? `${oauth.hint || "linked"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
-              : "not linked"}
-          </span>
-          <div className="ai-key-actions">
-            <button className="btn sm primary" disabled={startOauth.isPending}
-              onClick={() => {
-                const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-                const mode = local ? "loopback" : "paste";
-                startOauth.mutate(mode, {
-                  onSuccess: res => {
-                    setOauthMode(res.mode);
-                    setAuthorizeUrl(res.authorize_url);
-                    // Keep a window handle so we can close it on success.
-                    // Do not use noopener — that makes window.open return null.
-                    oauthWinRef.current = window.open(res.authorize_url, "agora-codex-oauth");
-                    toast(mode === "loopback"
-                      ? "Sign in opened — finish in the Codex OAuth window"
-                      : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
-                  },
-                  onError: err("Couldn't start Codex OAuth"),
-                });
-              }}>
-              {oauth.configured ? "Reconnect" : "Connect"}
-            </button>
-            {oauth.configured && (
-              <button className="btn sm" disabled={test.isPending}
-                onClick={() => test.mutate("codex", {
-                  onSuccess: () => toast("Codex OAuth credentials work", { variant: "ok" }),
-                  onError: err("Codex OAuth test failed"),
-                })}>
-                {test.isPending ? "Testing…" : "Test"}
+          <KeyRow
+            envName="ANTHROPIC API KEY"
+            field={data.credentials.anthropic}
+            placeholder="Paste key…"
+            testing={test.isPending}
+            onSave={api_key => update.mutate({ credentials: { anthropic: { api_key } } }, {
+              onSuccess: () => toast("Anthropic key saved", { variant: "ok" }),
+              onError: err("Couldn't save Anthropic key"),
+            })}
+            onClear={() => update.mutate({ credentials: { anthropic: { clear_key: true } } }, {
+              onSuccess: () => toast("Anthropic key cleared", { variant: "ok" }),
+              onError: err("Couldn't clear Anthropic key"),
+            })}
+            onTest={() => test.mutate("anthropic", {
+              onSuccess: () => toast("Anthropic credentials work", { variant: "ok" }),
+              onError: err("Anthropic test failed"),
+            })}
+          />
+        </div>
+      </div>
+      <div className="ai-oauth">
+        <div className="ai-oauth-head">OAuth</div>
+        <div className="ai-oauth-card">
+          <div className="ai-oauth-label">
+            <h4>OpenAI Codex</h4>
+            <p>Sign in to your ChatGPT subscription.</p>
+          </div>
+          <div className="ai-oauth-body">
+            <div className="ai-oauth-status">
+              {oauth.configured ? (
+                <>
+                  <span className="ai-oauth-badge on">connected</span>
+                  {oauth.account_id ? <span className="dim">{oauth.account_id}</span> : null}
+                  <span className="dim">tokens refresh automatically</span>
+                </>
+              ) : (
+                <span className="ai-oauth-badge">not connected</span>
+              )}
+            </div>
+            <div className="ai-oauth-actions">
+              {oauth.configured && (
+                <button className="btn sm danger" disabled={disconnectOauth.isPending}
+                  onClick={() => disconnectOauth.mutate(undefined, {
+                    onSuccess: () => toast("Codex OAuth disconnected", { variant: "ok" }),
+                    onError: err("Couldn't disconnect"),
+                  })}>
+                  Disconnect
+                </button>
+              )}
+              {oauth.configured && (
+                <button className="btn sm" disabled={test.isPending}
+                  onClick={() => test.mutate("codex", {
+                    onSuccess: () => toast("Codex OAuth credentials work", { variant: "ok" }),
+                    onError: err("Codex OAuth test failed"),
+                  })}>
+                  {test.isPending ? "Testing…" : "Test"}
+                </button>
+              )}
+              <button className="btn sm primary" disabled={startOauth.isPending}
+                onClick={() => {
+                  const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+                  const mode = local ? "loopback" : "paste";
+                  startOauth.mutate(mode, {
+                    onSuccess: res => {
+                      setOauthMode(res.mode);
+                      setAuthorizeUrl(res.authorize_url);
+                      // Keep a window handle so we can close it on success.
+                      // Do not use noopener — that makes window.open return null.
+                      oauthWinRef.current = window.open(res.authorize_url, "agora-codex-oauth");
+                      toast(mode === "loopback"
+                        ? "Sign in opened — finish in the Codex OAuth window"
+                        : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
+                    },
+                    onError: err("Couldn't start Codex OAuth"),
+                  });
+                }}>
+                {oauth.configured ? "Re-authenticate" : "Connect account"}
               </button>
+            </div>
+            {oauthMode === "loopback" && (
+              <p className="conn-hint">Waiting for redirect on {oauth.redirect_uri}…</p>
             )}
-            {oauth.configured && (
-              <button className="btn sm danger" disabled={disconnectOauth.isPending}
-                onClick={() => disconnectOauth.mutate(undefined, {
-                  onSuccess: () => toast("Codex OAuth disconnected", { variant: "ok" }),
-                  onError: err("Couldn't disconnect"),
-                })}>
-                Clear
-              </button>
+            {oauthMode === "paste" && (
+              <div className="ai-oauth-paste">
+                <label htmlFor="codex-redirect-url">Redirect URL</label>
+                <div className="ai-key">
+                  <input
+                    id="codex-redirect-url"
+                    value={redirectPaste}
+                    onChange={e => setRedirectPaste(e.target.value)}
+                    placeholder="http://localhost:1455/auth/callback?code=…"
+                    autoComplete="off"
+                  />
+                  <button className="btn sm primary" disabled={!redirectPaste.trim() || completeOauth.isPending}
+                    onClick={() => completeOauth.mutate(redirectPaste.trim(), {
+                      onSuccess: () => {
+                        toast("Codex OAuth complete", { variant: "ok" });
+                        closeOauthWindow();
+                        setOauthMode(null);
+                        setRedirectPaste("");
+                      },
+                      onError: err("Couldn't complete sign-in"),
+                    })}>
+                    Complete
+                  </button>
+                </div>
+                {authorizeUrl && (
+                  <p className="conn-hint">
+                    If the window didn&apos;t open: <a href={authorizeUrl} target="agora-codex-oauth" rel="noreferrer">open authorize URL</a>
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </div>
-        {oauthMode === "loopback" && (
-          <p className="conn-hint">Waiting for redirect on {oauth.redirect_uri}…</p>
-        )}
-        {oauthMode === "paste" && (
-          <div className="ai-row">
-            <label>Redirect URL</label>
-            <div className="ai-key">
-              <input
-                value={redirectPaste}
-                onChange={e => setRedirectPaste(e.target.value)}
-                placeholder="http://localhost:1455/auth/callback?code=…"
-                autoComplete="off"
-              />
-              <button className="btn sm primary" disabled={!redirectPaste.trim() || completeOauth.isPending}
-                onClick={() => completeOauth.mutate(redirectPaste.trim(), {
-                  onSuccess: () => {
-                    toast("Codex OAuth complete", { variant: "ok" });
-                    closeOauthWindow();
-                    setOauthMode(null);
-                    setRedirectPaste("");
-                  },
-                  onError: err("Couldn't complete sign-in"),
-                })}>
-                Complete
-              </button>
-            </div>
-            {authorizeUrl && (
-              <p className="conn-hint">
-                If the window didn&apos;t open: <a href={authorizeUrl} target="agora-codex-oauth" rel="noreferrer">open authorize URL</a>
-              </p>
-            )}
-          </div>
-        )}
       </div>
     </>
   );
@@ -515,12 +523,7 @@ export function AiSettingsPane() {
             </>
           )}
           {q.data && tab === "credentials" && (
-            <>
-              <p className="conn-hint">
-                Add a key for each provider you use, then press Test to make sure it works.
-              </p>
-              <CredentialsTab data={q.data} />
-            </>
+            <CredentialsTab data={q.data} />
           )}
         </div>
       </div>
