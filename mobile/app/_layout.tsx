@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import { Stack } from "expo-router";
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ApiError } from "@agora/core";
+import { ApiError, resetSeenMessageIds } from "@agora/core";
 import { onUnauthorized, useSession } from "../src/state/session";
 import { ToastHost } from "../src/components/Toast";
 import { colors } from "../src/lib/theme";
@@ -34,7 +34,11 @@ export default function RootLayout() {
   useEffect(() => {
     // Query keys are intentionally server-resource scoped, not credential
     // scoped. Purge private data before another account can reuse the client.
-    if (status === "signedOut") client.clear();
+    // clear() does not touch the WS seen-id WeakMap — reset that too.
+    if (status === "signedOut") {
+      resetSeenMessageIds(client);
+      client.clear();
+    }
   }, [client, status]);
 
   return (

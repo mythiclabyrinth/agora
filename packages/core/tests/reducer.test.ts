@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { appendMessage, applyAliasToPages, applyMessageUpdate, applyWsEvent, replaceMessage, type MessagePages } from "../src/ws/reducer";
+import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
 import { keys } from "../src/api/keys";
 import type { Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
@@ -100,5 +100,131 @@ describe("attachment browser invalidation", () => {
     await Promise.resolve();
     expect(qc.getQueryState(keys.attachments("c1", null))?.isInvalidated).toBe(true);
     expect(qc.getQueryState(keys.attachments("c1", 42))?.isInvalidated).toBe(true);
+  });
+});
+
+describe("applyWsEvent message dedupe", () => {
+  it("applies a duplicate message frame only once", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 0 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), pages());
+    const reply = { ...msg(11), thread_id: 5 };
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", 5))!.pages[0].map(m => m.id)).toEqual([11]);
+  });
+
+  it("still bumps after an optimistic append that never touched the seen-set", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 0 }]],
+      pageParams: [undefined],
+    });
+    const reply = { ...msg(11), thread_id: 5 };
+    qc.setQueryData(keys.messages("c1", 5), appendMessage(pages(), reply));
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
+
+  it("resetSeenMessageIds lets the same id apply again after a switch or restore", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 0 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), pages());
+    const reply = { ...msg(11), thread_id: 5 };
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    // Covers server switch and same-server backup restore (rowids restart
+    // while baseUrl/token stay put) — hooks call this from onReopen too.
+    resetSeenMessageIds(qc);
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 0 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), pages());
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
+
+  it("delete-own-reply plus WS echo only drops reply_count once", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), {
+      pages: [[{ ...msg(7), thread_id: 5 }, { ...msg(8), thread_id: 5 }]],
+      pageParams: [undefined],
+    });
+    const ev = {
+      type: "message_delete" as const,
+      channel_id: "c1",
+      message_id: 7,
+      thread_id: 5,
+    };
+    // Mutation onSuccess, then the hub broadcast echo.
+    applyMessageDelete(qc, ev);
+    applyWsEvent(qc, ev, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", 5))!.pages[0].map(m => m.id)).toEqual([8]);
+  });
+
+  it("separate QueryClients each apply the same message id independently", () => {
+    const a = new QueryClient();
+    const b = new QueryClient();
+    for (const qc of [a, b]) {
+      qc.setQueryData(keys.messages("c1", null), {
+        pages: [[{ ...msg(5), reply_count: 0 }]],
+        pageParams: [undefined],
+      });
+      qc.setQueryData(keys.messages("c1", 5), pages());
+    }
+    const reply = { ...msg(11), thread_id: 5 };
+    applyWsEvent(a, { type: "message", message: reply }, { username: "me" });
+    applyWsEvent(b, { type: "message", message: reply }, { username: "me" });
+    expect(a.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    expect(b.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
+
+  it("resetSeenMessageIds clears the delete gate so a later delete can drop again", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), {
+      pages: [[{ ...msg(7), thread_id: 5 }, { ...msg(8), thread_id: 5 }]],
+      pageParams: [undefined],
+    });
+    const ev = {
+      type: "message_delete" as const,
+      channel_id: "c1",
+      message_id: 7,
+      thread_id: 5,
+    };
+    applyMessageDelete(qc, ev);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    // Echo is gated — no second drop.
+    applyMessageDelete(qc, ev);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+
+    resetSeenMessageIds(qc);
+    // Restore a reply_count as if a new instance reused the rowid, then
+    // deleting id 7 again must be allowed to drop once.
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), {
+      pages: [[{ ...msg(7), thread_id: 5 }, { ...msg(8), thread_id: 5 }]],
+      pageParams: [undefined],
+    });
+    applyMessageDelete(qc, ev);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
   });
 });
