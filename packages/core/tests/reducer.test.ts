@@ -130,7 +130,7 @@ describe("applyWsEvent message dedupe", () => {
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
   });
 
-  it("resetSeenMessageIds lets the same id apply again after a server switch", () => {
+  it("resetSeenMessageIds lets the same id apply again after a switch or restore", () => {
     const qc = new QueryClient();
     qc.setQueryData(keys.messages("c1", null), {
       pages: [[{ ...msg(5), reply_count: 0 }]],
@@ -139,8 +139,9 @@ describe("applyWsEvent message dedupe", () => {
     qc.setQueryData(keys.messages("c1", 5), pages());
     const reply = { ...msg(11), thread_id: 5 };
     applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    // Covers server switch and same-server backup restore (rowids restart
+    // while baseUrl/token stay put) — hooks call this from onReopen too.
     resetSeenMessageIds(qc);
-    // Simulate a new instance that reused rowid 11 — must not be swallowed.
     qc.setQueryData(keys.messages("c1", null), {
       pages: [[{ ...msg(5), reply_count: 0 }]],
       pageParams: [undefined],

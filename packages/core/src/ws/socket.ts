@@ -105,7 +105,10 @@ export function createAgoraSocket(
     if (ws) {
       const old = ws;
       ws = null;
+      // discard() nulls onclose, so a CLOSING socket never reports its
+      // disconnect — flip connected here the way close() does.
       discard(old);
+      handlers.onConnectedChange?.(false);
     }
     const socket = new WS(options.url());
     ws = socket;

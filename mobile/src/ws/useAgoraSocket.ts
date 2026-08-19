@@ -38,6 +38,9 @@ export function useAgoraSocket(
           }),
         onConnectedChange: setConnected,
         onReopen: () => {
+          // Same-server restore can restart SQLite rowids while baseUrl/token
+          // stay put — clear the seen-set so real frames aren't swallowed.
+          resetSeenMessageIds(qc);
           void qc.refetchQueries({ type: "active" });
         },
       },

@@ -37,6 +37,9 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
           }),
         onConnectedChange: setConnected,
         onReopen: () => {
+          // Same-server restore can restart SQLite rowids while the session
+          // stays put — clear the seen-set so real frames aren't swallowed.
+          resetSeenMessageIds(qc);
           void qc.refetchQueries({ type: "active" });
         },
       },

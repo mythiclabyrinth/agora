@@ -160,4 +160,24 @@ describe("createAgoraSocket", () => {
     FakeWebSocket.instances[1].open();
     expect(reopens).toHaveLength(1);
   });
+
+  it("connect() reports disconnected when replacing a CLOSING socket", () => {
+    const states: boolean[] = [];
+    const sock = createAgoraSocket(
+      { url: () => "ws://test/ws", WebSocketImpl: FakeWS },
+      { onEvent: () => {}, onConnectedChange: (c) => states.push(c) },
+    );
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    expect(states).toEqual([true]);
+
+    // CLOSING without onclose yet — the race wake() hits after a drop.
+    FakeWebSocket.instances[0].readyState = FakeWebSocket.CLOSING;
+    sock.wake();
+    expect(states).toEqual([true, false]);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    FakeWebSocket.instances[1].open();
+    expect(states).toEqual([true, false, true]);
+  });
 });
