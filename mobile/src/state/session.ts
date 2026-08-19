@@ -35,13 +35,11 @@ interface SessionState {
   instanceAdmin: boolean;
   /** False only while an existing session's cached/server role is unresolved. */
   instanceAdminKnown: boolean;
-  /** Any voice capability at all. Coarse — prefer sttOk / ttsOk, since the
-      two can come from different providers and one can exist without the
-      other (e.g. Groq for STT with no OpenAI key). */
+  /** Any voice feature Enabled. Coarse — prefer sttOk / ttsOk. */
   voiceOk: boolean;
-  /** Transcription available: voice notes / mic. */
+  /** Speech-to-text Enabled: voice notes / mic. */
   sttOk: boolean;
-  /** Synthesis available: speak-aloud. Live voice needs both. */
+  /** Text-to-speech Enabled: speak-aloud. Live voice needs both. */
   ttsOk: boolean;
   /** Last known server URL. Survives a sign-out (an expired Google session
       should ask for credentials again, not for the server address), cleared

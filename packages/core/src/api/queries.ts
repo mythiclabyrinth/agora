@@ -721,7 +721,7 @@ export function useSearchMore() {
 }
 
 /** POST /api/search/ask — AI answer with [n] citations into `sources`.
-    Only offered when /api/me reports `search_ai`. */
+    Offered when /api/me reports `search_ai` (Ask AI Enabled). */
 export function useAskAi() {
   const api = useApi();
   return useMutation({

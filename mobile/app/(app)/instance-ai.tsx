@@ -69,9 +69,6 @@ function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
       <View style={styles.cardHead}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Voice — speech to text</Text>
-          <Text style={styles.meta}>
-            {sttProvider} · {data.stt_available ? "available" : "off"}
-          </Text>
         </View>
         <Switch
           value={data.stt_enabled}
@@ -133,9 +130,6 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
       <View style={styles.cardHead}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Voice — text to speech</Text>
-          <Text style={styles.meta}>
-            {data.tts_provider} · {data.tts_available ? "available" : "off"}
-          </Text>
         </View>
         <Switch
           value={data.tts_enabled}
@@ -217,7 +211,6 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
       <View style={styles.cardHead}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Ask AI</Text>
-          <Text style={styles.meta}>{data.available ? "available" : "off"}</Text>
         </View>
         <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
       </View>

@@ -12,15 +12,15 @@ export interface Me {
   max_file_mb?: number;
   /** Per-video upload limit advertised by current servers. */
   max_video_mb?: number;
-  /** Server has some voice capability — STT or TTS. Coarse; prefer the two
-      flags below, since STT and TTS can come from different providers and one
-      can be configured without the other. */
+  /** Server has voice enabled (STT or TTS). Coarse; prefer the two flags
+      below. Missing credentials still advertise true when Enabled — clients
+      show the UI and surface errors at use time. */
   voice?: boolean;
-  /** Transcription is available: show the composer mic / voice notes. */
+  /** Speech-to-text Enabled: show the composer mic / voice notes. */
   voice_stt?: boolean;
-  /** Synthesis is available: show speak-aloud. Live voice needs both. */
+  /** Text-to-speech Enabled: show speak-aloud. Live voice needs both. */
   voice_tts?: boolean;
-  /** Server has Ask AI available (instance AI settings or env key). */
+  /** Ask AI Enabled (credentials checked when the user asks). */
   search_ai?: boolean;
   /** Operator-configured MapLibre style URL for map artifacts; empty/absent
       means clients fall back to the coordinate-only SVG map. */
@@ -637,7 +637,7 @@ export interface InstanceAiVoice {
       separately, so they turn off separately. */
   stt_enabled: boolean;
   tts_enabled: boolean;
-  /** Either half is usable. */
+  /** Either half is enabled and credentialed (settings diagnostics). */
   available: boolean;
   /** Transcription half — enabled and the selected STT provider has a key. */
   stt_available: boolean;

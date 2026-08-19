@@ -680,6 +680,10 @@ async fn me(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     let config = state.config.snapshot();
+    // Advertise admin Enabled toggles so clients can show mic / speak-aloud /
+    // Ask AI even when credentials are missing; missing keys fail at use time.
+    let voice = resolved_voice(&state);
+    let search = resolved_search_ai(&state);
     Ok(Json(json!({
         "username": user.username,
         "display_name": user.display_name,
@@ -689,15 +693,11 @@ async fn me(
         // copying a promised file into the webview heap.
         "max_file_mb": config.max_file_mb,
         "max_video_mb": config.max_video_mb,
-        // Voice / Ask AI: resolved from config.json (UI) with process-env
-        // fallback at read time — never folded into config at boot.
-        // Coarse "any voice at all" flag, kept for older clients. Current
-        // clients gate the mic and speak-aloud separately: a Groq STT key with
-        // no OpenAI key gives working voice notes and no spoken replies.
-        "voice": resolved_voice(&state).available(),
-        "voice_stt": resolved_voice(&state).stt_available(),
-        "voice_tts": resolved_voice(&state).tts_available(),
-        "search_ai": resolved_search_ai(&state).available(),
+        // Coarse "any voice at all" flag, kept for older clients.
+        "voice": voice.stt_enabled || voice.tts_enabled,
+        "voice_stt": voice.stt_enabled,
+        "voice_tts": voice.tts_enabled,
+        "search_ai": search.enabled,
         // MapLibre style URL for map artifacts; empty when the operator has
         // not configured tiles, in which case clients draw the SVG fallback.
         "map_style_url": state.config.map_style_url(),
@@ -1601,7 +1601,8 @@ async fn delete_attachment(
 /// distill the question to keywords, retrieve the best-matching messages via
 /// the FTS index, and synthesize a short answer citing them as [1], [2], ….
 /// Provider is instance-configured: Anthropic API key, OpenAI API key, or
-/// Codex ChatGPT OAuth. `/api/me` advertises availability as `search_ai`.
+/// Codex ChatGPT OAuth. `/api/me` advertises Ask AI via the Enabled toggle
+/// as `search_ai`; missing credentials fail when the user asks.
 async fn search_ask(
     State(state): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
@@ -3228,8 +3229,8 @@ fn instance_ai_payload(state: &AppState) -> Value {
             "stt_enabled": voice.stt_enabled,
             "tts_enabled": voice.tts_enabled,
             "available": voice.available(),
-            // Split so the admin can see which half is missing a credential
-            // — Groq STT and OpenAI TTS are configured independently.
+            // Credential readiness for the admin Features tab diagnostics —
+            // UI visibility is driven by stt_enabled / tts_enabled alone.
             "stt_available": voice.stt_available(),
             "tts_available": voice.tts_available(),
             "stt_provider": voice.stt_provider,
@@ -4913,12 +4914,14 @@ mod tests {
         assert!(!dumped.contains("sk-abcdefghijklmnop"));
         assert!(!dumped.contains("ant-secret-key-here"));
 
-        // /api/me reflects availability.
+        // /api/me reflects Enabled toggles (credentials checked at use time).
         let me_body = me(State(state.clone()), Query(HashMap::new()), admin_headers.clone())
             .await
             .unwrap()
             .0;
         assert_eq!(me_body["voice"], true);
+        assert_eq!(me_body["voice_stt"], true);
+        assert_eq!(me_body["voice_tts"], true);
         assert_eq!(me_body["search_ai"], true);
 
         // Kill-switch hides the feature even with a stored key.
@@ -4935,8 +4938,10 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(me_body["voice"], false);
+        assert_eq!(me_body["voice_stt"], false);
+        assert_eq!(me_body["voice_tts"], false);
 
-        // clear_key drops the config value (feature stays unavailable without env).
+        // clear_key drops the config value; Enabled still advertises the UI.
         update_instance_ai(
             State(state.clone()),
             Query(HashMap::new()),
@@ -4945,12 +4950,19 @@ mod tests {
         )
         .await
         .unwrap();
-        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), admin_headers)
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), admin_headers.clone())
             .await
             .unwrap()
             .0;
         assert_eq!(got["voice"]["api_key"]["configured"], false);
         assert_eq!(got["voice"]["available"], false);
+        let me_body = me(State(state.clone()), Query(HashMap::new()), admin_headers)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(me_body["voice"], true);
+        assert_eq!(me_body["voice_stt"], true);
+        assert_eq!(me_body["voice_tts"], true);
     }
 
     #[tokio::test]

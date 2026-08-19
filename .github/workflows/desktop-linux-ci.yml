@@ -5,6 +5,7 @@ name: Linux desktop CI
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "crates/agora-desktop/**"
       - "crates/agora-core/**"

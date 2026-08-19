@@ -28,21 +28,15 @@ function sourceLabel(source: string): string {
 }
 
 function SectionHead({
-  title, available, enabled, onEnabled,
+  title, enabled, onEnabled,
 }: {
   title: string;
-  available: boolean;
   enabled: boolean;
   onEnabled: (v: boolean) => void;
 }) {
   return (
     <div className="ai-section-head">
-      <h4>
-        {title}{" "}
-        <span className={`ai-pill ${available ? "on" : "off"}`}>
-          {available ? "available" : "off"}
-        </span>
-      </h4>
+      <h4>{title}</h4>
       <label className="ai-toggle">
         <input type="checkbox" checked={enabled} onChange={e => onEnabled(e.target.checked)} />
         Enabled
@@ -83,7 +77,6 @@ function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
     <div className="ai-section">
       <SectionHead
         title="Voice — speech to text"
-        available={data.stt_available}
         enabled={data.stt_enabled}
         onEnabled={stt_enabled => save({ stt_enabled })}
       />
@@ -140,7 +133,6 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
     <div className="ai-section">
       <SectionHead
         title="Voice — text to speech"
-        available={data.tts_available}
         enabled={data.tts_enabled}
         onEnabled={tts_enabled => save({ tts_enabled })}
       />
@@ -215,7 +207,6 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
     <div className="ai-section">
       <SectionHead
         title="Ask AI"
-        available={data.available}
         enabled={data.enabled}
         onEnabled={enabled => save({ enabled })}
       />

@@ -426,21 +426,20 @@ pub struct ResolvedVoiceSttModels {
 }
 
 impl ResolvedVoice {
-    /// Any voice capability at all. Deliberately an OR: with Groq for STT and
-    /// no OpenAI key, voice notes work while speak-aloud does not, and
-    /// reporting the whole feature as off would hide a working microphone —
-    /// which is the entire reason Groq is selectable. Clients gate each
-    /// control on [`Self::stt_available`] / [`Self::tts_available`].
+    /// Either half is enabled *and* credentialed. Settings may still report
+    /// this for diagnostics; clients advertise UI from the Enabled toggles
+    /// alone (`stt_enabled` / `tts_enabled` on `/api/me`) and fail at use
+    /// time when a key is missing.
     pub fn available(&self) -> bool {
         self.stt_available() || self.tts_available()
     }
 
-    /// Transcription (voice notes, the composer mic) is usable.
+    /// Transcription is enabled and the selected STT provider has a key.
     pub fn stt_available(&self) -> bool {
         self.stt_enabled && self.stt_ready()
     }
 
-    /// Synthesis (speak-aloud) is usable. Live voice needs both.
+    /// Synthesis is enabled and the TTS provider has a key.
     pub fn tts_available(&self) -> bool {
         self.tts_enabled && self.tts_ready()
     }
@@ -507,6 +506,8 @@ pub struct ResolvedSearchModels {
 }
 
 impl ResolvedSearchAi {
+    /// Enabled and the selected provider has credentials. `/api/me` uses
+    /// [`Self::enabled`] alone so Ask AI can appear before keys are saved.
     pub fn available(&self) -> bool {
         if !self.enabled {
             return false;
