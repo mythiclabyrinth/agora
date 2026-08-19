@@ -1,10 +1,13 @@
 //! AI answers over search ("ask Agora"): retrieve candidate messages with the
-//! FTS index, then have Claude synthesize a short, cited answer from those
-//! excerpts. Powers `POST /api/search/ask`.
+//! FTS index, then synthesize a short, cited answer. Powers `POST /api/search/ask`.
 //!
-//! Pure HTTP client: keys and models come from the caller
-//! ([`crate::config::Config::search_ai`]). The Anthropic URL stays hard-coded
-//! — an admin-settable endpoint would be an SSRF / key-exfiltration path.
+//! Providers (instance settings):
+//! - `anthropic` — Messages API + API key
+//! - `openai` — Chat Completions + API key
+//! - `codex` — ChatGPT OAuth via [`crate::codex_oauth`]
+//!
+//! Pure HTTP clients: keys/models come from the caller. Provider base URLs stay
+//! hard-coded — an admin-settable endpoint would be an SSRF / key-exfiltration path.
 
 use std::time::Duration;
 
@@ -12,6 +15,7 @@ use serde_json::{json, Value};
 
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const OPENAI_CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
 const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ANSWER_TOKENS: u32 = 1024;
 
@@ -20,12 +24,33 @@ pub const CONTEXT_MESSAGES: usize = 30;
 /// Cap on keywords extracted from the question for retrieval.
 const MAX_KEYWORDS: usize = 12;
 
-/// Curated Ask-AI models shown in the admin UI (free-text still allowed).
-pub const SUGGESTED_SEARCH_MODELS: &[&str] = &[
+pub const SYSTEM_PROMPT: &str = "You answer questions about a chat workspace from message excerpts found by \
+                  full-text search. Use only the excerpts as evidence. Cite the excerpts that \
+                  support each claim inline as [1], [2] (the client links them to the original \
+                  messages). Be direct and brief: answer first, in a few sentences; use Markdown \
+                  lists only when the answer is genuinely a list. If the excerpts don't answer \
+                  the question, say so plainly and mention the closest related thing they do \
+                  cover. Never invent message content.";
+
+/// Curated Ask-AI models for Anthropic.
+pub const SUGGESTED_ANTHROPIC_MODELS: &[&str] = &[
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-haiku-4-5-20251001",
 ];
+
+/// Curated Ask-AI models for OpenAI API-key auth.
+pub const SUGGESTED_OPENAI_MODELS: &[&str] = &[
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "gpt-4o",
+    "gpt-4o-mini",
+];
+
+/// Back-compat alias used by older call sites / fixtures.
+pub const SUGGESTED_SEARCH_MODELS: &[&str] = SUGGESTED_ANTHROPIC_MODELS;
+
+pub const DEFAULT_OPENAI_SEARCH_MODEL: &str = "gpt-4.1-mini";
 
 /// Question words that carry no retrieval signal. Small on purpose: a missed
 /// stopword just adds one low-weight OR term.
@@ -57,12 +82,8 @@ pub fn retrieval_keywords(question: &str) -> Option<String> {
     }
 }
 
-/// Ask Claude to answer `question` from numbered message excerpts (the rows
-/// `Store::search_messages` returns). Blocking — run via `spawn_blocking`.
-/// Returns the answer text, which cites excerpts as [1], [2], ….
-pub fn answer(key: &str, model: &str, question: &str, context: &[Value]) -> anyhow::Result<String> {
-    anyhow::ensure!(!context.is_empty(), "no matching messages to answer from");
-    let excerpts: String = context
+pub fn format_excerpts(context: &[Value]) -> String {
+    context
         .iter()
         .enumerate()
         .map(|(i, m)| {
@@ -80,15 +101,21 @@ pub fn answer(key: &str, model: &str, question: &str, context: &[Value]) -> anyh
             let text: String = m["text"].as_str().unwrap_or("").chars().take(1500).collect();
             format!("[{}] ({where_} — {author}, {ts})\n{text}\n", i + 1)
         })
-        .collect();
-    let system = "You answer questions about a chat workspace from message excerpts found by \
-                  full-text search. Use only the excerpts as evidence. Cite the excerpts that \
-                  support each claim inline as [1], [2] (the client links them to the original \
-                  messages). Be direct and brief: answer first, in a few sentences; use Markdown \
-                  lists only when the answer is genuinely a list. If the excerpts don't answer \
-                  the question, say so plainly and mention the closest related thing they do \
-                  cover. Never invent message content.";
-    let prompt = format!("Question: {question}\n\nMessage excerpts:\n\n{excerpts}");
+        .collect()
+}
+
+/// Anthropic Messages API.
+pub fn answer_anthropic(
+    key: &str,
+    model: &str,
+    question: &str,
+    context: &[Value],
+) -> anyhow::Result<String> {
+    anyhow::ensure!(!context.is_empty(), "no matching messages to answer from");
+    let prompt = format!(
+        "Question: {question}\n\nMessage excerpts:\n\n{}",
+        format_excerpts(context)
+    );
     let response = ureq::post(ANTHROPIC_URL)
         .timeout(TIMEOUT)
         .set("x-api-key", key)
@@ -96,10 +123,10 @@ pub fn answer(key: &str, model: &str, question: &str, context: &[Value]) -> anyh
         .send_json(json!({
             "model": model,
             "max_tokens": MAX_ANSWER_TOKENS,
-            "system": system,
+            "system": SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": prompt}],
         }))
-        .map_err(flatten_api_error)?;
+        .map_err(|e| flatten_api_error("Anthropic", e))?;
     let parsed: Value = response.into_json()?;
     let text = parsed["content"]
         .as_array()
@@ -115,8 +142,47 @@ pub fn answer(key: &str, model: &str, question: &str, context: &[Value]) -> anyh
     Ok(text.trim().to_string())
 }
 
-/// Cheap auth/connectivity probe for the admin "Test connection" button.
-pub fn test_connection(key: &str, model: &str) -> anyhow::Result<()> {
+/// OpenAI Chat Completions (API key).
+pub fn answer_openai(
+    key: &str,
+    model: &str,
+    question: &str,
+    context: &[Value],
+) -> anyhow::Result<String> {
+    anyhow::ensure!(!context.is_empty(), "no matching messages to answer from");
+    let prompt = format!(
+        "Question: {question}\n\nMessage excerpts:\n\n{}",
+        format_excerpts(context)
+    );
+    let response = ureq::post(OPENAI_CHAT_URL)
+        .timeout(TIMEOUT)
+        .set("Authorization", &format!("Bearer {key}"))
+        .send_json(json!({
+            "model": model,
+            "max_tokens": MAX_ANSWER_TOKENS,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        }))
+        .map_err(|e| flatten_api_error("OpenAI", e))?;
+    let parsed: Value = response.into_json()?;
+    let text = parsed["choices"]
+        .as_array()
+        .and_then(|c| c.first())
+        .and_then(|c| c["message"]["content"].as_str())
+        .unwrap_or("")
+        .to_string();
+    anyhow::ensure!(!text.trim().is_empty(), "empty answer from model");
+    Ok(text.trim().to_string())
+}
+
+/// Back-compat name used by older call sites (Anthropic).
+pub fn answer(key: &str, model: &str, question: &str, context: &[Value]) -> anyhow::Result<String> {
+    answer_anthropic(key, model, question, context)
+}
+
+pub fn test_connection_anthropic(key: &str, model: &str) -> anyhow::Result<()> {
     let response = ureq::post(ANTHROPIC_URL)
         .timeout(Duration::from_secs(30))
         .set("x-api-key", key)
@@ -126,14 +192,31 @@ pub fn test_connection(key: &str, model: &str) -> anyhow::Result<()> {
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "ping"}],
         }))
-        .map_err(flatten_api_error)?;
+        .map_err(|e| flatten_api_error("Anthropic", e))?;
     let _ = response.into_string()?;
     Ok(())
 }
 
-/// Pull the API's error message out of a non-2xx response so logs say
-/// "invalid x-api-key" instead of just "status 401".
-fn flatten_api_error(e: ureq::Error) -> anyhow::Error {
+pub fn test_connection_openai(key: &str, model: &str) -> anyhow::Result<()> {
+    let response = ureq::post(OPENAI_CHAT_URL)
+        .timeout(Duration::from_secs(30))
+        .set("Authorization", &format!("Bearer {key}"))
+        .send_json(json!({
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }))
+        .map_err(|e| flatten_api_error("OpenAI", e))?;
+    let _ = response.into_string()?;
+    Ok(())
+}
+
+/// Back-compat Anthropic probe.
+pub fn test_connection(key: &str, model: &str) -> anyhow::Result<()> {
+    test_connection_anthropic(key, model)
+}
+
+fn flatten_api_error(provider: &str, e: ureq::Error) -> anyhow::Error {
     match e {
         ureq::Error::Status(code, response) => {
             let body = response.into_string().unwrap_or_default();
@@ -142,7 +225,7 @@ fn flatten_api_error(e: ureq::Error) -> anyhow::Error {
                 .and_then(|v| v["error"]["message"].as_str().map(String::from))
                 .unwrap_or(body);
             anyhow::anyhow!(
-                "Anthropic API error {code}: {}",
+                "{provider} API error {code}: {}",
                 detail.chars().take(300).collect::<String>()
             )
         }

@@ -19,7 +19,9 @@ const emptySettings = {
     enabled: true,
     available: false,
     provider: "anthropic",
+    providers: ["anthropic", "openai", "codex"],
     api_key: { configured: false, hint: null, source: "none" },
+    oauth: { configured: false, source: "none", hint: null, account_id: null },
     model: { value: "claude-sonnet-5", source: "default" },
     suggested_models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
   },
@@ -71,7 +73,7 @@ export const Empty: Story = {
     // assertion on loaded content has to be a findBy*.
     await expect(canvas.findByText("AI & voice")).resolves.toBeVisible();
     await expect(canvas.findByText("openai")).resolves.toBeVisible();
-    await expect(canvas.findByText("anthropic")).resolves.toBeVisible();
+    await expect(canvas.findByDisplayValue(/anthropic \(API key\)/)).resolves.toBeVisible();
     await expect(
       (await canvas.findAllByRole("button", { name: "Test connection" }))[0],
     ).toBeDisabled();

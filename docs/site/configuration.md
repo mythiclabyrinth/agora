@@ -39,13 +39,25 @@ overwrite a UI-set key):
 
 | Env (fallback) | Feature |
 | --- | --- |
-| `OPENAI_API_KEY` | Voice notes, speak-aloud, live voice (OpenAI STT/TTS) |
-| `ANTHROPIC_API_KEY` | Search screen Ask AI answers |
-| `AGORA_AI_MODEL` | Ask AI model when none is saved in settings (default `claude-sonnet-5`) |
+| `OPENAI_API_KEY` | Voice (OpenAI STT/TTS); also Ask AI when provider is `openai` |
+| `ANTHROPIC_API_KEY` | Ask AI when provider is `anthropic` |
+| `AGORA_AI_MODEL` | Ask AI model override when none is saved in settings |
+
+Ask AI **providers** (set in the UI):
+
+| Provider | Auth |
+| --- | --- |
+| `anthropic` | Anthropic API key (config or `ANTHROPIC_API_KEY`) |
+| `openai` | OpenAI API key (config or `OPENAI_API_KEY`) |
+| `codex` | ChatGPT OAuth — import `~/.codex/auth.json` after `codex login`, paste that JSON, or paste a refresh token. Tokens refresh against the fixed OpenAI auth host; Ask AI calls the fixed Codex responses URL. |
+
+Default models when unset: Anthropic `claude-sonnet-5`, OpenAI `gpt-4.1-mini`,
+Codex `gpt-5.1`.
 
 `enabled: false` in settings turns a feature off even when an env key is still
 present. Clearing a saved key removes only the config value and falls back to
-env. Provider base URLs are not configurable (SSRF risk).
+env. Provider base URLs are not configurable (SSRF risk). Codex OAuth tokens
+are never folded from the environment.
 
 ## Sign in with Google and Apple
 

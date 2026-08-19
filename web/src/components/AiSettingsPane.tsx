@@ -164,10 +164,16 @@ function SearchForm({ data }: { data: InstanceAiSettings["search"] }) {
   const test = useTestInstanceAi();
   const [key, setKey] = useState("");
   const [model, setModel] = useState(override(data.model));
+  const [provider, setProvider] = useState(data.provider);
+  const [authPaste, setAuthPaste] = useState("");
+  const [refreshPaste, setRefreshPaste] = useState("");
 
   useEffect(() => {
     setModel(override(data.model));
+    setProvider(data.provider);
     setKey("");
+    setAuthPaste("");
+    setRefreshPaste("");
   }, [data]);
 
   const err = (msg: string) => (e: unknown) =>
@@ -180,6 +186,14 @@ function SearchForm({ data }: { data: InstanceAiSettings["search"] }) {
     });
   };
 
+  const isCodex = provider === "codex";
+  const isOpenAi = provider === "openai";
+  const keyPlaceholder = isOpenAi ? "sk-…" : "sk-ant-…";
+  const canTest = isCodex ? data.oauth.configured : data.api_key.configured;
+  const providers = data.providers?.length
+    ? data.providers
+    : ["anthropic", "openai", "codex"];
+
   return (
     <div className="ai-section">
       <SectionHead
@@ -189,36 +203,119 @@ function SearchForm({ data }: { data: InstanceAiSettings["search"] }) {
         onEnabled={enabled => save({ enabled })}
       />
       <p className="conn-hint">
-        Provider <b>{data.provider}</b> — synthesizes cited answers over FTS hits.
-        Plain search needs no key. Endpoints are fixed (Anthropic).
+        Synthesizes cited answers over FTS hits. Plain search needs no key.
+        Endpoints are fixed per provider (no custom base URL).
       </p>
       <div className="ai-row">
-        <label>API key</label>
-        <div className="ai-key">
-          <span className="dim">
-            {data.api_key.configured
-              ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
-              : sourceLabel(data.api_key.source)}
-          </span>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={data.api_key.configured ? "replace key…" : "sk-ant-…"}
-            value={key}
-            onChange={e => setKey(e.target.value)}
-          />
-          <button className="btn sm primary" disabled={!key.trim() || update.isPending}
-            onClick={() => { save({ api_key: key.trim() }); setKey(""); }}>
-            Save key
-          </button>
-          {data.api_key.source === "config" && (
-            <button className="btn sm danger" disabled={update.isPending}
-              onClick={() => save({ clear_key: true })}>
-              Clear saved key
-            </button>
-          )}
-        </div>
+        <label>Provider</label>
+        <select
+          value={provider}
+          onChange={e => {
+            const next = e.target.value;
+            setProvider(next);
+            save({ provider: next });
+          }}
+          disabled={update.isPending}
+        >
+          {providers.map(p => (
+            <option key={p} value={p}>
+              {p === "codex" ? "codex (ChatGPT OAuth)" : p === "openai" ? "openai (API key)" : "anthropic (API key)"}
+            </option>
+          ))}
+        </select>
       </div>
+      {isCodex ? (
+        <>
+          <div className="ai-row">
+            <label>ChatGPT OAuth</label>
+            <div className="ai-key">
+              <span className="dim">
+                {data.oauth.configured
+                  ? `${data.oauth.hint || "linked"} · ${sourceLabel(data.oauth.source)}${
+                      data.oauth.account_id ? ` · ${data.oauth.account_id}` : ""
+                    }`
+                  : "not set — import from `codex login`"}
+              </span>
+              <button className="btn sm" disabled={update.isPending}
+                title="Reads ~/.codex/auth.json on this server host"
+                onClick={() => save({ import_local_codex_auth: true, provider: "codex" })}>
+                Import from ~/.codex
+              </button>
+              {data.oauth.configured && (
+                <button className="btn sm danger" disabled={update.isPending}
+                  onClick={() => save({ clear_oauth: true })}>
+                  Clear OAuth
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="ai-row">
+            <label>Paste auth.json</label>
+            <textarea
+              rows={3}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder='{"tokens":{"access_token":"…","refresh_token":"…","account_id":"…"}}'
+              value={authPaste}
+              onChange={e => setAuthPaste(e.target.value)}
+            />
+            <button className="btn sm primary" disabled={!authPaste.trim() || update.isPending}
+              onClick={() => {
+                save({ codex_auth_json: authPaste.trim(), provider: "codex" });
+                setAuthPaste("");
+              }}>
+              Import paste
+            </button>
+          </div>
+          <div className="ai-row">
+            <label>Or refresh token</label>
+            <div className="ai-key">
+              <input
+                type="password"
+                autoComplete="off"
+                placeholder="rt_…"
+                value={refreshPaste}
+                onChange={e => setRefreshPaste(e.target.value)}
+              />
+              <button className="btn sm primary" disabled={!refreshPaste.trim() || update.isPending}
+                onClick={() => {
+                  save({ codex_refresh_token: refreshPaste.trim(), provider: "codex" });
+                  setRefreshPaste("");
+                }}>
+                Save token
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="ai-row">
+          <label>API key</label>
+          <div className="ai-key">
+            <span className="dim">
+              {data.api_key.configured
+                ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
+                : sourceLabel(data.api_key.source)}
+            </span>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={data.api_key.configured ? "replace key…" : keyPlaceholder}
+              value={key}
+              onChange={e => setKey(e.target.value)}
+            />
+            <button className="btn sm primary" disabled={!key.trim() || update.isPending}
+              onClick={() => { save({ api_key: key.trim() }); setKey(""); }}>
+              Save key
+            </button>
+            {data.api_key.source === "config" && (
+              <button className="btn sm danger" disabled={update.isPending}
+                onClick={() => save({ clear_key: true })}>
+                Clear saved key
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <div className="ai-row">
         <label>Model</label>
         <input list="ai-search-models" value={model} placeholder={inherited(data.model)}
@@ -233,9 +330,12 @@ function SearchForm({ data }: { data: InstanceAiSettings["search"] }) {
           onClick={() => save({ model: model.trim() })}>
           Save model
         </button>
-        <button className="btn sm" disabled={test.isPending || !data.api_key.configured}
+        <button className="btn sm" disabled={test.isPending || !canTest}
           onClick={() => test.mutate("search", {
-            onSuccess: () => toast("Anthropic key works", { variant: "ok" }),
+            onSuccess: () => toast(
+              isCodex ? "Codex OAuth works" : isOpenAi ? "OpenAI key works" : "Anthropic key works",
+              { variant: "ok" },
+            ),
             onError: err("Ask AI test failed"),
           })}>
           {test.isPending ? "Testing…" : "Test connection"}

@@ -180,12 +180,38 @@ pub const DEFAULT_TTS_VOICE: &str = "alloy";
 /// Ask-AI defaults (Anthropic Messages API).
 pub const DEFAULT_SEARCH_PROVIDER: &str = "anthropic";
 pub const DEFAULT_SEARCH_MODEL: &str = "claude-sonnet-5";
+pub const SEARCH_PROVIDER_ANTHROPIC: &str = "anthropic";
+pub const SEARCH_PROVIDER_OPENAI: &str = "openai";
+pub const SEARCH_PROVIDER_CODEX: &str = "codex";
 
 fn default_voice_provider() -> String {
     DEFAULT_VOICE_PROVIDER.to_string()
 }
 fn default_search_provider() -> String {
     DEFAULT_SEARCH_PROVIDER.to_string()
+}
+
+pub fn is_supported_search_provider(p: &str) -> bool {
+    matches!(
+        p,
+        SEARCH_PROVIDER_ANTHROPIC | SEARCH_PROVIDER_OPENAI | SEARCH_PROVIDER_CODEX
+    )
+}
+
+pub fn default_model_for_search_provider(provider: &str) -> &'static str {
+    match provider {
+        SEARCH_PROVIDER_OPENAI => crate::ai::DEFAULT_OPENAI_SEARCH_MODEL,
+        SEARCH_PROVIDER_CODEX => crate::codex_oauth::DEFAULT_CODEX_MODEL,
+        _ => DEFAULT_SEARCH_MODEL,
+    }
+}
+
+pub fn suggested_models_for_search_provider(provider: &str) -> &'static [&'static str] {
+    match provider {
+        SEARCH_PROVIDER_OPENAI => crate::ai::SUGGESTED_OPENAI_MODELS,
+        SEARCH_PROVIDER_CODEX => crate::codex_oauth::SUGGESTED_CODEX_MODELS,
+        _ => crate::ai::SUGGESTED_ANTHROPIC_MODELS,
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -227,13 +253,24 @@ impl Default for AiVoiceSettings {
 pub struct AiSearchSettings {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// `anthropic` (API key), `openai` (API key), or `codex` (ChatGPT OAuth).
     #[serde(default = "default_search_provider")]
     pub provider: String,
     #[serde(default)]
     pub api_key: String,
-    /// Empty → resolve via `AGORA_AI_MODEL` env, else [`DEFAULT_SEARCH_MODEL`].
+    /// Empty → resolve via `AGORA_AI_MODEL` env, else provider default.
     #[serde(default)]
     pub model: String,
+    /// Codex / ChatGPT OAuth refresh token (provider=`codex`). Never folded
+    /// from env at boot.
+    #[serde(default)]
+    pub codex_refresh_token: String,
+    #[serde(default)]
+    pub codex_access_token: String,
+    #[serde(default)]
+    pub codex_account_id: String,
+    #[serde(default)]
+    pub codex_last_refresh: f64,
 }
 
 impl Default for AiSearchSettings {
@@ -243,6 +280,10 @@ impl Default for AiSearchSettings {
             provider: default_search_provider(),
             api_key: String::new(),
             model: String::new(),
+            codex_refresh_token: String::new(),
+            codex_access_token: String::new(),
+            codex_account_id: String::new(),
+            codex_last_refresh: 0.0,
         }
     }
 }
@@ -282,15 +323,27 @@ impl ResolvedVoice {
 pub struct ResolvedSearchAi {
     pub enabled: bool,
     pub provider: String,
+    /// API key for anthropic/openai providers.
     pub api_key: Option<String>,
     pub api_key_source: AiFieldSource,
+    /// Codex OAuth: refresh token present (config).
+    pub oauth_configured: bool,
+    pub oauth_source: AiFieldSource,
+    pub access_token: Option<String>,
+    pub account_id: String,
     pub model: String,
     pub model_source: AiFieldSource,
 }
 
 impl ResolvedSearchAi {
     pub fn available(&self) -> bool {
-        self.enabled && self.api_key.is_some()
+        if !self.enabled {
+            return false;
+        }
+        match self.provider.as_str() {
+            SEARCH_PROVIDER_CODEX => self.oauth_configured || self.access_token.is_some(),
+            _ => self.api_key.is_some(),
+        }
     }
 }
 
@@ -585,35 +638,74 @@ impl Config {
         }
     }
 
-    /// Resolve Ask-AI settings. `anthropic_api_key_env` /
-    /// `agora_ai_model_env` are typically the matching process env vars —
-    /// never folded into config.json at boot (same rule as voice).
+    /// Resolve Ask-AI settings. Env values are never folded into config.json
+    /// at boot (same rule as voice).
+    ///
+    /// - `anthropic_api_key_env` — used when provider is anthropic
+    /// - `openai_api_key_env` — used when provider is openai
+    /// - `agora_ai_model_env` — model override for any provider
     pub fn search_ai(
         &self,
         anthropic_api_key_env: Option<&str>,
+        openai_api_key_env: Option<&str>,
         agora_ai_model_env: Option<&str>,
     ) -> ResolvedSearchAi {
         let data = self.data.lock().unwrap();
         let s = &data.ai.search;
-        let (api_key, api_key_source) = resolve_secret(&s.api_key, anthropic_api_key_env);
-        let (model, model_source) =
-            resolve_setting(&s.model, agora_ai_model_env, DEFAULT_SEARCH_MODEL);
         let provider = {
             let p = s.provider.trim();
-            if p.is_empty() {
+            if p.is_empty() || !is_supported_search_provider(p) {
                 DEFAULT_SEARCH_PROVIDER.to_string()
             } else {
                 p.to_string()
             }
+        };
+        let key_env = match provider.as_str() {
+            SEARCH_PROVIDER_OPENAI => openai_api_key_env,
+            SEARCH_PROVIDER_ANTHROPIC => anthropic_api_key_env,
+            _ => None,
+        };
+        let (api_key, api_key_source) = resolve_secret(&s.api_key, key_env);
+        let default_model = default_model_for_search_provider(&provider);
+        let (model, model_source) = resolve_setting(&s.model, agora_ai_model_env, default_model);
+        let refresh = s.codex_refresh_token.trim();
+        let access = s.codex_access_token.trim();
+        let oauth_configured = !refresh.is_empty();
+        let oauth_source = if oauth_configured {
+            AiFieldSource::Config
+        } else {
+            AiFieldSource::None
         };
         ResolvedSearchAi {
             enabled: s.enabled,
             provider,
             api_key,
             api_key_source,
+            oauth_configured,
+            oauth_source,
+            access_token: (!access.is_empty()).then(|| access.to_string()),
+            account_id: s.codex_account_id.trim().to_string(),
             model,
             model_source,
         }
+    }
+
+    /// Persist refreshed Codex OAuth tokens after a successful refresh.
+    pub fn store_codex_tokens(&self, tokens: &crate::codex_oauth::CodexTokens) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        self.update(|c| {
+            c.ai.search.codex_access_token = tokens.access_token.clone();
+            if !tokens.refresh_token.is_empty() {
+                c.ai.search.codex_refresh_token = tokens.refresh_token.clone();
+            }
+            if !tokens.account_id.is_empty() {
+                c.ai.search.codex_account_id = tokens.account_id.clone();
+            }
+            c.ai.search.codex_last_refresh = now;
+        });
     }
 
     /// Atomic write: temp file + rename, mode 0600 on Unix. A torn
@@ -852,14 +944,40 @@ mod tests {
     fn search_ai_resolver_uses_agora_ai_model_env() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::load(dir.path()).unwrap();
-        let s = cfg.search_ai(Some("ant-key"), Some("claude-opus-5"));
+        let s = cfg.search_ai(Some("ant-key"), None, Some("claude-opus-5"));
         assert!(s.available());
         assert_eq!(s.model, "claude-opus-5");
         assert_eq!(s.model_source, AiFieldSource::Env);
         cfg.update(|c| c.ai.search.model = "claude-haiku-4-5-20251001".into());
-        let s = cfg.search_ai(Some("ant-key"), Some("claude-opus-5"));
+        let s = cfg.search_ai(Some("ant-key"), None, Some("claude-opus-5"));
         assert_eq!(s.model, "claude-haiku-4-5-20251001");
         assert_eq!(s.model_source, AiFieldSource::Config);
+    }
+
+    #[test]
+    fn search_ai_openai_provider_uses_openai_env_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| c.ai.search.provider = SEARCH_PROVIDER_OPENAI.into());
+        let s = cfg.search_ai(Some("ant"), Some("sk-openai"), None);
+        assert!(s.available());
+        assert_eq!(s.api_key.as_deref(), Some("sk-openai"));
+        assert_eq!(s.model, crate::ai::DEFAULT_OPENAI_SEARCH_MODEL);
+    }
+
+    #[test]
+    fn search_ai_codex_available_with_refresh_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| {
+            c.ai.search.provider = SEARCH_PROVIDER_CODEX.into();
+            c.ai.search.codex_refresh_token = "rt".into();
+            c.ai.search.codex_account_id = "acct".into();
+        });
+        let s = cfg.search_ai(None, None, None);
+        assert!(s.available());
+        assert!(s.oauth_configured);
+        assert_eq!(s.account_id, "acct");
     }
 
     #[test]

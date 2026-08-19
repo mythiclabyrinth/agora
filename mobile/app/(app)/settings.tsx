@@ -228,7 +228,7 @@ export default function SettingsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.agentHubTitle}>AI & voice</Text>
                 <Text style={styles.meta}>
-                  OpenAI voice keys/models and Anthropic Ask AI for this instance.
+                  OpenAI voice and Ask AI (Anthropic / OpenAI key / Codex OAuth) for this instance.
                 </Text>
               </View>
               <Text style={styles.agentHubArrow}>›</Text>

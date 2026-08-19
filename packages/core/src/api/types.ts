@@ -641,7 +641,15 @@ export interface InstanceAiSearch {
   enabled: boolean;
   available: boolean;
   provider: string;
+  /** Supported Ask-AI providers advertised by the server. */
+  providers: string[];
   api_key: AiSecretField;
+  oauth: {
+    configured: boolean;
+    source: AiFieldSource;
+    hint: string | null;
+    account_id: string | null;
+  };
   model: AiValueField;
   suggested_models: string[];
 }
@@ -668,6 +676,14 @@ export type InstanceAiUpdate = {
     api_key?: string;
     clear_key?: boolean;
     model?: string;
+    /** Paste of ~/.codex/auth.json (stringified). */
+    codex_auth_json?: string;
+    /** Paste a ChatGPT refresh token directly. */
+    codex_refresh_token?: string;
+    codex_account_id?: string;
+    /** Read ~/.codex/auth.json on the server host (desktop / same-machine). */
+    import_local_codex_auth?: boolean;
+    clear_oauth?: boolean;
   };
 };
 

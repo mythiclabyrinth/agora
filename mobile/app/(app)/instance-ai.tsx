@@ -162,10 +162,16 @@ function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
   const test = useTestInstanceAi();
   const [key, setKey] = useState("");
   const [model, setModel] = useState(override(data.model));
+  const [provider, setProvider] = useState(data.provider);
+  const [authPaste, setAuthPaste] = useState("");
+  const [refreshPaste, setRefreshPaste] = useState("");
 
   useEffect(() => {
     setModel(override(data.model));
+    setProvider(data.provider);
     setKey("");
+    setAuthPaste("");
+    setRefreshPaste("");
   }, [data]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["search"]>) => {
@@ -175,13 +181,20 @@ function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
     });
   };
 
+  const isCodex = provider === "codex";
+  const isOpenAi = provider === "openai";
+  const canTest = isCodex ? data.oauth.configured : data.api_key.configured;
+  const providers = data.providers?.length
+    ? data.providers
+    : ["anthropic", "openai", "codex"];
+
   return (
     <View style={styles.card}>
       <View style={styles.cardHead}>
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Ask AI</Text>
           <Text style={styles.meta}>
-            Provider {data.provider} · {data.available ? "available" : "off"}
+            {data.available ? "available" : "off"}
           </Text>
         </View>
         <Switch
@@ -190,42 +203,134 @@ function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
         />
       </View>
       <Text style={styles.hint}>
-        Cited answers over search hits. Plain search needs no key. Endpoints are fixed (Anthropic).
+        Cited answers over search hits. Endpoints are fixed per provider.
       </Text>
-      <Text style={styles.label}>API key</Text>
-      <Text style={styles.meta}>
-        {data.api_key.configured
-          ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
-          : sourceLabel(data.api_key.source)}
-      </Text>
-      <TextInput
-        style={styles.input}
-        value={key}
-        onChangeText={setKey}
-        placeholder={data.api_key.configured ? "replace key…" : "sk-ant-…"}
-        placeholderTextColor={colors.faint}
-        autoCapitalize="none"
-        autoCorrect={false}
-        secureTextEntry
-      />
+      <Text style={styles.label}>Provider</Text>
       <View style={styles.rowBtns}>
-        <Pressable
-          style={[styles.btn, styles.btnPrimary, (!key.trim() || update.isPending) && styles.btnDisabled]}
-          disabled={!key.trim() || update.isPending}
-          onPress={() => { save({ api_key: key.trim() }); setKey(""); }}
-        >
-          <Text style={styles.btnPrimaryText}>Save key</Text>
-        </Pressable>
-        {data.api_key.source === "config" ? (
+        {providers.map((p) => (
           <Pressable
-            style={[styles.btn, styles.btnDanger]}
+            key={p}
+            style={[styles.btn, provider === p && styles.btnPrimary]}
             disabled={update.isPending}
-            onPress={() => save({ clear_key: true })}
+            onPress={() => {
+              setProvider(p);
+              save({ provider: p });
+            }}
           >
-            <Text style={styles.btnDangerText}>Clear saved</Text>
+            <Text style={provider === p ? styles.btnPrimaryText : styles.btnText}>
+              {p === "codex" ? "codex OAuth" : p}
+            </Text>
           </Pressable>
-        ) : null}
+        ))}
       </View>
+      {isCodex ? (
+        <>
+          <Text style={styles.label}>ChatGPT OAuth</Text>
+          <Text style={styles.meta}>
+            {data.oauth.configured
+              ? `${data.oauth.hint || "linked"} · ${sourceLabel(data.oauth.source)}${
+                  data.oauth.account_id ? ` · ${data.oauth.account_id}` : ""
+                }`
+              : "not set — paste auth.json from `codex login`"}
+          </Text>
+          <View style={styles.rowBtns}>
+            <Pressable
+              style={[styles.btn]}
+              disabled={update.isPending}
+              onPress={() => save({ import_local_codex_auth: true, provider: "codex" })}
+            >
+              <Text style={styles.btnText}>Import ~/.codex</Text>
+            </Pressable>
+            {data.oauth.configured ? (
+              <Pressable
+                style={[styles.btn, styles.btnDanger]}
+                disabled={update.isPending}
+                onPress={() => save({ clear_oauth: true })}
+              >
+                <Text style={styles.btnDangerText}>Clear OAuth</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          <Text style={styles.label}>Paste auth.json</Text>
+          <TextInput
+            style={[styles.input, styles.multiline]}
+            value={authPaste}
+            onChangeText={setAuthPaste}
+            placeholder='{"tokens":{…}}'
+            placeholderTextColor={colors.faint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            multiline
+          />
+          <Pressable
+            style={[styles.btn, styles.btnPrimary, (!authPaste.trim() || update.isPending) && styles.btnDisabled]}
+            disabled={!authPaste.trim() || update.isPending}
+            onPress={() => {
+              save({ codex_auth_json: authPaste.trim(), provider: "codex" });
+              setAuthPaste("");
+            }}
+          >
+            <Text style={styles.btnPrimaryText}>Import paste</Text>
+          </Pressable>
+          <Text style={styles.label}>Or refresh token</Text>
+          <TextInput
+            style={styles.input}
+            value={refreshPaste}
+            onChangeText={setRefreshPaste}
+            placeholder="rt_…"
+            placeholderTextColor={colors.faint}
+            autoCapitalize="none"
+            secureTextEntry
+          />
+          <Pressable
+            style={[styles.btn, styles.btnPrimary, (!refreshPaste.trim() || update.isPending) && styles.btnDisabled]}
+            disabled={!refreshPaste.trim() || update.isPending}
+            onPress={() => {
+              save({ codex_refresh_token: refreshPaste.trim(), provider: "codex" });
+              setRefreshPaste("");
+            }}
+          >
+            <Text style={styles.btnPrimaryText}>Save token</Text>
+          </Pressable>
+        </>
+      ) : (
+        <>
+          <Text style={styles.label}>API key</Text>
+          <Text style={styles.meta}>
+            {data.api_key.configured
+              ? `${data.api_key.hint} · ${sourceLabel(data.api_key.source)}`
+              : sourceLabel(data.api_key.source)}
+          </Text>
+          <TextInput
+            style={styles.input}
+            value={key}
+            onChangeText={setKey}
+            placeholder={data.api_key.configured ? "replace key…" : isOpenAi ? "sk-…" : "sk-ant-…"}
+            placeholderTextColor={colors.faint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+          />
+          <View style={styles.rowBtns}>
+            <Pressable
+              style={[styles.btn, styles.btnPrimary, (!key.trim() || update.isPending) && styles.btnDisabled]}
+              disabled={!key.trim() || update.isPending}
+              onPress={() => { save({ api_key: key.trim() }); setKey(""); }}
+            >
+              <Text style={styles.btnPrimaryText}>Save key</Text>
+            </Pressable>
+            {data.api_key.source === "config" ? (
+              <Pressable
+                style={[styles.btn, styles.btnDanger]}
+                disabled={update.isPending}
+                onPress={() => save({ clear_key: true })}
+              >
+                <Text style={styles.btnDangerText}>Clear saved</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </>
+      )}
       <Text style={styles.label}>Model</Text>
       <TextInput style={styles.input} value={model} onChangeText={setModel} autoCapitalize="none"
         placeholder={inherited(data.model)} placeholderTextColor={colors.faint} />
@@ -244,10 +349,12 @@ function SearchBlock({ data }: { data: InstanceAiSettings["search"] }) {
           <Text style={styles.btnPrimaryText}>Save model</Text>
         </Pressable>
         <Pressable
-          style={[styles.btn, (!data.api_key.configured || test.isPending) && styles.btnDisabled]}
-          disabled={!data.api_key.configured || test.isPending}
+          style={[styles.btn, (!canTest || test.isPending) && styles.btnDisabled]}
+          disabled={!canTest || test.isPending}
           onPress={() => test.mutate("search", {
-            onSuccess: () => toast("Anthropic key works"),
+            onSuccess: () => toast(
+              isCodex ? "Codex OAuth works" : isOpenAi ? "OpenAI key works" : "Anthropic key works",
+            ),
             onError: (e) => toastErr("Ask AI test failed", e as Error),
           })}
         >
@@ -325,6 +432,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 14,
   },
+  multiline: { minHeight: 72, textAlignVertical: "top" },
   rowBtns: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
   btn: {
     borderWidth: 1,

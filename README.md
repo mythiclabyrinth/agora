@@ -171,8 +171,9 @@ that carried it, even when its text says nothing). Three ways in:
 
 ### AI answers (ask your history)
 
-With Ask AI configured (instance **AI & voice** settings, or an
-`ANTHROPIC_API_KEY` env fallback), search grows an **Ask AI** mode:
+With Ask AI configured (instance **AI & voice** settings — Anthropic API key,
+OpenAI API key, or Codex ChatGPT OAuth — or the matching env fallbacks),
+search grows an **Ask AI** mode:
 `POST /api/search/ask {"q": "what did we decide about the deploy?"}`
 retrieves the best-matching messages via the same index and has Claude write
 a short answer citing them as `[1]`, `[2]`, … (`sources` in the response, in

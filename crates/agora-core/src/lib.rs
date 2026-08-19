@@ -9,6 +9,7 @@ pub mod ai;
 pub mod artifacts;
 mod attachments;
 pub mod auth;
+pub mod codex_oauth;
 pub mod config;
 pub mod connections;
 pub mod hub;

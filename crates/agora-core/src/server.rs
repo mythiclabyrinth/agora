@@ -1541,10 +1541,9 @@ async fn delete_attachment(
 
 /// POST /api/search/ask {"q", "channel_id"?, "group_id"?} — AI answer mode:
 /// distill the question to keywords, retrieve the best-matching messages via
-/// the FTS index, and have Claude write a short answer citing them as [1],
-/// [2], …. `sources` come back in citation order ([1] = sources[0]). Needs
-/// Ask-AI configured (instance settings or `ANTHROPIC_API_KEY`); `/api/me`
-/// advertises it as `search_ai` so clients can hide the control.
+/// the FTS index, and synthesize a short answer citing them as [1], [2], ….
+/// Provider is instance-configured: Anthropic API key, OpenAI API key, or
+/// Codex ChatGPT OAuth. `/api/me` advertises availability as `search_ai`.
 async fn search_ask(
     State(state): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
@@ -1554,7 +1553,6 @@ async fn search_ask(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     let scope_user = (!user.instance_admin).then(|| user.username.clone());
-    // Externally billed like the voice endpoints, so share their backstop.
     if !state.upload_limiter.allow(&rate_key(&peer)) {
         return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many AI requests — slow down"));
     }
@@ -1565,19 +1563,18 @@ async fn search_ask(
             "AI answers are disabled for this instance",
         ));
     }
-    let Some(key) = search.api_key.clone() else {
+    if !search.available() {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "AI answers are not configured (set an Anthropic key in instance AI settings)",
+            "AI answers are not configured (set a provider key or Codex OAuth in instance AI settings)",
         ));
-    };
+    }
     let question = payload["q"].as_str().unwrap_or("").trim().to_string();
     if question.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "Question required"));
     }
     let channel_id = payload["channel_id"].as_str().filter(|s| !s.is_empty());
     let group_id = payload["group_id"].as_str().filter(|s| !s.is_empty());
-    // Recall-oriented retrieval: any-term match, bm25 ranks denser hits up.
     let retrieval = crate::ai::retrieval_keywords(&question).unwrap_or_else(|| question.clone());
     let mut sources = state.hub.store.search_messages(
         &retrieval,
@@ -1607,14 +1604,39 @@ async fn search_ask(
         })));
     }
     let model = search.model.clone();
+    let provider = search.provider.clone();
     let answer = {
-        let (question, sources, model) = (question.clone(), sources.clone(), model.clone());
-        tokio::task::spawn_blocking(move || crate::ai::answer(&key, &model, &question, &sources))
-            .await
-            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "answer task failed"))?
-            .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?
+        let state = state.clone();
+        let search = search.clone();
+        let (question, sources, model, provider) =
+            (question.clone(), sources.clone(), model.clone(), provider.clone());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            match provider.as_str() {
+                crate::config::SEARCH_PROVIDER_OPENAI => {
+                    let key = search
+                        .api_key
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("OpenAI key missing"))?;
+                    crate::ai::answer_openai(&key, &model, &question, &sources)
+                }
+                crate::config::SEARCH_PROVIDER_CODEX => {
+                    let (access, account) = refresh_codex_if_needed(&state, &search)?;
+                    crate::codex_oauth::answer(&access, &account, &model, &question, &sources)
+                }
+                _ => {
+                    let key = search
+                        .api_key
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("Anthropic key missing"))?;
+                    crate::ai::answer_anthropic(&key, &model, &question, &sources)
+                }
+            }
+        })
+        .await
+        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "answer task failed"))?
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?
     };
-    Ok(Json(json!({"answer": answer, "model": model, "sources": sources})))
+    Ok(Json(json!({"answer": answer, "model": model, "provider": provider, "sources": sources})))
 }
 
 async fn post_message(
@@ -3022,11 +3044,42 @@ fn resolved_voice(state: &AppState) -> crate::config::ResolvedVoice {
 }
 
 fn resolved_search_ai(state: &AppState) -> crate::config::ResolvedSearchAi {
-    let env_key = env_opt("ANTHROPIC_API_KEY");
+    let anthropic = env_opt("ANTHROPIC_API_KEY");
+    let openai = env_opt("OPENAI_API_KEY");
     let env_model = env_opt("AGORA_AI_MODEL");
-    state
+    state.config.search_ai(
+        anthropic.as_deref(),
+        openai.as_deref(),
+        env_model.as_deref(),
+    )
+}
+
+/// Refresh Codex OAuth if we only have a refresh token. Blocking — call from
+/// `spawn_blocking`. Persists rotated tokens via `store_codex_tokens`.
+fn refresh_codex_if_needed(
+    state: &AppState,
+    search: &crate::config::ResolvedSearchAi,
+) -> anyhow::Result<(String, String)> {
+    if let Some(access) = &search.access_token {
+        return Ok((access.clone(), search.account_id.clone()));
+    }
+    let refresh = state
         .config
-        .search_ai(env_key.as_deref(), env_model.as_deref())
+        .snapshot()
+        .ai
+        .search
+        .codex_refresh_token
+        .trim()
+        .to_string();
+    anyhow::ensure!(!refresh.is_empty(), "Codex OAuth is not configured");
+    let mut tokens = crate::codex_oauth::refresh_access_token(&refresh)?;
+    if tokens.account_id.is_empty() {
+        tokens.account_id = search.account_id.clone();
+    }
+    let access = tokens.access_token.clone();
+    let account = tokens.account_id.clone();
+    state.config.store_codex_tokens(&tokens);
+    Ok((access, account))
 }
 
 fn ai_secret_field(key: Option<&str>, source: crate::config::AiFieldSource) -> Value {
@@ -3051,6 +3104,14 @@ fn ai_value_field(value: &str, source: crate::config::AiFieldSource) -> Value {
 fn instance_ai_payload(state: &AppState) -> Value {
     let voice = resolved_voice(state);
     let search = resolved_search_ai(state);
+    let suggested = crate::config::suggested_models_for_search_provider(&search.provider);
+    let oauth_hint = if search.oauth_configured {
+        let snap = state.config.snapshot();
+        let rt = snap.ai.search.codex_refresh_token.trim();
+        Some(crate::config::key_hint(rt))
+    } else {
+        None
+    };
     json!({
         "voice": {
             "enabled": voice.enabled,
@@ -3066,9 +3127,24 @@ fn instance_ai_payload(state: &AppState) -> Value {
             "enabled": search.enabled,
             "available": search.available(),
             "provider": search.provider,
+            "providers": [
+                crate::config::SEARCH_PROVIDER_ANTHROPIC,
+                crate::config::SEARCH_PROVIDER_OPENAI,
+                crate::config::SEARCH_PROVIDER_CODEX,
+            ],
             "api_key": ai_secret_field(search.api_key.as_deref(), search.api_key_source),
+            "oauth": {
+                "configured": search.oauth_configured,
+                "source": search.oauth_source,
+                "hint": oauth_hint,
+                "account_id": if search.account_id.is_empty() {
+                    Value::Null
+                } else {
+                    json!(search.account_id)
+                },
+            },
             "model": ai_value_field(&search.model, search.model_source),
-            "suggested_models": crate::ai::SUGGESTED_SEARCH_MODELS,
+            "suggested_models": suggested,
         },
     })
 }
@@ -3118,11 +3194,61 @@ async fn update_instance_ai(
         .map(str::trim)
         .filter(|p| !p.is_empty())
     {
-        if p != crate::config::DEFAULT_SEARCH_PROVIDER {
+        if !crate::config::is_supported_search_provider(p) {
             return Err(err(
                 StatusCode::BAD_REQUEST,
-                &format!("unsupported search provider `{p}` (only anthropic)"),
+                &format!("unsupported search provider `{p}` (anthropic, openai, or codex)"),
             ));
+        }
+    }
+
+    // Codex OAuth import runs before the locked config update so we can
+    // parse JSON / read ~/.codex/auth.json without holding the mutex across I/O.
+    let mut imported_codex: Option<crate::codex_oauth::CodexTokens> = None;
+    if let Some(s) = payload.get("search") {
+        if s.get("import_local_codex_auth").and_then(|x| x.as_bool()) == Some(true) {
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "could not resolve home directory"))?;
+            let path = std::path::PathBuf::from(home).join(".codex").join("auth.json");
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("could not read {}: {e}", path.display()),
+                )
+            })?;
+            let auth: Value = serde_json::from_str(&text).map_err(|e| {
+                err(StatusCode::BAD_REQUEST, &format!("invalid auth.json: {e}"))
+            })?;
+            imported_codex = Some(crate::codex_oauth::tokens_from_auth_json(&auth).map_err(
+                |e| err(StatusCode::BAD_REQUEST, &format!("invalid Codex auth: {e:#}")),
+            )?);
+        } else if let Some(raw) = s.get("codex_auth_json").and_then(|x| x.as_str()) {
+            let raw = raw.trim();
+            if !raw.is_empty() {
+                let auth: Value = serde_json::from_str(raw).map_err(|e| {
+                    err(StatusCode::BAD_REQUEST, &format!("invalid auth.json paste: {e}"))
+                })?;
+                imported_codex = Some(crate::codex_oauth::tokens_from_auth_json(&auth).map_err(
+                    |e| err(StatusCode::BAD_REQUEST, &format!("invalid Codex auth: {e:#}")),
+                )?);
+            }
+        } else if let Some(rt) = s.get("codex_refresh_token").and_then(|x| x.as_str()) {
+            let rt = rt.trim();
+            if !rt.is_empty() {
+                imported_codex = Some(crate::codex_oauth::CodexTokens {
+                    access_token: String::new(),
+                    refresh_token: rt.chars().take(4096).collect(),
+                    account_id: s
+                        .get("codex_account_id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(120)
+                        .collect(),
+                });
+            }
         }
     }
 
@@ -3183,12 +3309,39 @@ async fn update_instance_ai(
                     c.ai.search.api_key = key.to_string();
                 }
             }
+            if s.get("clear_oauth").and_then(|x| x.as_bool()) == Some(true) {
+                c.ai.search.codex_refresh_token.clear();
+                c.ai.search.codex_access_token.clear();
+                c.ai.search.codex_account_id.clear();
+                c.ai.search.codex_last_refresh = 0.0;
+            }
+            if let Some(tokens) = &imported_codex {
+                c.ai.search.codex_refresh_token = tokens.refresh_token.clone();
+                c.ai.search.codex_access_token = tokens.access_token.clone();
+                if !tokens.account_id.is_empty() {
+                    c.ai.search.codex_account_id = tokens.account_id.clone();
+                }
+            }
             // Same override semantics as the voice models above.
             if let Some(m) = s.get("model").and_then(|x| x.as_str()) {
                 c.ai.search.model = m.trim().chars().take(120).collect();
             }
         }
     });
+
+    // If OAuth was imported and the client didn't set a provider, prefer codex.
+    if imported_codex.is_some()
+        && payload
+            .pointer("/search/provider")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .is_none()
+    {
+        state.config.update(|c| {
+            c.ai.search.provider = crate::config::SEARCH_PROVIDER_CODEX.to_string();
+        });
+    }
 
     if clear_speech {
         state.speech_cache.lock().unwrap().clear();
@@ -3226,19 +3379,41 @@ async fn test_instance_ai(
         }
         "search" => {
             let search = resolved_search_ai(&state);
-            let Some(key) = search.api_key.clone() else {
-                return Err(err(StatusCode::BAD_REQUEST, "No Anthropic key configured"));
-            };
             let model = search.model.clone();
-            tokio::task::spawn_blocking(move || crate::ai::test_connection(&key, &model))
-                .await
-                .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
-                .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
+            let provider = search.provider.clone();
+            let state_for_job = state.clone();
+            let resp_provider = provider.clone();
+            let resp_model = model.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                match provider.as_str() {
+                    crate::config::SEARCH_PROVIDER_OPENAI => {
+                        let key = search
+                            .api_key
+                            .clone()
+                            .ok_or_else(|| anyhow::anyhow!("No OpenAI key configured"))?;
+                        crate::ai::test_connection_openai(&key, &model)
+                    }
+                    crate::config::SEARCH_PROVIDER_CODEX => {
+                        let (access, account) = refresh_codex_if_needed(&state_for_job, &search)?;
+                        crate::codex_oauth::test_connection(&access, &account, &model)
+                    }
+                    _ => {
+                        let key = search
+                            .api_key
+                            .clone()
+                            .ok_or_else(|| anyhow::anyhow!("No Anthropic key configured"))?;
+                        crate::ai::test_connection_anthropic(&key, &model)
+                    }
+                }
+            })
+            .await
+            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
             Ok(Json(json!({
                 "ok": true,
                 "section": "search",
-                "provider": search.provider,
-                "model": search.model,
+                "provider": resp_provider,
+                "model": resp_model,
             })))
         }
         _ => Err(err(StatusCode::BAD_REQUEST, "section must be \"voice\" or \"search\"")),
@@ -4289,7 +4464,7 @@ mod tests {
         assert_eq!(
             state
                 .config
-                .search_ai(Some("ant-key"), Some("claude-sonnet-5"))
+                .search_ai(Some("ant-key"), None, Some("claude-sonnet-5"))
                 .model_source,
             crate::config::AiFieldSource::Env
         );
@@ -4304,14 +4479,83 @@ mod tests {
             format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
         );
         let err = update_instance_ai(
-            State(state),
+            State(state.clone()),
             Query(HashMap::new()),
-            headers,
+            headers.clone(),
             Json(json!({"voice": {"provider": "evil.com"}})),
         )
         .await
         .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+        let err = update_instance_ai(
+            State(state),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({"search": {"provider": "evil.com"}})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn instance_ai_imports_codex_oauth_from_auth_json() {
+        let (state, _dir) = test_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let got = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({
+                "search": {
+                    "provider": "codex",
+                    "codex_auth_json": serde_json::to_string(&json!({
+                        "tokens": {
+                            "access_token": "at-abcdefghijklmnop",
+                            "refresh_token": "rt-abcdefghijklmnop",
+                            "account_id": "acct_123"
+                        }
+                    })).unwrap(),
+                }
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(got["search"]["provider"], "codex");
+        assert_eq!(got["search"]["available"], true);
+        assert_eq!(got["search"]["oauth"]["configured"], true);
+        assert_eq!(got["search"]["oauth"]["account_id"], "acct_123");
+        assert_eq!(got["search"]["oauth"]["source"], "config");
+        let dumped = got.to_string();
+        assert!(!dumped.contains("rt-abcdefghijklmnop"));
+        assert!(!dumped.contains("at-abcdefghijklmnop"));
+        assert_eq!(
+            got["search"]["suggested_models"][0],
+            crate::codex_oauth::DEFAULT_CODEX_MODEL
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let cleared = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({"search": {"clear_oauth": true}})),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(cleared["search"]["oauth"]["configured"], false);
+        assert_eq!(cleared["search"]["available"], false);
     }
 
     #[test]
