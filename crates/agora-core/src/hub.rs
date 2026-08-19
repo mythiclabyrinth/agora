@@ -3381,6 +3381,32 @@ mod tests {
     }
 
     #[test]
+    fn peer_thread_reply_keeps_hidden_inbox_row() {
+        let h = hub();
+        let cid = setup_channel(&h, &[]);
+        h.store.add_member(
+            h.store.channel(&cid).unwrap()["group_id"].as_str().unwrap(),
+            "user",
+            "alice",
+            "member",
+            None,
+        );
+        let root = h.post_user_message(&cid, "root", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        h.post_user_message(&cid, "first reply", "tom", None, Some(root_id), vec![]);
+        h.store.hide_thread("tom", root_id);
+        assert!(h.store.my_threads("tom", 10).is_empty());
+
+        // Alice posts on the same path that restores *her* dismissals —
+        // tom's hide row must stay put because unhide is keyed by username.
+        h.post_user_message_opts(
+            &cid, "alice continuing", "alice", Some("Alice"), Some(root_id), vec![], false, None,
+            false, false,
+        );
+        assert!(h.store.my_threads("tom", 10).is_empty());
+    }
+
+    #[test]
     fn read_events_go_to_acking_user_only() {
         let h = hub();
         let cid = setup_channel(&h, &[]);

@@ -63,7 +63,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
               )} />}
             {canRemove && (
               <button className={`ago-x ${armed ? "armed" : ""}`}
-                title={armed ? "Click again to remove this thread" : "Remove from Threads (messages stay in the channel)"}
+                title={armed ? "Click again to remove this thread" : "Remove from Threads (messages stay in the channel; posting again restores it)"}
                 onClick={e => {
                   e.stopPropagation();
                   if (!armed) { arm(`thr:${root.id}`); return; }
