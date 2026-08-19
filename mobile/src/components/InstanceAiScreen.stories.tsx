@@ -6,9 +6,25 @@ const emptySettings = {
   voice: {
     enabled: true,
     available: false,
+    stt_provider: "openai",
+    tts_provider: "openai",
     provider: "openai",
     api_key: { configured: false, hint: null, source: "none" },
     stt_model: { value: "gpt-4o-mini-transcribe", source: "default" },
+    stt_models: {
+      openai: { value: "gpt-4o-mini-transcribe", source: "default" },
+      groq: { value: "whisper-large-v3-turbo", source: "default" },
+    },
+    suggested_stt_models: ["gpt-4o-mini-transcribe", "whisper-1"],
+    suggested_stt_models_by_provider: {
+      openai: ["gpt-4o-mini-transcribe", "whisper-1"],
+      groq: ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
+    },
+    stt_providers: [
+      { id: "openai", label: "OpenAI" },
+      { id: "groq", label: "Groq" },
+    ],
+    tts_providers: [{ id: "openai", label: "OpenAI" }],
     tts_model: { value: "gpt-4o-mini-tts", source: "default" },
     tts_voice: { value: "alloy", source: "default" },
     suggested_tts_voices: ["alloy", "shimmer", "nova"],
@@ -40,6 +56,7 @@ const emptySettings = {
   },
   credentials: {
     openai: { configured: false, hint: null, source: "none" },
+    groq: { configured: false, hint: null, source: "none" },
     anthropic: { configured: false, hint: null, source: "none" },
     oauth: {
       configured: false,
@@ -69,6 +86,7 @@ const configuredSettings = {
   },
   credentials: {
     openai: { configured: true, hint: "sk-a…mnop", source: "config" },
+    groq: { configured: false, hint: null, source: "none" },
     anthropic: { configured: true, hint: "ant-…here", source: "env" },
     oauth: emptySettings.credentials.oauth,
   },
@@ -81,8 +99,8 @@ const meta = {
     apiRoutes: {
       "GET /api/me": { ...fixtureMe, instance_admin: true },
       "GET /api/instance/ai": emptySettings,
-      "PUT /api/instance/ai": configuredSettings,
-      "POST /api/instance/ai/test": { ok: true, provider: "openai" },
+      "PUT /api/instance/ai": async () => configuredSettings,
+      "POST /api/instance/ai/test": async () => ({ ok: true, provider: "openai" }),
       "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
     },
   },
@@ -98,8 +116,8 @@ export const Configured: Story = {
     apiRoutes: {
       "GET /api/me": { ...fixtureMe, instance_admin: true },
       "GET /api/instance/ai": configuredSettings,
-      "PUT /api/instance/ai": configuredSettings,
-      "POST /api/instance/ai/test": { ok: true, provider: "anthropic" },
+      "PUT /api/instance/ai": async () => configuredSettings,
+      "POST /api/instance/ai/test": async () => ({ ok: true, provider: "openai" }),
       "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
     },
   },

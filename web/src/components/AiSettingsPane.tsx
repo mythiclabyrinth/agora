@@ -51,11 +51,15 @@ function SectionHead({
   );
 }
 
-const STT_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];
 const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 
 function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
+  const [sttProvider, setSttProvider] = useState(data.stt_provider || data.provider);
+
+  useEffect(() => {
+    setSttProvider(data.stt_provider || data.provider);
+  }, [data.stt_provider, data.provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
@@ -64,10 +68,24 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
     });
   };
 
-  const stt = data.stt_model.value;
+  const sttProviders = data.stt_providers?.length
+    ? data.stt_providers
+    : [
+        { id: "openai", label: "OpenAI" },
+        { id: "groq", label: "Groq" },
+      ];
+  const ttsProviders = data.tts_providers?.length
+    ? data.tts_providers
+    : [{ id: "openai", label: "OpenAI" }];
+  const sttModelField = data.stt_models?.[sttProvider as "openai" | "groq"] || data.stt_model;
+  const suggestedStt = data.suggested_stt_models_by_provider?.[sttProvider]
+    || data.suggested_stt_models
+    || [];
+  const stt = sttModelField.value;
   const tts = data.tts_model.value;
   const voice = data.tts_voice.value;
   const voices = data.suggested_tts_voices;
+  const ttsProvider = data.tts_provider || "openai";
 
   return (
     <div className="ai-section">
@@ -77,16 +95,44 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         enabled={data.enabled}
         onEnabled={enabled => save({ enabled })}
       />
-      <p className="conn-hint">Provider OpenAI — voice notes, speak-aloud, live voice.</p>
+      <p className="conn-hint">Voice notes (STT), speak-aloud and live voice (TTS).</p>
+      <div className="ai-row">
+        <label>STT provider</label>
+        <select
+          value={sttProvider}
+          disabled={update.isPending}
+          onChange={e => {
+            const next = e.target.value;
+            setSttProvider(next);
+            save({ stt_provider: next });
+          }}
+        >
+          {sttProviders.map(p => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
+        </select>
+      </div>
       <div className="ai-row">
         <label>STT model</label>
         <select
           value={stt}
           disabled={update.isPending}
-          onChange={e => save({ stt_model: e.target.value })}
+          onChange={e => save({ stt_model: e.target.value, stt_model_provider: sttProvider })}
         >
-          {STT_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-          {stt && !STT_MODELS.includes(stt) && <option value={stt}>{stt}</option>}
+          {suggestedStt.map(m => <option key={m} value={m}>{m}</option>)}
+          {stt && !suggestedStt.includes(stt) && <option value={stt}>{stt}</option>}
+        </select>
+      </div>
+      <div className="ai-row">
+        <label>TTS provider</label>
+        <select
+          value={ttsProvider}
+          disabled={update.isPending}
+          onChange={e => save({ tts_provider: e.target.value })}
+        >
+          {ttsProviders.map(p => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
         </select>
       </div>
       <div className="ai-row">
@@ -278,7 +324,7 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
           onError: err("Couldn't clear OpenAI key"),
         })}
       />
-      <p className="conn-hint">Shared by Voice and by Ask AI when its provider is OpenAI.</p>
+      <p className="conn-hint">Shared by Voice TTS (and OpenAI STT) and by Ask AI when its provider is OpenAI.</p>
       <div className="ai-actions">
         <button className="btn sm" disabled={test.isPending || !data.credentials.openai.configured}
           onClick={() => test.mutate("openai", {
@@ -286,6 +332,30 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
             onError: err("OpenAI test failed"),
           })}>
           {test.isPending ? "Testing…" : "Test OpenAI"}
+        </button>
+      </div>
+
+      <KeyRow
+        label="Groq API key"
+        field={data.credentials.groq}
+        placeholder="gsk-…"
+        onSave={api_key => update.mutate({ credentials: { groq: { api_key } } }, {
+          onSuccess: () => toast("Groq key saved", { variant: "ok" }),
+          onError: err("Couldn't save Groq key"),
+        })}
+        onClear={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
+          onSuccess: () => toast("Groq key cleared", { variant: "ok" }),
+          onError: err("Couldn't clear Groq key"),
+        })}
+      />
+      <p className="conn-hint">Used by Voice when STT provider is Groq.</p>
+      <div className="ai-actions">
+        <button className="btn sm" disabled={test.isPending || !data.credentials.groq.configured}
+          onClick={() => test.mutate("groq", {
+            onSuccess: () => toast("Groq credentials work", { variant: "ok" }),
+            onError: err("Groq test failed"),
+          })}>
+          {test.isPending ? "Testing…" : "Test Groq"}
         </button>
       </div>
 

@@ -27,7 +27,6 @@ import { toast, toastErr } from "../../src/components/Toast";
 import { colors } from "../../src/lib/theme";
 import * as Linking from "expo-linking";
 
-const STT_MODELS = ["gpt-4o-mini-transcribe", "whisper-1"];
 const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 
 function sourceLabel(source: string): string {
@@ -41,6 +40,11 @@ function sourceLabel(source: string): string {
 
 function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
+  const [sttProvider, setSttProvider] = useState(data.stt_provider || data.provider);
+
+  useEffect(() => {
+    setSttProvider(data.stt_provider || data.provider);
+  }, [data.stt_provider, data.provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
@@ -49,10 +53,24 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
     });
   };
 
-  const stt = data.stt_model.value;
+  const sttProviders = data.stt_providers?.length
+    ? data.stt_providers
+    : [
+        { id: "openai", label: "OpenAI" },
+        { id: "groq", label: "Groq" },
+      ];
+  const ttsProviders = data.tts_providers?.length
+    ? data.tts_providers
+    : [{ id: "openai", label: "OpenAI" }];
+  const sttModelField = data.stt_models?.[sttProvider as "openai" | "groq"] || data.stt_model;
+  const suggestedStt = data.suggested_stt_models_by_provider?.[sttProvider]
+    || data.suggested_stt_models
+    || [];
+  const stt = sttModelField.value;
   const tts = data.tts_model.value;
   const voice = data.tts_voice.value;
   const voices = data.suggested_tts_voices;
+  const ttsProvider = data.tts_provider || "openai";
 
   return (
     <View style={styles.card}>
@@ -60,21 +78,51 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Voice</Text>
           <Text style={styles.meta}>
-            OpenAI · {data.available ? "available" : "off"}
+            STT {sttProvider} · TTS {ttsProvider} · {data.available ? "available" : "off"}
           </Text>
         </View>
         <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
       </View>
+      <Text style={styles.label}>STT provider</Text>
+      <View style={styles.rowBtns}>
+        {sttProviders.map((p) => (
+          <Pressable
+            key={p.id}
+            style={[styles.btn, sttProvider === p.id && styles.btnPrimary]}
+            disabled={update.isPending}
+            onPress={() => { setSttProvider(p.id); save({ stt_provider: p.id }); }}
+          >
+            <Text style={sttProvider === p.id ? styles.btnPrimaryText : styles.btnText}>
+              {p.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
       <Text style={styles.label}>STT model</Text>
       <View style={styles.rowBtns}>
-        {[...STT_MODELS, ...(stt && !STT_MODELS.includes(stt) ? [stt] : [])].map((m) => (
+        {[...suggestedStt, ...(stt && !suggestedStt.includes(stt) ? [stt] : [])].map((m) => (
           <Pressable
             key={m}
             style={[styles.btn, stt === m && styles.btnPrimary]}
             disabled={update.isPending}
-            onPress={() => save({ stt_model: m })}
+            onPress={() => save({ stt_model: m, stt_model_provider: sttProvider })}
           >
             <Text style={stt === m ? styles.btnPrimaryText : styles.btnText}>{m}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <Text style={styles.label}>TTS provider</Text>
+      <View style={styles.rowBtns}>
+        {ttsProviders.map((p) => (
+          <Pressable
+            key={p.id}
+            style={[styles.btn, ttsProvider === p.id && styles.btnPrimary]}
+            disabled={update.isPending}
+            onPress={() => save({ tts_provider: p.id })}
+          >
+            <Text style={ttsProvider === p.id ? styles.btnPrimaryText : styles.btnText}>
+              {p.label}
+            </Text>
           </Pressable>
         ))}
       </View>
@@ -180,6 +228,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
   const completeOauth = useCompleteCodexOauth();
   const disconnectOauth = useDisconnectCodexOauth();
   const [openaiKey, setOpenaiKey] = useState("");
+  const [groqKey, setGroqKey] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
   const [redirectPaste, setRedirectPaste] = useState("");
   const [awaitingPaste, setAwaitingPaste] = useState(false);
@@ -190,7 +239,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
     <>
       <View style={styles.card}>
         <Text style={styles.cardTitle}>OpenAI API key</Text>
-        <Text style={styles.hint}>Shared by Voice and Ask AI (OpenAI provider).</Text>
+        <Text style={styles.hint}>Shared by Voice TTS / OpenAI STT and Ask AI (OpenAI provider).</Text>
         <Text style={styles.meta}>
           {data.credentials.openai.configured
             ? `${data.credentials.openai.hint} · ${sourceLabel(data.credentials.openai.source)}`
@@ -238,6 +287,60 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
             })}
           >
             <Text style={styles.btnText}>Test OpenAI</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Groq API key</Text>
+        <Text style={styles.hint}>Used by Voice when STT provider is Groq.</Text>
+        <Text style={styles.meta}>
+          {data.credentials.groq.configured
+            ? `${data.credentials.groq.hint} · ${sourceLabel(data.credentials.groq.source)}`
+            : sourceLabel(data.credentials.groq.source)}
+        </Text>
+        <TextInput
+          style={styles.input}
+          value={groqKey}
+          onChangeText={setGroqKey}
+          placeholder={data.credentials.groq.configured ? "replace key…" : "gsk-…"}
+          placeholderTextColor={colors.faint}
+          autoCapitalize="none"
+          secureTextEntry
+        />
+        <View style={styles.rowBtns}>
+          <Pressable
+            style={[styles.btn, styles.btnPrimary, !groqKey.trim() && styles.btnDisabled]}
+            disabled={!groqKey.trim() || update.isPending}
+            onPress={() => {
+              update.mutate({ credentials: { groq: { api_key: groqKey.trim() } } }, {
+                onSuccess: () => { toast("Groq key saved"); setGroqKey(""); },
+                onError: (e) => toastErr("Couldn't save", e as Error),
+              });
+            }}
+          >
+            <Text style={styles.btnPrimaryText}>Save key</Text>
+          </Pressable>
+          {data.credentials.groq.source === "config" ? (
+            <Pressable
+              style={[styles.btn, styles.btnDanger]}
+              onPress={() => update.mutate({ credentials: { groq: { clear_key: true } } }, {
+                onSuccess: () => toast("Cleared"),
+                onError: (e) => toastErr("Couldn't clear", e as Error),
+              })}
+            >
+              <Text style={styles.btnDangerText}>Clear saved</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            style={[styles.btn, (!data.credentials.groq.configured || test.isPending) && styles.btnDisabled]}
+            disabled={!data.credentials.groq.configured || test.isPending}
+            onPress={() => test.mutate("groq", {
+              onSuccess: () => toast("Groq credentials work"),
+              onError: (e) => toastErr("Groq test failed", e as Error),
+            })}
+          >
+            <Text style={styles.btnText}>Test Groq</Text>
           </Pressable>
         </View>
       </View>

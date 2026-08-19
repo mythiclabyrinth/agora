@@ -300,12 +300,13 @@ export default function ChannelScreen() {
 
   /* 🔊 speak-aloud: while this channel is focused (and not covered by the
      live screen), agent replies landing here are read out via server TTS. */
-  const voiceOk = useSession((s) => s.voiceOk);
+  const sttOk = useSession((s) => s.sttOk);
+  const ttsOk = useSession((s) => s.ttsOk);
   const speakAloud = usePrefs((s) => s.speakAloud);
   const setSpeakAloud = usePrefs((s) => s.setSpeakAloud);
   useFocusEffect(
     useCallback(() => {
-      if (!voiceOk || !speakAloud) return;
+      if (!ttsOk || !speakAloud) return;
       void prepareSpeechAudio();
       const off = onAgentMessage((m) => {
         if (m.channel_id === channelId) enqueueSpeech(session, m.id);
@@ -314,7 +315,7 @@ export default function ChannelScreen() {
         off();
         stopSpeech();
       };
-    }, [voiceOk, speakAloud, channelId, session]),
+    }, [ttsOk, speakAloud, channelId, session]),
   );
 
   const openLive = useCallback(() => {
@@ -379,7 +380,7 @@ export default function ChannelScreen() {
               >
                 <Icon icon={Paperclip} size={20} color={colors.text} />
               </Pressable>
-              {voiceOk ? (
+              {ttsOk ? (
                 <Pressable
                   onPress={() => {
                     if (speakAloud) stopSpeech();
@@ -392,7 +393,7 @@ export default function ChannelScreen() {
                   </View>
                 </Pressable>
               ) : null}
-              {voiceOk ? (
+              {sttOk && ttsOk ? (
                 <Pressable onPress={openLive} hitSlop={8}>
                   <Icon icon={Headphones} size={20} color={colors.text} />
                 </Pressable>
@@ -511,7 +512,7 @@ export default function ChannelScreen() {
             await send.mutateAsync({ text, threadId: null, files, replyInThread });
           }}
           onSendVoice={
-            voiceOk
+            sttOk
               ? async (file, mentions) => {
                   await sendVoice.mutateAsync({ file, threadId: null, mentions });
                 }

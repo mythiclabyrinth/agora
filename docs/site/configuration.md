@@ -39,8 +39,11 @@ overwrite a UI-set key):
 
 | Env (fallback) | Feature |
 | --- | --- |
-| `OPENAI_API_KEY` | Voice (OpenAI STT/TTS); also Ask AI when provider is `openai` |
+| `OPENAI_API_KEY` | Voice TTS and OpenAI STT; also Ask AI when provider is `openai` |
+| `GROQ_API_KEY` | Voice STT when STT provider is `groq` |
 | `ANTHROPIC_API_KEY` | Ask AI when provider is `anthropic` |
+
+Voice **STT providers** (Features tab): `openai` or `groq`. TTS is OpenAI-only for now. STT models are stored per provider so switching does not leak a foreign model id.
 
 Ask AI **providers** (set in the UI Features tab):
 

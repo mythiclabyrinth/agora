@@ -256,8 +256,8 @@ export function ChannelPane() {
             }, "Channel")}>
             <Icon name="link" /> Link
           </button>}
-          {me?.voice && <SpeakButton />}
-          {me?.voice && <LiveButton channelId={channel.id} threadId={null} />}
+          {me?.voice_tts && <SpeakButton />}
+          {me?.voice_stt && me?.voice_tts && <LiveButton channelId={channel.id} threadId={null} />}
           {FEATURES.stars && <button className={`btn sm ago-star-toggle ${starsOpen ? "active" : ""}`}
             title={`Starred messages in #${channel.name}`}
             onClick={() => setStarsOpen(!starsOpen)}>
@@ -283,7 +283,7 @@ export function ChannelPane() {
       <LiveRows channelId={channel.id} threadId={null} />
       <LiveStrip channelId={channel.id} threadId={null} />
       {(!isDm || channel.dm_can_post !== false) && <Composer channelId={channel.id} channelName={channel.name} groupId={group.id} threadId={null}
-        agents={agents} candidates={isDm ? [] : candidates} voiceOK={!!me?.voice}
+        agents={agents} candidates={isDm ? [] : candidates} voiceOK={!!me?.voice_stt}
         replyInThread={replyInThread}
         onSetReplyInThread={setReplyInThread} />}
     </div>

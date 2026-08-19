@@ -691,7 +691,12 @@ async fn me(
         "max_video_mb": config.max_video_mb,
         // Voice / Ask AI: resolved from config.json (UI) with process-env
         // fallback at read time — never folded into config at boot.
+        // Coarse "any voice at all" flag, kept for older clients. Current
+        // clients gate the mic and speak-aloud separately: a Groq STT key with
+        // no OpenAI key gives working voice notes and no spoken replies.
         "voice": resolved_voice(&state).available(),
+        "voice_stt": resolved_voice(&state).stt_available(),
+        "voice_tts": resolved_voice(&state).tts_available(),
         "search_ai": resolved_search_ai(&state).available(),
         // MapLibre style URL for map artifacts; empty when the operator has
         // not configured tiles, in which case clients draw the SVG fallback.
@@ -1875,12 +1880,14 @@ async fn post_voice_message(
             "Voice input is disabled for this instance",
         ));
     }
-    let Some(key) = voice.api_key.clone() else {
+    let Some(key) = voice.stt_api_key().map(str::to_string) else {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "Voice input is not configured (set an OpenAI key in instance AI settings)",
+            "Voice input is not configured (set a key for the selected STT provider in Settings → Credentials)",
         ));
     };
+    let stt_provider = voice.stt_provider.clone();
+    let stt_provider_label = stt_provider.clone();
     let stt_model = voice.stt_model.clone();
     let stt_model_label = stt_model.clone();
     let mut audio: Vec<u8> = Vec::new();
@@ -1930,7 +1937,7 @@ async fn post_voice_message(
     }
     let thread_id = resolve_thread(&state, &channel_id, thread_id)?;
     let text = tokio::task::spawn_blocking(move || {
-        crate::voice::transcribe(&key, &audio, &filename, &stt_model)
+        crate::voice::transcribe(&stt_provider, &key, &audio, &filename, &stt_model)
     })
     .await
     .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed"))?
@@ -1939,7 +1946,7 @@ async fn post_voice_message(
         err(
             StatusCode::BAD_GATEWAY,
             &format!(
-                "Voice transcription failed (OpenAI / {stt_model_label}): {}",
+                "Voice transcription failed ({stt_provider_label} / {stt_model_label}): {}",
                 truncate_err(&format!("{e:#}"), 200)
             ),
         )
@@ -2001,10 +2008,10 @@ async fn message_speech(
             "Spoken replies are disabled for this instance",
         ));
     }
-    let Some(key) = voice.api_key.clone() else {
+    let Some(key) = voice.tts_api_key().map(str::to_string) else {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "Spoken replies are not configured (set an OpenAI key in instance AI settings)",
+            "Spoken replies are not configured (set an OpenAI key in Settings → Credentials)",
         ));
     };
     let tts_model = voice.tts_model.clone();
@@ -3127,8 +3134,9 @@ fn env_opt(key: &str) -> Option<String> {
 }
 
 fn resolved_voice(state: &AppState) -> crate::config::ResolvedVoice {
-    let env_key = env_opt("OPENAI_API_KEY");
-    state.config.voice(env_key.as_deref())
+    let openai = env_opt("OPENAI_API_KEY");
+    let groq = env_opt("GROQ_API_KEY");
+    state.config.voice(openai.as_deref(), groq.as_deref())
 }
 
 fn resolved_search_ai(state: &AppState) -> crate::config::ResolvedSearchAi {
@@ -3209,14 +3217,42 @@ fn instance_ai_payload(state: &AppState) -> Value {
         let snap = state.config.snapshot();
         crate::config::resolve_secret(&snap.ai.search.api_key, anthropic_env.as_deref())
     };
+    let groq_env = env_opt("GROQ_API_KEY");
+    let (groq_key, groq_source) = {
+        let snap = state.config.snapshot();
+        crate::config::resolve_secret(&snap.ai.voice.groq_api_key, groq_env.as_deref())
+    };
     let codex_models = resolve_codex_suggested_models(state, &search);
     json!({
         "voice": {
             "enabled": voice.enabled,
             "available": voice.available(),
-            "provider": voice.provider,
-            "api_key": ai_secret_field(voice.api_key.as_deref(), voice.api_key_source),
+            // Split so the admin can see which half is missing a credential
+            // — Groq STT and OpenAI TTS are configured independently.
+            "stt_available": voice.stt_available(),
+            "tts_available": voice.tts_available(),
+            "stt_provider": voice.stt_provider,
+            "tts_provider": voice.tts_provider,
+            "stt_providers": [
+                { "id": crate::config::VOICE_PROVIDER_OPENAI, "label": "OpenAI" },
+                { "id": crate::config::VOICE_PROVIDER_GROQ, "label": "Groq" },
+            ],
+            "tts_providers": [
+                { "id": crate::config::VOICE_PROVIDER_OPENAI, "label": "OpenAI" },
+            ],
+            // Legacy alias = STT provider (historically the load-bearing half).
+            "provider": voice.stt_provider,
+            "api_key": ai_secret_field(voice.openai_api_key.as_deref(), voice.openai_api_key_source),
             "stt_model": ai_value_field(&voice.stt_model, voice.stt_model_source),
+            "stt_models": {
+                "openai": ai_value_field(&voice.stt_models.openai.0, voice.stt_models.openai.1),
+                "groq": ai_value_field(&voice.stt_models.groq.0, voice.stt_models.groq.1),
+            },
+            "suggested_stt_models": crate::config::suggested_stt_models_for_provider(&voice.stt_provider),
+            "suggested_stt_models_by_provider": {
+                "openai": crate::config::SUGGESTED_OPENAI_STT_MODELS,
+                "groq": crate::config::SUGGESTED_GROQ_STT_MODELS,
+            },
             "tts_model": ai_value_field(&voice.tts_model, voice.tts_model_source),
             "tts_voice": ai_value_field(&voice.tts_voice, voice.tts_voice_source),
             "suggested_tts_voices": ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
@@ -3257,7 +3293,8 @@ fn instance_ai_payload(state: &AppState) -> Value {
             },
         },
         "credentials": {
-            "openai": ai_secret_field(voice.api_key.as_deref(), voice.api_key_source),
+            "openai": ai_secret_field(voice.openai_api_key.as_deref(), voice.openai_api_key_source),
+            "groq": ai_secret_field(groq_key.as_deref(), groq_source),
             "anthropic": ai_secret_field(anthropic_key.as_deref(), anthropic_source),
             "oauth": {
                 "configured": search.oauth_configured,
@@ -3369,15 +3406,42 @@ async fn update_instance_ai(
     require_instance_admin(&user)?;
 
     if let Some(p) = payload
+        .pointer("/voice/stt_provider")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if !crate::config::is_supported_stt_provider(p) {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("unsupported STT provider `{p}` (openai or groq)"),
+            ));
+        }
+    }
+    // Legacy alias: `voice.provider` means STT provider.
+    if let Some(p) = payload
         .pointer("/voice/provider")
         .and_then(|x| x.as_str())
         .map(str::trim)
         .filter(|p| !p.is_empty())
     {
-        if p != crate::config::DEFAULT_VOICE_PROVIDER {
+        if !crate::config::is_supported_stt_provider(p) {
             return Err(err(
                 StatusCode::BAD_REQUEST,
-                &format!("unsupported voice provider `{p}` (only openai)"),
+                &format!("unsupported STT provider `{p}` (openai or groq)"),
+            ));
+        }
+    }
+    if let Some(p) = payload
+        .pointer("/voice/tts_provider")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if !crate::config::is_supported_tts_provider(p) {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("unsupported TTS provider `{p}` (only openai for now)"),
             ));
         }
     }
@@ -3401,10 +3465,23 @@ async fn update_instance_ai(
             if let Some(enabled) = v.get("enabled").and_then(|x| x.as_bool()) {
                 c.ai.voice.enabled = enabled;
             }
-            if let Some(provider) = v.get("provider").and_then(|x| x.as_str()) {
+            if let Some(provider) = v.get("stt_provider").and_then(|x| x.as_str()) {
                 let p = provider.trim();
                 if !p.is_empty() {
-                    c.ai.voice.provider = p.to_string();
+                    c.ai.voice.stt_provider = p.to_string();
+                }
+            } else if let Some(provider) = v.get("provider").and_then(|x| x.as_str()) {
+                // Legacy single `provider` = STT.
+                let p = provider.trim();
+                if !p.is_empty() {
+                    c.ai.voice.stt_provider = p.to_string();
+                }
+            }
+            if let Some(provider) = v.get("tts_provider").and_then(|x| x.as_str()) {
+                let p = provider.trim();
+                if !p.is_empty() {
+                    clear_speech |= p != c.ai.voice.tts_provider;
+                    c.ai.voice.tts_provider = p.to_string();
                 }
             }
             if v.get("clear_key").and_then(|x| x.as_bool()) == Some(true) {
@@ -3415,11 +3492,37 @@ async fn update_instance_ai(
                     c.ai.voice.api_key = key.to_string();
                 }
             }
-            // Model fields are overrides, not values: an explicit "" clears
-            // the override so resolution falls back to the hard-coded default.
-            // Omitting the field leaves it alone.
-            if let Some(m) = v.get("stt_model").and_then(|x| x.as_str()) {
-                c.ai.voice.stt_model = m.trim().chars().take(120).collect();
+            // Per-provider STT model overrides. `stt_model` writes the *active*
+            // STT provider slot (or `stt_model_provider` when set).
+            let stt_model_provider = v
+                .get("stt_model_provider")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|p| crate::config::is_supported_stt_provider(p))
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| {
+                    let p = c.ai.voice.stt_provider.trim();
+                    if crate::config::is_supported_stt_provider(p) {
+                        p.to_string()
+                    } else {
+                        crate::config::DEFAULT_STT_PROVIDER.to_string()
+                    }
+                });
+            if let Some(models) = v.get("stt_models").and_then(|x| x.as_object()) {
+                for (prov, val) in models {
+                    if !crate::config::is_supported_stt_provider(prov) {
+                        continue;
+                    }
+                    if let Some(m) = val.as_str() {
+                        c.ai.voice
+                            .stt_models
+                            .set(prov, m.trim().chars().take(120).collect());
+                    }
+                }
+            } else if let Some(m) = v.get("stt_model").and_then(|x| x.as_str()) {
+                c.ai.voice
+                    .stt_models
+                    .set(&stt_model_provider, m.trim().chars().take(120).collect());
             }
             if let Some(m) = v.get("tts_model").and_then(|x| x.as_str()) {
                 let next: String = m.trim().chars().take(120).collect();
@@ -3500,6 +3603,16 @@ async fn update_instance_ai(
                     }
                 }
             }
+            if let Some(groq) = cred.get("groq") {
+                if groq.get("clear_key").and_then(|x| x.as_bool()) == Some(true) {
+                    c.ai.voice.groq_api_key.clear();
+                } else if let Some(key) = groq.get("api_key").and_then(|x| x.as_str()) {
+                    let key = key.trim();
+                    if !key.is_empty() {
+                        c.ai.voice.groq_api_key = key.to_string();
+                    }
+                }
+            }
             if let Some(anthropic) = cred.get("anthropic") {
                 if anthropic.get("clear_key").and_then(|x| x.as_bool()) == Some(true) {
                     c.ai.search.api_key.clear();
@@ -3531,7 +3644,7 @@ async fn update_instance_ai(
     Ok(Json(instance_ai_payload(&state)))
 }
 
-/// POST /api/instance/ai/test {"provider":"openai"|"anthropic"|"codex"} —
+/// POST /api/instance/ai/test {"provider":"openai"|"groq"|"anthropic"|"codex"} —
 /// cheap round-trip against that provider's credential. Independent of which
 /// feature (Voice / Ask AI) currently uses it.
 async fn test_instance_ai(
@@ -3550,7 +3663,7 @@ async fn test_instance_ai(
     match provider {
         crate::config::SEARCH_PROVIDER_OPENAI => {
             let voice = resolved_voice(&state);
-            let Some(key) = voice.api_key.clone() else {
+            let Some(key) = voice.openai_api_key.clone() else {
                 return Err(err(StatusCode::BAD_REQUEST, "No OpenAI key configured"));
             };
             tokio::task::spawn_blocking(move || crate::voice::test_connection(&key))
@@ -3558,6 +3671,17 @@ async fn test_instance_ai(
                 .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
                 .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
             Ok(Json(json!({"ok": true, "provider": "openai"})))
+        }
+        crate::config::VOICE_PROVIDER_GROQ => {
+            let voice = resolved_voice(&state);
+            let Some(key) = voice.groq_api_key.clone() else {
+                return Err(err(StatusCode::BAD_REQUEST, "No Groq key configured"));
+            };
+            tokio::task::spawn_blocking(move || crate::voice::test_connection_groq(&key))
+                .await
+                .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "test task failed"))?
+                .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("{e:#}")))?;
+            Ok(Json(json!({"ok": true, "provider": "groq"})))
         }
         crate::config::SEARCH_PROVIDER_ANTHROPIC => {
             let search = resolved_search_ai(&state);
@@ -3599,7 +3723,7 @@ async fn test_instance_ai(
         }
         _ => Err(err(
             StatusCode::BAD_REQUEST,
-            "provider must be \"openai\", \"anthropic\", or \"codex\"",
+            "provider must be \"openai\", \"groq\", \"anthropic\", or \"codex\"",
         )),
     }
 }
@@ -4756,7 +4880,10 @@ mod tests {
         assert_eq!(got["voice"]["enabled"], true);
         assert_eq!(got["voice"]["available"], false);
         assert_eq!(got["voice"]["api_key"]["configured"], false);
+        assert_eq!(got["voice"]["stt_provider"], "openai");
+        assert_eq!(got["voice"]["tts_provider"], "openai");
         assert_eq!(got["voice"]["provider"], "openai");
+        assert_eq!(got["credentials"]["groq"]["configured"], false);
         assert_eq!(got["search"]["provider"], "anthropic");
 
         // Set a config key + TTS voice; response masks the secret.
@@ -4903,11 +5030,127 @@ mod tests {
         );
         let snap = state.config.snapshot();
         assert!(snap.ai.voice.stt_model.is_empty());
+        assert!(snap.ai.voice.stt_models.openai.is_empty());
         assert!(snap.ai.search.models.anthropic.is_empty());
         assert_eq!(
             state.config.search_ai(Some("ant-key"), None).model_source,
             crate::config::AiFieldSource::Default
         );
+    }
+
+    #[tokio::test]
+    async fn instance_ai_groq_stt_provider_and_credentials() {
+        let (state, _dir) = test_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+
+        // OpenAI key alone is not enough when STT is Groq.
+        update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "voice": {
+                    "stt_provider": "groq",
+                    "stt_model": "whisper-large-v3-turbo",
+                },
+                "credentials": {
+                    "openai": { "api_key": "sk-abcdefghijklmnop" },
+                },
+            })),
+        )
+        .await
+        .unwrap();
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), headers.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(got["voice"]["stt_provider"], "groq");
+        assert_eq!(got["voice"]["provider"], "groq");
+        assert_eq!(got["voice"]["stt_model"]["value"], "whisper-large-v3-turbo");
+        // Groq is selected for STT with no Groq key yet, so the mic is off —
+        // but the OpenAI key still powers spoken replies, so voice as a whole
+        // is not off.
+        assert_eq!(got["voice"]["stt_available"], false);
+        assert_eq!(got["voice"]["tts_available"], true);
+        assert_eq!(got["voice"]["available"], true);
+        assert_eq!(
+            got["voice"]["suggested_stt_models"][0],
+            "whisper-large-v3-turbo"
+        );
+
+        // Switching back must restore the OpenAI STT model slot, not keep Groq's.
+        update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "voice": {
+                    "stt_provider": "openai",
+                    "stt_models": { "openai": "whisper-1" },
+                },
+            })),
+        )
+        .await
+        .unwrap();
+        update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({ "voice": { "stt_provider": "groq" } })),
+        )
+        .await
+        .unwrap();
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), headers.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(got["voice"]["stt_models"]["openai"]["value"], "whisper-1");
+        assert_eq!(
+            got["voice"]["stt_models"]["groq"]["value"],
+            "whisper-large-v3-turbo"
+        );
+        assert_eq!(got["voice"]["stt_model"]["value"], "whisper-large-v3-turbo");
+
+        // Groq credential makes voice available (TTS still OpenAI).
+        let updated = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "credentials": {
+                    "groq": { "api_key": "gsk-abcdefghijklmnop" },
+                },
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(updated["voice"]["available"], true);
+        assert_eq!(updated["credentials"]["groq"]["configured"], true);
+        assert_eq!(updated["credentials"]["groq"]["hint"], "gsk-…mnop");
+        let dumped = updated.to_string();
+        assert!(!dumped.contains("gsk-abcdefghijklmnop"));
+
+        let me_body = me(State(state.clone()), Query(HashMap::new()), headers.clone())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(me_body["voice"], true);
+
+        // Reject unknown STT provider.
+        let err = update_instance_ai(
+            State(state),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({"voice": {"stt_provider": "evil.com"}})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

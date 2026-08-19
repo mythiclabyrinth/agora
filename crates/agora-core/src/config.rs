@@ -170,12 +170,21 @@ pub enum AiFieldSource {
     None,
 }
 
-/// Voice feature defaults (OpenAI audio APIs). Provider is fixed in v1; the
-/// field stays in the schema so clients don't invent a free-form endpoint.
-pub const DEFAULT_VOICE_PROVIDER: &str = "openai";
+/// Voice feature defaults. STT and TTS providers are independent — Groq can
+/// handle STT while OpenAI still does TTS.
+pub const VOICE_PROVIDER_OPENAI: &str = "openai";
+pub const VOICE_PROVIDER_GROQ: &str = "groq";
+pub const DEFAULT_STT_PROVIDER: &str = VOICE_PROVIDER_OPENAI;
+pub const DEFAULT_TTS_PROVIDER: &str = VOICE_PROVIDER_OPENAI;
+pub const DEFAULT_VOICE_PROVIDER: &str = VOICE_PROVIDER_OPENAI; // legacy alias
 pub const DEFAULT_STT_MODEL: &str = "gpt-4o-mini-transcribe";
+pub const DEFAULT_GROQ_STT_MODEL: &str = "whisper-large-v3-turbo";
 pub const DEFAULT_TTS_MODEL: &str = "gpt-4o-mini-tts";
 pub const DEFAULT_TTS_VOICE: &str = "alloy";
+
+pub const SUGGESTED_OPENAI_STT_MODELS: &[&str] = &["gpt-4o-mini-transcribe", "whisper-1"];
+pub const SUGGESTED_GROQ_STT_MODELS: &[&str] =
+    &["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"];
 
 /// Ask-AI defaults (Anthropic Messages API).
 pub const DEFAULT_SEARCH_PROVIDER: &str = "anthropic";
@@ -184,11 +193,23 @@ pub const SEARCH_PROVIDER_ANTHROPIC: &str = "anthropic";
 pub const SEARCH_PROVIDER_OPENAI: &str = "openai";
 pub const SEARCH_PROVIDER_CODEX: &str = "codex";
 
-fn default_voice_provider() -> String {
-    DEFAULT_VOICE_PROVIDER.to_string()
+fn default_stt_provider() -> String {
+    DEFAULT_STT_PROVIDER.to_string()
+}
+fn default_tts_provider() -> String {
+    DEFAULT_TTS_PROVIDER.to_string()
 }
 fn default_search_provider() -> String {
     DEFAULT_SEARCH_PROVIDER.to_string()
+}
+
+pub fn is_supported_stt_provider(p: &str) -> bool {
+    matches!(p, VOICE_PROVIDER_OPENAI | VOICE_PROVIDER_GROQ)
+}
+
+pub fn is_supported_tts_provider(p: &str) -> bool {
+    // TTS adapters beyond OpenAI are intentionally not wired yet.
+    matches!(p, VOICE_PROVIDER_OPENAI)
 }
 
 pub fn is_supported_search_provider(p: &str) -> bool {
@@ -196,6 +217,20 @@ pub fn is_supported_search_provider(p: &str) -> bool {
         p,
         SEARCH_PROVIDER_ANTHROPIC | SEARCH_PROVIDER_OPENAI | SEARCH_PROVIDER_CODEX
     )
+}
+
+pub fn default_stt_model_for_provider(provider: &str) -> &'static str {
+    match provider {
+        VOICE_PROVIDER_GROQ => DEFAULT_GROQ_STT_MODEL,
+        _ => DEFAULT_STT_MODEL,
+    }
+}
+
+pub fn suggested_stt_models_for_provider(provider: &str) -> &'static [&'static str] {
+    match provider {
+        VOICE_PROVIDER_GROQ => SUGGESTED_GROQ_STT_MODELS,
+        _ => SUGGESTED_OPENAI_STT_MODELS,
+    }
 }
 
 pub fn default_model_for_search_provider(provider: &str) -> &'static str {
@@ -214,6 +249,32 @@ pub fn suggested_models_for_search_provider(provider: &str) -> &'static [&'stati
     }
 }
 
+/// Per-provider STT model overrides. Switching STT provider must not keep a
+/// foreign model id (e.g. `gpt-4o-mini-transcribe` while on Groq).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AiVoiceSttModels {
+    #[serde(default)]
+    pub openai: String,
+    #[serde(default)]
+    pub groq: String,
+}
+
+impl AiVoiceSttModels {
+    pub fn get(&self, provider: &str) -> &str {
+        match provider {
+            VOICE_PROVIDER_GROQ => self.groq.as_str(),
+            _ => self.openai.as_str(),
+        }
+    }
+
+    pub fn set(&mut self, provider: &str, value: String) {
+        match provider {
+            VOICE_PROVIDER_GROQ => self.groq = value,
+            _ => self.openai = value,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AiVoiceSettings {
     /// Admin kill-switch: false hides voice even when a key is present (env
@@ -221,13 +282,24 @@ pub struct AiVoiceSettings {
     /// Railway still exports `OPENAI_API_KEY`.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_voice_provider")]
+    /// Legacy single provider. Migrated into [`Self::stt_provider`] /
+    /// [`Self::tts_provider`] on load.
+    #[serde(default)]
     pub provider: String,
+    #[serde(default = "default_stt_provider")]
+    pub stt_provider: String,
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: String,
+    /// OpenAI API key — shared with Ask AI when that provider is openai.
     #[serde(default)]
     pub api_key: String,
-    /// Empty means "use the built-in default at resolve time" so an
-    /// env-only deploy can still override via process env without the
-    /// first `config.json` write baking the stock model in as `config`.
+    /// Groq API key for STT when `stt_provider=groq`.
+    #[serde(default)]
+    pub groq_api_key: String,
+    /// Per-provider STT model overrides (preferred).
+    #[serde(default)]
+    pub stt_models: AiVoiceSttModels,
+    /// Legacy single STT model. Migrated into [`Self::stt_models`] on load.
     #[serde(default)]
     pub stt_model: String,
     #[serde(default)]
@@ -240,8 +312,12 @@ impl Default for AiVoiceSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            provider: default_voice_provider(),
+            provider: String::new(),
+            stt_provider: default_stt_provider(),
+            tts_provider: default_tts_provider(),
             api_key: String::new(),
+            groq_api_key: String::new(),
+            stt_models: AiVoiceSttModels::default(),
             stt_model: String::new(),
             tts_model: String::new(),
             tts_voice: String::new(),
@@ -331,21 +407,86 @@ pub struct AiSettings {
 #[derive(Clone, Debug)]
 pub struct ResolvedVoice {
     pub enabled: bool,
-    pub provider: String,
-    pub api_key: Option<String>,
-    pub api_key_source: AiFieldSource,
+    pub stt_provider: String,
+    pub tts_provider: String,
+    /// OpenAI key (Voice TTS + Ask AI openai + OpenAI STT).
+    pub openai_api_key: Option<String>,
+    pub openai_api_key_source: AiFieldSource,
+    /// Groq key (STT when `stt_provider=groq`).
+    pub groq_api_key: Option<String>,
+    pub groq_api_key_source: AiFieldSource,
     pub stt_model: String,
     pub stt_model_source: AiFieldSource,
+    pub stt_models: ResolvedVoiceSttModels,
     pub tts_model: String,
     pub tts_model_source: AiFieldSource,
     pub tts_voice: String,
     pub tts_voice_source: AiFieldSource,
 }
 
+#[derive(Clone, Debug)]
+pub struct ResolvedVoiceSttModels {
+    pub openai: (String, AiFieldSource),
+    pub groq: (String, AiFieldSource),
+}
+
 impl ResolvedVoice {
-    /// Feature is on for clients: admin enabled it *and* a usable key exists.
+    /// Any voice capability at all. Deliberately an OR: with Groq for STT and
+    /// no OpenAI key, voice notes work while speak-aloud does not, and
+    /// reporting the whole feature as off would hide a working microphone —
+    /// which is the entire reason Groq is selectable. Clients gate each
+    /// control on [`Self::stt_available`] / [`Self::tts_available`].
     pub fn available(&self) -> bool {
-        self.enabled && self.api_key.is_some()
+        self.stt_available() || self.tts_available()
+    }
+
+    /// Transcription (voice notes, the composer mic) is usable.
+    pub fn stt_available(&self) -> bool {
+        self.enabled && self.stt_ready()
+    }
+
+    /// Synthesis (speak-aloud) is usable. Live voice needs both.
+    pub fn tts_available(&self) -> bool {
+        self.enabled && self.tts_ready()
+    }
+
+    pub fn stt_ready(&self) -> bool {
+        match self.stt_provider.as_str() {
+            VOICE_PROVIDER_GROQ => self.groq_api_key.is_some(),
+            _ => self.openai_api_key.is_some(),
+        }
+    }
+
+    /// TTS is OpenAI-only for now, so the selected provider does not change
+    /// which credential is required.
+    pub fn tts_ready(&self) -> bool {
+        self.openai_api_key.is_some()
+    }
+
+    pub fn stt_api_key(&self) -> Option<&str> {
+        match self.stt_provider.as_str() {
+            VOICE_PROVIDER_GROQ => self.groq_api_key.as_deref(),
+            _ => self.openai_api_key.as_deref(),
+        }
+    }
+
+    pub fn tts_api_key(&self) -> Option<&str> {
+        self.openai_api_key.as_deref()
+    }
+
+    /// Back-compat alias used by older call sites that only knew OpenAI.
+    pub fn api_key(&self) -> Option<&str> {
+        self.openai_api_key.as_deref()
+    }
+
+    pub fn api_key_source(&self) -> AiFieldSource {
+        self.openai_api_key_source
+    }
+
+    /// Legacy single `provider` field for payloads that still expose it
+    /// (equals STT provider — the historically load-bearing half).
+    pub fn provider(&self) -> &str {
+        &self.stt_provider
     }
 }
 
@@ -507,6 +648,7 @@ impl Config {
                 pairing.id = new_token();
             }
         }
+        migrate_voice_settings(&mut data.ai.voice);
         let cfg = Self {
             path,
             data: Mutex::new(data),
@@ -642,35 +784,66 @@ impl Config {
     /// Resolve voice settings. Env values are passed in (never read here) so
     /// unit tests stay deterministic — see [`resolve_secret`].
     ///
-    /// `openai_api_key_env` is typically `std::env::var("OPENAI_API_KEY").ok()`.
-    /// These env vars are deliberately *not* folded into config.json at boot
-    /// (`apply_env_overrides` must never touch them): a Railway restart would
-    /// otherwise overwrite an admin's UI-set key.
-    pub fn voice(&self, openai_api_key_env: Option<&str>) -> ResolvedVoice {
+    /// `openai_api_key_env` / `groq_api_key_env` are typically
+    /// `OPENAI_API_KEY` / `GROQ_API_KEY`. Never folded into config.json at boot.
+    pub fn voice(
+        &self,
+        openai_api_key_env: Option<&str>,
+        groq_api_key_env: Option<&str>,
+    ) -> ResolvedVoice {
         let data = self.data.lock().unwrap();
         let v = &data.ai.voice;
-        let (api_key, api_key_source) = resolve_secret(&v.api_key, openai_api_key_env);
-        let (stt_model, stt_model_source) =
-            resolve_setting(&v.stt_model, None, DEFAULT_STT_MODEL);
-        let (tts_model, tts_model_source) =
-            resolve_setting(&v.tts_model, None, DEFAULT_TTS_MODEL);
-        let (tts_voice, tts_voice_source) =
-            resolve_setting(&v.tts_voice, None, DEFAULT_TTS_VOICE);
-        let provider = {
-            let p = v.provider.trim();
-            if p.is_empty() {
-                DEFAULT_VOICE_PROVIDER.to_string()
+        let (openai_api_key, openai_api_key_source) =
+            resolve_secret(&v.api_key, openai_api_key_env);
+        let (groq_api_key, groq_api_key_source) =
+            resolve_secret(&v.groq_api_key, groq_api_key_env);
+        let stt_provider = {
+            let p = v.stt_provider.trim();
+            if p.is_empty() || !is_supported_stt_provider(p) {
+                DEFAULT_STT_PROVIDER.to_string()
             } else {
                 p.to_string()
             }
         };
+        let tts_provider = {
+            let p = v.tts_provider.trim();
+            if p.is_empty() || !is_supported_tts_provider(p) {
+                DEFAULT_TTS_PROVIDER.to_string()
+            } else {
+                p.to_string()
+            }
+        };
+        let stt_models = ResolvedVoiceSttModels {
+            openai: resolve_setting(
+                v.stt_models.get(VOICE_PROVIDER_OPENAI),
+                None,
+                default_stt_model_for_provider(VOICE_PROVIDER_OPENAI),
+            ),
+            groq: resolve_setting(
+                v.stt_models.get(VOICE_PROVIDER_GROQ),
+                None,
+                default_stt_model_for_provider(VOICE_PROVIDER_GROQ),
+            ),
+        };
+        let (stt_model, stt_model_source) = match stt_provider.as_str() {
+            VOICE_PROVIDER_GROQ => stt_models.groq.clone(),
+            _ => stt_models.openai.clone(),
+        };
+        let (tts_model, tts_model_source) =
+            resolve_setting(&v.tts_model, None, DEFAULT_TTS_MODEL);
+        let (tts_voice, tts_voice_source) =
+            resolve_setting(&v.tts_voice, None, DEFAULT_TTS_VOICE);
         ResolvedVoice {
             enabled: v.enabled,
-            provider,
-            api_key,
-            api_key_source,
+            stt_provider,
+            tts_provider,
+            openai_api_key,
+            openai_api_key_source,
+            groq_api_key,
+            groq_api_key_source,
             stt_model,
             stt_model_source,
+            stt_models,
             tts_model,
             tts_model_source,
             tts_voice,
@@ -784,6 +957,40 @@ impl Config {
 
 /// Fold the legacy single `model` into the active provider's slot once, then
 /// clear it so a later provider switch cannot resurrect a foreign model.
+fn migrate_voice_settings(voice: &mut AiVoiceSettings) {
+    // Legacy single `provider` → both STT and TTS when the split fields were
+    // never written (still at serde defaults) and the legacy value is known.
+    let legacy = voice.provider.trim().to_string();
+    if !legacy.is_empty() {
+        if is_supported_stt_provider(&legacy)
+            && voice.stt_provider.trim() == DEFAULT_STT_PROVIDER
+        {
+            voice.stt_provider = legacy.clone();
+        }
+        if is_supported_tts_provider(&legacy)
+            && voice.tts_provider.trim() == DEFAULT_TTS_PROVIDER
+        {
+            voice.tts_provider = legacy;
+        }
+        voice.provider.clear();
+    }
+    if !is_supported_stt_provider(voice.stt_provider.trim()) {
+        voice.stt_provider = DEFAULT_STT_PROVIDER.to_string();
+    }
+    if !is_supported_tts_provider(voice.tts_provider.trim()) {
+        voice.tts_provider = DEFAULT_TTS_PROVIDER.to_string();
+    }
+    // Legacy single `stt_model` → active STT provider slot.
+    let legacy_model = voice.stt_model.trim().to_string();
+    if !legacy_model.is_empty() {
+        let slot = voice.stt_provider.clone();
+        if voice.stt_models.get(&slot).is_empty() {
+            voice.stt_models.set(&slot, legacy_model);
+        }
+        voice.stt_model.clear();
+    }
+}
+
 fn resolve_provider_model(
     models: &AiSearchModels,
     provider: &str,
@@ -976,28 +1183,121 @@ mod tests {
     }
 
     #[test]
+    fn groq_stt_without_an_openai_key_still_enables_the_microphone() {
+        // The whole point of Groq being selectable: someone with no OpenAI
+        // account can still record voice notes. Gating the mic on a combined
+        // "voice" flag would hide a working feature.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| {
+            c.ai.voice.stt_provider = VOICE_PROVIDER_GROQ.into();
+            c.ai.voice.groq_api_key = "gsk-live".into();
+        });
+        let v = cfg.voice(None, None);
+        assert!(v.stt_available(), "Groq key should enable transcription");
+        assert!(!v.tts_available(), "no OpenAI key means no spoken replies");
+        assert!(v.available(), "some voice capability exists");
+
+        // Adding the OpenAI key lights up TTS without touching STT.
+        cfg.update(|c| c.ai.voice.api_key = "sk-openai".into());
+        let v = cfg.voice(None, None);
+        assert!(v.stt_available() && v.tts_available());
+
+        // The kill-switch still beats present credentials on both halves.
+        cfg.update(|c| c.ai.voice.enabled = false);
+        let v = cfg.voice(None, None);
+        assert!(!v.stt_available() && !v.tts_available() && !v.available());
+    }
+
+    #[test]
     fn voice_resolver_honors_enabled_and_env_key() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::load(dir.path()).unwrap();
         // Env key alone: available when enabled (default).
-        let v = cfg.voice(Some("sk-env"));
+        let v = cfg.voice(Some("sk-env"), None);
         assert!(v.available());
-        assert_eq!(v.api_key_source, AiFieldSource::Env);
+        assert_eq!(v.openai_api_key_source, AiFieldSource::Env);
         assert_eq!(v.stt_model, DEFAULT_STT_MODEL);
         // Kill-switch beats a present key.
         cfg.update(|c| c.ai.voice.enabled = false);
-        assert!(!cfg.voice(Some("sk-env")).available());
+        assert!(!cfg.voice(Some("sk-env"), None).available());
         // Config key wins over env.
         cfg.update(|c| {
             c.ai.voice.enabled = true;
             c.ai.voice.api_key = "sk-cfg".into();
             c.ai.voice.tts_voice = "shimmer".into();
         });
-        let v = cfg.voice(Some("sk-env"));
-        assert_eq!(v.api_key.as_deref(), Some("sk-cfg"));
-        assert_eq!(v.api_key_source, AiFieldSource::Config);
+        let v = cfg.voice(Some("sk-env"), None);
+        assert_eq!(v.openai_api_key.as_deref(), Some("sk-cfg"));
+        assert_eq!(v.openai_api_key_source, AiFieldSource::Config);
         assert_eq!(v.tts_voice, "shimmer");
         assert_eq!(v.tts_voice_source, AiFieldSource::Config);
+    }
+
+    #[test]
+    fn voice_stt_provider_switch_keeps_per_provider_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| {
+            c.ai.voice.stt_models.openai = "whisper-1".into();
+            c.ai.voice.stt_models.groq = "whisper-large-v3".into();
+            c.ai.voice.stt_provider = VOICE_PROVIDER_OPENAI.into();
+            c.ai.voice.api_key = "sk".into();
+            c.ai.voice.groq_api_key = "gsk".into();
+        });
+        let v = cfg.voice(None, None);
+        assert_eq!(v.stt_model, "whisper-1");
+        cfg.update(|c| c.ai.voice.stt_provider = VOICE_PROVIDER_GROQ.into());
+        let v = cfg.voice(None, None);
+        assert_eq!(v.stt_model, "whisper-large-v3");
+        assert_eq!(v.stt_models.openai.0, "whisper-1");
+        assert_ne!(v.stt_model, "whisper-1");
+    }
+
+    #[test]
+    fn voice_readiness_tracks_each_selected_provider_independently() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        // Groq STT selected but only an OpenAI key present: TTS works, the
+        // mic does not. Each half is judged on its own credential.
+        cfg.update(|c| {
+            c.ai.voice.stt_provider = VOICE_PROVIDER_GROQ.into();
+            c.ai.voice.api_key = "sk".into();
+        });
+        let v = cfg.voice(None, None);
+        assert!(!v.stt_available() && v.tts_available());
+        // Groq key via env makes STT ready too.
+        let v = cfg.voice(None, Some("gsk-env"));
+        assert!(v.stt_available() && v.tts_available());
+        // Drop OpenAI: Groq alone still gives transcription, never synthesis.
+        cfg.update(|c| c.ai.voice.api_key.clear());
+        let v = cfg.voice(None, Some("gsk-env"));
+        assert!(v.stt_available() && !v.tts_available() && v.available());
+        assert!(cfg.voice(Some("sk-env"), Some("gsk-env")).tts_available());
+        // OpenAI STT+TTS: the one key covers both halves.
+        cfg.update(|c| c.ai.voice.stt_provider = VOICE_PROVIDER_OPENAI.into());
+        let v = cfg.voice(Some("sk-env"), None);
+        assert!(v.stt_available() && v.tts_available());
+        // Back on OpenAI for both, a Groq key alone leaves nothing usable.
+        assert!(!cfg.voice(None, Some("gsk-env")).available());
+    }
+
+    #[test]
+    fn legacy_voice_stt_model_migrates_into_provider_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"voice":{"provider":"openai","stt_model":"whisper-1","api_key":"sk"}}}"#,
+        )
+        .unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        let snap = cfg.snapshot();
+        assert!(snap.ai.voice.stt_model.is_empty());
+        assert_eq!(snap.ai.voice.stt_models.openai, "whisper-1");
+        assert_eq!(snap.ai.voice.stt_provider, VOICE_PROVIDER_OPENAI);
+        let v = cfg.voice(None, None);
+        assert_eq!(v.stt_model, "whisper-1");
     }
 
     #[test]

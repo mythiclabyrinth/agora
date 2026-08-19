@@ -12,8 +12,14 @@ export interface Me {
   max_file_mb?: number;
   /** Per-video upload limit advertised by current servers. */
   max_video_mb?: number;
-  /** Server has voice STT/TTS available (instance AI settings or env key). */
+  /** Server has some voice capability — STT or TTS. Coarse; prefer the two
+      flags below, since STT and TTS can come from different providers and one
+      can be configured without the other. */
   voice?: boolean;
+  /** Transcription is available: show the composer mic / voice notes. */
+  voice_stt?: boolean;
+  /** Synthesis is available: show speak-aloud. Live voice needs both. */
+  voice_tts?: boolean;
   /** Server has Ask AI available (instance AI settings or env key). */
   search_ai?: boolean;
   /** Operator-configured MapLibre style URL for map artifacts; empty/absent
@@ -628,10 +634,27 @@ export interface AiValueField {
 
 export interface InstanceAiVoice {
   enabled: boolean;
+  /** Either half is usable. */
   available: boolean;
+  /** Transcription half — the selected STT provider has a credential. */
+  stt_available: boolean;
+  /** Synthesis half — the selected TTS provider has a credential. */
+  tts_available: boolean;
+  /** STT provider (also exposed as legacy `provider`). */
+  stt_provider: string;
+  tts_provider: string;
+  /** Legacy alias for `stt_provider`. */
   provider: string;
   api_key: AiSecretField;
   stt_model: AiValueField;
+  stt_models: {
+    openai: AiValueField;
+    groq: AiValueField;
+  };
+  suggested_stt_models: string[];
+  suggested_stt_models_by_provider: Record<string, string[]>;
+  stt_providers: InstanceAiProviderOption[];
+  tts_providers: InstanceAiProviderOption[];
   tts_model: AiValueField;
   tts_voice: AiValueField;
   suggested_tts_voices: string[];
@@ -659,6 +682,7 @@ export interface InstanceAiSearch {
 
 export interface InstanceAiCredentials {
   openai: AiSecretField;
+  groq: AiSecretField;
   anthropic: AiSecretField;
   oauth: {
     configured: boolean;
@@ -679,10 +703,15 @@ export interface InstanceAiSettings {
 export type InstanceAiUpdate = {
   voice?: {
     enabled?: boolean;
+    stt_provider?: string;
+    tts_provider?: string;
+    /** Legacy alias for `stt_provider`. */
     provider?: string;
     api_key?: string;
     clear_key?: boolean;
     stt_model?: string;
+    stt_model_provider?: string;
+    stt_models?: Partial<Record<"openai" | "groq", string>>;
     tts_model?: string;
     tts_voice?: string;
   };
@@ -698,6 +727,7 @@ export type InstanceAiUpdate = {
   };
   credentials?: {
     openai?: { api_key?: string; clear_key?: boolean };
+    groq?: { api_key?: string; clear_key?: boolean };
     anthropic?: { api_key?: string; clear_key?: boolean };
     clear_oauth?: boolean;
   };

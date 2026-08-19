@@ -8,9 +8,25 @@ const emptySettings = {
   voice: {
     enabled: true,
     available: false,
+    stt_provider: "openai",
+    tts_provider: "openai",
     provider: "openai",
     api_key: { configured: false, hint: null, source: "none" },
     stt_model: { value: "gpt-4o-mini-transcribe", source: "default" },
+    stt_models: {
+      openai: { value: "gpt-4o-mini-transcribe", source: "default" },
+      groq: { value: "whisper-large-v3-turbo", source: "default" },
+    },
+    suggested_stt_models: ["gpt-4o-mini-transcribe", "whisper-1"],
+    suggested_stt_models_by_provider: {
+      openai: ["gpt-4o-mini-transcribe", "whisper-1"],
+      groq: ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
+    },
+    stt_providers: [
+      { id: "openai", label: "OpenAI" },
+      { id: "groq", label: "Groq" },
+    ],
+    tts_providers: [{ id: "openai", label: "OpenAI" }],
     tts_model: { value: "gpt-4o-mini-tts", source: "default" },
     tts_voice: { value: "alloy", source: "default" },
     suggested_tts_voices: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
@@ -42,6 +58,7 @@ const emptySettings = {
   },
   credentials: {
     openai: { configured: false, hint: null, source: "none" },
+    groq: { configured: false, hint: null, source: "none" },
     anthropic: { configured: false, hint: null, source: "none" },
     oauth: {
       configured: false,
@@ -71,6 +88,7 @@ const configuredSettings = {
   },
   credentials: {
     openai: { configured: true, hint: "sk-a…mnop", source: "config" },
+    groq: { configured: false, hint: null, source: "none" },
     anthropic: { configured: true, hint: "ant-…here", source: "env" },
     oauth: emptySettings.credentials.oauth,
   },
@@ -109,6 +127,7 @@ export const Empty: Story = {
     await expect(canvas.findByDisplayValue(/Anthropic \(API key\)/)).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
     await expect(canvas.findByText("OpenAI API key")).resolves.toBeVisible();
+    await expect(canvas.findByText("Groq API key")).resolves.toBeVisible();
     await expect(canvas.findByText("Anthropic API key")).resolves.toBeVisible();
     await expect(canvas.findByRole("button", { name: /Authorize Codex/ })).resolves.toBeVisible();
   },
@@ -132,6 +151,7 @@ const envBackedSettings = {
   },
   credentials: {
     openai: { configured: true, hint: "sk-p…9f2c", source: "env" },
+    groq: { configured: false, hint: null, source: "none" },
     anthropic: { configured: true, hint: "ant-…here", source: "env" },
     oauth: emptySettings.credentials.oauth,
   },

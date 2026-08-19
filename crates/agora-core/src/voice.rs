@@ -1,6 +1,9 @@
-//! Speech-to-text and text-to-speech via OpenAI's audio APIs.
+//! Speech-to-text and text-to-speech HTTP clients.
 //!
-//! Pure HTTP client: keys and models come from the caller ([`crate::config::Config::voice`]).
+//! STT: OpenAI or Groq (OpenAI-compatible multipart transcriptions).
+//! TTS: OpenAI only for now.
+//!
+//! Keys and models come from the caller ([`crate::config::Config::voice`]).
 //! Endpoints stay hard-coded — an admin-settable base URL would be an SSRF /
 //! key-exfiltration primitive. Powers `/api/channels/{id}/voice` and
 //! `/api/messages/{id}/speech`.
@@ -13,9 +16,11 @@ const MAX_TTS_CHARS: usize = 4000;
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
-const OPENAI_TRANSCRIPTIONS_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
+pub const OPENAI_TRANSCRIPTIONS_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
+pub const GROQ_TRANSCRIPTIONS_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
 const OPENAI_SPEECH_URL: &str = "https://api.openai.com/v1/audio/speech";
 const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
+const GROQ_MODELS_URL: &str = "https://api.groq.com/openai/v1/models";
 
 /// Clip overly long replies at a sentence-ish boundary for speech.
 pub fn clip_for_tts(text: &str) -> String {
@@ -32,9 +37,23 @@ pub fn clip_for_tts(text: &str) -> String {
     }
 }
 
+pub fn transcription_url(stt_provider: &str) -> &'static str {
+    match stt_provider {
+        crate::config::VOICE_PROVIDER_GROQ => GROQ_TRANSCRIPTIONS_URL,
+        _ => OPENAI_TRANSCRIPTIONS_URL,
+    }
+}
+
 /// Transcribe an audio clip (webm/ogg/m4a/wav…). The API infers the codec
 /// from the filename extension. Blocking — run via `spawn_blocking`.
-pub fn transcribe(key: &str, data: &[u8], filename: &str, model: &str) -> anyhow::Result<String> {
+pub fn transcribe(
+    stt_provider: &str,
+    key: &str,
+    data: &[u8],
+    filename: &str,
+    model: &str,
+) -> anyhow::Result<String> {
+    let url = transcription_url(stt_provider);
     let boundary = format!("agora{}", crate::store::new_token());
     let mut body: Vec<u8> = Vec::with_capacity(data.len() + 512);
     let part = |body: &mut Vec<u8>, headers: &str| {
@@ -63,7 +82,12 @@ pub fn transcribe(key: &str, data: &[u8], filename: &str, model: &str) -> anyhow
     body.extend_from_slice(data);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
-    let response = ureq::post(OPENAI_TRANSCRIPTIONS_URL)
+    let provider_label = if stt_provider == crate::config::VOICE_PROVIDER_GROQ {
+        "Groq"
+    } else {
+        "OpenAI"
+    };
+    let response = ureq::post(url)
         .timeout(TIMEOUT)
         .set("Authorization", &format!("Bearer {key}"))
         .set(
@@ -71,7 +95,7 @@ pub fn transcribe(key: &str, data: &[u8], filename: &str, model: &str) -> anyhow
             &format!("multipart/form-data; boundary={boundary}"),
         )
         .send_bytes(&body)
-        .map_err(flatten_api_error)?;
+        .map_err(|e| flatten_api_error(provider_label, e))?;
     let parsed: serde_json::Value = response.into_json()?;
     Ok(parsed["text"]
         .as_str()
@@ -81,7 +105,7 @@ pub fn transcribe(key: &str, data: &[u8], filename: &str, model: &str) -> anyhow
 }
 
 /// Render text to MP3 bytes (Safari's `<audio>` can't decode Opus).
-/// Blocking — run via `spawn_blocking`.
+/// Blocking — run via `spawn_blocking`. OpenAI only for now.
 pub fn synthesize(key: &str, text: &str, model: &str, voice: &str) -> anyhow::Result<Vec<u8>> {
     let input = clip_for_tts(text);
     anyhow::ensure!(!input.is_empty(), "nothing to speak");
@@ -94,7 +118,7 @@ pub fn synthesize(key: &str, text: &str, model: &str, voice: &str) -> anyhow::Re
             "input": input,
             "response_format": "mp3",
         }))
-        .map_err(flatten_api_error)?;
+        .map_err(|e| flatten_api_error("OpenAI", e))?;
     let mut audio = Vec::new();
     response
         .into_reader()
@@ -104,21 +128,31 @@ pub fn synthesize(key: &str, text: &str, model: &str, voice: &str) -> anyhow::Re
     Ok(audio)
 }
 
-/// Cheap auth/connectivity probe for the admin "Test connection" button.
-/// Lists models — no billed audio generation.
+/// Cheap auth/connectivity probe for OpenAI (lists models — no billed audio).
 pub fn test_connection(key: &str) -> anyhow::Result<()> {
     let response = ureq::get(OPENAI_MODELS_URL)
         .timeout(Duration::from_secs(30))
         .set("Authorization", &format!("Bearer {key}"))
         .call()
-        .map_err(flatten_api_error)?;
+        .map_err(|e| flatten_api_error("OpenAI", e))?;
+    let _ = response.into_string()?;
+    Ok(())
+}
+
+/// Cheap auth/connectivity probe for Groq.
+pub fn test_connection_groq(key: &str) -> anyhow::Result<()> {
+    let response = ureq::get(GROQ_MODELS_URL)
+        .timeout(Duration::from_secs(30))
+        .set("Authorization", &format!("Bearer {key}"))
+        .call()
+        .map_err(|e| flatten_api_error("Groq", e))?;
     let _ = response.into_string()?;
     Ok(())
 }
 
 /// Pull the API's error message out of a non-2xx response so logs say
 /// "invalid api key" instead of just "status 401".
-fn flatten_api_error(e: ureq::Error) -> anyhow::Error {
+fn flatten_api_error(provider: &str, e: ureq::Error) -> anyhow::Error {
     match e {
         ureq::Error::Status(code, response) => {
             let body = response.into_string().unwrap_or_default();
@@ -127,7 +161,7 @@ fn flatten_api_error(e: ureq::Error) -> anyhow::Error {
                 .and_then(|v| v["error"]["message"].as_str().map(String::from))
                 .unwrap_or(body);
             anyhow::anyhow!(
-                "OpenAI API error {code}: {}",
+                "{provider} API error {code}: {}",
                 detail.chars().take(300).collect::<String>()
             )
         }
@@ -146,5 +180,18 @@ mod tests {
         let clipped = clip_for_tts(&long);
         assert!(clipped.len() <= MAX_TTS_CHARS);
         assert!(clipped.ends_with('.'));
+    }
+
+    #[test]
+    fn transcription_url_dispatches_openai_and_groq() {
+        assert_eq!(
+            transcription_url(crate::config::VOICE_PROVIDER_OPENAI),
+            OPENAI_TRANSCRIPTIONS_URL
+        );
+        assert_eq!(
+            transcription_url(crate::config::VOICE_PROVIDER_GROQ),
+            GROQ_TRANSCRIPTIONS_URL
+        );
+        assert!(GROQ_TRANSCRIPTIONS_URL.contains("api.groq.com"));
     }
 }

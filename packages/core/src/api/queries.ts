@@ -1063,7 +1063,7 @@ export function useUpdateInstanceAi() {
 export function useTestInstanceAi() {
   const api = useApi();
   return useMutation({
-    mutationFn: (provider: "openai" | "anthropic" | "codex") =>
+    mutationFn: (provider: "openai" | "groq" | "anthropic" | "codex") =>
       api.post<{ ok: boolean; provider: string }>("/api/instance/ai/test", { provider }),
   });
 }
