@@ -6,8 +6,8 @@
 
 import type { WsEvent } from "../api/types";
 
-export const BACKOFF_START = 1000;
-export const BACKOFF_CAP = 30_000;
+const BACKOFF_START = 1000;
+const BACKOFF_CAP = 30_000;
 
 /** Minimal surface the lifecycle needs — real WebSocket or a test double. */
 export interface AgoraWebSocket {

@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   applyWsEvent,
   createAgoraSocket,
+  resetSeenMessageIds,
   type Message,
 } from "@agora/core";
 import { sessionToken } from "../lib/auth";
@@ -19,6 +20,7 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
 
   useEffect(() => {
     if (!username) return;
+    resetSeenMessageIds(qc);
 
     const url = () => {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";

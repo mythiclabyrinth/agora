@@ -8,6 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   applyWsEvent,
   createAgoraSocket,
+  resetSeenMessageIds,
   wsUrl,
   type Message,
   type Session,
@@ -24,6 +25,9 @@ export function useAgoraSocket(
   onAgentMessageRef.current = onAgentMessage;
 
   useEffect(() => {
+    // Ids are per-instance rowids; drop the seen-set when baseUrl/token
+    // changes so a server switch can't silently swallow real frames.
+    resetSeenMessageIds(qc);
     const sock = createAgoraSocket(
       { url: () => wsUrl(session) },
       {

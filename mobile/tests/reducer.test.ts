@@ -13,6 +13,7 @@ import type {
 import { useLive } from "@agora/core";
 import {
   appendMessage,
+  applyMessageDelete,
   applyMessageToGroups,
   applyReadToGroups,
   applyReplyToThreads,
@@ -526,5 +527,23 @@ describe("message_delete frames", () => {
     expect(replies.pages[0].map((m) => m.id)).toEqual([8]);
     const top = qc.getQueryData<MessagePages>(keys.messages("general-1a2b", null))!;
     expect(top.pages[0][0].reply_count).toBe(1);
+  });
+
+  it("delete-own-reply plus WS echo only drops reply_count once", () => {
+    qc.setQueryData(keys.messages("general-1a2b", null), pages([msg({ id: 5, reply_count: 2 })]));
+    qc.setQueryData(
+      keys.messages("general-1a2b", 5),
+      pages([msg({ id: 7, thread_id: 5 }), msg({ id: 8, thread_id: 5 })]),
+    );
+    const ev = {
+      type: "message_delete" as const,
+      channel_id: "general-1a2b",
+      message_id: 7,
+      thread_id: 5,
+    };
+    applyMessageDelete(qc, ev);
+    applyWsEvent(qc, ev, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("general-1a2b", null))!.pages[0][0].reply_count)
+      .toBe(1);
   });
 });

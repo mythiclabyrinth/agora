@@ -244,11 +244,13 @@ export function applyAliasToPages(
 }
 
 /** Scrub a deleted message from every cache that may hold it. Shared by the
-    WS case and useDeleteMessage's onSuccess (the echo then no-ops). A root
-    takes its whole thread with it server-side, so its reply page set and
-    single-message cache go too; pins/stars/threads rows may reference the
-    id, so those refetch. */
+    WS case and useDeleteMessage's onSuccess — the echo is a no-op because
+    we claim the deleted id (removeMessage alone is idempotent, but
+    dropReplyCount is not). A root takes its whole thread with it
+    server-side, so its reply page set and single-message cache go too;
+    pins/stars/threads rows may reference the id, so those refetch. */
 export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): void {
+  if (!claimId(deletedMessageIds, qc, ev.message_id)) return;
   qc.setQueryData<MessagePages>(
     keys.messages(ev.channel_id, ev.thread_id),
     (data) => removeMessage(data, ev.message_id),
@@ -276,18 +278,25 @@ export interface WsContext {
   onAgentMessage?: (message: Message) => void;
 }
 
-/** Per-QueryClient set of message ids already applied via applyWsEvent.
-    Written only here — never from optimistic mutation paths — so the WS
-    echo of an own reply still runs bumpReplyCount. Caps at SEEN_CAP with
-    FIFO eviction so a burst of duplicate sockets can't grow unbounded. */
+/** Per-QueryClient sets of ids already applied via applyWsEvent /
+    applyMessageDelete. Message ids are claimed only inside applyWsEvent —
+    never from optimistic mutation paths — so the WS echo of an own reply
+    still runs bumpReplyCount. Delete ids are claimed inside
+    applyMessageDelete so the mutation onSuccess + WS echo share one gate.
+    Caps at SEEN_CAP with FIFO eviction. */
 const SEEN_CAP = 512;
 const seenMessageIds = new WeakMap<QueryClient, Set<number>>();
+const deletedMessageIds = new WeakMap<QueryClient, Set<number>>();
 
-function claimMessageId(qc: QueryClient, id: number): boolean {
-  let seen = seenMessageIds.get(qc);
+function claimId(
+  map: WeakMap<QueryClient, Set<number>>,
+  qc: QueryClient,
+  id: number,
+): boolean {
+  let seen = map.get(qc);
   if (!seen) {
     seen = new Set();
-    seenMessageIds.set(qc, seen);
+    map.set(qc, seen);
   }
   if (seen.has(id)) return false;
   seen.add(id);
@@ -295,6 +304,15 @@ function claimMessageId(qc: QueryClient, id: number): boolean {
     seen.delete(seen.values().next().value!);
   }
   return true;
+}
+
+/** Drop the per-client seen/deleted id sets. Call next to `QueryClient.clear()`
+    on sign-out, and when the live socket reconnects against a new server —
+    message ids are per-instance rowids, so a stale set silently drops real
+    frames after a server switch. */
+export function resetSeenMessageIds(qc: QueryClient): void {
+  seenMessageIds.delete(qc);
+  deletedMessageIds.delete(qc);
 }
 
 export function applyWsEvent(
@@ -308,7 +326,7 @@ export function applyWsEvent(
       // Duplicate frames (leaked sockets) must not re-bump reply/unread
       // counters — appendMessage already dedupes the list, but the bump
       // helpers do not.
-      if (!claimMessageId(qc, message.id)) return;
+      if (!claimId(seenMessageIds, qc, message.id)) return;
       qc.setQueryData<MessagePages>(
         keys.messages(message.channel_id, message.thread_id),
         (data) => appendMessage(data, message),

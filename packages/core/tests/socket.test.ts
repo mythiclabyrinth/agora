@@ -125,4 +125,39 @@ describe("createAgoraSocket", () => {
     sock.wake();
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
+
+  it("close() schedules no further reconnects", async () => {
+    const sock = createAgoraSocket(
+      { url: () => "ws://test/ws", WebSocketImpl: FakeWS },
+      { onEvent: () => {} },
+    );
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    sock.close();
+    // Closing the live socket (or a late onclose) must not reconnect.
+    FakeWebSocket.instances[0].close();
+    await vi.runAllTimersAsync();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(sock.current()).toBeNull();
+  });
+
+  it("onReopen fires only from the second successful open onward", async () => {
+    const reopens: number[] = [];
+    const sock = createAgoraSocket(
+      { url: () => "ws://test/ws", WebSocketImpl: FakeWS },
+      { onEvent: () => {}, onReopen: () => reopens.push(1) },
+    );
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    expect(reopens).toHaveLength(0);
+
+    FakeWebSocket.instances[0].close();
+    // FakeWebSocket.close fires onclose via microtask; flush it so the
+    // reconnect timer is scheduled before we advance fake timers.
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    FakeWebSocket.instances[1].open();
+    expect(reopens).toHaveLength(1);
+  });
 });
