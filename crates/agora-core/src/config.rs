@@ -289,13 +289,9 @@ pub struct AiSearchSettings {
     /// Anthropic Messages API key. OpenAI Ask AI shares [`AiVoiceSettings::api_key`].
     #[serde(default)]
     pub api_key: String,
-    /// Per-provider model overrides (preferred).
+    /// Per-provider model overrides. Empty slots resolve to the provider default.
     #[serde(default)]
     pub models: AiSearchModels,
-    /// Legacy single-model override. Migrated into [`Self::models`] for the
-    /// active provider on load; still read as a fallback until cleared.
-    #[serde(default)]
-    pub model: String,
     /// Codex / ChatGPT OAuth refresh token (provider=`codex`). Never folded
     /// from env at boot.
     #[serde(default)]
@@ -315,7 +311,6 @@ impl Default for AiSearchSettings {
             provider: default_search_provider(),
             api_key: String::new(),
             models: AiSearchModels::default(),
-            model: String::new(),
             codex_refresh_token: String::new(),
             codex_access_token: String::new(),
             codex_account_id: String::new(),
@@ -512,7 +507,6 @@ impl Config {
                 pairing.id = new_token();
             }
         }
-        migrate_legacy_search_model(&mut data.ai.search);
         let cfg = Self {
             path,
             data: Mutex::new(data),
@@ -684,17 +678,17 @@ impl Config {
         }
     }
 
-    /// Resolve Ask-AI settings. Env values are never folded into config.json
-    /// at boot (same rule as voice).
+    /// Resolve Ask-AI settings. Env key fallbacks are never folded into
+    /// config.json at boot (same rule as voice).
     ///
     /// OpenAI Ask AI shares the voice OpenAI key (`ai.voice.api_key` /
     /// `OPENAI_API_KEY`). Anthropic uses `ai.search.api_key` /
-    /// `ANTHROPIC_API_KEY`. Models are per-provider.
+    /// `ANTHROPIC_API_KEY`. Models come from per-provider Settings overrides
+    /// or the hard-coded provider default — never from process env.
     pub fn search_ai(
         &self,
         anthropic_api_key_env: Option<&str>,
         openai_api_key_env: Option<&str>,
-        agora_ai_model_env: Option<&str>,
     ) -> ResolvedSearchAi {
         let data = self.data.lock().unwrap();
         let s = &data.ai.search;
@@ -713,17 +707,10 @@ impl Config {
             SEARCH_PROVIDER_ANTHROPIC => resolve_secret(&s.api_key, anthropic_api_key_env),
             _ => (None, AiFieldSource::None),
         };
-        // `AGORA_AI_MODEL` is the legacy Anthropic-only knob — do not apply it
-        // to openai/codex or a deployment with `AGORA_AI_MODEL=claude-…` would
-        // send Claude model ids to OpenAI the moment an admin switches provider.
         let models = ResolvedSearchModels {
-            anthropic: resolve_provider_model(
-                &s.models,
-                SEARCH_PROVIDER_ANTHROPIC,
-                agora_ai_model_env,
-            ),
-            openai: resolve_provider_model(&s.models, SEARCH_PROVIDER_OPENAI, None),
-            codex: resolve_provider_model(&s.models, SEARCH_PROVIDER_CODEX, None),
+            anthropic: resolve_provider_model(&s.models, SEARCH_PROVIDER_ANTHROPIC),
+            openai: resolve_provider_model(&s.models, SEARCH_PROVIDER_OPENAI),
+            codex: resolve_provider_model(&s.models, SEARCH_PROVIDER_CODEX),
         };
         let (model, model_source) = match provider.as_str() {
             SEARCH_PROVIDER_OPENAI => models.openai.clone(),
@@ -797,32 +784,12 @@ impl Config {
 
 /// Fold the legacy single `model` into the active provider's slot once, then
 /// clear it so a later provider switch cannot resurrect a foreign model.
-fn migrate_legacy_search_model(search: &mut AiSearchSettings) {
-    let legacy = search.model.trim().to_string();
-    if legacy.is_empty() {
-        return;
-    }
-    let provider = {
-        let p = search.provider.trim();
-        if p.is_empty() || !is_supported_search_provider(p) {
-            DEFAULT_SEARCH_PROVIDER
-        } else {
-            p
-        }
-    };
-    if search.models.get(provider).is_empty() {
-        search.models.set(provider, legacy);
-    }
-    search.model.clear();
-}
-
 fn resolve_provider_model(
     models: &AiSearchModels,
     provider: &str,
-    agora_ai_model_env: Option<&str>,
 ) -> (String, AiFieldSource) {
     let default = default_model_for_search_provider(provider);
-    resolve_setting(models.get(provider), agora_ai_model_env, default)
+    resolve_setting(models.get(provider), None, default)
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -1034,17 +1001,17 @@ mod tests {
     }
 
     #[test]
-    fn search_ai_resolver_uses_agora_ai_model_env() {
+    fn search_ai_resolver_uses_config_model_then_default() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::load(dir.path()).unwrap();
-        let s = cfg.search_ai(Some("ant-key"), None, Some("claude-opus-5"));
+        let s = cfg.search_ai(Some("ant-key"), None);
         assert!(s.available());
-        assert_eq!(s.model, "claude-opus-5");
-        assert_eq!(s.model_source, AiFieldSource::Env);
+        assert_eq!(s.model, DEFAULT_SEARCH_MODEL);
+        assert_eq!(s.model_source, AiFieldSource::Default);
         cfg.update(|c| {
             c.ai.search.models.anthropic = "claude-haiku-4-5-20251001".into();
         });
-        let s = cfg.search_ai(Some("ant-key"), None, Some("claude-opus-5"));
+        let s = cfg.search_ai(Some("ant-key"), None);
         assert_eq!(s.model, "claude-haiku-4-5-20251001");
         assert_eq!(s.model_source, AiFieldSource::Config);
     }
@@ -1054,7 +1021,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::load(dir.path()).unwrap();
         cfg.update(|c| c.ai.search.provider = SEARCH_PROVIDER_OPENAI.into());
-        let s = cfg.search_ai(Some("ant"), Some("sk-openai"), None);
+        let s = cfg.search_ai(Some("ant"), Some("sk-openai"));
         assert!(s.available());
         assert_eq!(s.api_key.as_deref(), Some("sk-openai"));
         assert_eq!(s.model, crate::ai::DEFAULT_OPENAI_SEARCH_MODEL);
@@ -1068,7 +1035,7 @@ mod tests {
             c.ai.search.provider = SEARCH_PROVIDER_OPENAI.into();
             c.ai.voice.api_key = "sk-voice".into();
         });
-        let s = cfg.search_ai(None, Some("sk-env"), None);
+        let s = cfg.search_ai(None, Some("sk-env"));
         assert_eq!(s.api_key.as_deref(), Some("sk-voice"));
         assert_eq!(s.api_key_source, AiFieldSource::Config);
     }
@@ -1082,10 +1049,10 @@ mod tests {
             c.ai.search.models.openai = "gpt-4.1".into();
             c.ai.search.provider = SEARCH_PROVIDER_ANTHROPIC.into();
         });
-        let s = cfg.search_ai(Some("ant"), Some("sk"), None);
+        let s = cfg.search_ai(Some("ant"), Some("sk"));
         assert_eq!(s.model, "claude-opus-5");
         cfg.update(|c| c.ai.search.provider = SEARCH_PROVIDER_OPENAI.into());
-        let s = cfg.search_ai(Some("ant"), Some("sk"), None);
+        let s = cfg.search_ai(Some("ant"), Some("sk"));
         assert_eq!(s.model, "gpt-4.1");
         assert_eq!(s.models.anthropic.0, "claude-opus-5");
         // Never emit the anthropic override while on openai.
@@ -1093,32 +1060,30 @@ mod tests {
     }
 
     #[test]
-    fn agora_ai_model_env_scopes_to_anthropic_only() {
+    fn search_ai_defaults_are_independent_per_provider() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::load(dir.path()).unwrap();
-        // Empty per-provider overrides: env must not leak Claude ids into
-        // openai/codex when an admin switches provider in the Features tab.
-        let resolved = cfg.search_ai(Some("ant"), Some("sk"), Some("claude-sonnet-5"));
-        assert_eq!(resolved.models.anthropic.0, "claude-sonnet-5");
-        assert_eq!(resolved.models.anthropic.1, AiFieldSource::Env);
+        let resolved = cfg.search_ai(Some("ant"), Some("sk"));
+        assert_eq!(resolved.models.anthropic.0, DEFAULT_SEARCH_MODEL);
+        assert_eq!(resolved.models.anthropic.1, AiFieldSource::Default);
         assert_eq!(resolved.models.openai.0, crate::ai::DEFAULT_OPENAI_SEARCH_MODEL);
         assert_eq!(resolved.models.openai.1, AiFieldSource::Default);
         assert_eq!(resolved.models.codex.0, crate::codex_oauth::DEFAULT_CODEX_MODEL);
         assert_eq!(resolved.models.codex.1, AiFieldSource::Default);
 
         cfg.update(|c| c.ai.search.provider = SEARCH_PROVIDER_OPENAI.into());
-        let s = cfg.search_ai(Some("ant"), Some("sk"), Some("claude-sonnet-5"));
+        let s = cfg.search_ai(Some("ant"), Some("sk"));
         assert_eq!(s.model, crate::ai::DEFAULT_OPENAI_SEARCH_MODEL);
-        assert_ne!(s.model, "claude-sonnet-5");
 
         cfg.update(|c| c.ai.search.provider = SEARCH_PROVIDER_CODEX.into());
-        let s = cfg.search_ai(None, None, Some("claude-sonnet-5"));
+        let s = cfg.search_ai(None, None);
         assert_eq!(s.model, crate::codex_oauth::DEFAULT_CODEX_MODEL);
-        assert_ne!(s.model, "claude-sonnet-5");
     }
 
     #[test]
-    fn legacy_search_model_migrates_into_active_provider_slot() {
+    fn legacy_top_level_search_model_in_config_is_ignored() {
+        // Pre-per-provider configs used ai.search.model. That field is gone;
+        // unknown JSON keys are ignored and the provider default applies.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
@@ -1128,10 +1093,9 @@ mod tests {
         .unwrap();
         let cfg = Config::load(dir.path()).unwrap();
         let snap = cfg.snapshot();
-        assert_eq!(snap.ai.search.models.anthropic, "claude-opus-5");
-        assert!(snap.ai.search.model.is_empty());
+        assert!(snap.ai.search.models.anthropic.is_empty());
         cfg.update(|c| c.ai.search.provider = SEARCH_PROVIDER_OPENAI.into());
-        let s = cfg.search_ai(None, Some("sk"), None);
+        let s = cfg.search_ai(None, Some("sk"));
         assert_eq!(s.model, crate::ai::DEFAULT_OPENAI_SEARCH_MODEL);
     }
 
@@ -1144,7 +1108,7 @@ mod tests {
             c.ai.search.codex_refresh_token = "rt".into();
             c.ai.search.codex_account_id = "acct".into();
         });
-        let s = cfg.search_ai(None, None, None);
+        let s = cfg.search_ai(None, None);
         assert!(s.available());
         assert!(s.oauth_configured);
         assert_eq!(s.account_id, "acct");

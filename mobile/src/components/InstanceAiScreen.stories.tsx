@@ -72,7 +72,7 @@ const configuredSettings = {
 };
 
 const meta = {
-  title: "Native/Screens/AI and voice",
+  title: "Native/Screens/Instance settings",
   component: InstanceAiScreen,
   parameters: {
     apiRoutes: {

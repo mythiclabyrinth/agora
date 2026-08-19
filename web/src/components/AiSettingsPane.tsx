@@ -1,6 +1,5 @@
-/* Instance-admin AI & voice settings.
-   Features tab = provider + models (no secrets).
-   Credentials tab = OpenAI/Anthropic keys + ChatGPT OAuth. */
+/* Instance-admin Settings: shell for instance-wide options.
+   Today: Features + Credentials for voice / Ask AI. More tabs can land here later. */
 
 import { useEffect, useState } from "react";
 import {
@@ -396,18 +395,18 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
 export function AiSettingsPane() {
   const ui = useUiState();
   const me = useMe().data;
-  const open = ui.panel === "ai";
+  const open = ui.panel === "settings";
   const q = useInstanceAi(open && !!me?.instance_admin);
   const [tab, setTab] = useState<"features" | "credentials">("features");
 
   if (!open) return null;
 
   return (
-    <div className="conn-overlay" id="ai-overlay"
+    <div className="conn-overlay" id="settings-overlay"
       onClick={e => { if (e.target === e.currentTarget) ui.openPanel(null); }}>
-      <div className="conn-panel" id="ai-panel">
+      <div className="conn-panel" id="settings-panel">
         <div className="conn-head">
-          <b>AI &amp; voice</b>
+          <b>Settings</b>
           <button className="btn sm" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
         </div>
         <div className="conn-tabs" role="tablist">

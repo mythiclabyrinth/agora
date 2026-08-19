@@ -358,7 +358,7 @@ export default function InstanceAiScreen() {
   if (me.isSuccess && !isAdmin) {
     return (
       <>
-        <Stack.Screen options={{ title: "AI & voice", headerShown: true }} />
+        <Stack.Screen options={{ title: "Settings", headerShown: true }} />
         <View style={[styles.root, styles.content]}>
           <Text style={styles.hint}>Instance admin access required.</Text>
         </View>
@@ -368,7 +368,7 @@ export default function InstanceAiScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "AI & voice", headerShown: true }} />
+      <Stack.Screen options={{ title: "Settings", headerShown: true }} />
       <ScrollView
         style={styles.root}
         contentContainerStyle={styles.content}

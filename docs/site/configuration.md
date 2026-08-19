@@ -41,7 +41,6 @@ overwrite a UI-set key):
 | --- | --- |
 | `OPENAI_API_KEY` | Voice (OpenAI STT/TTS); also Ask AI when provider is `openai` |
 | `ANTHROPIC_API_KEY` | Ask AI when provider is `anthropic` |
-| `AGORA_AI_MODEL` | Ask AI model override for the **Anthropic** provider only (legacy). OpenAI / Codex use their own defaults or per-provider saved models. |
 
 Ask AI **providers** (set in the UI Features tab):
 

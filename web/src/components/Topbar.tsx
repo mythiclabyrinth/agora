@@ -1,5 +1,5 @@
 /* Topbar: brand, server badge, self-rename button, and the operator-only
-   People/Connections buttons. */
+   People / Connections / Settings buttons. */
 
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -67,10 +67,10 @@ export function Topbar() {
         <button className="btn sm" id="btn-people" onClick={() => openPanel("people")}>People</button>
       )}
       {isAdmin && (
-        <button className="btn sm" id="btn-ai" onClick={() => openPanel("ai")}>AI &amp; voice</button>
+        <button className="btn sm" id="btn-connections" onClick={() => openPanel("connections")}>Connections</button>
       )}
       {isAdmin && (
-        <button className="btn sm" id="btn-connections" onClick={() => openPanel("connections")}>Connections</button>
+        <button className="btn sm" id="btn-settings" onClick={() => openPanel("settings")}>Settings</button>
       )}
     </div>
   );

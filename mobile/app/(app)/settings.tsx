@@ -226,9 +226,9 @@ export default function SettingsScreen() {
           <Link href="/(app)/instance-ai" asChild>
             <Pressable style={styles.agentHub} accessibilityRole="button">
               <View style={{ flex: 1 }}>
-                <Text style={styles.agentHubTitle}>AI & voice</Text>
+                <Text style={styles.agentHubTitle}>Instance settings</Text>
                 <Text style={styles.meta}>
-                  OpenAI voice and Ask AI (Anthropic / OpenAI key / Codex OAuth) for this instance.
+                  Voice, Ask AI providers, and credentials for this Agora.
                 </Text>
               </View>
               <Text style={styles.agentHubArrow}>›</Text>

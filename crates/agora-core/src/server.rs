@@ -3129,12 +3129,7 @@ fn resolved_voice(state: &AppState) -> crate::config::ResolvedVoice {
 fn resolved_search_ai(state: &AppState) -> crate::config::ResolvedSearchAi {
     let anthropic = env_opt("ANTHROPIC_API_KEY");
     let openai = env_opt("OPENAI_API_KEY");
-    let env_model = env_opt("AGORA_AI_MODEL");
-    state.config.search_ai(
-        anthropic.as_deref(),
-        openai.as_deref(),
-        env_model.as_deref(),
-    )
+    state.config.search_ai(anthropic.as_deref(), openai.as_deref())
 }
 
 /// Refresh Codex OAuth if we only have a refresh token. Blocking — call from
@@ -3343,10 +3338,8 @@ async fn update_instance_ai(
                 }
             }
             // Model fields are overrides, not values: an explicit "" clears
-            // the override so resolution falls back to env/default. Omitting
-            // the field leaves it alone. Without this there is no way back to
-            // `default`, and saving a pre-filled form would silently pin the
-            // stock model into config and shadow `AGORA_AI_MODEL` forever.
+            // the override so resolution falls back to the hard-coded default.
+            // Omitting the field leaves it alone.
             if let Some(m) = v.get("stt_model").and_then(|x| x.as_str()) {
                 c.ai.voice.stt_model = m.trim().chars().take(120).collect();
             }
@@ -3412,12 +3405,10 @@ async fn update_instance_ai(
                             .set(prov, m.trim().chars().take(120).collect());
                     }
                 }
-                c.ai.search.model.clear();
             } else if let Some(m) = s.get("model").and_then(|x| x.as_str()) {
                 c.ai.search
                     .models
                     .set(&model_provider, m.trim().chars().take(120).collect());
-                c.ai.search.model.clear();
             }
         }
         if let Some(cred) = payload.get("credentials") {
@@ -4775,10 +4766,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_model_clears_the_override_so_env_and_defaults_win_again() {
-        // Model fields are overrides. Saving "" must return the field to
-        // default/env resolution — otherwise a pre-filled admin form pins the
-        // stock model into config on first save and AGORA_AI_MODEL is dead.
+    async fn empty_model_clears_the_override_so_defaults_win_again() {
+        // Model fields are overrides. Saving "" must return the field to the
+        // hard-coded default — otherwise a pre-filled admin form pins the
+        // stock model into config on first save.
         let (state, _dir) = test_state();
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -4822,17 +4813,12 @@ mod tests {
             cleared["search"]["model"]["value"],
             crate::config::DEFAULT_SEARCH_MODEL
         );
-        // The stored override really is empty, so env can win on next resolve.
         let snap = state.config.snapshot();
         assert!(snap.ai.voice.stt_model.is_empty());
-        assert!(snap.ai.search.model.is_empty());
         assert!(snap.ai.search.models.anthropic.is_empty());
         assert_eq!(
-            state
-                .config
-                .search_ai(Some("ant-key"), None, Some("claude-sonnet-5"))
-                .model_source,
-            crate::config::AiFieldSource::Env
+            state.config.search_ai(Some("ant-key"), None).model_source,
+            crate::config::AiFieldSource::Default
         );
     }
 

@@ -77,7 +77,7 @@ const putAi = fn(async (_body: unknown) => configuredSettings);
 const testAi = fn(async () => ({ ok: true, section: "voice" }));
 
 const meta = {
-  title: "Web/Connected/AI and voice settings",
+  title: "Web/Connected/Instance settings",
   component: AiSettingsPane,
   parameters: {
     apiRoutes: {
@@ -90,7 +90,7 @@ const meta = {
     setup: () => {
       putAi.mockClear();
       testAi.mockClear();
-      useUiState.setState({ panel: "ai" });
+      useUiState.setState({ panel: "settings" });
     },
   },
 } satisfies Meta<typeof AiSettingsPane>;
@@ -101,7 +101,7 @@ type Story = StoryObj<typeof meta>;
 export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.findByText("AI & voice")).resolves.toBeVisible();
+    await expect(canvas.findByText("Settings")).resolves.toBeVisible();
     await expect(canvas.findByRole("tab", { name: "Features" })).resolves.toBeVisible();
     await expect(canvas.findByDisplayValue(/Anthropic \(API key\)/)).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
