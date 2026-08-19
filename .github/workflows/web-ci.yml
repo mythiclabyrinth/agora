@@ -17,6 +17,7 @@ name: Web CI
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "web/**"
       - "packages/**"

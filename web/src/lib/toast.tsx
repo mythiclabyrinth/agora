@@ -12,7 +12,11 @@ export interface ToastItem {
   leaving?: boolean;
 }
 
+const TOAST_MS = 8000;
+const LEAVE_MS = 200;
+
 let nextId = 1;
+const dismissTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
 interface ToastState {
   toasts: ToastItem[];
@@ -20,17 +24,42 @@ interface ToastState {
   dismiss: (id: number) => void;
 }
 
+function clearDismissTimer(id: number): void {
+  const t = dismissTimers.get(id);
+  if (t != null) {
+    clearTimeout(t);
+    dismissTimers.delete(id);
+  }
+}
+
+function scheduleDismiss(id: number): void {
+  clearDismissTimer(id);
+  dismissTimers.set(
+    id,
+    setTimeout(() => useToasts.getState().dismiss(id), TOAST_MS),
+  );
+}
+
 export const useToasts = create<ToastState>((set, get) => ({
   toasts: [],
   push: (t) => {
+    // Same message already showing → refresh its timer instead of stacking.
+    const existing = get().toasts.find(
+      (x) => !x.leaving && x.message === t.message && x.variant === t.variant,
+    );
+    if (existing) {
+      scheduleDismiss(existing.id);
+      return;
+    }
     const id = nextId++;
     set((s) => ({ toasts: [...s.toasts, { ...t, id }] }));
-    setTimeout(() => get().dismiss(id), 8000);
+    scheduleDismiss(id);
   },
   dismiss: (id) => {
+    clearDismissTimer(id);
     set((s) => ({ toasts: s.toasts.map(t => t.id === id ? { ...t, leaving: true } : t) }));
     setTimeout(() =>
-      set((s) => ({ toasts: s.toasts.filter(t => t.id !== id) })), 200);
+      set((s) => ({ toasts: s.toasts.filter(t => t.id !== id) })), LEAVE_MS);
   },
 }));
 

@@ -206,6 +206,16 @@ run the first command, then flip the desktop app to remote mode
 | `public_url` | `""` | Public https origin used to build the OAuth redirect URI. |
 | `map_style_url` | `""` | MapLibre style URL for map artifacts; empty uses the built-in default, `"none"` disables external tiles. |
 
+Voice / Ask AI keys may be set by instance admins in the **Settings** UI
+(`ai` in `config.json`) or supplied as process-env fallbacks
+(`OPENAI_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`). Ask AI also supports provider
+`codex` (**Codex OAuth** via PKCE in Settings → Credentials). Voice STT can use
+`openai` or `groq`; TTS remains OpenAI for now. Models are set
+per provider in Settings → Features; for Codex OAuth the dropdown prefers the
+live Codex catalog when linked (else a hard-coded fallback).
+Env key fallbacks are **not** folded into `config.json` at boot — see
+[configuration.md](site/configuration.md#voice-and-ask-ai).
+
 `AGORA_*` environment overrides are written into `config.json` at boot, so
 unsetting one later keeps the last value rather than reverting.
 

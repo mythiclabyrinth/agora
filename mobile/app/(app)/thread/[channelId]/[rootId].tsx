@@ -83,7 +83,8 @@ export default function ThreadScreen() {
   const topLevel = useMessages(channelId, null);
   const send = useSendMessage(channelId);
   const sendVoice = useSendVoice(channelId);
-  const voiceOk = useSession((s) => s.voiceOk);
+  const sttOk = useSession((s) => s.sttOk);
+  const ttsOk = useSession((s) => s.ttsOk);
   const channelAgents = useChannelAgents(channelId);
   const stars = useStars(channelId);
   const markThreadRead = useMarkThreadRead(rootId);
@@ -194,7 +195,7 @@ export default function ThreadScreen() {
   const setSpeakAloud = usePrefs((s) => s.setSpeakAloud);
   useFocusEffect(
     useCallback(() => {
-      if (!voiceOk || !speakAloud) return;
+      if (!ttsOk || !speakAloud) return;
       void prepareSpeechAudio();
       const off = onAgentMessage((m) => {
         if (m.channel_id === channelId && m.thread_id === rootId) {
@@ -205,7 +206,7 @@ export default function ThreadScreen() {
         off();
         stopSpeech();
       };
-    }, [voiceOk, speakAloud, channelId, rootId, session]),
+    }, [ttsOk, speakAloud, channelId, rootId, session]),
   );
 
   /* 🎧 live voice scoped to this thread: turns post as replies here. */
@@ -324,7 +325,7 @@ export default function ThreadScreen() {
               >
                 <Icon icon={Paperclip} size={20} color={colors.text} />
               </Pressable>
-              {voiceOk ? <>
+              {ttsOk ? (
                 <Pressable
                   onPress={() => {
                     if (speakAloud) stopSpeech();
@@ -336,10 +337,12 @@ export default function ThreadScreen() {
                     <Icon icon={Volume2} size={20} color={colors.text} />
                   </View>
                 </Pressable>
+              ) : null}
+              {sttOk && ttsOk ? (
                 <Pressable onPress={openLive} hitSlop={8}>
                   <Icon icon={Headphones} size={20} color={colors.text} />
                 </Pressable>
-              </> : null}
+              ) : null}
             </View>,
           ),
         }}
@@ -414,7 +417,7 @@ export default function ThreadScreen() {
             await send.mutateAsync({ text, threadId: rootId, files, requireAgent });
           }}
           onSendVoice={
-            voiceOk
+            sttOk
               ? async (file, mentions, requireAgent) => {
                   await sendVoice.mutateAsync({
                     file,

@@ -171,16 +171,20 @@ that carried it, even when its text says nothing). Three ways in:
 
 ### AI answers (ask your history)
 
-With an `ANTHROPIC_API_KEY` in the server env, search grows an **Ask AI**
-mode: `POST /api/search/ask {"q": "what did we decide about the deploy?"}`
+With Ask AI configured (instance **AI & voice** settings — Anthropic API key,
+OpenAI API key, or Codex ChatGPT OAuth — or the matching env fallbacks),
+search grows an **Ask AI** mode:
+`POST /api/search/ask {"q": "what did we decide about the deploy?"}`
 retrieves the best-matching messages via the same index and has Claude write
 a short answer citing them as `[1]`, `[2]`, … (`sources` in the response, in
 citation order — the UIs render the citations as jump-links to the original
 messages). The desktop palette and the mobile search screen both surface it
-as an "Ask Agora AI" row whenever the key is configured (`search_ai` in
-`/api/me` advertises it). `AGORA_AI_MODEL` overrides the model (default
-`claude-sonnet-5`). Like voice's `OPENAI_API_KEY`, the key lives in the
-process env, never in `config.json`.
+as an "Ask Agora AI" row whenever the feature is available (`search_ai` in
+`/api/me`). The model comes from instance Settings (per provider), else the
+provider default (`claude-sonnet-5` for Anthropic, etc.). Voice works the same
+way with OpenAI (`OPENAI_API_KEY` / saved instance key). Keys may live in
+`config.json` (UI-set) or the process env (ops fallback); env is never written
+into `config.json` at boot.
 
 ## Notifications
 

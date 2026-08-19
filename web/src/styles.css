@@ -89,8 +89,8 @@ svg.ico.spin { animation: ico-spin 1s linear infinite; transform-origin: center;
 .topbar-me:hover { color: var(--text); background: rgba(255,255,255,.06); }
 .conn-row.disabled .conn-row-main { opacity: .55; }
 .conn-add select {
-  background: rgba(0,0,0,.25); border: 1px solid var(--border-strong); border-radius: 8px;
-  padding: 6px 9px; color: var(--text); font: inherit; font-size: 12.5px; outline: none;
+  background-color: rgba(0,0,0,.25); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 6px 28px 6px 9px; color: var(--text); font: inherit; font-size: 12.5px; outline: none;
 }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex-shrink: 0; display: inline-block; }
 .conn-dot.on { background: var(--green); }
@@ -114,24 +114,39 @@ svg.ico.spin { animation: ico-spin 1s linear infinite; transform-origin: center;
 a.btn { text-decoration: none; }
 .btn:disabled { opacity: .5; cursor: default; }
 
+/* Native <select>: OS carets sit flush to the edge. Hide them and draw our
+   own with a consistent inset. Rules that set `background:` must use
+   `background-color` instead so this image is preserved. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b91a5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
+}
+
 /* ---------- empty state ---------- */
 .empty { padding: 64px 20px; text-align: center; color: var(--dim); }
 .empty .glyph { font-size: 30px; margin-bottom: 12px; opacity: .5; }
 .empty .hint { font-size: 12.5px; color: var(--faint); margin-top: 6px; }
 
 /* ---------- toasts ---------- */
+/* Sit above modal overlays (conn 55, search 58, dm/map 80) so save/error
+   feedback stays readable while a panel is open. Opaque fill — panel-strong
+   is ~5% white and lets the dimmed UI bleed through the blur. */
 .toast-host {
-  position: fixed; left: 0; right: 0; bottom: 22px; z-index: 60;
-  display: flex; flex-direction: column-reverse; align-items: center; gap: 10px;
-  padding: 0 16px; pointer-events: none;
+  position: fixed; right: 0; bottom: 22px; z-index: 200;
+  display: flex; flex-direction: column-reverse; align-items: flex-end; gap: 10px;
+  padding: 0 16px; pointer-events: none; max-width: min(520px, 100%);
 }
 .toast {
   pointer-events: auto; display: flex; align-items: center; gap: 14px;
-  max-width: min(520px, 100%); padding: 12px 12px 12px 16px;
-  background: var(--panel-strong); border: 1px solid var(--border-strong);
+  width: max-content; max-width: 100%; padding: 12px 12px 12px 16px;
+  background: #10141f; border: 1px solid var(--border-strong);
   border-left: 3px solid var(--a1); border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(0,0,0,.45); color: var(--text);
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 12px 32px rgba(0,0,0,.55); color: var(--text);
   opacity: 0; transform: translateY(12px); transition: opacity .2s ease, transform .2s ease;
 }
 .toast.in { opacity: 1; transform: translateY(0); }
@@ -360,8 +375,8 @@ a.btn { text-decoration: none; }
   letter-spacing: .08em;
 }
 .ago-map-filters select {
-  max-width: 220px; min-width: 125px; color: var(--text); background: #111620;
-  border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 9px;
+  max-width: 220px; min-width: 125px; color: var(--text); background-color: #111620;
+  border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 28px 6px 9px;
   font: inherit; font-size: 11px;
 }
 .ago-map-filters > button {
@@ -1453,11 +1468,11 @@ a.btn { text-decoration: none; }
 .ago-role-select {
   appearance: none; -webkit-appearance: none; -moz-appearance: none;
   align-self: flex-start; max-width: 120px;
-  background: rgba(139,124,255,.12); border: 1px solid rgba(139,124,255,.35); border-radius: 7px;
+  background-color: rgba(139,124,255,.12); border: 1px solid rgba(139,124,255,.35); border-radius: 7px;
   color: var(--a1); font: inherit; font-size: 11.5px; font-weight: 700;
-  padding: 4px 24px 4px 8px; cursor: pointer;
+  padding: 4px 26px 4px 8px; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b7cff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 7px center; background-size: 12px 12px;
+  background-repeat: no-repeat; background-position: right 8px center; background-size: 12px 12px;
 }
 .ago-members-mode {
   display: flex; gap: 4px; padding: 10px 14px 6px;
@@ -1508,6 +1523,15 @@ a.btn { text-decoration: none; }
   background: #0d1018; border: 1px solid var(--border-strong); border-radius: 20px;
   box-shadow: 0 30px 80px rgba(0,0,0,.6); animation: rise .2s ease;
 }
+/* Settings keeps a stable pane height across Features / Credentials so adding
+   more credential rows scrolls inside the body instead of growing the modal. */
+#settings-panel.conn-panel {
+  height: min(640px, 86vh);
+}
+#settings-panel .conn-body {
+  flex: 1;
+  min-height: 0;
+}
 .conn-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 14px;
@@ -1539,6 +1563,26 @@ a.btn { text-decoration: none; }
 }
 .conn-add input:focus { border-color: var(--a1); }
 .conn-hint { font-size: 11.5px; color: var(--faint); margin: 8px 0 0; line-height: 1.5; }
+.ai-section { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
+.ai-section:first-of-type { border-top: none; padding-top: 0; }
+.ai-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ai-section-head h4 { margin: 0; }
+.ai-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: pointer; }
+.ai-row { display: grid; grid-template-columns: 90px 1fr; gap: 8px; align-items: start; margin-top: 10px; }
+.ai-row > label { font-size: 12px; color: var(--dim); padding-top: 8px; }
+.ai-row input, .ai-row textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 7px 10px; color: var(--text); font: inherit; font-size: 12px; outline: none;
+}
+.ai-row select {
+  width: 100%; background-color: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 7px 28px 7px 10px; color: var(--text); font: inherit; font-size: 12px; outline: none;
+}
+.ai-row textarea { resize: vertical; min-height: 64px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ai-key { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ai-key input { flex: 1 1 160px; min-width: 140px; }
+.ai-key-actions { display: flex; flex-wrap: nowrap; gap: 6px; flex: 0 0 auto; }
+.ai-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .conn-tabs {
   display: flex; gap: 4px; padding: 10px 20px 0;
   border-bottom: 1px solid var(--border);
@@ -1889,7 +1933,7 @@ a.btn { text-decoration: none; }
     order: -1; flex: 1 0 100%; width: 100%; font-size: 16px; padding: 10px 12px; min-width: 0;
   }
   .agora-main .chat-input .btn, .agora-thread .chat-input .btn { flex-shrink: 0; }
-  .toast-host { bottom: 14px; }
+  .toast-host { left: 0; bottom: 14px; align-items: stretch; max-width: none; }
   .toast { width: 100%; }
 }
 
@@ -1955,8 +1999,8 @@ a.btn { text-decoration: none; }
 .ago-search-bar input::placeholder { color: var(--faint); }
 .ago-search-panel:focus-within { border-color: rgba(139,124,255,.45); }
 .ago-search-scope {
-  flex-shrink: 0; max-width: 180px; padding: 4px 8px;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  flex-shrink: 0; max-width: 180px; padding: 4px 28px 4px 8px;
+  background-color: var(--panel); border: 1px solid var(--border); border-radius: 8px;
   color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; outline: none;
 }

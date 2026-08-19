@@ -18,6 +18,7 @@ import { AttachmentBrowser } from "./AttachmentBrowser";
 import { SearchPane } from "./SearchPane";
 import { PeoplePane } from "./PeoplePane";
 import { ConnectionsPane } from "./ConnectionsPane";
+import { AiSettingsPane } from "./AiSettingsPane";
 import { SourcesViewer } from "./SourcesViewer";
 import { AgentProfileCard } from "./AgentProfileCard";
 import { EmojiPickerHost } from "./EmojiPicker";
@@ -164,6 +165,7 @@ export function AgoraLayout() {
       <EmojiPickerHost onPick={(mid, emoji) => toggleReaction(mid, emoji)} />
       <SearchPane />
       <PeoplePane />
+      <AiSettingsPane />
       <ConnectionsPane />
       <SourcesViewer />
       <AgentProfileCard />

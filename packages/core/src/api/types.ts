@@ -12,9 +12,15 @@ export interface Me {
   max_file_mb?: number;
   /** Per-video upload limit advertised by current servers. */
   max_video_mb?: number;
-  /** Server has OPENAI_API_KEY: voice notes / speak-aloud / live voice work. */
+  /** Server has voice enabled (STT or TTS). Coarse; prefer the two flags
+      below. Missing credentials still advertise true when Enabled — clients
+      show the UI and surface errors at use time. */
   voice?: boolean;
-  /** Server has ANTHROPIC_API_KEY: /api/search/ask (Ask AI) works. */
+  /** Speech-to-text Enabled: show the composer mic / voice notes. */
+  voice_stt?: boolean;
+  /** Text-to-speech Enabled: show speak-aloud. Live voice needs both. */
+  voice_tts?: boolean;
+  /** Ask AI Enabled (credentials checked when the user asks). */
   search_ai?: boolean;
   /** Operator-configured MapLibre style URL for map artifacts; empty/absent
       means clients fall back to the coordinate-only SVG map. */
@@ -611,6 +617,120 @@ export interface InviteLink {
   used_by?: string | null;
   expires_at: number;
 }
+
+/** Where a resolved AI field came from (admin API). */
+export type AiFieldSource = "config" | "env" | "default" | "none";
+
+export interface AiSecretField {
+  configured: boolean;
+  hint: string | null;
+  source: AiFieldSource;
+}
+
+export interface AiValueField {
+  value: string;
+  source: AiFieldSource;
+}
+
+export interface InstanceAiVoice {
+  /** Admin kill-switch per half — they are configured and credentialed
+      separately, so they turn off separately. */
+  stt_enabled: boolean;
+  tts_enabled: boolean;
+  /** Either half is enabled and credentialed (settings diagnostics). */
+  available: boolean;
+  /** Transcription half — enabled and the selected STT provider has a key. */
+  stt_available: boolean;
+  /** Synthesis half — enabled and the selected TTS provider has a key. */
+  tts_available: boolean;
+  stt_provider: string;
+  tts_provider: string;
+  api_key: AiSecretField;
+  stt_model: AiValueField;
+  stt_models: {
+    openai: AiValueField;
+    groq: AiValueField;
+  };
+  suggested_stt_models: string[];
+  suggested_stt_models_by_provider: Record<string, string[]>;
+  stt_providers: InstanceAiProviderOption[];
+  tts_providers: InstanceAiProviderOption[];
+  tts_model: AiValueField;
+  tts_voice: AiValueField;
+  suggested_tts_voices: string[];
+}
+
+export interface InstanceAiProviderOption {
+  id: string;
+  label: string;
+}
+
+export interface InstanceAiSearch {
+  enabled: boolean;
+  available: boolean;
+  provider: string;
+  providers: InstanceAiProviderOption[];
+  model: AiValueField;
+  models: {
+    anthropic: AiValueField;
+    openai: AiValueField;
+    codex: AiValueField;
+  };
+  suggested_models: string[];
+  suggested_models_by_provider: Record<string, string[]>;
+}
+
+export interface InstanceAiCredentials {
+  openai: AiSecretField;
+  groq: AiSecretField;
+  anthropic: AiSecretField;
+  oauth: {
+    configured: boolean;
+    source: AiFieldSource;
+    hint: string | null;
+    account_id: string | null;
+    redirect_uri: string;
+  };
+}
+
+/** GET /api/instance/ai — instance-admin voice + Ask-AI settings. */
+export interface InstanceAiSettings {
+  voice: InstanceAiVoice;
+  search: InstanceAiSearch;
+  credentials: InstanceAiCredentials;
+}
+
+export type InstanceAiUpdate = {
+  voice?: {
+    stt_enabled?: boolean;
+    tts_enabled?: boolean;
+    stt_provider?: string;
+    tts_provider?: string;
+    api_key?: string;
+    clear_key?: boolean;
+    stt_model?: string;
+    stt_model_provider?: string;
+    stt_models?: Partial<Record<"openai" | "groq", string>>;
+    tts_model?: string;
+    tts_voice?: string;
+  };
+  search?: {
+    enabled?: boolean;
+    provider?: string;
+    api_key?: string;
+    clear_key?: boolean;
+    model?: string;
+    model_provider?: string;
+    models?: Partial<Record<"anthropic" | "openai" | "codex", string>>;
+    clear_oauth?: boolean;
+  };
+  credentials?: {
+    openai?: { api_key?: string; clear_key?: boolean };
+    groq?: { api_key?: string; clear_key?: boolean };
+    anthropic?: { api_key?: string; clear_key?: boolean };
+    clear_oauth?: boolean;
+  };
+};
 
 /* The server rejects messages and templates longer than this (MAX_MESSAGE_CHARS
    in agora-core), so both clients cap their inputs at the same number. */

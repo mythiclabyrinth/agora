@@ -9,6 +9,7 @@ pub mod ai;
 pub mod artifacts;
 mod attachments;
 pub mod auth;
+pub mod codex_oauth;
 pub mod config;
 pub mod connections;
 pub mod hub;
@@ -95,6 +96,9 @@ pub async fn run(data_dir: PathBuf, ui_dir: Option<PathBuf>) -> anyhow::Result<A
         data_dir,
         restart_handler: Arc::new(std::sync::Mutex::new(None)),
         speech_cache: Arc::new(std::sync::Mutex::new(Vec::new())),
+        codex_oauth: Arc::new(std::sync::Mutex::new(None)),
+        codex_models_cache: Arc::new(std::sync::Mutex::new(None)),
+        codex_models_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         auth_limiter,
         upload_limiter,
     };

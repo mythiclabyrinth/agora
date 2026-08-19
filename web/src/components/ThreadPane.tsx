@@ -177,8 +177,8 @@ export function ThreadPane() {
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread === rootId), rootId)}>
             <Icon name="paperclip" /><span className="ago-btn-label">Files</span>
           </button>
-          {me?.voice && <SpeakButton />}
-          {me?.voice && <LiveButton channelId={channel.id} threadId={rootId} />}
+          {me?.voice_tts && <SpeakButton />}
+          {me?.voice_stt && me?.voice_tts && <LiveButton channelId={channel.id} threadId={rootId} />}
           <button className={`btn sm ${pinned ? "active" : ""}`}
             title={pinned ? "Unpin this thread" : "Pin this thread for quick access"}
             onClick={() => pinMut.mutate({ messageId: rootId, pinned: !pinned })}>
@@ -199,7 +199,7 @@ export function ThreadPane() {
       <LiveRows channelId={channel.id} threadId={rootId} />
       <LiveStrip channelId={channel.id} threadId={rootId} />
       <Composer channelId={channel.id} channelName={channel.name} groupId={channel.group_id} threadId={rootId}
-        agents={agents} candidates={candidates} voiceOK={!!me?.voice}
+        agents={agents} candidates={candidates} voiceOK={!!me?.voice_stt}
         isDm={channel.kind === "agent_dm"} />
     </div>
   );

@@ -34,6 +34,8 @@ import type {
   Connection,
   Group,
   InstanceInfo,
+  InstanceAiSettings,
+  InstanceAiUpdate,
   InstanceMembership,
   Invite,
   InviteLink,
@@ -719,7 +721,7 @@ export function useSearchMore() {
 }
 
 /** POST /api/search/ask — AI answer with [n] citations into `sources`.
-    Only offered when /api/me reports `search_ai`. */
+    Offered when /api/me reports `search_ai` (Ask AI Enabled). */
 export function useAskAi() {
   const api = useApi();
   return useMutation({
@@ -1032,6 +1034,97 @@ export function useRenameInstance() {
   return useMutation({
     mutationFn: (name: string) => api.put("/api/instance", { name }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.connectionsInfo }),
+  });
+}
+
+/** Instance-admin voice + Ask-AI settings (keys masked). */
+export function useInstanceAi(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.instanceAi,
+    queryFn: () => api.get<InstanceAiSettings>("/api/instance/ai"),
+    enabled,
+  });
+}
+
+export function useUpdateInstanceAi() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: InstanceAiUpdate) =>
+      api.put<InstanceAiSettings>("/api/instance/ai", patch),
+    onSuccess: (data) => {
+      qc.setQueryData(keys.instanceAi, data);
+      void qc.invalidateQueries({ queryKey: keys.me });
+    },
+  });
+}
+
+export function useTestInstanceAi() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (provider: "openai" | "groq" | "anthropic" | "codex") =>
+      api.post<{ ok: boolean; provider: string }>("/api/instance/ai/test", { provider }),
+  });
+}
+
+export type CodexOauthStartResult = {
+  ok: boolean;
+  mode: "loopback" | "paste";
+  authorize_url: string;
+  redirect_uri: string;
+};
+
+export type CodexOauthStatusResult = {
+  status: "idle" | "pending" | "completed" | "failed" | "expired";
+  mode?: "loopback" | "paste";
+  error?: string | null;
+};
+
+export function useStartCodexOauth() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (mode: "loopback" | "paste") =>
+      api.post<CodexOauthStartResult>("/api/instance/ai/codex/oauth/start", { mode }),
+  });
+}
+
+export function useCodexOauthStatus(enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: [...keys.instanceAi, "codex-oauth-status"] as const,
+    queryFn: () => api.get<CodexOauthStatusResult>("/api/instance/ai/codex/oauth/status"),
+    enabled,
+    refetchInterval: enabled ? 1500 : false,
+  });
+}
+
+export function useCompleteCodexOauth() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (redirect_url: string) =>
+      api.post<{ ok: boolean; account_id?: string }>(
+        "/api/instance/ai/codex/oauth/complete",
+        { redirect_url },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.instanceAi });
+      void qc.invalidateQueries({ queryKey: keys.me });
+    },
+  });
+}
+
+export function useDisconnectCodexOauth() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean }>("/api/instance/ai/codex/oauth/disconnect", {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.instanceAi });
+      void qc.invalidateQueries({ queryKey: keys.me });
+    },
   });
 }
 

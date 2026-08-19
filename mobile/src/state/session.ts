@@ -35,8 +35,12 @@ interface SessionState {
   instanceAdmin: boolean;
   /** False only while an existing session's cached/server role is unresolved. */
   instanceAdminKnown: boolean;
-  /** Server-side STT/TTS available (me.voice) — gates all voice UI. */
+  /** Any voice feature Enabled. Coarse — prefer sttOk / ttsOk. */
   voiceOk: boolean;
+  /** Speech-to-text Enabled: voice notes / mic. */
+  sttOk: boolean;
+  /** Text-to-speech Enabled: speak-aloud. Live voice needs both. */
+  ttsOk: boolean;
   /** Last known server URL. Survives a sign-out (an expired Google session
       should ask for credentials again, not for the server address), cleared
       only by forgetServer. */
@@ -56,6 +60,8 @@ export const useSession = create<SessionState>((set) => ({
   instanceAdmin: false,
   instanceAdminKnown: false,
   voiceOk: false,
+  sttOk: false,
+  ttsOk: false,
   savedUrl: "",
 
   async load() {
@@ -118,6 +124,8 @@ export const useSession = create<SessionState>((set) => ({
           instanceAdmin: !!me.instance_admin,
           instanceAdminKnown: true,
           voiceOk: !!me.voice,
+          sttOk: !!me.voice_stt,
+          ttsOk: !!me.voice_tts,
         });
         await SecureStore.setItemAsync(
           KEY_INSTANCE_ADMIN,
@@ -167,6 +175,8 @@ export const useSession = create<SessionState>((set) => ({
       instanceAdmin: !!me.instance_admin,
       instanceAdminKnown: true,
       voiceOk: !!me.voice,
+      sttOk: !!me.voice_stt,
+      ttsOk: !!me.voice_tts,
       savedUrl: session.baseUrl,
     });
   },
@@ -189,6 +199,8 @@ export const useSession = create<SessionState>((set) => ({
       instanceAdmin: false,
       instanceAdminKnown: false,
       voiceOk: false,
+      sttOk: false,
+      ttsOk: false,
     });
   },
 
@@ -210,6 +222,8 @@ export const useSession = create<SessionState>((set) => ({
       instanceAdmin: false,
       instanceAdminKnown: false,
       voiceOk: false,
+  sttOk: false,
+  ttsOk: false,
       savedUrl: "",
     });
   },

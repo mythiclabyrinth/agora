@@ -27,4 +27,5 @@ export const keys = {
   pairing: ["pairing"] as const,
   agentSources: ["agent-sources"] as const,
   invites: ["invites"] as const,
+  instanceAi: ["instanceAi"] as const,
 };

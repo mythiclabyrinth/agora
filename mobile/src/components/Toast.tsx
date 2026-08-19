@@ -22,9 +22,23 @@ interface ToastState {
 
 let nextId = 1;
 
-export const useToasts = create<ToastState>((set) => ({
+export const useToasts = create<ToastState>((set, get) => ({
   items: [],
   show(message, variant) {
+    const existing = get().items.find(
+      (t) => t.message === message && t.variant === variant,
+    );
+    if (existing) {
+      // Refresh auto-dismiss by replacing with a new id.
+      const id = nextId++;
+      set((s) => ({
+        items: s.items.map((t) => (t.id === existing.id ? { ...t, id } : t)),
+      }));
+      setTimeout(() => {
+        set((s) => ({ items: s.items.filter((t) => t.id !== id) }));
+      }, 6000);
+      return;
+    }
     const id = nextId++;
     set((s) => ({ items: [...s.items, { id, message, variant }] }));
     setTimeout(() => {

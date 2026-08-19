@@ -1,0 +1,206 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, fn, userEvent, within } from "storybook/test";
+import { fixtureMe } from "@agora/core/testing/fixtures";
+import { useUiState } from "../state/ui";
+import { AiSettingsPane } from "./AiSettingsPane";
+
+const emptySettings = {
+  voice: {
+    stt_enabled: true,
+    tts_enabled: true,
+    available: false,
+    stt_available: false,
+    tts_available: false,
+    stt_provider: "openai",
+    tts_provider: "openai",
+    api_key: { configured: false, hint: null, source: "none" },
+    stt_model: { value: "gpt-4o-mini-transcribe", source: "default" },
+    stt_models: {
+      openai: { value: "gpt-4o-mini-transcribe", source: "default" },
+      groq: { value: "whisper-large-v3-turbo", source: "default" },
+    },
+    suggested_stt_models: ["gpt-4o-mini-transcribe", "whisper-1"],
+    suggested_stt_models_by_provider: {
+      openai: ["gpt-4o-mini-transcribe", "whisper-1"],
+      groq: ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
+    },
+    stt_providers: [
+      { id: "openai", label: "OpenAI" },
+      { id: "groq", label: "Groq" },
+    ],
+    tts_providers: [{ id: "openai", label: "OpenAI" }],
+    tts_model: { value: "gpt-4o-mini-tts", source: "default" },
+    tts_voice: { value: "alloy", source: "default" },
+    suggested_tts_voices: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
+  },
+  search: {
+    enabled: true,
+    available: false,
+    provider: "anthropic",
+    providers: [
+      { id: "anthropic", label: "Anthropic (API key)" },
+      { id: "openai", label: "OpenAI (API key)" },
+      { id: "codex", label: "Codex OAuth" },
+    ],
+    model: { value: "claude-sonnet-5", source: "default" },
+    models: {
+      anthropic: { value: "claude-sonnet-5", source: "default" },
+      openai: { value: "gpt-4.1-mini", source: "default" },
+      codex: { value: "gpt-5.6-sol", source: "default" },
+    },
+    suggested_models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    suggested_models_by_provider: {
+      anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+      openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"],
+      codex: [
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+        "gpt-5.3-codex-spark", "codex-auto-review",
+      ],
+    },
+  },
+  credentials: {
+    openai: { configured: false, hint: null, source: "none" },
+    groq: { configured: false, hint: null, source: "none" },
+    anthropic: { configured: false, hint: null, source: "none" },
+    oauth: {
+      configured: false,
+      source: "none",
+      hint: null,
+      account_id: null,
+      redirect_uri: "http://localhost:1455/auth/callback",
+    },
+  },
+};
+
+const configuredSettings = {
+  voice: {
+    ...emptySettings.voice,
+    available: true,
+    stt_available: true,
+    tts_available: true,
+    api_key: { configured: true, hint: "sk-a…mnop", source: "config" },
+    tts_voice: { value: "shimmer", source: "config" },
+  },
+  search: {
+    ...emptySettings.search,
+    available: true,
+    model: { value: "claude-haiku-4-5-20251001", source: "config" },
+    models: {
+      ...emptySettings.search.models,
+      anthropic: { value: "claude-haiku-4-5-20251001", source: "config" },
+    },
+  },
+  credentials: {
+    openai: { configured: true, hint: "sk-a…mnop", source: "config" },
+    groq: { configured: false, hint: null, source: "none" },
+    anthropic: { configured: true, hint: "ant-…here", source: "env" },
+    oauth: emptySettings.credentials.oauth,
+  },
+};
+
+const putAi = fn(async (_body: unknown) => configuredSettings);
+const testAi = fn(async () => ({ ok: true, provider: "openai" }));
+
+const meta = {
+  title: "Web/Connected/Instance settings",
+  component: AiSettingsPane,
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": { ...fixtureMe, instance_admin: true },
+      "GET /api/instance/ai": emptySettings,
+      "PUT /api/instance/ai": putAi,
+      "POST /api/instance/ai/test": testAi,
+      "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
+    },
+    setup: () => {
+      putAi.mockClear();
+      testAi.mockClear();
+      useUiState.setState({ panel: "settings" });
+    },
+  },
+} satisfies Meta<typeof AiSettingsPane>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Empty: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("Settings")).resolves.toBeVisible();
+    await expect(canvas.findByRole("tab", { name: "Features" })).resolves.toBeVisible();
+    await expect(canvas.findByDisplayValue(/Anthropic \(API key\)/)).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
+    await expect(canvas.findByText("OpenAI")).resolves.toBeVisible();
+    await expect(canvas.findByText("Groq")).resolves.toBeVisible();
+    await expect(canvas.findByText("Anthropic")).resolves.toBeVisible();
+    await expect(canvas.findByRole("button", { name: "Connect" })).resolves.toBeVisible();
+  },
+};
+
+const envBackedSettings = {
+  voice: {
+    ...emptySettings.voice,
+    stt_enabled: false,
+    tts_enabled: false,
+    available: false,
+    stt_available: false,
+    tts_available: false,
+    api_key: { configured: true, hint: "sk-p…9f2c", source: "env" },
+  },
+  search: {
+    ...emptySettings.search,
+    available: true,
+    model: { value: "claude-opus-5", source: "env" },
+    models: {
+      ...emptySettings.search.models,
+      anthropic: { value: "claude-opus-5", source: "env" },
+    },
+  },
+  credentials: {
+    openai: { configured: true, hint: "sk-p…9f2c", source: "env" },
+    groq: { configured: false, hint: null, source: "none" },
+    anthropic: { configured: true, hint: "ant-…here", source: "env" },
+    oauth: emptySettings.credentials.oauth,
+  },
+};
+
+export const InheritedFromEnv: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": { ...fixtureMe, instance_admin: true },
+      "GET /api/instance/ai": envBackedSettings,
+      "PUT /api/instance/ai": putAi,
+      "POST /api/instance/ai/test": testAi,
+      "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
+    await expect(canvas.findAllByText(/from server environment/)).resolves.toHaveLength(2);
+    await expect(canvas.queryByRole("button", { name: "Clear" })).toBeNull();
+  },
+};
+
+export const Configured: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": { ...fixtureMe, instance_admin: true },
+      "GET /api/instance/ai": configuredSettings,
+      "PUT /api/instance/ai": putAi,
+      "POST /api/instance/ai/test": testAi,
+      "GET /api/instance/ai/codex/oauth/status": { status: "idle" },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
+    await expect(canvas.findByText(/sk-a…mnop/)).resolves.toBeVisible();
+    await expect(canvas.getByText(/from server environment/)).toBeVisible();
+    const testButtons = canvas.getAllByRole("button", { name: "Test" });
+    await userEvent.click(testButtons[0]);
+    await expect(testAi).toHaveBeenCalledWith({ provider: "openai" });
+    await userEvent.click(testButtons[1]);
+    await expect(testAi).toHaveBeenCalledWith({ provider: "anthropic" });
+  },
+};
