@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -28,6 +29,81 @@ import { colors } from "../../src/lib/theme";
 import * as Linking from "expo-linking";
 
 const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
+
+type SelectOption = { id: string; label: string };
+
+function SelectField({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: SelectOption[];
+  disabled?: boolean;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.id === value);
+
+  return (
+    <View>
+      <Text style={styles.label}>{label}</Text>
+      <Pressable
+        style={[styles.select, disabled && styles.btnDisabled]}
+        disabled={disabled || options.length === 0}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityHint="Opens a list of options"
+        onPress={() => setOpen(true)}
+      >
+        <Text style={styles.selectValue} numberOfLines={1}>
+          {selected?.label ?? (value || "Select…")}
+        </Text>
+        <Text style={styles.selectChevron}>▾</Text>
+      </Pressable>
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setOpen(false)}
+      >
+        <View style={styles.selectModal}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+          <View style={styles.selectSheet} accessibilityRole="menu">
+            <Text style={styles.selectSheetTitle}>{label}</Text>
+            <ScrollView style={styles.selectList} keyboardShouldPersistTaps="handled">
+              {options.map((o) => {
+                const active = o.id === value;
+                return (
+                  <Pressable
+                    key={o.id}
+                    style={[styles.selectOption, active && styles.selectOptionActive]}
+                    accessibilityRole="menuitem"
+                    accessibilityState={{ selected: active }}
+                    onPress={() => {
+                      onChange(o.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <Text
+                      style={active ? styles.selectOptionTextActive : styles.selectOptionText}
+                      numberOfLines={1}
+                    >
+                      {o.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
 
 function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
@@ -67,34 +143,23 @@ function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         />
       </View>
       <Text style={styles.hint}>Voice notes: the composer microphone.</Text>
-      <Text style={styles.label}>Provider</Text>
-      <View style={styles.rowBtns}>
-        {sttProviders.map((p) => (
-          <Pressable
-            key={p.id}
-            style={[styles.btn, sttProvider === p.id && styles.btnPrimary]}
-            disabled={update.isPending}
-            onPress={() => { setSttProvider(p.id); save({ stt_provider: p.id }); }}
-          >
-            <Text style={sttProvider === p.id ? styles.btnPrimaryText : styles.btnText}>
-              {p.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-      <Text style={styles.label}>Model</Text>
-      <View style={styles.rowBtns}>
-        {[...suggested, ...(stt && !suggested.includes(stt) ? [stt] : [])].map((m) => (
-          <Pressable
-            key={m}
-            style={[styles.btn, stt === m && styles.btnPrimary]}
-            disabled={update.isPending}
-            onPress={() => save({ stt_model: m, stt_model_provider: sttProvider })}
-          >
-            <Text style={stt === m ? styles.btnPrimaryText : styles.btnText}>{m}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <SelectField
+        label="Provider"
+        value={sttProvider}
+        options={sttProviders}
+        disabled={update.isPending}
+        onChange={(id) => { setSttProvider(id); save({ stt_provider: id }); }}
+      />
+      <SelectField
+        label="Model"
+        value={stt}
+        options={[
+          ...suggested.map((m) => ({ id: m, label: m })),
+          ...(stt && !suggested.includes(stt) ? [{ id: stt, label: stt }] : []),
+        ]}
+        disabled={update.isPending}
+        onChange={(id) => save({ stt_model: id, stt_model_provider: sttProvider })}
+      />
     </View>
   );
 }
@@ -128,47 +193,33 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         />
       </View>
       <Text style={styles.hint}>Speak-aloud, and live voice together with speech to text.</Text>
-      <Text style={styles.label}>Provider</Text>
-      <View style={styles.rowBtns}>
-        {ttsProviders.map((p) => (
-          <Pressable
-            key={p.id}
-            style={[styles.btn, data.tts_provider === p.id && styles.btnPrimary]}
-            disabled={update.isPending}
-            onPress={() => save({ tts_provider: p.id })}
-          >
-            <Text style={data.tts_provider === p.id ? styles.btnPrimaryText : styles.btnText}>
-              {p.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-      <Text style={styles.label}>Model</Text>
-      <View style={styles.rowBtns}>
-        {[...TTS_MODELS, ...(tts && !TTS_MODELS.includes(tts) ? [tts] : [])].map((m) => (
-          <Pressable
-            key={m}
-            style={[styles.btn, tts === m && styles.btnPrimary]}
-            disabled={update.isPending}
-            onPress={() => save({ tts_model: m })}
-          >
-            <Text style={tts === m ? styles.btnPrimaryText : styles.btnText}>{m}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <Text style={styles.label}>Voice</Text>
-      <View style={styles.rowBtns}>
-        {[...voices, ...(voice && !voices.includes(voice) ? [voice] : [])].map((v) => (
-          <Pressable
-            key={v}
-            style={[styles.btn, voice === v && styles.btnPrimary]}
-            disabled={update.isPending}
-            onPress={() => save({ tts_voice: v })}
-          >
-            <Text style={voice === v ? styles.btnPrimaryText : styles.btnText}>{v}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <SelectField
+        label="Provider"
+        value={data.tts_provider}
+        options={ttsProviders}
+        disabled={update.isPending}
+        onChange={(id) => save({ tts_provider: id })}
+      />
+      <SelectField
+        label="Model"
+        value={tts}
+        options={[
+          ...TTS_MODELS.map((m) => ({ id: m, label: m })),
+          ...(tts && !TTS_MODELS.includes(tts) ? [{ id: tts, label: tts }] : []),
+        ]}
+        disabled={update.isPending}
+        onChange={(id) => save({ tts_model: id })}
+      />
+      <SelectField
+        label="Voice"
+        value={voice}
+        options={[
+          ...voices.map((v) => ({ id: v, label: v })),
+          ...(voice && !voices.includes(voice) ? [{ id: voice, label: voice }] : []),
+        ]}
+        disabled={update.isPending}
+        onChange={(id) => save({ tts_voice: id })}
+      />
     </View>
   );
 }
@@ -205,34 +256,25 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
         </View>
         <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
       </View>
-      <Text style={styles.label}>Provider</Text>
-      <View style={styles.rowBtns}>
-        {providers.map((p) => (
-          <Pressable
-            key={p.id}
-            style={[styles.btn, provider === p.id && styles.btnPrimary]}
-            disabled={update.isPending}
-            onPress={() => { setProvider(p.id); save({ provider: p.id }); }}
-          >
-            <Text style={provider === p.id ? styles.btnPrimaryText : styles.btnText}>
-              {p.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-      <Text style={styles.label}>Model</Text>
-      <View style={styles.rowBtns}>
-        {suggested.map((m) => (
-          <Pressable
-            key={m}
-            style={[styles.btn, selectedModel === m && styles.btnPrimary]}
-            disabled={update.isPending}
-            onPress={() => save({ model: m, model_provider: provider })}
-          >
-            <Text style={selectedModel === m ? styles.btnPrimaryText : styles.btnText}>{m}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <SelectField
+        label="Provider"
+        value={provider}
+        options={providers}
+        disabled={update.isPending}
+        onChange={(id) => { setProvider(id); save({ provider: id }); }}
+      />
+      <SelectField
+        label="Model"
+        value={selectedModel}
+        options={[
+          ...suggested.map((m) => ({ id: m, label: m })),
+          ...(selectedModel && !suggested.includes(selectedModel)
+            ? [{ id: selectedModel, label: selectedModel }]
+            : []),
+        ]}
+        disabled={update.isPending}
+        onChange={(id) => save({ model: id, model_provider: provider })}
+      />
     </View>
   );
 }
@@ -565,6 +607,47 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   rowBtns: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
+  select: {
+    marginTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.bg,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  selectValue: { flex: 1, color: colors.text, fontSize: 14, fontWeight: "600" },
+  selectChevron: { color: colors.dim, fontSize: 12 },
+  selectModal: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    padding: 24,
+  },
+  selectSheet: {
+    backgroundColor: colors.sheet,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: 14,
+    padding: 10,
+    maxHeight: "70%",
+  },
+  selectSheetTitle: {
+    color: colors.dim,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  selectList: { maxHeight: 360 },
+  selectOption: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12 },
+  selectOptionActive: { backgroundColor: colors.panelStrong },
+  selectOptionText: { color: colors.text, fontSize: 15, fontWeight: "500" },
+  selectOptionTextActive: { color: colors.text, fontSize: 15, fontWeight: "700" },
   btn: {
     borderWidth: 1,
     borderColor: colors.borderStrong,
