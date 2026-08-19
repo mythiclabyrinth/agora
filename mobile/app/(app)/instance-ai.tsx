@@ -38,18 +38,18 @@ function sourceLabel(source: string): string {
   }
 }
 
-function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
+function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
-  const [sttProvider, setSttProvider] = useState(data.stt_provider || data.provider);
+  const [sttProvider, setSttProvider] = useState(data.stt_provider);
 
   useEffect(() => {
-    setSttProvider(data.stt_provider || data.provider);
-  }, [data.stt_provider, data.provider]);
+    setSttProvider(data.stt_provider);
+  }, [data.stt_provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
-      onSuccess: () => toast("Voice settings saved"),
-      onError: (e) => toastErr("Couldn't save voice settings", e as Error),
+      onSuccess: () => toast("Speech-to-text settings saved"),
+      onError: (e) => toastErr("Couldn't save speech-to-text settings", e as Error),
     });
   };
 
@@ -59,31 +59,27 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         { id: "openai", label: "OpenAI" },
         { id: "groq", label: "Groq" },
       ];
-  const ttsProviders = data.tts_providers?.length
-    ? data.tts_providers
-    : [{ id: "openai", label: "OpenAI" }];
-  const sttModelField = data.stt_models?.[sttProvider as "openai" | "groq"] || data.stt_model;
-  const suggestedStt = data.suggested_stt_models_by_provider?.[sttProvider]
+  const stt = (data.stt_models?.[sttProvider as "openai" | "groq"] || data.stt_model).value;
+  const suggested = data.suggested_stt_models_by_provider?.[sttProvider]
     || data.suggested_stt_models
     || [];
-  const stt = sttModelField.value;
-  const tts = data.tts_model.value;
-  const voice = data.tts_voice.value;
-  const voices = data.suggested_tts_voices;
-  const ttsProvider = data.tts_provider || "openai";
 
   return (
     <View style={styles.card}>
       <View style={styles.cardHead}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.cardTitle}>Voice</Text>
+          <Text style={styles.cardTitle}>Voice — speech to text</Text>
           <Text style={styles.meta}>
-            STT {sttProvider} · TTS {ttsProvider} · {data.available ? "available" : "off"}
+            {sttProvider} · {data.stt_available ? "available" : "off"}
           </Text>
         </View>
-        <Switch value={data.enabled} onValueChange={(enabled) => save({ enabled })} />
+        <Switch
+          value={data.stt_enabled}
+          onValueChange={(stt_enabled) => save({ stt_enabled })}
+        />
       </View>
-      <Text style={styles.label}>STT provider</Text>
+      <Text style={styles.hint}>Voice notes: the composer microphone.</Text>
+      <Text style={styles.label}>Provider</Text>
       <View style={styles.rowBtns}>
         {sttProviders.map((p) => (
           <Pressable
@@ -98,9 +94,9 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
           </Pressable>
         ))}
       </View>
-      <Text style={styles.label}>STT model</Text>
+      <Text style={styles.label}>Model</Text>
       <View style={styles.rowBtns}>
-        {[...suggestedStt, ...(stt && !suggestedStt.includes(stt) ? [stt] : [])].map((m) => (
+        {[...suggested, ...(stt && !suggested.includes(stt) ? [stt] : [])].map((m) => (
           <Pressable
             key={m}
             style={[styles.btn, stt === m && styles.btnPrimary]}
@@ -111,22 +107,58 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
           </Pressable>
         ))}
       </View>
-      <Text style={styles.label}>TTS provider</Text>
+    </View>
+  );
+}
+
+function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
+  const update = useUpdateInstanceAi();
+
+  const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
+    update.mutate({ voice: patch }, {
+      onSuccess: () => toast("Text-to-speech settings saved"),
+      onError: (e) => toastErr("Couldn't save text-to-speech settings", e as Error),
+    });
+  };
+
+  const ttsProviders = data.tts_providers?.length
+    ? data.tts_providers
+    : [{ id: "openai", label: "OpenAI" }];
+  const tts = data.tts_model.value;
+  const voice = data.tts_voice.value;
+  const voices = data.suggested_tts_voices;
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardHead}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.cardTitle}>Voice — text to speech</Text>
+          <Text style={styles.meta}>
+            {data.tts_provider} · {data.tts_available ? "available" : "off"}
+          </Text>
+        </View>
+        <Switch
+          value={data.tts_enabled}
+          onValueChange={(tts_enabled) => save({ tts_enabled })}
+        />
+      </View>
+      <Text style={styles.hint}>Speak-aloud, and live voice together with speech to text.</Text>
+      <Text style={styles.label}>Provider</Text>
       <View style={styles.rowBtns}>
         {ttsProviders.map((p) => (
           <Pressable
             key={p.id}
-            style={[styles.btn, ttsProvider === p.id && styles.btnPrimary]}
+            style={[styles.btn, data.tts_provider === p.id && styles.btnPrimary]}
             disabled={update.isPending}
             onPress={() => save({ tts_provider: p.id })}
           >
-            <Text style={ttsProvider === p.id ? styles.btnPrimaryText : styles.btnText}>
+            <Text style={data.tts_provider === p.id ? styles.btnPrimaryText : styles.btnText}>
               {p.label}
             </Text>
           </Pressable>
         ))}
       </View>
-      <Text style={styles.label}>TTS model</Text>
+      <Text style={styles.label}>Model</Text>
       <View style={styles.rowBtns}>
         {[...TTS_MODELS, ...(tts && !TTS_MODELS.includes(tts) ? [tts] : [])].map((m) => (
           <Pressable
@@ -139,7 +171,7 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
           </Pressable>
         ))}
       </View>
-      <Text style={styles.label}>TTS voice</Text>
+      <Text style={styles.label}>Voice</Text>
       <View style={styles.rowBtns}>
         {[...voices, ...(voice && !voices.includes(voice) ? [voice] : [])].map((v) => (
           <Pressable
@@ -238,8 +270,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
   return (
     <>
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>OpenAI API key</Text>
-        <Text style={styles.hint}>Shared by Voice TTS / OpenAI STT and Ask AI (OpenAI provider).</Text>
+        <Text style={styles.cardTitle}>OpenAI</Text>
         <Text style={styles.meta}>
           {data.credentials.openai.configured
             ? `${data.credentials.openai.hint} · ${sourceLabel(data.credentials.openai.source)}`
@@ -265,8 +296,20 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
               });
             }}
           >
-            <Text style={styles.btnPrimaryText}>Save key</Text>
+            <Text style={styles.btnPrimaryText}>Save</Text>
           </Pressable>
+          {data.credentials.openai.configured ? (
+            <Pressable
+              style={[styles.btn, test.isPending && styles.btnDisabled]}
+              disabled={test.isPending}
+              onPress={() => test.mutate("openai", {
+                onSuccess: () => toast("OpenAI credentials work"),
+                onError: (e) => toastErr("OpenAI test failed", e as Error),
+              })}
+            >
+              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
+            </Pressable>
+          ) : null}
           {data.credentials.openai.source === "config" ? (
             <Pressable
               style={[styles.btn, styles.btnDanger]}
@@ -275,25 +318,14 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
                 onError: (e) => toastErr("Couldn't clear", e as Error),
               })}
             >
-              <Text style={styles.btnDangerText}>Clear saved</Text>
+              <Text style={styles.btnDangerText}>Clear</Text>
             </Pressable>
           ) : null}
-          <Pressable
-            style={[styles.btn, (!data.credentials.openai.configured || test.isPending) && styles.btnDisabled]}
-            disabled={!data.credentials.openai.configured || test.isPending}
-            onPress={() => test.mutate("openai", {
-              onSuccess: () => toast("OpenAI credentials work"),
-              onError: (e) => toastErr("OpenAI test failed", e as Error),
-            })}
-          >
-            <Text style={styles.btnText}>Test OpenAI</Text>
-          </Pressable>
         </View>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Groq API key</Text>
-        <Text style={styles.hint}>Used by Voice when STT provider is Groq.</Text>
+        <Text style={styles.cardTitle}>Groq</Text>
         <Text style={styles.meta}>
           {data.credentials.groq.configured
             ? `${data.credentials.groq.hint} · ${sourceLabel(data.credentials.groq.source)}`
@@ -319,8 +351,20 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
               });
             }}
           >
-            <Text style={styles.btnPrimaryText}>Save key</Text>
+            <Text style={styles.btnPrimaryText}>Save</Text>
           </Pressable>
+          {data.credentials.groq.configured ? (
+            <Pressable
+              style={[styles.btn, test.isPending && styles.btnDisabled]}
+              disabled={test.isPending}
+              onPress={() => test.mutate("groq", {
+                onSuccess: () => toast("Groq credentials work"),
+                onError: (e) => toastErr("Groq test failed", e as Error),
+              })}
+            >
+              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
+            </Pressable>
+          ) : null}
           {data.credentials.groq.source === "config" ? (
             <Pressable
               style={[styles.btn, styles.btnDanger]}
@@ -329,25 +373,14 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
                 onError: (e) => toastErr("Couldn't clear", e as Error),
               })}
             >
-              <Text style={styles.btnDangerText}>Clear saved</Text>
+              <Text style={styles.btnDangerText}>Clear</Text>
             </Pressable>
           ) : null}
-          <Pressable
-            style={[styles.btn, (!data.credentials.groq.configured || test.isPending) && styles.btnDisabled]}
-            disabled={!data.credentials.groq.configured || test.isPending}
-            onPress={() => test.mutate("groq", {
-              onSuccess: () => toast("Groq credentials work"),
-              onError: (e) => toastErr("Groq test failed", e as Error),
-            })}
-          >
-            <Text style={styles.btnText}>Test Groq</Text>
-          </Pressable>
         </View>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Anthropic API key</Text>
-        <Text style={styles.hint}>Used by Ask AI when provider is Anthropic.</Text>
+        <Text style={styles.cardTitle}>Anthropic</Text>
         <Text style={styles.meta}>
           {data.credentials.anthropic.configured
             ? `${data.credentials.anthropic.hint} · ${sourceLabel(data.credentials.anthropic.source)}`
@@ -373,8 +406,20 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
               });
             }}
           >
-            <Text style={styles.btnPrimaryText}>Save key</Text>
+            <Text style={styles.btnPrimaryText}>Save</Text>
           </Pressable>
+          {data.credentials.anthropic.configured ? (
+            <Pressable
+              style={[styles.btn, test.isPending && styles.btnDisabled]}
+              disabled={test.isPending}
+              onPress={() => test.mutate("anthropic", {
+                onSuccess: () => toast("Anthropic credentials work"),
+                onError: (e) => toastErr("Anthropic test failed", e as Error),
+              })}
+            >
+              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
+            </Pressable>
+          ) : null}
           {data.credentials.anthropic.source === "config" ? (
             <Pressable
               style={[styles.btn, styles.btnDanger]}
@@ -383,29 +428,18 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
                 onError: (e) => toastErr("Couldn't clear", e as Error),
               })}
             >
-              <Text style={styles.btnDangerText}>Clear saved</Text>
+              <Text style={styles.btnDangerText}>Clear</Text>
             </Pressable>
           ) : null}
-          <Pressable
-            style={[styles.btn, (!data.credentials.anthropic.configured || test.isPending) && styles.btnDisabled]}
-            disabled={!data.credentials.anthropic.configured || test.isPending}
-            onPress={() => test.mutate("anthropic", {
-              onSuccess: () => toast("Anthropic credentials work"),
-              onError: (e) => toastErr("Anthropic test failed", e as Error),
-            })}
-          >
-            <Text style={styles.btnText}>Test Anthropic</Text>
-          </Pressable>
         </View>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Codex OAuth</Text>
-        <Text style={styles.hint}>Used by Ask AI when provider is Codex OAuth.</Text>
+        <Text style={styles.cardTitle}>Codex</Text>
         <Text style={styles.meta}>
           {oauth.configured
-            ? `Linked · ${oauth.hint || "token"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
-            : "Not linked — authorize from this device (paste redirect URL)."}
+            ? `${oauth.hint || "linked"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
+            : "not linked"}
         </Text>
         <View style={styles.rowBtns}>
           <Pressable
@@ -423,7 +457,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
             }}
           >
             <Text style={styles.btnPrimaryText}>
-              {oauth.configured ? "Re-authorize" : "Authorize Codex"}
+              {oauth.configured ? "Reconnect" : "Connect"}
             </Text>
           </Pressable>
           {oauth.configured ? (
@@ -435,7 +469,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
                 onError: (e) => toastErr("Codex OAuth test failed", e as Error),
               })}
             >
-              <Text style={styles.btnText}>Test Codex OAuth</Text>
+              <Text style={styles.btnText}>{test.isPending ? "Testing…" : "Test"}</Text>
             </Pressable>
           ) : null}
           {oauth.configured ? (
@@ -447,7 +481,7 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
                 onError: (e) => toastErr("Couldn't disconnect", e as Error),
               })}
             >
-              <Text style={styles.btnDangerText}>Disconnect</Text>
+              <Text style={styles.btnDangerText}>Clear</Text>
             </Pressable>
           ) : null}
         </View>
@@ -529,16 +563,15 @@ export default function InstanceAiScreen() {
             <Text style={styles.hint}>
               Choose providers and models. Keys and Codex OAuth live under Credentials.
             </Text>
-            <VoiceFeatures data={q.data.voice} />
+            <SttFeatures data={q.data.voice} />
+            <TtsFeatures data={q.data.voice} />
             <SearchFeatures data={q.data.search} />
           </>
         ) : null}
         {q.data && tab === "credentials" ? (
           <>
             <Text style={styles.hint}>
-              Provider credentials are shared by any feature that needs them. Env keys show
-              masked; saving overrides env, clear restores it. Test checks the provider accepts
-              the credential.
+              Add a key for each provider you use, then press Test to make sure it works.
             </Text>
             <CredentialsPane data={q.data} />
           </>

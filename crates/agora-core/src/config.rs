@@ -176,7 +176,6 @@ pub const VOICE_PROVIDER_OPENAI: &str = "openai";
 pub const VOICE_PROVIDER_GROQ: &str = "groq";
 pub const DEFAULT_STT_PROVIDER: &str = VOICE_PROVIDER_OPENAI;
 pub const DEFAULT_TTS_PROVIDER: &str = VOICE_PROVIDER_OPENAI;
-pub const DEFAULT_VOICE_PROVIDER: &str = VOICE_PROVIDER_OPENAI; // legacy alias
 pub const DEFAULT_STT_MODEL: &str = "gpt-4o-mini-transcribe";
 pub const DEFAULT_GROQ_STT_MODEL: &str = "whisper-large-v3-turbo";
 pub const DEFAULT_TTS_MODEL: &str = "gpt-4o-mini-tts";
@@ -277,15 +276,13 @@ impl AiVoiceSttModels {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AiVoiceSettings {
-    /// Admin kill-switch: false hides voice even when a key is present (env
-    /// or config). Clearing the config key alone cannot express that when
-    /// Railway still exports `OPENAI_API_KEY`.
+    /// Admin kill-switches, one per half — they are configured separately and
+    /// can be credentialed separately, so they turn off separately. Clearing a
+    /// key cannot express "off" when the env still exports one.
     #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Legacy single provider. Migrated into [`Self::stt_provider`] /
-    /// [`Self::tts_provider`] on load.
-    #[serde(default)]
-    pub provider: String,
+    pub stt_enabled: bool,
+    #[serde(default = "default_true")]
+    pub tts_enabled: bool,
     #[serde(default = "default_stt_provider")]
     pub stt_provider: String,
     #[serde(default = "default_tts_provider")]
@@ -296,12 +293,10 @@ pub struct AiVoiceSettings {
     /// Groq API key for STT when `stt_provider=groq`.
     #[serde(default)]
     pub groq_api_key: String,
-    /// Per-provider STT model overrides (preferred).
+    /// Per-provider STT model overrides. Empty slots resolve to the provider
+    /// default.
     #[serde(default)]
     pub stt_models: AiVoiceSttModels,
-    /// Legacy single STT model. Migrated into [`Self::stt_models`] on load.
-    #[serde(default)]
-    pub stt_model: String,
     #[serde(default)]
     pub tts_model: String,
     #[serde(default)]
@@ -311,14 +306,13 @@ pub struct AiVoiceSettings {
 impl Default for AiVoiceSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
-            provider: String::new(),
+            stt_enabled: true,
+            tts_enabled: true,
             stt_provider: default_stt_provider(),
             tts_provider: default_tts_provider(),
             api_key: String::new(),
             groq_api_key: String::new(),
             stt_models: AiVoiceSttModels::default(),
-            stt_model: String::new(),
             tts_model: String::new(),
             tts_voice: String::new(),
         }
@@ -406,7 +400,8 @@ pub struct AiSettings {
 /// Runtime voice settings after config/env/default resolution.
 #[derive(Clone, Debug)]
 pub struct ResolvedVoice {
-    pub enabled: bool,
+    pub stt_enabled: bool,
+    pub tts_enabled: bool,
     pub stt_provider: String,
     pub tts_provider: String,
     /// OpenAI key (Voice TTS + Ask AI openai + OpenAI STT).
@@ -442,12 +437,12 @@ impl ResolvedVoice {
 
     /// Transcription (voice notes, the composer mic) is usable.
     pub fn stt_available(&self) -> bool {
-        self.enabled && self.stt_ready()
+        self.stt_enabled && self.stt_ready()
     }
 
     /// Synthesis (speak-aloud) is usable. Live voice needs both.
     pub fn tts_available(&self) -> bool {
-        self.enabled && self.tts_ready()
+        self.tts_enabled && self.tts_ready()
     }
 
     pub fn stt_ready(&self) -> bool {
@@ -483,11 +478,6 @@ impl ResolvedVoice {
         self.openai_api_key_source
     }
 
-    /// Legacy single `provider` field for payloads that still expose it
-    /// (equals STT provider — the historically load-bearing half).
-    pub fn provider(&self) -> &str {
-        &self.stt_provider
-    }
 }
 
 /// Runtime Ask-AI settings after config/env/default resolution.
@@ -648,7 +638,6 @@ impl Config {
                 pairing.id = new_token();
             }
         }
-        migrate_voice_settings(&mut data.ai.voice);
         let cfg = Self {
             path,
             data: Mutex::new(data),
@@ -834,7 +823,8 @@ impl Config {
         let (tts_voice, tts_voice_source) =
             resolve_setting(&v.tts_voice, None, DEFAULT_TTS_VOICE);
         ResolvedVoice {
-            enabled: v.enabled,
+            stt_enabled: v.stt_enabled,
+            tts_enabled: v.tts_enabled,
             stt_provider,
             tts_provider,
             openai_api_key,
@@ -957,40 +947,6 @@ impl Config {
 
 /// Fold the legacy single `model` into the active provider's slot once, then
 /// clear it so a later provider switch cannot resurrect a foreign model.
-fn migrate_voice_settings(voice: &mut AiVoiceSettings) {
-    // Legacy single `provider` → both STT and TTS when the split fields were
-    // never written (still at serde defaults) and the legacy value is known.
-    let legacy = voice.provider.trim().to_string();
-    if !legacy.is_empty() {
-        if is_supported_stt_provider(&legacy)
-            && voice.stt_provider.trim() == DEFAULT_STT_PROVIDER
-        {
-            voice.stt_provider = legacy.clone();
-        }
-        if is_supported_tts_provider(&legacy)
-            && voice.tts_provider.trim() == DEFAULT_TTS_PROVIDER
-        {
-            voice.tts_provider = legacy;
-        }
-        voice.provider.clear();
-    }
-    if !is_supported_stt_provider(voice.stt_provider.trim()) {
-        voice.stt_provider = DEFAULT_STT_PROVIDER.to_string();
-    }
-    if !is_supported_tts_provider(voice.tts_provider.trim()) {
-        voice.tts_provider = DEFAULT_TTS_PROVIDER.to_string();
-    }
-    // Legacy single `stt_model` → active STT provider slot.
-    let legacy_model = voice.stt_model.trim().to_string();
-    if !legacy_model.is_empty() {
-        let slot = voice.stt_provider.clone();
-        if voice.stt_models.get(&slot).is_empty() {
-            voice.stt_models.set(&slot, legacy_model);
-        }
-        voice.stt_model.clear();
-    }
-}
-
 fn resolve_provider_model(
     models: &AiSearchModels,
     provider: &str,
@@ -1204,7 +1160,10 @@ mod tests {
         assert!(v.stt_available() && v.tts_available());
 
         // The kill-switch still beats present credentials on both halves.
-        cfg.update(|c| c.ai.voice.enabled = false);
+        cfg.update(|c| {
+            c.ai.voice.stt_enabled = false;
+            c.ai.voice.tts_enabled = false;
+        });
         let v = cfg.voice(None, None);
         assert!(!v.stt_available() && !v.tts_available() && !v.available());
     }
@@ -1219,11 +1178,15 @@ mod tests {
         assert_eq!(v.openai_api_key_source, AiFieldSource::Env);
         assert_eq!(v.stt_model, DEFAULT_STT_MODEL);
         // Kill-switch beats a present key.
-        cfg.update(|c| c.ai.voice.enabled = false);
+        cfg.update(|c| {
+            c.ai.voice.stt_enabled = false;
+            c.ai.voice.tts_enabled = false;
+        });
         assert!(!cfg.voice(Some("sk-env"), None).available());
         // Config key wins over env.
         cfg.update(|c| {
-            c.ai.voice.enabled = true;
+            c.ai.voice.stt_enabled = true;
+            c.ai.voice.tts_enabled = true;
             c.ai.voice.api_key = "sk-cfg".into();
             c.ai.voice.tts_voice = "shimmer".into();
         });
@@ -1283,21 +1246,25 @@ mod tests {
     }
 
     #[test]
-    fn legacy_voice_stt_model_migrates_into_provider_slot() {
+    fn superseded_voice_keys_are_ignored_not_migrated() {
+        // There is no migration path by design: an older config.json still
+        // loads (serde ignores unknown fields) but its `provider` /
+        // `stt_model` values are dropped rather than carried forward, and the
+        // model falls back to the provider default until re-picked.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
         std::fs::write(
-            &path,
-            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"voice":{"provider":"openai","stt_model":"whisper-1","api_key":"sk"}}}"#,
+            dir.path().join("config.json"),
+            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"voice":{"provider":"groq","stt_model":"whisper-1","api_key":"sk"}}}"#,
         )
         .unwrap();
         let cfg = Config::load(dir.path()).unwrap();
         let snap = cfg.snapshot();
-        assert!(snap.ai.voice.stt_model.is_empty());
-        assert_eq!(snap.ai.voice.stt_models.openai, "whisper-1");
+        assert!(snap.ai.voice.stt_models.openai.is_empty());
         assert_eq!(snap.ai.voice.stt_provider, VOICE_PROVIDER_OPENAI);
+        assert_eq!(snap.ai.voice.api_key, "sk", "real settings still load");
         let v = cfg.voice(None, None);
-        assert_eq!(v.stt_model, "whisper-1");
+        assert_eq!(v.stt_model, DEFAULT_STT_MODEL);
+        assert_eq!(v.stt_model_source, AiFieldSource::Default);
     }
 
     #[test]

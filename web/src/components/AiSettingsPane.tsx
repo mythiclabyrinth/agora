@@ -53,17 +53,17 @@ function SectionHead({
 
 const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 
-function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
+function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
-  const [sttProvider, setSttProvider] = useState(data.stt_provider || data.provider);
+  const [sttProvider, setSttProvider] = useState(data.stt_provider);
 
   useEffect(() => {
-    setSttProvider(data.stt_provider || data.provider);
-  }, [data.stt_provider, data.provider]);
+    setSttProvider(data.stt_provider);
+  }, [data.stt_provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
-      onSuccess: () => toast("Voice settings saved", { variant: "ok" }),
+      onSuccess: () => toast("Speech-to-text settings saved", { variant: "ok" }),
       onError: e => toast(`Couldn't save: ${(e as Error).message || e}`, { variant: "warn" }),
     });
   };
@@ -74,30 +74,22 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         { id: "openai", label: "OpenAI" },
         { id: "groq", label: "Groq" },
       ];
-  const ttsProviders = data.tts_providers?.length
-    ? data.tts_providers
-    : [{ id: "openai", label: "OpenAI" }];
-  const sttModelField = data.stt_models?.[sttProvider as "openai" | "groq"] || data.stt_model;
-  const suggestedStt = data.suggested_stt_models_by_provider?.[sttProvider]
+  const stt = (data.stt_models?.[sttProvider as "openai" | "groq"] || data.stt_model).value;
+  const suggested = data.suggested_stt_models_by_provider?.[sttProvider]
     || data.suggested_stt_models
     || [];
-  const stt = sttModelField.value;
-  const tts = data.tts_model.value;
-  const voice = data.tts_voice.value;
-  const voices = data.suggested_tts_voices;
-  const ttsProvider = data.tts_provider || "openai";
 
   return (
     <div className="ai-section">
       <SectionHead
-        title="Voice"
-        available={data.available}
-        enabled={data.enabled}
-        onEnabled={enabled => save({ enabled })}
+        title="Voice — speech to text"
+        available={data.stt_available}
+        enabled={data.stt_enabled}
+        onEnabled={stt_enabled => save({ stt_enabled })}
       />
-      <p className="conn-hint">Voice notes (STT), speak-aloud and live voice (TTS).</p>
+      <p className="conn-hint">Voice notes: the composer microphone.</p>
       <div className="ai-row">
-        <label>STT provider</label>
+        <label>Provider</label>
         <select
           value={sttProvider}
           disabled={update.isPending}
@@ -113,20 +105,50 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         </select>
       </div>
       <div className="ai-row">
-        <label>STT model</label>
+        <label>Model</label>
         <select
           value={stt}
           disabled={update.isPending}
           onChange={e => save({ stt_model: e.target.value, stt_model_provider: sttProvider })}
         >
-          {suggestedStt.map(m => <option key={m} value={m}>{m}</option>)}
-          {stt && !suggestedStt.includes(stt) && <option value={stt}>{stt}</option>}
+          {suggested.map(m => <option key={m} value={m}>{m}</option>)}
+          {stt && !suggested.includes(stt) && <option value={stt}>{stt}</option>}
         </select>
       </div>
+    </div>
+  );
+}
+
+function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
+  const update = useUpdateInstanceAi();
+
+  const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
+    update.mutate({ voice: patch }, {
+      onSuccess: () => toast("Text-to-speech settings saved", { variant: "ok" }),
+      onError: e => toast(`Couldn't save: ${(e as Error).message || e}`, { variant: "warn" }),
+    });
+  };
+
+  const ttsProviders = data.tts_providers?.length
+    ? data.tts_providers
+    : [{ id: "openai", label: "OpenAI" }];
+  const tts = data.tts_model.value;
+  const voice = data.tts_voice.value;
+  const voices = data.suggested_tts_voices;
+
+  return (
+    <div className="ai-section">
+      <SectionHead
+        title="Voice — text to speech"
+        available={data.tts_available}
+        enabled={data.tts_enabled}
+        onEnabled={tts_enabled => save({ tts_enabled })}
+      />
+      <p className="conn-hint">Speak-aloud, and live voice together with speech to text.</p>
       <div className="ai-row">
-        <label>TTS provider</label>
+        <label>Provider</label>
         <select
-          value={ttsProvider}
+          value={data.tts_provider}
           disabled={update.isPending}
           onChange={e => save({ tts_provider: e.target.value })}
         >
@@ -136,7 +158,7 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         </select>
       </div>
       <div className="ai-row">
-        <label>TTS model</label>
+        <label>Model</label>
         <select
           value={tts}
           disabled={update.isPending}
@@ -147,7 +169,7 @@ function VoiceFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         </select>
       </div>
       <div className="ai-row">
-        <label>TTS voice</label>
+        <label>Voice</label>
         <select
           value={voice}
           disabled={update.isPending}
@@ -234,13 +256,15 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
 }
 
 function KeyRow({
-  label, field, placeholder, onSave, onClear,
+  label, field, placeholder, onSave, onClear, onTest, testing,
 }: {
   label: string;
   field: InstanceAiSettings["credentials"]["openai"];
   placeholder: string;
   onSave: (key: string) => void;
   onClear: () => void;
+  onTest: () => void;
+  testing: boolean;
 }) {
   const [key, setKey] = useState("");
   return (
@@ -259,17 +283,21 @@ function KeyRow({
           value={key}
           onChange={e => setKey(e.target.value)}
         />
-        <button className="btn sm primary" disabled={!key.trim()}
-          onClick={() => { onSave(key.trim()); setKey(""); }}>
-          Save key
-        </button>
-        {field.source === "config" && (
-          <button className="btn sm danger" onClick={onClear}>Clear saved key</button>
-        )}
+        <div className="ai-key-actions">
+          <button className="btn sm primary" disabled={!key.trim()}
+            onClick={() => { onSave(key.trim()); setKey(""); }}>
+            Save
+          </button>
+          {field.configured && (
+            <button className="btn sm" disabled={testing} onClick={onTest}>
+              {testing ? "Testing…" : "Test"}
+            </button>
+          )}
+          {field.source === "config" && (
+            <button className="btn sm danger" onClick={onClear}>Clear</button>
+          )}
+        </div>
       </div>
-      {field.source === "env" && (
-        <p className="conn-hint">From the server environment — saving a key here overrides it for this instance.</p>
-      )}
     </div>
   );
 }
@@ -312,9 +340,10 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
   return (
     <>
       <KeyRow
-        label="OpenAI API key"
+        label="OpenAI"
         field={data.credentials.openai}
         placeholder="sk-…"
+        testing={test.isPending}
         onSave={api_key => update.mutate({ credentials: { openai: { api_key } } }, {
           onSuccess: () => toast("OpenAI key saved", { variant: "ok" }),
           onError: err("Couldn't save OpenAI key"),
@@ -323,22 +352,17 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
           onSuccess: () => toast("OpenAI key cleared", { variant: "ok" }),
           onError: err("Couldn't clear OpenAI key"),
         })}
+        onTest={() => test.mutate("openai", {
+          onSuccess: () => toast("OpenAI credentials work", { variant: "ok" }),
+          onError: err("OpenAI test failed"),
+        })}
       />
-      <p className="conn-hint">Shared by Voice TTS (and OpenAI STT) and by Ask AI when its provider is OpenAI.</p>
-      <div className="ai-actions">
-        <button className="btn sm" disabled={test.isPending || !data.credentials.openai.configured}
-          onClick={() => test.mutate("openai", {
-            onSuccess: () => toast("OpenAI credentials work", { variant: "ok" }),
-            onError: err("OpenAI test failed"),
-          })}>
-          {test.isPending ? "Testing…" : "Test OpenAI"}
-        </button>
-      </div>
 
       <KeyRow
-        label="Groq API key"
+        label="Groq"
         field={data.credentials.groq}
         placeholder="gsk-…"
+        testing={test.isPending}
         onSave={api_key => update.mutate({ credentials: { groq: { api_key } } }, {
           onSuccess: () => toast("Groq key saved", { variant: "ok" }),
           onError: err("Couldn't save Groq key"),
@@ -347,22 +371,17 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
           onSuccess: () => toast("Groq key cleared", { variant: "ok" }),
           onError: err("Couldn't clear Groq key"),
         })}
+        onTest={() => test.mutate("groq", {
+          onSuccess: () => toast("Groq credentials work", { variant: "ok" }),
+          onError: err("Groq test failed"),
+        })}
       />
-      <p className="conn-hint">Used by Voice when STT provider is Groq.</p>
-      <div className="ai-actions">
-        <button className="btn sm" disabled={test.isPending || !data.credentials.groq.configured}
-          onClick={() => test.mutate("groq", {
-            onSuccess: () => toast("Groq credentials work", { variant: "ok" }),
-            onError: err("Groq test failed"),
-          })}>
-          {test.isPending ? "Testing…" : "Test Groq"}
-        </button>
-      </div>
 
       <KeyRow
-        label="Anthropic API key"
+        label="Anthropic"
         field={data.credentials.anthropic}
         placeholder="sk-ant-…"
+        testing={test.isPending}
         onSave={api_key => update.mutate({ credentials: { anthropic: { api_key } } }, {
           onSuccess: () => toast("Anthropic key saved", { variant: "ok" }),
           onError: err("Couldn't save Anthropic key"),
@@ -371,66 +390,60 @@ function CredentialsTab({ data }: { data: InstanceAiSettings }) {
           onSuccess: () => toast("Anthropic key cleared", { variant: "ok" }),
           onError: err("Couldn't clear Anthropic key"),
         })}
+        onTest={() => test.mutate("anthropic", {
+          onSuccess: () => toast("Anthropic credentials work", { variant: "ok" }),
+          onError: err("Anthropic test failed"),
+        })}
       />
-      <p className="conn-hint">Used by Ask AI when its provider is Anthropic.</p>
-      <div className="ai-actions">
-        <button className="btn sm" disabled={test.isPending || !data.credentials.anthropic.configured}
-          onClick={() => test.mutate("anthropic", {
-            onSuccess: () => toast("Anthropic credentials work", { variant: "ok" }),
-            onError: err("Anthropic test failed"),
-          })}>
-          {test.isPending ? "Testing…" : "Test Anthropic"}
-        </button>
-      </div>
 
       <div className="ai-section">
-        <h4>Codex OAuth</h4>
-        <p className="conn-hint">
-          ChatGPT account via the Codex CLI OAuth client. Used by Ask AI when its provider
-          is Codex OAuth.
-          {oauth.configured
-            ? ` Linked · ${oauth.hint || "token saved"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
-            : " Not linked."}
-        </p>
-        <div className="ai-actions">
-          <button className="btn sm primary" disabled={startOauth.isPending}
-            onClick={() => {
-              const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-              const mode = local ? "loopback" : "paste";
-              startOauth.mutate(mode, {
-                onSuccess: res => {
-                  setOauthMode(res.mode);
-                  setAuthorizeUrl(res.authorize_url);
-                  // Keep a window handle so we can close it on success.
-                  // Do not use noopener — that makes window.open return null.
-                  oauthWinRef.current = window.open(res.authorize_url, "agora-codex-oauth");
-                  toast(mode === "loopback"
-                    ? "Sign in opened — finish in the Codex OAuth window"
-                    : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
-                },
-                onError: err("Couldn't start Codex OAuth"),
-              });
-            }}>
-            {oauth.configured ? "Re-authorize Codex" : "Authorize Codex"}
-          </button>
-          {oauth.configured && (
-            <button className="btn sm" disabled={test.isPending}
-              onClick={() => test.mutate("codex", {
-                onSuccess: () => toast("Codex OAuth credentials work", { variant: "ok" }),
-                onError: err("Codex OAuth test failed"),
-              })}>
-              {test.isPending ? "Testing…" : "Test Codex OAuth"}
+        <h4>Codex</h4>
+        <div className="ai-key">
+          <span className="dim">
+            {oauth.configured
+              ? `${oauth.hint || "linked"}${oauth.account_id ? ` · ${oauth.account_id}` : ""}`
+              : "not linked"}
+          </span>
+          <div className="ai-key-actions">
+            <button className="btn sm primary" disabled={startOauth.isPending}
+              onClick={() => {
+                const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+                const mode = local ? "loopback" : "paste";
+                startOauth.mutate(mode, {
+                  onSuccess: res => {
+                    setOauthMode(res.mode);
+                    setAuthorizeUrl(res.authorize_url);
+                    // Keep a window handle so we can close it on success.
+                    // Do not use noopener — that makes window.open return null.
+                    oauthWinRef.current = window.open(res.authorize_url, "agora-codex-oauth");
+                    toast(mode === "loopback"
+                      ? "Sign in opened — finish in the Codex OAuth window"
+                      : "Sign in opened — paste the redirected localhost URL below", { variant: "ok" });
+                  },
+                  onError: err("Couldn't start Codex OAuth"),
+                });
+              }}>
+              {oauth.configured ? "Reconnect" : "Connect"}
             </button>
-          )}
-          {oauth.configured && (
-            <button className="btn sm danger" disabled={disconnectOauth.isPending}
-              onClick={() => disconnectOauth.mutate(undefined, {
-                onSuccess: () => toast("Codex OAuth disconnected", { variant: "ok" }),
-                onError: err("Couldn't disconnect"),
-              })}>
-              Disconnect
-            </button>
-          )}
+            {oauth.configured && (
+              <button className="btn sm" disabled={test.isPending}
+                onClick={() => test.mutate("codex", {
+                  onSuccess: () => toast("Codex OAuth credentials work", { variant: "ok" }),
+                  onError: err("Codex OAuth test failed"),
+                })}>
+                {test.isPending ? "Testing…" : "Test"}
+              </button>
+            )}
+            {oauth.configured && (
+              <button className="btn sm danger" disabled={disconnectOauth.isPending}
+                onClick={() => disconnectOauth.mutate(undefined, {
+                  onSuccess: () => toast("Codex OAuth disconnected", { variant: "ok" }),
+                  onError: err("Couldn't disconnect"),
+                })}>
+                Clear
+              </button>
+            )}
+          </div>
         </div>
         {oauthMode === "loopback" && (
           <p className="conn-hint">Waiting for redirect on {oauth.redirect_uri}…</p>
@@ -505,16 +518,15 @@ export function AiSettingsPane() {
               <p className="conn-hint">
                 Choose providers and models. Keys and Codex OAuth live under Credentials.
               </p>
-              <VoiceFeatures data={q.data.voice} />
+              <SttFeatures data={q.data.voice} />
+              <TtsFeatures data={q.data.voice} />
               <SearchFeatures data={q.data.search} />
             </>
           )}
           {q.data && tab === "credentials" && (
             <>
               <p className="conn-hint">
-                Provider credentials are shared by any feature that needs them. Environment
-                keys show masked; saving here overrides env for this instance, clear restores
-                the env fallback. Test checks that the provider accepts the credential.
+                Add a key for each provider you use, then press Test to make sure it works.
               </p>
               <CredentialsTab data={q.data} />
             </>

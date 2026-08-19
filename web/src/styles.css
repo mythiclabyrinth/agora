@@ -1508,6 +1508,15 @@ a.btn { text-decoration: none; }
   background: #0d1018; border: 1px solid var(--border-strong); border-radius: 20px;
   box-shadow: 0 30px 80px rgba(0,0,0,.6); animation: rise .2s ease;
 }
+/* Settings keeps a stable pane height across Features / Credentials so adding
+   more credential rows scrolls inside the body instead of growing the modal. */
+#settings-panel.conn-panel {
+  height: min(640px, 86vh);
+}
+#settings-panel .conn-body {
+  flex: 1;
+  min-height: 0;
+}
 .conn-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 14px;
@@ -1560,6 +1569,7 @@ a.btn { text-decoration: none; }
 .ai-row textarea { resize: vertical; min-height: 64px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ai-key { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .ai-key input { flex: 1 1 160px; min-width: 140px; }
+.ai-key-actions { display: flex; flex-wrap: nowrap; gap: 6px; flex: 0 0 auto; }
 .ai-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .conn-tabs {
   display: flex; gap: 4px; padding: 10px 20px 0;

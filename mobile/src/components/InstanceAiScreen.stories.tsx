@@ -4,11 +4,13 @@ import InstanceAiScreen from "../../app/(app)/instance-ai";
 
 const emptySettings = {
   voice: {
-    enabled: true,
+    stt_enabled: true,
+    tts_enabled: true,
     available: false,
+    stt_available: false,
+    tts_available: false,
     stt_provider: "openai",
     tts_provider: "openai",
-    provider: "openai",
     api_key: { configured: false, hint: null, source: "none" },
     stt_model: { value: "gpt-4o-mini-transcribe", source: "default" },
     stt_models: {

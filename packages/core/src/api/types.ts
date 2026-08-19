@@ -633,18 +633,18 @@ export interface AiValueField {
 }
 
 export interface InstanceAiVoice {
-  enabled: boolean;
+  /** Admin kill-switch per half — they are configured and credentialed
+      separately, so they turn off separately. */
+  stt_enabled: boolean;
+  tts_enabled: boolean;
   /** Either half is usable. */
   available: boolean;
-  /** Transcription half — the selected STT provider has a credential. */
+  /** Transcription half — enabled and the selected STT provider has a key. */
   stt_available: boolean;
-  /** Synthesis half — the selected TTS provider has a credential. */
+  /** Synthesis half — enabled and the selected TTS provider has a key. */
   tts_available: boolean;
-  /** STT provider (also exposed as legacy `provider`). */
   stt_provider: string;
   tts_provider: string;
-  /** Legacy alias for `stt_provider`. */
-  provider: string;
   api_key: AiSecretField;
   stt_model: AiValueField;
   stt_models: {
@@ -702,11 +702,10 @@ export interface InstanceAiSettings {
 
 export type InstanceAiUpdate = {
   voice?: {
-    enabled?: boolean;
+    stt_enabled?: boolean;
+    tts_enabled?: boolean;
     stt_provider?: string;
     tts_provider?: string;
-    /** Legacy alias for `stt_provider`. */
-    provider?: string;
     api_key?: string;
     clear_key?: boolean;
     stt_model?: string;

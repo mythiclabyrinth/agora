@@ -1874,7 +1874,7 @@ async fn post_voice_message(
     }
     require_channel_postable(&state, &user, &channel_id)?;
     let voice = resolved_voice(&state);
-    if !voice.enabled {
+    if !voice.stt_enabled {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "Voice input is disabled for this instance",
@@ -2002,7 +2002,7 @@ async fn message_speech(
     let user = require_user(&state, &headers, &q)?;
     let message = require_message_visible(&state, &user, message_id)?;
     let voice = resolved_voice(&state);
-    if !voice.enabled {
+    if !voice.tts_enabled {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "Spoken replies are disabled for this instance",
@@ -3225,7 +3225,8 @@ fn instance_ai_payload(state: &AppState) -> Value {
     let codex_models = resolve_codex_suggested_models(state, &search);
     json!({
         "voice": {
-            "enabled": voice.enabled,
+            "stt_enabled": voice.stt_enabled,
+            "tts_enabled": voice.tts_enabled,
             "available": voice.available(),
             // Split so the admin can see which half is missing a credential
             // — Groq STT and OpenAI TTS are configured independently.
@@ -3240,8 +3241,6 @@ fn instance_ai_payload(state: &AppState) -> Value {
             "tts_providers": [
                 { "id": crate::config::VOICE_PROVIDER_OPENAI, "label": "OpenAI" },
             ],
-            // Legacy alias = STT provider (historically the load-bearing half).
-            "provider": voice.stt_provider,
             "api_key": ai_secret_field(voice.openai_api_key.as_deref(), voice.openai_api_key_source),
             "stt_model": ai_value_field(&voice.stt_model, voice.stt_model_source),
             "stt_models": {
@@ -3462,16 +3461,13 @@ async fn update_instance_ai(
     let mut clear_speech = false;
     state.config.update(|c| {
         if let Some(v) = payload.get("voice") {
-            if let Some(enabled) = v.get("enabled").and_then(|x| x.as_bool()) {
-                c.ai.voice.enabled = enabled;
+            if let Some(enabled) = v.get("stt_enabled").and_then(|x| x.as_bool()) {
+                c.ai.voice.stt_enabled = enabled;
+            }
+            if let Some(enabled) = v.get("tts_enabled").and_then(|x| x.as_bool()) {
+                c.ai.voice.tts_enabled = enabled;
             }
             if let Some(provider) = v.get("stt_provider").and_then(|x| x.as_str()) {
-                let p = provider.trim();
-                if !p.is_empty() {
-                    c.ai.voice.stt_provider = p.to_string();
-                }
-            } else if let Some(provider) = v.get("provider").and_then(|x| x.as_str()) {
-                // Legacy single `provider` = STT.
                 let p = provider.trim();
                 if !p.is_empty() {
                     c.ai.voice.stt_provider = p.to_string();
@@ -4877,12 +4873,12 @@ mod tests {
         .await
         .unwrap()
         .0;
-        assert_eq!(got["voice"]["enabled"], true);
+        assert_eq!(got["voice"]["stt_enabled"], true);
+        assert_eq!(got["voice"]["tts_enabled"], true);
         assert_eq!(got["voice"]["available"], false);
         assert_eq!(got["voice"]["api_key"]["configured"], false);
         assert_eq!(got["voice"]["stt_provider"], "openai");
         assert_eq!(got["voice"]["tts_provider"], "openai");
-        assert_eq!(got["voice"]["provider"], "openai");
         assert_eq!(got["credentials"]["groq"]["configured"], false);
         assert_eq!(got["search"]["provider"], "anthropic");
 
@@ -4930,7 +4926,7 @@ mod tests {
             State(state.clone()),
             Query(HashMap::new()),
             admin_headers.clone(),
-            Json(json!({"voice": {"enabled": false}})),
+            Json(json!({"voice": {"stt_enabled": false, "tts_enabled": false}})),
         )
         .await
         .unwrap();
@@ -4945,7 +4941,7 @@ mod tests {
             State(state.clone()),
             Query(HashMap::new()),
             admin_headers.clone(),
-            Json(json!({"voice": {"enabled": true, "clear_key": true}})),
+            Json(json!({"voice": {"stt_enabled": true, "tts_enabled": true, "clear_key": true}})),
         )
         .await
         .unwrap();
@@ -5029,7 +5025,6 @@ mod tests {
             crate::config::DEFAULT_SEARCH_MODEL
         );
         let snap = state.config.snapshot();
-        assert!(snap.ai.voice.stt_model.is_empty());
         assert!(snap.ai.voice.stt_models.openai.is_empty());
         assert!(snap.ai.search.models.anthropic.is_empty());
         assert_eq!(
@@ -5069,7 +5064,6 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(got["voice"]["stt_provider"], "groq");
-        assert_eq!(got["voice"]["provider"], "groq");
         assert_eq!(got["voice"]["stt_model"]["value"], "whisper-large-v3-turbo");
         // Groq is selected for STT with no Groq key yet, so the mic is off —
         // but the OpenAI key still powers spoken replies, so voice as a whole

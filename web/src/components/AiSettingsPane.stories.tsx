@@ -6,11 +6,13 @@ import { AiSettingsPane } from "./AiSettingsPane";
 
 const emptySettings = {
   voice: {
-    enabled: true,
+    stt_enabled: true,
+    tts_enabled: true,
     available: false,
+    stt_available: false,
+    tts_available: false,
     stt_provider: "openai",
     tts_provider: "openai",
-    provider: "openai",
     api_key: { configured: false, hint: null, source: "none" },
     stt_model: { value: "gpt-4o-mini-transcribe", source: "default" },
     stt_models: {
@@ -74,6 +76,8 @@ const configuredSettings = {
   voice: {
     ...emptySettings.voice,
     available: true,
+    stt_available: true,
+    tts_available: true,
     api_key: { configured: true, hint: "sk-a…mnop", source: "config" },
     tts_voice: { value: "shimmer", source: "config" },
   },
@@ -126,18 +130,21 @@ export const Empty: Story = {
     await expect(canvas.findByRole("tab", { name: "Features" })).resolves.toBeVisible();
     await expect(canvas.findByDisplayValue(/Anthropic \(API key\)/)).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
-    await expect(canvas.findByText("OpenAI API key")).resolves.toBeVisible();
-    await expect(canvas.findByText("Groq API key")).resolves.toBeVisible();
-    await expect(canvas.findByText("Anthropic API key")).resolves.toBeVisible();
-    await expect(canvas.findByRole("button", { name: /Authorize Codex/ })).resolves.toBeVisible();
+    await expect(canvas.findByText("OpenAI")).resolves.toBeVisible();
+    await expect(canvas.findByText("Groq")).resolves.toBeVisible();
+    await expect(canvas.findByText("Anthropic")).resolves.toBeVisible();
+    await expect(canvas.findByRole("button", { name: "Connect" })).resolves.toBeVisible();
   },
 };
 
 const envBackedSettings = {
   voice: {
     ...emptySettings.voice,
-    enabled: false,
+    stt_enabled: false,
+    tts_enabled: false,
     available: false,
+    stt_available: false,
+    tts_available: false,
     api_key: { configured: true, hint: "sk-p…9f2c", source: "env" },
   },
   search: {
@@ -171,7 +178,7 @@ export const InheritedFromEnv: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
     await expect(canvas.findAllByText(/from server environment/)).resolves.toHaveLength(2);
-    await expect(canvas.queryByRole("button", { name: "Clear saved key" })).toBeNull();
+    await expect(canvas.queryByRole("button", { name: "Clear" })).toBeNull();
   },
 };
 
@@ -190,9 +197,10 @@ export const Configured: Story = {
     await userEvent.click(await canvas.findByRole("tab", { name: "Credentials" }));
     await expect(canvas.findByText(/sk-a…mnop/)).resolves.toBeVisible();
     await expect(canvas.getByText(/from server environment/)).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Test OpenAI" }));
+    const testButtons = canvas.getAllByRole("button", { name: "Test" });
+    await userEvent.click(testButtons[0]);
     await expect(testAi).toHaveBeenCalledWith({ provider: "openai" });
-    await userEvent.click(canvas.getByRole("button", { name: "Test Anthropic" }));
+    await userEvent.click(testButtons[1]);
     await expect(testAi).toHaveBeenCalledWith({ provider: "anthropic" });
   },
 };
