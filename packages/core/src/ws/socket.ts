@@ -110,7 +110,19 @@ export function createAgoraSocket(
       discard(old);
       handlers.onConnectedChange?.(false);
     }
-    const socket = new WS(options.url());
+    let socket: AgoraWebSocket;
+    try {
+      socket = new WS(options.url());
+    } catch {
+      // Construction can throw on a malformed URL. We've already discarded
+      // any prior socket, so without a retry the lifecycle is dead until
+      // the next wake — schedule the normal backoff reconnect.
+      if (closed) return;
+      handlers.onConnectedChange?.(false);
+      timer = schedule(connect, backoff);
+      backoff = Math.min(backoff * 2, backoffCap);
+      return;
+    }
     ws = socket;
 
     socket.onopen = () => {

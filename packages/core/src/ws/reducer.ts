@@ -244,22 +244,24 @@ export function applyAliasToPages(
 }
 
 /** Scrub a deleted message from every cache that may hold it. Shared by the
-    WS case and useDeleteMessage's onSuccess — the echo is a no-op because
-    we claim the deleted id (removeMessage alone is idempotent, but
-    dropReplyCount is not). A root takes its whole thread with it
-    server-side, so its reply page set and single-message cache go too;
-    pins/stars/threads rows may reference the id, so those refetch. */
+    WS case and useDeleteMessage's onSuccess. removeMessage / removeQueries /
+    invalidateQueries are safe to repeat; only dropReplyCount is gated so the
+    mutation + WS echo don't double-decrement, while the echo can still
+    re-invalidate threads/stars/pins. A root takes its whole thread with it
+    server-side, so its reply page set and single-message cache go too. */
 export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): void {
-  if (!claimId(deletedMessageIds, qc, ev.message_id)) return;
   qc.setQueryData<MessagePages>(
     keys.messages(ev.channel_id, ev.thread_id),
     (data) => removeMessage(data, ev.message_id),
   );
   if (ev.thread_id != null) {
-    qc.setQueryData<MessagePages>(
-      keys.messages(ev.channel_id, null),
-      (data) => dropReplyCount(data, ev.thread_id!),
-    );
+    // dropReplyCount is the only non-idempotent step — claim just around it.
+    if (claimId(deletedMessageIds, qc, ev.message_id)) {
+      qc.setQueryData<MessagePages>(
+        keys.messages(ev.channel_id, null),
+        (data) => dropReplyCount(data, ev.thread_id!),
+      );
+    }
   } else {
     qc.removeQueries({ queryKey: keys.messages(ev.channel_id, ev.message_id) });
     qc.removeQueries({ queryKey: keys.message(ev.message_id) });
@@ -279,11 +281,11 @@ export interface WsContext {
 }
 
 /** Per-QueryClient sets of ids already applied via applyWsEvent /
-    applyMessageDelete. Message ids are claimed only inside applyWsEvent —
+    dropReplyCount. Message ids are claimed only inside applyWsEvent —
     never from optimistic mutation paths — so the WS echo of an own reply
-    still runs bumpReplyCount. Delete ids are claimed inside
-    applyMessageDelete so the mutation onSuccess + WS echo share one gate.
-    Caps at SEEN_CAP with FIFO eviction. */
+    still runs bumpReplyCount. Delete ids gate only dropReplyCount so the
+    mutation onSuccess + WS echo share one counter bump while invalidations
+    still re-run. Caps at SEEN_CAP with FIFO eviction. */
 const SEEN_CAP = 512;
 const seenMessageIds = new WeakMap<QueryClient, Set<number>>();
 const deletedMessageIds = new WeakMap<QueryClient, Set<number>>();

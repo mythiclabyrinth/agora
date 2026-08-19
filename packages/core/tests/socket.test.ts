@@ -180,4 +180,36 @@ describe("createAgoraSocket", () => {
     FakeWebSocket.instances[1].open();
     expect(states).toEqual([true, false, true]);
   });
+
+  it("a throwing WebSocket constructor reschedules on backoff", async () => {
+    let builds = 0;
+    class BoomWS implements AgoraWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      readyState = BoomWS.CONNECTING;
+      onopen: AgoraWebSocket["onopen"] = null;
+      onmessage: AgoraWebSocket["onmessage"] = null;
+      onerror: AgoraWebSocket["onerror"] = null;
+      onclose: AgoraWebSocket["onclose"] = null;
+      constructor(_url: string) {
+        builds++;
+        throw new Error("bad url");
+      }
+      close() {}
+    }
+    const sock = createAgoraSocket(
+      { url: () => "ws://bad", WebSocketImpl: BoomWS as unknown as AgoraWebSocketConstructor },
+      { onEvent: () => {} },
+    );
+    sock.connect();
+    expect(builds).toBe(1);
+    expect(sock.current()).toBeNull();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(builds).toBe(2);
+    sock.close();
+    await vi.runAllTimersAsync();
+    expect(builds).toBe(2);
+  });
 });

@@ -173,4 +173,58 @@ describe("applyWsEvent message dedupe", () => {
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", 5))!.pages[0].map(m => m.id)).toEqual([8]);
   });
+
+  it("separate QueryClients each apply the same message id independently", () => {
+    const a = new QueryClient();
+    const b = new QueryClient();
+    for (const qc of [a, b]) {
+      qc.setQueryData(keys.messages("c1", null), {
+        pages: [[{ ...msg(5), reply_count: 0 }]],
+        pageParams: [undefined],
+      });
+      qc.setQueryData(keys.messages("c1", 5), pages());
+    }
+    const reply = { ...msg(11), thread_id: 5 };
+    applyWsEvent(a, { type: "message", message: reply }, { username: "me" });
+    applyWsEvent(b, { type: "message", message: reply }, { username: "me" });
+    expect(a.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    expect(b.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
+
+  it("resetSeenMessageIds clears the delete gate so a later delete can drop again", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), {
+      pages: [[{ ...msg(7), thread_id: 5 }, { ...msg(8), thread_id: 5 }]],
+      pageParams: [undefined],
+    });
+    const ev = {
+      type: "message_delete" as const,
+      channel_id: "c1",
+      message_id: 7,
+      thread_id: 5,
+    };
+    applyMessageDelete(qc, ev);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    // Echo is gated — no second drop.
+    applyMessageDelete(qc, ev);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+
+    resetSeenMessageIds(qc);
+    // Restore a reply_count as if a new instance reused the rowid, then
+    // deleting id 7 again must be allowed to drop once.
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), {
+      pages: [[{ ...msg(7), thread_id: 5 }, { ...msg(8), thread_id: 5 }]],
+      pageParams: [undefined],
+    });
+    applyMessageDelete(qc, ev);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
 });
