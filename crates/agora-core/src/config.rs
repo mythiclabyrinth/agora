@@ -171,7 +171,7 @@ pub enum AiFieldSource {
 }
 
 /// Voice feature defaults. STT and TTS providers are independent — Groq can
-/// handle STT while OpenAI still does TTS.
+/// handle STT while OpenAI still does TTS, or the reverse.
 pub const VOICE_PROVIDER_OPENAI: &str = "openai";
 pub const VOICE_PROVIDER_GROQ: &str = "groq";
 pub const DEFAULT_STT_PROVIDER: &str = VOICE_PROVIDER_OPENAI;
@@ -180,10 +180,40 @@ pub const DEFAULT_STT_MODEL: &str = "gpt-4o-mini-transcribe";
 pub const DEFAULT_GROQ_STT_MODEL: &str = "whisper-large-v3-turbo";
 pub const DEFAULT_TTS_MODEL: &str = "gpt-4o-mini-tts";
 pub const DEFAULT_TTS_VOICE: &str = "alloy";
+pub const DEFAULT_GROQ_TTS_MODEL: &str = "canopylabs/orpheus-v1-english";
+pub const DEFAULT_GROQ_ARABIC_TTS_MODEL: &str = "canopylabs/orpheus-arabic-saudi";
+pub const DEFAULT_GROQ_TTS_VOICE: &str = "autumn";
+pub const DEFAULT_GROQ_ARABIC_TTS_VOICE: &str = "noura";
+pub const DEFAULT_OPENAI_BRITISH_TTS_VOICE: &str = "fable";
+
+/// Provider-agnostic spoken accent. OpenAI gpt-4o-mini-tts follows it via
+/// `instructions`; Groq maps Arabic onto the Arabic Orpheus model and English
+/// accents onto English voices (Orpheus has no British-specific set).
+pub const TTS_ACCENT_AMERICAN: &str = "american";
+pub const TTS_ACCENT_BRITISH: &str = "british";
+pub const TTS_ACCENT_ARABIC: &str = "arabic";
+pub const DEFAULT_TTS_ACCENT: &str = TTS_ACCENT_AMERICAN;
+pub const TTS_ACCENTS: &[(&str, &str)] = &[
+    (TTS_ACCENT_AMERICAN, "American English"),
+    (TTS_ACCENT_BRITISH, "British English"),
+    (TTS_ACCENT_ARABIC, "Arabic (Saudi)"),
+];
 
 pub const SUGGESTED_OPENAI_STT_MODELS: &[&str] = &["gpt-4o-mini-transcribe", "whisper-1"];
 pub const SUGGESTED_GROQ_STT_MODELS: &[&str] =
     &["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"];
+pub const SUGGESTED_OPENAI_TTS_MODELS: &[&str] = &["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
+pub const SUGGESTED_GROQ_TTS_MODELS: &[&str] = &[
+    "canopylabs/orpheus-v1-english",
+    "canopylabs/orpheus-arabic-saudi",
+];
+pub const SUGGESTED_OPENAI_TTS_VOICES: &[&str] = &[
+    "alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse",
+];
+pub const SUGGESTED_GROQ_ENGLISH_TTS_VOICES: &[&str] =
+    &["autumn", "diana", "hannah", "austin", "daniel", "troy"];
+pub const SUGGESTED_GROQ_ARABIC_TTS_VOICES: &[&str] =
+    &["abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"];
 
 /// Ask-AI defaults (Anthropic Messages API).
 pub const DEFAULT_SEARCH_PROVIDER: &str = "anthropic";
@@ -207,8 +237,7 @@ pub fn is_supported_stt_provider(p: &str) -> bool {
 }
 
 pub fn is_supported_tts_provider(p: &str) -> bool {
-    // TTS adapters beyond OpenAI are intentionally not wired yet.
-    matches!(p, VOICE_PROVIDER_OPENAI)
+    matches!(p, VOICE_PROVIDER_OPENAI | VOICE_PROVIDER_GROQ)
 }
 
 pub fn is_supported_search_provider(p: &str) -> bool {
@@ -230,6 +259,164 @@ pub fn suggested_stt_models_for_provider(provider: &str) -> &'static [&'static s
         VOICE_PROVIDER_GROQ => SUGGESTED_GROQ_STT_MODELS,
         _ => SUGGESTED_OPENAI_STT_MODELS,
     }
+}
+
+pub fn default_tts_model_for_provider(provider: &str) -> &'static str {
+    match provider {
+        VOICE_PROVIDER_GROQ => DEFAULT_GROQ_TTS_MODEL,
+        _ => DEFAULT_TTS_MODEL,
+    }
+}
+
+pub fn suggested_tts_models_for_provider(provider: &str) -> &'static [&'static str] {
+    match provider {
+        VOICE_PROVIDER_GROQ => SUGGESTED_GROQ_TTS_MODELS,
+        _ => SUGGESTED_OPENAI_TTS_MODELS,
+    }
+}
+
+pub fn groq_tts_model_is_arabic(model: &str) -> bool {
+    model.contains("arabic")
+}
+
+pub fn is_supported_tts_accent(accent: &str) -> bool {
+    matches!(
+        accent,
+        TTS_ACCENT_AMERICAN | TTS_ACCENT_BRITISH | TTS_ACCENT_ARABIC
+    )
+}
+
+/// Empty/unknown stored accent: Groq Arabic model implies Arabic, else American.
+pub fn resolve_tts_accent(
+    stored: &str,
+    tts_provider: &str,
+    groq_model: &str,
+) -> (String, AiFieldSource) {
+    let stored = stored.trim();
+    if is_supported_tts_accent(stored) {
+        return (stored.to_string(), AiFieldSource::Config);
+    }
+    if tts_provider == VOICE_PROVIDER_GROQ && groq_tts_model_is_arabic(groq_model) {
+        return (TTS_ACCENT_ARABIC.to_string(), AiFieldSource::Default);
+    }
+    (DEFAULT_TTS_ACCENT.to_string(), AiFieldSource::Default)
+}
+
+pub fn groq_tts_model_for_accent(accent: &str) -> &'static str {
+    if accent == TTS_ACCENT_ARABIC {
+        DEFAULT_GROQ_ARABIC_TTS_MODEL
+    } else {
+        DEFAULT_GROQ_TTS_MODEL
+    }
+}
+
+pub fn default_tts_voice_for(provider: &str, model: &str, accent: &str) -> &'static str {
+    match provider {
+        VOICE_PROVIDER_GROQ if groq_tts_uses_arabic(model, accent) => DEFAULT_GROQ_ARABIC_TTS_VOICE,
+        VOICE_PROVIDER_GROQ => DEFAULT_GROQ_TTS_VOICE,
+        _ if accent == TTS_ACCENT_BRITISH => DEFAULT_OPENAI_BRITISH_TTS_VOICE,
+        _ => DEFAULT_TTS_VOICE,
+    }
+}
+
+fn groq_tts_uses_arabic(model: &str, accent: &str) -> bool {
+    accent == TTS_ACCENT_ARABIC || groq_tts_model_is_arabic(model)
+}
+
+pub fn suggested_tts_voices_for(provider: &str, model: &str, accent: &str) -> &'static [&'static str] {
+    match provider {
+        VOICE_PROVIDER_GROQ if groq_tts_uses_arabic(model, accent) => SUGGESTED_GROQ_ARABIC_TTS_VOICES,
+        VOICE_PROVIDER_GROQ => SUGGESTED_GROQ_ENGLISH_TTS_VOICES,
+        _ => SUGGESTED_OPENAI_TTS_VOICES,
+    }
+}
+
+/// Human label for a provider voice id. Unknown ids are returned as-is.
+pub fn tts_voice_label(id: &str) -> String {
+    match id {
+        "alloy" => "Alloy — neutral".into(),
+        "ash" => "Ash — male".into(),
+        "ballad" => "Ballad — male".into(),
+        "coral" => "Coral — female".into(),
+        "echo" => "Echo — male".into(),
+        "fable" => "Fable — male".into(),
+        "onyx" => "Onyx — male".into(),
+        "nova" => "Nova — female".into(),
+        "sage" => "Sage — neutral".into(),
+        "shimmer" => "Shimmer — female".into(),
+        "verse" => "Verse — male".into(),
+        "autumn" => "Autumn — female".into(),
+        "diana" => "Diana — female".into(),
+        "hannah" => "Hannah — female".into(),
+        "austin" => "Austin — male".into(),
+        "daniel" => "Daniel — male".into(),
+        "troy" => "Troy — male".into(),
+        "abdullah" => "Abdullah — male".into(),
+        "fahad" => "Fahad — male".into(),
+        "sultan" => "Sultan — male".into(),
+        "lulwa" => "Lulwa — female".into(),
+        "noura" => "Noura — female".into(),
+        "aisha" => "Aisha — female".into(),
+        other => other.to_string(),
+    }
+}
+
+/// OpenAI `instructions` for gpt-4o-*tts models. `tts-1` rejects the field.
+pub fn openai_tts_instructions(model: &str, accent: &str) -> Option<&'static str> {
+    let m = model.to_ascii_lowercase();
+    if !(m.contains("gpt-4o") && m.contains("tts")) {
+        return None;
+    }
+    match accent {
+        TTS_ACCENT_BRITISH => Some("Speak with a clear British English accent."),
+        TTS_ACCENT_ARABIC => Some("Speak in Arabic using a Saudi dialect."),
+        TTS_ACCENT_AMERICAN => Some("Speak with a clear American English accent."),
+        _ => None,
+    }
+}
+
+pub fn tts_accent_label(id: &str) -> &'static str {
+    TTS_ACCENTS
+        .iter()
+        .find(|(accent, _)| *accent == id)
+        .map(|(_, label)| *label)
+        .unwrap_or("")
+}
+
+/// True when `source` is an outbound Pantheo connection name (not a pairing
+/// token). Those agents own their TTS in Pantheo; Agora must not overwrite it.
+pub fn agent_tts_is_remote(source: &str, connection_names: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    connection_names.into_iter().any(|name| name.as_ref() == source)
+}
+
+/// Optional TTS block on a `hello.agents[]` entry. Missing keys mean "leave
+/// Agora-stored values alone" (dial-in). Present keys, even empty, replace.
+pub fn parse_agent_hello_tts(agent: &serde_json::Value) -> Option<(String, String, String)> {
+    let has_accent = agent.get("tts_accent").is_some();
+    let has_voices = agent.get("tts_voices").is_some() || agent.get("tts_voice").is_some();
+    if !has_accent && !has_voices {
+        return None;
+    }
+    let accent = agent["tts_accent"].as_str().unwrap_or("").trim();
+    let accent = if is_supported_tts_accent(accent) {
+        accent.to_string()
+    } else {
+        String::new()
+    };
+    let voices = agent.get("tts_voices").and_then(|v| v.as_object());
+    let clip = |s: &str| s.trim().chars().take(40).collect::<String>();
+    let openai = voices
+        .and_then(|v| v.get("openai"))
+        .and_then(|v| v.as_str())
+        .or_else(|| agent["tts_voice"].as_str())
+        .map(clip)
+        .unwrap_or_default();
+    let groq = voices
+        .and_then(|v| v.get("groq"))
+        .and_then(|v| v.as_str())
+        .map(clip)
+        .unwrap_or_default();
+    Some((accent, openai, groq))
 }
 
 pub fn default_model_for_search_provider(provider: &str) -> &'static str {
@@ -274,6 +461,57 @@ impl AiVoiceSttModels {
     }
 }
 
+/// Per-provider TTS model overrides. Switching TTS provider must not keep a
+/// foreign model id (e.g. `gpt-4o-mini-tts` while on Groq Orpheus).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AiVoiceTtsModels {
+    #[serde(default)]
+    pub openai: String,
+    #[serde(default)]
+    pub groq: String,
+}
+
+impl AiVoiceTtsModels {
+    pub fn get(&self, provider: &str) -> &str {
+        match provider {
+            VOICE_PROVIDER_GROQ => self.groq.as_str(),
+            _ => self.openai.as_str(),
+        }
+    }
+
+    pub fn set(&mut self, provider: &str, value: String) {
+        match provider {
+            VOICE_PROVIDER_GROQ => self.groq = value,
+            _ => self.openai = value,
+        }
+    }
+}
+
+/// Per-provider TTS voice overrides. Groq Orpheus voices are not OpenAI names.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AiVoiceTtsVoices {
+    #[serde(default)]
+    pub openai: String,
+    #[serde(default)]
+    pub groq: String,
+}
+
+impl AiVoiceTtsVoices {
+    pub fn get(&self, provider: &str) -> &str {
+        match provider {
+            VOICE_PROVIDER_GROQ => self.groq.as_str(),
+            _ => self.openai.as_str(),
+        }
+    }
+
+    pub fn set(&mut self, provider: &str, value: String) {
+        match provider {
+            VOICE_PROVIDER_GROQ => self.groq = value,
+            _ => self.openai = value,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AiVoiceSettings {
     /// Admin kill-switches, one per half — they are configured separately and
@@ -290,15 +528,30 @@ pub struct AiVoiceSettings {
     /// OpenAI API key — shared with Ask AI when that provider is openai.
     #[serde(default)]
     pub api_key: String,
-    /// Groq API key for STT when `stt_provider=groq`.
+    /// Groq API key for STT/TTS when the selected half is Groq.
     #[serde(default)]
     pub groq_api_key: String,
     /// Per-provider STT model overrides. Empty slots resolve to the provider
     /// default.
     #[serde(default)]
     pub stt_models: AiVoiceSttModels,
+    /// Per-provider TTS model overrides. Empty slots resolve to the provider
+    /// default. Legacy `tts_model` is folded into the OpenAI slot on resolve.
+    #[serde(default)]
+    pub tts_models: AiVoiceTtsModels,
+    /// Per-provider TTS voice overrides. Legacy `tts_voice` is folded into the
+    /// OpenAI slot on resolve.
+    #[serde(default)]
+    pub tts_voices: AiVoiceTtsVoices,
+    /// Provider-agnostic accent (`american` / `british` / `arabic`). Empty
+    /// resolves to American, or Arabic when the Groq slot is an Arabic model.
+    #[serde(default)]
+    pub tts_accent: String,
+    /// Legacy OpenAI-only TTS model. Kept so older config.json still loads;
+    /// new writes go to `tts_models`.
     #[serde(default)]
     pub tts_model: String,
+    /// Legacy OpenAI-only TTS voice. New writes go to `tts_voices`.
     #[serde(default)]
     pub tts_voice: String,
 }
@@ -313,6 +566,9 @@ impl Default for AiVoiceSettings {
             api_key: String::new(),
             groq_api_key: String::new(),
             stt_models: AiVoiceSttModels::default(),
+            tts_models: AiVoiceTtsModels::default(),
+            tts_voices: AiVoiceTtsVoices::default(),
+            tts_accent: String::new(),
             tts_model: String::new(),
             tts_voice: String::new(),
         }
@@ -407,7 +663,7 @@ pub struct ResolvedVoice {
     /// OpenAI key (Voice TTS + Ask AI openai + OpenAI STT).
     pub openai_api_key: Option<String>,
     pub openai_api_key_source: AiFieldSource,
-    /// Groq key (STT when `stt_provider=groq`).
+    /// Groq key (STT/TTS when that half is set to groq).
     pub groq_api_key: Option<String>,
     pub groq_api_key_source: AiFieldSource,
     pub stt_model: String,
@@ -415,12 +671,28 @@ pub struct ResolvedVoice {
     pub stt_models: ResolvedVoiceSttModels,
     pub tts_model: String,
     pub tts_model_source: AiFieldSource,
+    pub tts_models: ResolvedVoiceTtsModels,
     pub tts_voice: String,
     pub tts_voice_source: AiFieldSource,
+    pub tts_voices: ResolvedVoiceTtsVoices,
+    pub tts_accent: String,
+    pub tts_accent_source: AiFieldSource,
 }
 
 #[derive(Clone, Debug)]
 pub struct ResolvedVoiceSttModels {
+    pub openai: (String, AiFieldSource),
+    pub groq: (String, AiFieldSource),
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedVoiceTtsModels {
+    pub openai: (String, AiFieldSource),
+    pub groq: (String, AiFieldSource),
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedVoiceTtsVoices {
     pub openai: (String, AiFieldSource),
     pub groq: (String, AiFieldSource),
 }
@@ -451,10 +723,11 @@ impl ResolvedVoice {
         }
     }
 
-    /// TTS is OpenAI-only for now, so the selected provider does not change
-    /// which credential is required.
     pub fn tts_ready(&self) -> bool {
-        self.openai_api_key.is_some()
+        match self.tts_provider.as_str() {
+            VOICE_PROVIDER_GROQ => self.groq_api_key.is_some(),
+            _ => self.openai_api_key.is_some(),
+        }
     }
 
     pub fn stt_api_key(&self) -> Option<&str> {
@@ -465,7 +738,63 @@ impl ResolvedVoice {
     }
 
     pub fn tts_api_key(&self) -> Option<&str> {
-        self.openai_api_key.as_deref()
+        match self.tts_provider.as_str() {
+            VOICE_PROVIDER_GROQ => self.groq_api_key.as_deref(),
+            _ => self.openai_api_key.as_deref(),
+        }
+    }
+
+    /// Overlay per-agent accent/voice onto instance TTS.
+    ///
+    /// `replace_defaults` is true for Pantheo (dial-out) agents: empty fields
+    /// use the provider default for that accent, never the instance voice.
+    /// For Agora-configured agents, empty slots keep the instance value.
+    pub fn overlay_agent_tts(
+        &mut self,
+        accent: &str,
+        voice_openai: &str,
+        voice_groq: &str,
+        replace_defaults: bool,
+    ) {
+        let accent = accent.trim();
+        let has_accent = is_supported_tts_accent(accent);
+        if has_accent {
+            self.tts_accent = accent.to_string();
+            self.tts_accent_source = AiFieldSource::Config;
+        } else if replace_defaults {
+            self.tts_accent = DEFAULT_TTS_ACCENT.to_string();
+            self.tts_accent_source = AiFieldSource::Default;
+        }
+
+        let slot = match self.tts_provider.as_str() {
+            VOICE_PROVIDER_GROQ => voice_groq.trim(),
+            _ => voice_openai.trim(),
+        };
+        let suggested = suggested_tts_voices_for(
+            &self.tts_provider,
+            &self.tts_model,
+            &self.tts_accent,
+        );
+        if !slot.is_empty() && suggested.iter().any(|v| *v == slot) {
+            self.tts_voice = slot.to_string();
+            self.tts_voice_source = AiFieldSource::Config;
+        } else if replace_defaults || !slot.is_empty() {
+            self.tts_voice = default_tts_voice_for(
+                &self.tts_provider,
+                &self.tts_model,
+                &self.tts_accent,
+            )
+            .to_string();
+            self.tts_voice_source = AiFieldSource::Default;
+        } else if has_accent && !suggested.iter().any(|v| *v == self.tts_voice.as_str()) {
+            self.tts_voice = default_tts_voice_for(
+                &self.tts_provider,
+                &self.tts_model,
+                &self.tts_accent,
+            )
+            .to_string();
+            self.tts_voice_source = AiFieldSource::Default;
+        }
     }
 
     /// Back-compat alias used by older call sites that only knew OpenAI.
@@ -819,10 +1148,54 @@ impl Config {
             VOICE_PROVIDER_GROQ => stt_models.groq.clone(),
             _ => stt_models.openai.clone(),
         };
-        let (tts_model, tts_model_source) =
-            resolve_setting(&v.tts_model, None, DEFAULT_TTS_MODEL);
-        let (tts_voice, tts_voice_source) =
-            resolve_setting(&v.tts_voice, None, DEFAULT_TTS_VOICE);
+        // Legacy `tts_model` / `tts_voice` were OpenAI-only; fold them into
+        // the OpenAI slot so existing config.json keeps its chosen voice.
+        let openai_tts_model = if v.tts_models.openai.trim().is_empty() {
+            v.tts_model.as_str()
+        } else {
+            v.tts_models.openai.as_str()
+        };
+        let groq_tts_model = v.tts_models.groq.as_str();
+        let tts_models = ResolvedVoiceTtsModels {
+            openai: resolve_setting(
+                openai_tts_model,
+                None,
+                default_tts_model_for_provider(VOICE_PROVIDER_OPENAI),
+            ),
+            groq: resolve_setting(
+                groq_tts_model,
+                None,
+                default_tts_model_for_provider(VOICE_PROVIDER_GROQ),
+            ),
+        };
+        let (tts_model, tts_model_source) = match tts_provider.as_str() {
+            VOICE_PROVIDER_GROQ => tts_models.groq.clone(),
+            _ => tts_models.openai.clone(),
+        };
+        let (tts_accent, tts_accent_source) =
+            resolve_tts_accent(&v.tts_accent, &tts_provider, &tts_models.groq.0);
+        let openai_tts_voice = if v.tts_voices.openai.trim().is_empty() {
+            v.tts_voice.as_str()
+        } else {
+            v.tts_voices.openai.as_str()
+        };
+        let groq_tts_voice = v.tts_voices.groq.as_str();
+        let tts_voices = ResolvedVoiceTtsVoices {
+            openai: resolve_setting(
+                openai_tts_voice,
+                None,
+                default_tts_voice_for(VOICE_PROVIDER_OPENAI, &tts_models.openai.0, &tts_accent),
+            ),
+            groq: resolve_setting(
+                groq_tts_voice,
+                None,
+                default_tts_voice_for(VOICE_PROVIDER_GROQ, &tts_models.groq.0, &tts_accent),
+            ),
+        };
+        let (tts_voice, tts_voice_source) = match tts_provider.as_str() {
+            VOICE_PROVIDER_GROQ => tts_voices.groq.clone(),
+            _ => tts_voices.openai.clone(),
+        };
         ResolvedVoice {
             stt_enabled: v.stt_enabled,
             tts_enabled: v.tts_enabled,
@@ -837,8 +1210,12 @@ impl Config {
             stt_models,
             tts_model,
             tts_model_source,
+            tts_models,
             tts_voice,
             tts_voice_source,
+            tts_voices,
+            tts_accent,
+            tts_accent_source,
         }
     }
 
@@ -1219,6 +1596,97 @@ mod tests {
     }
 
     #[test]
+    fn voice_tts_provider_switch_keeps_per_provider_models_and_voices() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| {
+            c.ai.voice.tts_models.openai = "tts-1-hd".into();
+            c.ai.voice.tts_voices.openai = "shimmer".into();
+            c.ai.voice.tts_models.groq = "canopylabs/orpheus-arabic-saudi".into();
+            c.ai.voice.tts_voices.groq = "fahad".into();
+            c.ai.voice.tts_provider = VOICE_PROVIDER_OPENAI.into();
+            c.ai.voice.api_key = "sk".into();
+            c.ai.voice.groq_api_key = "gsk".into();
+        });
+        let v = cfg.voice(None, None);
+        assert_eq!(v.tts_model, "tts-1-hd");
+        assert_eq!(v.tts_voice, "shimmer");
+        assert_eq!(v.tts_accent, crate::config::DEFAULT_TTS_ACCENT);
+        cfg.update(|c| c.ai.voice.tts_provider = VOICE_PROVIDER_GROQ.into());
+        let v = cfg.voice(None, None);
+        assert_eq!(v.tts_model, "canopylabs/orpheus-arabic-saudi");
+        assert_eq!(v.tts_voice, "fahad");
+        assert_eq!(v.tts_accent, crate::config::TTS_ACCENT_ARABIC);
+        assert_eq!(v.tts_models.openai.0, "tts-1-hd");
+        assert_eq!(v.tts_voices.openai.0, "shimmer");
+    }
+
+    #[test]
+    fn tts_accent_survives_provider_switch_and_picks_british_openai_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| {
+            c.ai.voice.tts_accent = TTS_ACCENT_BRITISH.into();
+            c.ai.voice.tts_provider = VOICE_PROVIDER_OPENAI.into();
+            c.ai.voice.api_key = "sk".into();
+            c.ai.voice.groq_api_key = "gsk".into();
+        });
+        let v = cfg.voice(None, None);
+        assert_eq!(v.tts_accent, TTS_ACCENT_BRITISH);
+        assert_eq!(v.tts_voice, DEFAULT_OPENAI_BRITISH_TTS_VOICE);
+        cfg.update(|c| c.ai.voice.tts_provider = VOICE_PROVIDER_GROQ.into());
+        let v = cfg.voice(None, None);
+        assert_eq!(v.tts_accent, TTS_ACCENT_BRITISH);
+        assert_eq!(v.tts_voice, DEFAULT_GROQ_TTS_VOICE);
+    }
+
+    #[test]
+    fn overlay_agent_tts_pantheo_ignores_instance_voice() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        cfg.update(|c| {
+            c.ai.voice.tts_voices.openai = "shimmer".into();
+            c.ai.voice.tts_accent = TTS_ACCENT_BRITISH.into();
+            c.ai.voice.api_key = "sk".into();
+        });
+        let mut v = cfg.voice(None, None);
+        assert_eq!(v.tts_voice, "shimmer");
+        assert_eq!(v.tts_accent, TTS_ACCENT_BRITISH);
+        v.overlay_agent_tts(TTS_ACCENT_AMERICAN, "onyx", "troy", true);
+        assert_eq!(v.tts_accent, TTS_ACCENT_AMERICAN);
+        assert_eq!(v.tts_voice, "onyx");
+        v.overlay_agent_tts("", "", "", true);
+        assert_eq!(v.tts_accent, DEFAULT_TTS_ACCENT);
+        assert_eq!(v.tts_voice, DEFAULT_TTS_VOICE);
+    }
+
+    #[test]
+    fn parse_agent_hello_tts_requires_an_explicit_key() {
+        assert!(parse_agent_hello_tts(&serde_json::json!({"id": "bot"})).is_none());
+        let got = parse_agent_hello_tts(&serde_json::json!({
+            "tts_accent": "british",
+            "tts_voices": { "openai": "fable", "groq": "austin" }
+        }))
+        .unwrap();
+        assert_eq!(got, ("british".into(), "fable".into(), "austin".into()));
+    }
+
+    #[test]
+    fn legacy_tts_model_and_voice_fold_into_the_openai_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"voice":{"tts_model":"tts-1","tts_voice":"nova","api_key":"sk"}}}"#,
+        )
+        .unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        let v = cfg.voice(None, None);
+        assert_eq!(v.tts_model, "tts-1");
+        assert_eq!(v.tts_voice, "nova");
+        assert_eq!(v.tts_model_source, AiFieldSource::Config);
+    }
+
+    #[test]
     fn voice_readiness_tracks_each_selected_provider_independently() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config::load(dir.path()).unwrap();
@@ -1233,13 +1701,22 @@ mod tests {
         // Groq key via env makes STT ready too.
         let v = cfg.voice(None, Some("gsk-env"));
         assert!(v.stt_available() && v.tts_available());
-        // Drop OpenAI: Groq alone still gives transcription, never synthesis.
+        // Drop OpenAI: Groq STT still works, OpenAI TTS does not.
         cfg.update(|c| c.ai.voice.api_key.clear());
         let v = cfg.voice(None, Some("gsk-env"));
         assert!(v.stt_available() && !v.tts_available() && v.available());
         assert!(cfg.voice(Some("sk-env"), Some("gsk-env")).tts_available());
+        // Same Groq key lights TTS once that half is pointed at Groq.
+        cfg.update(|c| c.ai.voice.tts_provider = VOICE_PROVIDER_GROQ.into());
+        let v = cfg.voice(None, Some("gsk-env"));
+        assert!(v.stt_available() && v.tts_available());
+        assert_eq!(v.tts_model, DEFAULT_GROQ_TTS_MODEL);
+        assert_eq!(v.tts_voice, DEFAULT_GROQ_TTS_VOICE);
         // OpenAI STT+TTS: the one key covers both halves.
-        cfg.update(|c| c.ai.voice.stt_provider = VOICE_PROVIDER_OPENAI.into());
+        cfg.update(|c| {
+            c.ai.voice.stt_provider = VOICE_PROVIDER_OPENAI.into();
+            c.ai.voice.tts_provider = VOICE_PROVIDER_OPENAI.into();
+        });
         let v = cfg.voice(Some("sk-env"), None);
         assert!(v.stt_available() && v.tts_available());
         // Back on OpenAI for both, a Groq key alone leaves nothing usable.

@@ -42,10 +42,10 @@ the Enabled flags alone; missing credentials fail with a clear error when used.
 | Env (fallback) | Feature |
 | --- | --- |
 | `OPENAI_API_KEY` | Voice TTS and OpenAI STT; also Ask AI when provider is `openai` |
-| `GROQ_API_KEY` | Voice STT when STT provider is `groq` |
+| `GROQ_API_KEY` | Voice STT and TTS when that half is set to `groq` |
 | `ANTHROPIC_API_KEY` | Ask AI when provider is `anthropic` |
 
-Voice **STT providers** (Features tab): `openai` or `groq`. TTS is OpenAI-only for now. STT models are stored per provider so switching does not leak a foreign model id.
+Voice **STT / TTS providers** (Features tab): `openai` or `groq`. Groq TTS uses Orpheus (`canopylabs/orpheus-v1-english` or `canopylabs/orpheus-arabic-saudi`; wav only; 200-character chunks). **Accent** (`american` / `british` / `arabic`) is stored once and applied on every provider: OpenAI `gpt-4o-mini-tts` follows it via speech instructions; Groq maps Arabic onto the Arabic Orpheus model and English accents onto English voices. Models and voices stay per provider so switching does not leak a foreign id.
 
 Ask AI **providers** (set in the UI Features tab):
 

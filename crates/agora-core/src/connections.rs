@@ -236,6 +236,9 @@ impl ConnectionManager {
                 conn_id,
                 tx: tx.clone(),
             });
+            if let Some((accent, openai, groq)) = crate::config::parse_agent_hello_tts(a) {
+                self.hub.store.update_agent_tts(id, &accent, &openai, &groq);
+            }
         }
         self.set_status(name, |s| {
             s.connected = true;
@@ -299,6 +302,13 @@ impl ConnectionManager {
                                             conn_id,
                                             tx: tx.clone(),
                                         });
+                                        if let Some((accent, openai, groq)) =
+                                            crate::config::parse_agent_hello_tts(&a)
+                                        {
+                                            self.hub.store.update_agent_tts(
+                                                id, &accent, &openai, &groq,
+                                            );
+                                        }
                                     }
                                 } else {
                                     // Operator-configured outbound peers are trusted and

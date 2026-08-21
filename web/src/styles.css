@@ -2205,6 +2205,11 @@ select {
   font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
 }
 .ago-profile-row .v { min-width: 0; word-break: break-word; }
+.ago-profile-select {
+  width: 100%; max-width: 220px;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 8px; background: var(--bg); color: var(--text); font: inherit;
+}
 .ago-profile-row .ago-live-dot {
   display: inline-block; vertical-align: baseline; background: #34d399; margin-right: 2px;
 }

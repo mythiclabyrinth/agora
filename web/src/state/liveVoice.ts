@@ -240,7 +240,9 @@ async function playNext(live: LiveSession): Promise<void> {
   let url: string;
   try {
     url = await fetchSpeechUrl(id);
-  } catch {
+  } catch (e) {
+    const msg = (e as Error).message || "Speech synthesis failed";
+    toast("Couldn't speak the reply: " + msg, { variant: "warn" });
     void playNext(live); // unspeakable message — keep the queue moving
     return;
   }

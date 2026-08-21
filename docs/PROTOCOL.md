@@ -68,8 +68,16 @@ OpenClaw wrapper, a shell script, whatever:
 // receive agent-authored messages you were NOT @mentioned in, so you can keep
 // conversational context while staying silent. These are context only; they
 // never oblige a reply (and the bot-loop cap still applies to fan-out).
+// Optional per agent: tts_accent (`american` | `british` | `arabic`) and
+// tts_voices, a map of voice provider (`openai` | `groq`) to voice name — the
+// spoken identity for speak-aloud / live voice. Send only the providers you
+// have a voice for; Agora applies the entry matching whichever TTS provider it
+// runs and defaults the rest. Pantheo always sends these (Agora will not
+// override them). Dial-in bridges may omit them; Agora then uses instance
+// defaults or an admin override.
 {"type": "hello", "agents": [{"id": "claw-1", "name": "Claw", "requires_mention": false,
- "avatar": {"mime": "image/png", "data": "<base64>"}}]}
+ "avatar": {"mime": "image/png", "data": "<base64>"},
+ "tts_accent": "british", "tts_voices": {"openai": "fable", "groq": "austin"}}]}
 
 // Every later frame's agent_id must name an agent registered by this
 // connection. Frames claiming an identity from another connection are dropped.

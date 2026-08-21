@@ -182,7 +182,7 @@ messages). The desktop palette and the mobile search screen both surface it
 as an "Ask Agora AI" row whenever Ask AI is Enabled (`search_ai` in
 `/api/me`). The model comes from instance Settings (per provider), else the
 provider default (`claude-sonnet-5` for Anthropic, etc.). Voice works the same
-way with OpenAI (`OPENAI_API_KEY` / saved instance key). Keys may live in
+way with OpenAI or Groq (`OPENAI_API_KEY` / `GROQ_API_KEY` / saved instance keys). Keys may live in
 `config.json` (UI-set) or the process env (ops fallback); env is never written
 into `config.json` at boot.
 

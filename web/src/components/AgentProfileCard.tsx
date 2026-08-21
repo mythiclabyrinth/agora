@@ -1,9 +1,17 @@
 /* Agent profile overlay: avatar + everything /api/agents knows about the
-   agent. */
+   agent. Instance admins can set spoken accent/voice for agents Agora owns
+   (pairing / dial-in). Pantheo agents show the voice their hello advertised. */
 
-import { useAgents } from "@agora/core";
+import { useEffect, useState } from "react";
+import {
+  useAgents,
+  useInstanceAi,
+  useMe,
+  useUpdateAgentTts,
+} from "@agora/core";
 import { Icon } from "../lib/icons";
 import { withToken } from "../lib/files";
+import { toast } from "../lib/toast";
 import { useAgentProfile } from "./MessageItem";
 
 function relTime(ts: number): string {
@@ -17,11 +25,11 @@ function relTime(ts: number): string {
 export function AgentProfileCard() {
   const { openId, close } = useAgentProfile();
   const agents = useAgents().data || [];
+  const me = useMe();
   if (!openId) return null;
-  const a = agents.find(x => x.id === openId) as (typeof agents)[number] & {
-    avatar?: string; source?: string; last_seen?: number; requires_mention?: boolean;
-  } | undefined;
+  const a = agents.find(x => x.id === openId);
   if (!a) return null;
+  const admin = !!me.data?.instance_admin;
 
   return (
     <div className="conn-overlay" id="ago-profile-overlay"
@@ -53,8 +61,115 @@ export function AgentProfileCard() {
             <span className="k">Responds</span>
             <span className="v">{a.requires_mention ? "Only when @-mentioned" : "To every message in its channels"}</span>
           </div>
+          <AgentVoiceRows agentId={a.id} admin={admin} />
         </div>
       </div>
     </div>
+  );
+}
+
+function AgentVoiceRows({ agentId, admin }: { agentId: string; admin: boolean }) {
+  const agents = useAgents().data || [];
+  const a = agents.find(x => x.id === agentId);
+  const editable = admin && !!a?.tts_editable;
+  const ai = useInstanceAi(editable);
+  const update = useUpdateAgentTts(agentId);
+  const ttsProvider = ai.data?.voice.tts_provider || "openai";
+  const accents = ai.data?.voice.tts_accents || [
+    { id: "american", label: "American English" },
+    { id: "british", label: "British English" },
+    { id: "arabic", label: "Arabic (Saudi)" },
+  ];
+  const voiceOptions = ai.data?.voice.suggested_tts_voice_options_by_provider?.[ttsProvider]
+    || ai.data?.voice.suggested_tts_voice_options
+    || [];
+  const [accent, setAccent] = useState(a?.tts_accent || "american");
+  const currentVoice = (ttsProvider === "groq" ? a?.tts_voices?.groq : a?.tts_voices?.openai) || "";
+  const [voice, setVoice] = useState(currentVoice);
+
+  useEffect(() => {
+    setAccent(a?.tts_accent || "american");
+    setVoice((ttsProvider === "groq" ? a?.tts_voices?.groq : a?.tts_voices?.openai) || "");
+  }, [a?.tts_accent, a?.tts_voices?.groq, a?.tts_voices?.openai, ttsProvider]);
+
+  if (!a) return null;
+
+  const save = (patch: { tts_accent?: string; tts_voices?: { openai?: string; groq?: string } }) => {
+    update.mutate(patch, {
+      onSuccess: () => toast("Agent voice saved", { variant: "ok" }),
+      onError: e => toast(`Couldn't save: ${(e as Error).message || e}`, { variant: "warn" }),
+    });
+  };
+
+  const accentLabel = a.tts_accent_label
+    || accents.find(x => x.id === a.tts_accent)?.label
+    || (a.tts_accent ? a.tts_accent : "Instance default");
+  const voiceLabel = ttsProvider === "groq"
+    ? (a.tts_voice_labels?.groq || a.tts_voices?.groq || "Instance default")
+    : (a.tts_voice_labels?.openai || a.tts_voices?.openai || "Instance default");
+
+  if (!editable) {
+    return (
+      <>
+        <div className="ago-profile-row">
+          <span className="k">Accent</span>
+          <span className="v">{accentLabel}{a.tts_editable === false ? " · set in Pantheo" : ""}</span>
+        </div>
+        <div className="ago-profile-row">
+          <span className="k">Voice</span>
+          <span className="v">{voiceLabel}</span>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="ago-profile-row">
+        <span className="k">Accent</span>
+        <span className="v">
+          <select
+            className="ago-profile-select"
+            value={accent}
+            disabled={update.isPending}
+            onChange={e => {
+              const next = e.target.value;
+              setAccent(next);
+              save({ tts_accent: next });
+            }}
+          >
+            <option value="">Instance default</option>
+            {accents.map(opt => (
+              <option key={opt.id} value={opt.id}>{opt.label}</option>
+            ))}
+          </select>
+        </span>
+      </div>
+      <div className="ago-profile-row">
+        <span className="k">Voice</span>
+        <span className="v">
+          <select
+            className="ago-profile-select"
+            value={voice}
+            disabled={update.isPending || !ai.data}
+            onChange={e => {
+              const next = e.target.value;
+              setVoice(next);
+              save({
+                tts_voices: ttsProvider === "groq" ? { groq: next } : { openai: next },
+              });
+            }}
+          >
+            <option value="">Instance default</option>
+            {voiceOptions.map(opt => (
+              <option key={opt.id} value={opt.id}>{opt.label}</option>
+            ))}
+            {voice && !voiceOptions.some(o => o.id === voice) && (
+              <option value={voice}>{voice}</option>
+            )}
+          </select>
+        </span>
+      </div>
+    </>
   );
 }

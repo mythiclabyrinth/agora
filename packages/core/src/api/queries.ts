@@ -919,6 +919,22 @@ export function useUpdateAgentDmPolicy(agentId: string) {
   });
 }
 
+export function useUpdateAgentTts(agentId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: {
+      tts_accent?: string;
+      tts_voices?: Partial<{ openai: string; groq: string }>;
+      tts_voice?: string;
+    }) =>
+      api.put<AgentInfo>(`/api/admin/agents/${encodeURIComponent(agentId)}/tts`, patch),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.agents });
+    },
+  });
+}
+
 export function useForgetAgent() {
   const api = useApi();
   const qc = useQueryClient();

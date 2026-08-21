@@ -26,10 +26,52 @@ const emptySettings = {
       { id: "openai", label: "OpenAI" },
       { id: "groq", label: "Groq" },
     ],
-    tts_providers: [{ id: "openai", label: "OpenAI" }],
+    tts_providers: [
+      { id: "openai", label: "OpenAI" },
+      { id: "groq", label: "Groq" },
+    ],
     tts_model: { value: "gpt-4o-mini-tts", source: "default" },
+    tts_models: {
+      openai: { value: "gpt-4o-mini-tts", source: "default" },
+      groq: { value: "canopylabs/orpheus-v1-english", source: "default" },
+    },
     tts_voice: { value: "alloy", source: "default" },
+    tts_voices: {
+      openai: { value: "alloy", source: "default" },
+      groq: { value: "autumn", source: "default" },
+    },
+    tts_accent: { value: "american", source: "default" },
+    tts_accents: [
+      { id: "american", label: "American English" },
+      { id: "british", label: "British English" },
+      { id: "arabic", label: "Arabic (Saudi)" },
+    ],
+    suggested_tts_models: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
+    suggested_tts_models_by_provider: {
+      openai: ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
+      groq: ["canopylabs/orpheus-v1-english", "canopylabs/orpheus-arabic-saudi"],
+    },
     suggested_tts_voices: ["alloy", "shimmer", "nova"],
+    suggested_tts_voices_by_provider: {
+      openai: ["alloy", "shimmer", "nova"],
+      groq: ["autumn", "diana", "hannah", "austin", "daniel", "troy"],
+    },
+    suggested_tts_voice_options: [
+      { id: "alloy", label: "Alloy — neutral" },
+      { id: "shimmer", label: "Shimmer — female" },
+      { id: "nova", label: "Nova — female" },
+    ],
+    suggested_tts_voice_options_by_provider: {
+      openai: [
+        { id: "alloy", label: "Alloy — neutral" },
+        { id: "shimmer", label: "Shimmer — female" },
+        { id: "nova", label: "Nova — female" },
+      ],
+      groq: [
+        { id: "autumn", label: "Autumn — female" },
+        { id: "troy", label: "Troy — male" },
+      ],
+    },
   },
   search: {
     enabled: true,

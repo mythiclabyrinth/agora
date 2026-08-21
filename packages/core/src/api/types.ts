@@ -464,6 +464,11 @@ export interface AgentInfo {
   last_seen: number;
   live: boolean;
   avatar: string | null;
+  tts_accent?: string;
+  tts_voices?: { openai: string; groq: string };
+  tts_editable?: boolean;
+  tts_accent_label?: string;
+  tts_voice_labels?: { openai: string; groq: string };
 }
 
 export interface ChannelAgent {
@@ -656,8 +661,23 @@ export interface InstanceAiVoice {
   stt_providers: InstanceAiProviderOption[];
   tts_providers: InstanceAiProviderOption[];
   tts_model: AiValueField;
+  tts_models: {
+    openai: AiValueField;
+    groq: AiValueField;
+  };
   tts_voice: AiValueField;
+  tts_voices: {
+    openai: AiValueField;
+    groq: AiValueField;
+  };
+  tts_accent: AiValueField;
+  tts_accents: InstanceAiProviderOption[];
+  suggested_tts_models: string[];
+  suggested_tts_models_by_provider: Record<string, string[]>;
   suggested_tts_voices: string[];
+  suggested_tts_voices_by_provider: Record<string, string[]>;
+  suggested_tts_voice_options: InstanceAiProviderOption[];
+  suggested_tts_voice_options_by_provider: Record<string, InstanceAiProviderOption[]>;
 }
 
 export interface InstanceAiProviderOption {
@@ -712,7 +732,11 @@ export type InstanceAiUpdate = {
     stt_model_provider?: string;
     stt_models?: Partial<Record<"openai" | "groq", string>>;
     tts_model?: string;
+    tts_model_provider?: string;
+    tts_models?: Partial<Record<"openai" | "groq", string>>;
     tts_voice?: string;
+    tts_voices?: Partial<Record<"openai" | "groq", string>>;
+    tts_accent?: string;
   };
   search?: {
     enabled?: boolean;
