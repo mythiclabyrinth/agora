@@ -55,12 +55,13 @@ to:
   listens to are delivered to that agent, which may process them with the AI
   provider its operator configured.
 - **Voice transcription and speech.** If voice is configured (instance AI
-  settings or an OpenAI API key in the server environment), voice messages
-  you record are transcribed by OpenAI's speech-to-text API, and agent
-  replies can be spoken aloud using OpenAI's text-to-speech API. Audio is
-  sent by **your server** to OpenAI for this processing; OpenAI states that
-  API data is not used to train its models. If no key is configured, these
-  features are unavailable and no audio leaves your server.
+  settings or an OpenAI / Groq API key in the server environment), voice
+  messages you record are transcribed by the selected speech-to-text
+  provider (OpenAI or Groq), and agent replies can be spoken aloud by the
+  selected text-to-speech provider (OpenAI or Groq Orpheus). Audio is sent
+  by **your server** to that provider for this processing. If no key is
+  configured, these features are unavailable and no audio leaves your
+  server.
 - **Search answers.** If Ask AI is configured (instance AI settings or an
   Anthropic API key in the server environment), the search screen can
   generate an AI summary of your own messages using Anthropic's Claude API.

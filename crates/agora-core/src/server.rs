@@ -56,8 +56,8 @@ const MAX_VOICE_BYTES: usize = 15 * 1024 * 1024;
 /// listeners don't re-bill the TTS API. ~64 clips of a few hundred KB each.
 const SPEECH_CACHE_MAX: usize = 64;
 
-/// message_id -> mp3 bytes, most-recently-used last.
-type SpeechCache = std::sync::Mutex<Vec<(i64, Vec<u8>)>>;
+/// message_id + TTS fingerprint -> audio bytes, most-recently-used last.
+type SpeechCache = std::sync::Mutex<Vec<(i64, String, Vec<u8>)>>;
 
 /// Requests per client per window on the auth surface (Google sign-in): enough
 /// for a real round-trip and retries, low enough to blunt automated abuse of an
@@ -473,6 +473,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agents", get(available_agents))
         .route("/api/agents/{agent_id}", delete(forget_agent))
         .route("/api/agents/{agent_id}/avatar", get(agent_avatar))
+        .route("/api/admin/agents/{agent_id}/tts", put(update_agent_tts_settings))
         .route("/api/dms", get(list_agent_dms))
         .route("/api/dms/{agent_id}", post(open_agent_dm))
         .route("/api/admin/agents/{agent_id}/dm-policy", get(get_agent_dm_policy).put(update_agent_dm_policy))
@@ -2002,7 +2003,7 @@ async fn message_speech(
 ) -> Result<Response, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     let message = require_message_visible(&state, &user, message_id)?;
-    let voice = resolved_voice(&state);
+    let voice = resolved_voice_for_message(&state, &message);
     if !voice.tts_enabled {
         return Err(err(
             StatusCode::BAD_REQUEST,
@@ -2010,19 +2011,27 @@ async fn message_speech(
         ));
     }
     let Some(key) = voice.tts_api_key().map(str::to_string) else {
+        let needed = if voice.tts_provider == crate::config::VOICE_PROVIDER_GROQ {
+            "a Groq key"
+        } else {
+            "an OpenAI key"
+        };
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "Spoken replies are not configured (set an OpenAI key in Settings → Credentials)",
+            &format!("Spoken replies are not configured (set {needed} in Settings → Credentials)"),
         ));
     };
+    let tts_provider = voice.tts_provider.clone();
     let tts_model = voice.tts_model.clone();
     let tts_voice = voice.tts_voice.clone();
+    let tts_accent = voice.tts_accent.clone();
+    let clip_fp = format!("{tts_provider}\0{tts_model}\0{tts_voice}\0{tts_accent}");
     let cached = {
         let mut cache = state.speech_cache.lock().unwrap();
-        match cache.iter().position(|(id, _)| *id == message_id) {
+        match cache.iter().position(|(id, fp, _)| *id == message_id && *fp == clip_fp) {
             Some(i) => {
                 let entry = cache.remove(i);
-                let audio = entry.1.clone();
+                let audio = entry.2.clone();
                 cache.push(entry); // bump to most-recently-used
                 Some(audio)
             }
@@ -2037,8 +2046,17 @@ async fn message_speech(
                 return Err(err(StatusCode::BAD_REQUEST, "Nothing to speak"));
             }
             let tts_model_label = tts_model.clone();
+            let tts_provider_label = tts_provider.clone();
             let audio = tokio::task::spawn_blocking(move || {
-                crate::voice::synthesize(&key, &text, &tts_model, &tts_voice)
+                crate::voice::synthesize(
+                    &tts_provider,
+                    &key,
+                    &text,
+                    &tts_model,
+                    &tts_voice,
+                    &tts_accent,
+                )
+                    .map(|speech| speech.bytes)
             })
             .await
             .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Speech task failed"))?
@@ -2047,14 +2065,14 @@ async fn message_speech(
                 err(
                     StatusCode::BAD_GATEWAY,
                     &format!(
-                        "Speech synthesis failed (OpenAI / {tts_model_label}): {}",
+                        "Speech synthesis failed ({tts_provider_label} / {tts_model_label}): {}",
                         truncate_err(&format!("{e:#}"), 200)
                     ),
                 )
             })?;
             let mut cache = state.speech_cache.lock().unwrap();
-            cache.retain(|(id, _)| *id != message_id);
-            cache.push((message_id, audio.clone()));
+            cache.retain(|(id, fp, _)| *id != message_id || *fp != clip_fp);
+            cache.push((message_id, clip_fp, audio.clone()));
             if cache.len() > SPEECH_CACHE_MAX {
                 cache.remove(0);
             }
@@ -2062,7 +2080,10 @@ async fn message_speech(
         }
     };
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert("content-type", "audio/mpeg".parse().unwrap());
+    resp_headers.insert(
+        "content-type",
+        crate::voice::audio_content_type(&audio).parse().unwrap(),
+    );
     Ok((resp_headers, audio).into_response())
 }
 
@@ -2898,6 +2919,22 @@ async fn available_agents(
             let id = a["id"].as_str().unwrap_or_default().to_string();
             a["live"] = json!(live.contains(&id));
             a["avatar"] = agent_avatar_path(&a);
+            let source = a["source"].as_str().unwrap_or_default();
+            let remote = crate::config::agent_tts_is_remote(
+                source,
+                state.config.snapshot().connections.iter().map(|c| c.name.as_str()),
+            );
+            let accent = a["tts_accent"].as_str().unwrap_or_default().to_string();
+            a["tts_editable"] = json!(!remote);
+            a["tts_accent_label"] = json!(crate::config::tts_accent_label(&accent));
+            a["tts_voice_labels"] = json!({
+                "openai": crate::config::tts_voice_label(
+                    a["tts_voices"]["openai"].as_str().unwrap_or_default()
+                ),
+                "groq": crate::config::tts_voice_label(
+                    a["tts_voices"]["groq"].as_str().unwrap_or_default()
+                ),
+            });
             a
         })
         .collect();
@@ -3075,6 +3112,59 @@ async fn forget_agent(
     Ok(Json(json!({"ok": state.hub.store.remove_agent(&agent_id)})))
 }
 
+/// PUT /api/admin/agents/{id}/tts — instance-admin accent/voice for agents
+/// Agora owns (dial-in / pairing). Pantheo agents are rejected; edit those
+/// on the Pantheo Agents page so hello stays the source of truth.
+async fn update_agent_tts_settings(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_instance_admin(&user)?;
+    let Some(agent) = state.hub.store.agent(&agent_id) else {
+        return Err(err(StatusCode::NOT_FOUND, "Unknown agent"));
+    };
+    let source = agent["source"].as_str().unwrap_or_default();
+    if crate::config::agent_tts_is_remote(
+        source,
+        state.config.snapshot().connections.iter().map(|c| c.name.as_str()),
+    ) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "This agent's voice is configured on its Pantheo instance",
+        ));
+    }
+    let clip = |s: &str| s.trim().chars().take(40).collect::<String>();
+    let accent = match payload.get("tts_accent").and_then(|v| v.as_str()).map(str::trim) {
+        Some("") => String::new(),
+        Some(a) if crate::config::is_supported_tts_accent(a) => a.to_string(),
+        Some(_) => crate::config::DEFAULT_TTS_ACCENT.to_string(),
+        None => agent["tts_accent"].as_str().unwrap_or("").to_string(),
+    };
+    let openai = payload
+        .pointer("/tts_voices/openai")
+        .and_then(|v| v.as_str())
+        .map(clip)
+        .or_else(|| payload["tts_voice"].as_str().map(clip))
+        .unwrap_or_else(|| agent["tts_voices"]["openai"].as_str().unwrap_or("").to_string());
+    let groq = payload
+        .pointer("/tts_voices/groq")
+        .and_then(|v| v.as_str())
+        .map(clip)
+        .unwrap_or_else(|| agent["tts_voices"]["groq"].as_str().unwrap_or("").to_string());
+    state.hub.store.update_agent_tts(&agent_id, &accent, &openai, &groq);
+    state.speech_cache.lock().unwrap().clear();
+    let Some(mut updated) = state.hub.store.agent(&agent_id) else {
+        return Err(err(StatusCode::NOT_FOUND, "Unknown agent"));
+    };
+    updated["tts_editable"] = json!(true);
+    updated["tts_accent_label"] = json!(crate::config::tts_accent_label(&accent));
+    Ok(Json(updated))
+}
+
 // ------------------------------------------------------------- connections
 
 async fn list_connections(
@@ -3140,6 +3230,34 @@ fn resolved_voice(state: &AppState) -> crate::config::ResolvedVoice {
     state.config.voice(openai.as_deref(), groq.as_deref())
 }
 
+fn resolved_voice_for_message(state: &AppState, message: &Value) -> crate::config::ResolvedVoice {
+    let mut voice = resolved_voice(state);
+    if message["author_type"].as_str() != Some("agent") {
+        return voice;
+    }
+    let Some(id) = message["author_id"].as_str() else {
+        return voice;
+    };
+    let Some(agent) = state.hub.store.agent(id) else {
+        return voice;
+    };
+    let source = agent["source"].as_str().unwrap_or_default();
+    let remote = crate::config::agent_tts_is_remote(
+        source,
+        state.config.snapshot().connections.iter().map(|c| c.name.as_str()),
+    );
+    let accent = agent["tts_accent"].as_str().unwrap_or_default();
+    let openai = agent["tts_voices"]["openai"].as_str().unwrap_or_default();
+    let groq = agent["tts_voices"]["groq"].as_str().unwrap_or_default();
+    let has_override = crate::config::is_supported_tts_accent(accent)
+        || !openai.trim().is_empty()
+        || !groq.trim().is_empty();
+    if remote || has_override {
+        voice.overlay_agent_tts(accent, openai, groq, remote);
+    }
+    voice
+}
+
 fn resolved_search_ai(state: &AppState) -> crate::config::ResolvedSearchAi {
     let anthropic = env_opt("ANTHROPIC_API_KEY");
     let openai = env_opt("OPENAI_API_KEY");
@@ -3202,6 +3320,15 @@ fn ai_value_field(value: &str, source: crate::config::AiFieldSource) -> Value {
     json!({ "value": value, "source": source })
 }
 
+fn tts_voice_options_json(provider: &str, model: &str, accent: &str) -> Value {
+    Value::Array(
+        crate::config::suggested_tts_voices_for(provider, model, accent)
+            .iter()
+            .map(|id| json!({ "id": *id, "label": crate::config::tts_voice_label(id) }))
+            .collect(),
+    )
+}
+
 fn instance_ai_payload(state: &AppState) -> Value {
     let voice = resolved_voice(state);
     let search = resolved_search_ai(state);
@@ -3241,6 +3368,7 @@ fn instance_ai_payload(state: &AppState) -> Value {
             ],
             "tts_providers": [
                 { "id": crate::config::VOICE_PROVIDER_OPENAI, "label": "OpenAI" },
+                { "id": crate::config::VOICE_PROVIDER_GROQ, "label": "Groq" },
             ],
             "api_key": ai_secret_field(voice.openai_api_key.as_deref(), voice.openai_api_key_source),
             "stt_model": ai_value_field(&voice.stt_model, voice.stt_model_source),
@@ -3254,8 +3382,56 @@ fn instance_ai_payload(state: &AppState) -> Value {
                 "groq": crate::config::SUGGESTED_GROQ_STT_MODELS,
             },
             "tts_model": ai_value_field(&voice.tts_model, voice.tts_model_source),
+            "tts_models": {
+                "openai": ai_value_field(&voice.tts_models.openai.0, voice.tts_models.openai.1),
+                "groq": ai_value_field(&voice.tts_models.groq.0, voice.tts_models.groq.1),
+            },
             "tts_voice": ai_value_field(&voice.tts_voice, voice.tts_voice_source),
-            "suggested_tts_voices": ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
+            "tts_voices": {
+                "openai": ai_value_field(&voice.tts_voices.openai.0, voice.tts_voices.openai.1),
+                "groq": ai_value_field(&voice.tts_voices.groq.0, voice.tts_voices.groq.1),
+            },
+            "tts_accent": ai_value_field(&voice.tts_accent, voice.tts_accent_source),
+            "tts_accents": crate::config::TTS_ACCENTS.iter().map(|(id, label)| json!({"id": *id, "label": *label})).collect::<Vec<_>>(),
+            "suggested_tts_models": crate::config::suggested_tts_models_for_provider(&voice.tts_provider),
+            "suggested_tts_models_by_provider": {
+                "openai": crate::config::SUGGESTED_OPENAI_TTS_MODELS,
+                "groq": crate::config::SUGGESTED_GROQ_TTS_MODELS,
+            },
+            "suggested_tts_voices": crate::config::suggested_tts_voices_for(
+                &voice.tts_provider,
+                &voice.tts_model,
+                &voice.tts_accent,
+            ),
+            "suggested_tts_voices_by_provider": {
+                "openai": crate::config::suggested_tts_voices_for(
+                    crate::config::VOICE_PROVIDER_OPENAI,
+                    &voice.tts_models.openai.0,
+                    &voice.tts_accent,
+                ),
+                "groq": crate::config::suggested_tts_voices_for(
+                    crate::config::VOICE_PROVIDER_GROQ,
+                    &voice.tts_models.groq.0,
+                    &voice.tts_accent,
+                ),
+            },
+            "suggested_tts_voice_options": tts_voice_options_json(
+                &voice.tts_provider,
+                &voice.tts_model,
+                &voice.tts_accent,
+            ),
+            "suggested_tts_voice_options_by_provider": {
+                "openai": tts_voice_options_json(
+                    crate::config::VOICE_PROVIDER_OPENAI,
+                    &voice.tts_models.openai.0,
+                    &voice.tts_accent,
+                ),
+                "groq": tts_voice_options_json(
+                    crate::config::VOICE_PROVIDER_GROQ,
+                    &voice.tts_models.groq.0,
+                    &voice.tts_accent,
+                ),
+            },
         },
         "search": {
             "enabled": search.enabled,
@@ -3441,7 +3617,7 @@ async fn update_instance_ai(
         if !crate::config::is_supported_tts_provider(p) {
             return Err(err(
                 StatusCode::BAD_REQUEST,
-                &format!("unsupported TTS provider `{p}` (only openai for now)"),
+                &format!("unsupported TTS provider `{p}` (openai or groq)"),
             ));
         }
     }
@@ -3521,15 +3697,159 @@ async fn update_instance_ai(
                     .stt_models
                     .set(&stt_model_provider, m.trim().chars().take(120).collect());
             }
-            if let Some(m) = v.get("tts_model").and_then(|x| x.as_str()) {
+            // Per-provider TTS model/voice. `tts_model` / `tts_voice` write the
+            // active TTS provider slot (or `tts_model_provider`).
+            let tts_model_provider = v
+                .get("tts_model_provider")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|p| crate::config::is_supported_tts_provider(p))
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| {
+                    let p = c.ai.voice.tts_provider.trim();
+                    if crate::config::is_supported_tts_provider(p) {
+                        p.to_string()
+                    } else {
+                        crate::config::DEFAULT_TTS_PROVIDER.to_string()
+                    }
+                });
+            if let Some(models) = v.get("tts_models").and_then(|x| x.as_object()) {
+                for (prov, val) in models {
+                    if !crate::config::is_supported_tts_provider(prov) {
+                        continue;
+                    }
+                    if let Some(m) = val.as_str() {
+                        let next: String = m.trim().chars().take(120).collect();
+                        clear_speech |= next != c.ai.voice.tts_models.get(prov);
+                        c.ai.voice.tts_models.set(prov, next);
+                    }
+                }
+            } else if let Some(m) = v.get("tts_model").and_then(|x| x.as_str()) {
                 let next: String = m.trim().chars().take(120).collect();
-                clear_speech |= next != c.ai.voice.tts_model;
+                clear_speech |= next != c.ai.voice.tts_models.get(&tts_model_provider);
+                c.ai.voice.tts_models.set(&tts_model_provider, next.clone());
                 c.ai.voice.tts_model = next;
             }
-            if let Some(voice) = v.get("tts_voice").and_then(|x| x.as_str()) {
+            if let Some(voices) = v.get("tts_voices").and_then(|x| x.as_object()) {
+                for (prov, val) in voices {
+                    if !crate::config::is_supported_tts_provider(prov) {
+                        continue;
+                    }
+                    if let Some(voice) = val.as_str() {
+                        let next: String = voice.trim().chars().take(40).collect();
+                        clear_speech |= next != c.ai.voice.tts_voices.get(prov);
+                        c.ai.voice.tts_voices.set(prov, next);
+                    }
+                }
+            } else if let Some(voice) = v.get("tts_voice").and_then(|x| x.as_str()) {
                 let next: String = voice.trim().chars().take(40).collect();
-                clear_speech |= next != c.ai.voice.tts_voice;
+                clear_speech |= next != c.ai.voice.tts_voices.get(&tts_model_provider);
+                c.ai.voice.tts_voices.set(&tts_model_provider, next.clone());
                 c.ai.voice.tts_voice = next;
+            }
+            let model_in_payload =
+                v.get("tts_models").is_some() || v.get("tts_model").is_some();
+            let accent_in_payload = v.get("tts_accent").and_then(|x| x.as_str()).map(str::trim);
+            if let Some(accent) = accent_in_payload {
+                let next = if crate::config::is_supported_tts_accent(accent) {
+                    accent.to_string()
+                } else {
+                    crate::config::DEFAULT_TTS_ACCENT.to_string()
+                };
+                clear_speech |= next != c.ai.voice.tts_accent;
+                c.ai.voice.tts_accent = next;
+            }
+            // Groq language follows the generic accent. Last write wins:
+            // accent in the patch retargets the Orpheus model; a model
+            // change infers Arabic vs English; a provider switch keeps
+            // the stored accent and snaps the Groq slot to match.
+            if tts_model_provider == crate::config::VOICE_PROVIDER_GROQ {
+                let groq_model_now = {
+                    let stored = c.ai.voice.tts_models.get(crate::config::VOICE_PROVIDER_GROQ);
+                    if stored.is_empty() {
+                        crate::config::DEFAULT_GROQ_TTS_MODEL.to_string()
+                    } else {
+                        stored.to_string()
+                    }
+                };
+                let model_arabic = crate::config::groq_tts_model_is_arabic(&groq_model_now);
+                let stored_accent_valid =
+                    crate::config::is_supported_tts_accent(&c.ai.voice.tts_accent);
+                if accent_in_payload.is_some() {
+                    let want_arabic =
+                        c.ai.voice.tts_accent == crate::config::TTS_ACCENT_ARABIC;
+                    if want_arabic != model_arabic {
+                        let next = crate::config::groq_tts_model_for_accent(&c.ai.voice.tts_accent)
+                            .to_string();
+                        clear_speech = true;
+                        c.ai.voice
+                            .tts_models
+                            .set(crate::config::VOICE_PROVIDER_GROQ, next.clone());
+                        if c.ai.voice.tts_provider == crate::config::VOICE_PROVIDER_GROQ {
+                            c.ai.voice.tts_model = next;
+                        }
+                    }
+                } else if model_in_payload {
+                    if model_arabic && c.ai.voice.tts_accent != crate::config::TTS_ACCENT_ARABIC {
+                        clear_speech = true;
+                        c.ai.voice.tts_accent = crate::config::TTS_ACCENT_ARABIC.to_string();
+                    } else if !model_arabic
+                        && c.ai.voice.tts_accent == crate::config::TTS_ACCENT_ARABIC
+                    {
+                        clear_speech = true;
+                        c.ai.voice.tts_accent = crate::config::DEFAULT_TTS_ACCENT.to_string();
+                    }
+                } else if stored_accent_valid {
+                    let want_arabic =
+                        c.ai.voice.tts_accent == crate::config::TTS_ACCENT_ARABIC;
+                    if want_arabic != model_arabic {
+                        let next = crate::config::groq_tts_model_for_accent(&c.ai.voice.tts_accent)
+                            .to_string();
+                        clear_speech = true;
+                        c.ai.voice
+                            .tts_models
+                            .set(crate::config::VOICE_PROVIDER_GROQ, next.clone());
+                        if c.ai.voice.tts_provider == crate::config::VOICE_PROVIDER_GROQ {
+                            c.ai.voice.tts_model = next;
+                        }
+                    }
+                } else if model_arabic {
+                    c.ai.voice.tts_accent = crate::config::TTS_ACCENT_ARABIC.to_string();
+                }
+            }
+            // Groq English vs Arabic voices are disjoint; snap to a default
+            // when the stored voice is not valid for accent + model.
+            let tts_model_now = {
+                let stored = c.ai.voice.tts_models.get(&tts_model_provider);
+                if stored.is_empty() {
+                    crate::config::default_tts_model_for_provider(&tts_model_provider).to_string()
+                } else {
+                    stored.to_string()
+                }
+            };
+            let accent_now = if crate::config::is_supported_tts_accent(&c.ai.voice.tts_accent) {
+                c.ai.voice.tts_accent.as_str()
+            } else {
+                crate::config::DEFAULT_TTS_ACCENT
+            };
+            let suggested_voices = crate::config::suggested_tts_voices_for(
+                &tts_model_provider,
+                &tts_model_now,
+                accent_now,
+            );
+            let current_voice = c.ai.voice.tts_voices.get(&tts_model_provider).to_string();
+            if !current_voice.is_empty() && !suggested_voices.iter().any(|v| *v == current_voice) {
+                let next = crate::config::default_tts_voice_for(
+                    &tts_model_provider,
+                    &tts_model_now,
+                    accent_now,
+                )
+                .to_string();
+                clear_speech = true;
+                c.ai.voice.tts_voices.set(&tts_model_provider, next.clone());
+                if tts_model_provider == c.ai.voice.tts_provider {
+                    c.ai.voice.tts_voice = next;
+                }
             }
         }
         if let Some(s) = payload.get("search") {
@@ -4747,6 +5067,11 @@ async fn handle_agent_socket(
                                     conn_id,
                                     tx: tx.clone(),
                                 });
+                                if let Some((accent, openai, groq)) =
+                                    crate::config::parse_agent_hello_tts(&a)
+                                {
+                                    state.hub.store.update_agent_tts(id, &accent, &openai, &groq);
+                                }
                                 registered = true;
                             }
                         } else if registered {
@@ -4880,6 +5205,17 @@ mod tests {
         assert_eq!(got["voice"]["api_key"]["configured"], false);
         assert_eq!(got["voice"]["stt_provider"], "openai");
         assert_eq!(got["voice"]["tts_provider"], "openai");
+        assert_eq!(got["voice"]["tts_providers"][1]["id"], "groq");
+        assert_eq!(got["voice"]["tts_accent"]["value"], "american");
+        assert_eq!(got["voice"]["tts_accents"][0]["id"], "american");
+        assert_eq!(
+            got["voice"]["suggested_tts_voice_options"][0]["id"],
+            "alloy"
+        );
+        assert_eq!(
+            got["voice"]["suggested_tts_models_by_provider"]["groq"][0],
+            "canopylabs/orpheus-v1-english"
+        );
         assert_eq!(got["credentials"]["groq"]["configured"], false);
         assert_eq!(got["search"]["provider"], "anthropic");
 
@@ -4970,7 +5306,7 @@ mod tests {
         let (state, _dir) = test_state();
         {
             let mut cache = state.speech_cache.lock().unwrap();
-            cache.push((42, vec![1, 2, 3]));
+            cache.push((42, "fp".into(), vec![1, 2, 3]));
         }
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -5186,6 +5522,162 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn instance_ai_accepts_groq_tts_provider_and_orpheus_voice() {
+        let (state, _dir) = test_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let updated = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "voice": {
+                    "tts_provider": "groq",
+                    "tts_model": "canopylabs/orpheus-v1-english",
+                    "tts_voice": "troy",
+                }
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(updated["voice"]["tts_provider"], "groq");
+        assert_eq!(
+            updated["voice"]["tts_model"]["value"],
+            "canopylabs/orpheus-v1-english"
+        );
+        assert_eq!(updated["voice"]["tts_voice"]["value"], "troy");
+        assert_eq!(updated["voice"]["tts_voices"]["groq"]["value"], "troy");
+        assert_eq!(updated["voice"]["suggested_tts_voices"][0], "autumn");
+    }
+
+    #[tokio::test]
+    async fn instance_ai_tts_accent_is_generic_and_maps_groq_model() {
+        let (state, _dir) = test_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let british = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({ "voice": { "tts_accent": "british" } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(british["voice"]["tts_accent"]["value"], "british");
+        assert_eq!(british["voice"]["tts_voice"]["value"], "fable");
+        assert!(british["voice"]["suggested_tts_voices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "alloy"));
+
+        let groq_arabic = update_instance_ai(
+            State(state.clone()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "voice": {
+                    "tts_provider": "groq",
+                    "tts_accent": "arabic",
+                }
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(groq_arabic["voice"]["tts_accent"]["value"], "arabic");
+        assert_eq!(
+            groq_arabic["voice"]["tts_model"]["value"],
+            "canopylabs/orpheus-arabic-saudi"
+        );
+        assert_eq!(groq_arabic["voice"]["tts_voice"]["value"], "noura");
+        assert_eq!(groq_arabic["voice"]["suggested_tts_voices"][0], "abdullah");
+
+        let groq_british = update_instance_ai(
+            State(state),
+            Query(HashMap::new()),
+            headers,
+            Json(json!({ "voice": { "tts_accent": "british" } })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(groq_british["voice"]["tts_accent"]["value"], "british");
+        assert_eq!(
+            groq_british["voice"]["tts_model"]["value"],
+            "canopylabs/orpheus-v1-english"
+        );
+        assert_eq!(groq_british["voice"]["tts_voice"]["value"], "autumn");
+        assert_eq!(groq_british["voice"]["suggested_tts_voices"][0], "autumn");
+    }
+
+    #[tokio::test]
+    async fn agent_tts_is_editable_for_pairing_agents_not_pantheo() {
+        let (state, _dir) = test_state();
+        state.config.update(|c| {
+            c.connections.push(crate::config::Connection {
+                name: "home".into(),
+                url: "ws://127.0.0.1/agora/connect".into(),
+                token: "tok".into(),
+                enabled: true,
+            });
+        });
+        state.hub.store.upsert_agent("bot", "Bot", "pairing:abc", false, false, 0);
+        state.hub.store.upsert_agent("mimir", "Mimir", "home", false, false, 0);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        let updated = update_agent_tts_settings(
+            State(state.clone()),
+            Path("bot".into()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({
+                "tts_accent": "british",
+                "tts_voices": { "openai": "fable", "groq": "austin" }
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(updated["tts_accent"], "british");
+        assert_eq!(updated["tts_voices"]["openai"], "fable");
+        assert_eq!(updated["tts_editable"], true);
+
+        let err = update_agent_tts_settings(
+            State(state.clone()),
+            Path("mimir".into()),
+            Query(HashMap::new()),
+            headers.clone(),
+            Json(json!({ "tts_accent": "british" })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+        let roster = available_agents(State(state), Query(HashMap::new()), headers)
+            .await
+            .unwrap()
+            .0;
+        let agents = roster["agents"].as_array().unwrap();
+        let bot = agents.iter().find(|a| a["id"] == "bot").unwrap();
+        let mimir = agents.iter().find(|a| a["id"] == "mimir").unwrap();
+        assert_eq!(bot["tts_editable"], true);
+        assert_eq!(bot["tts_accent_label"], "British English");
+        assert_eq!(mimir["tts_editable"], false);
     }
 
     #[tokio::test]

@@ -210,7 +210,8 @@ Voice / Ask AI keys may be set by instance admins in the **Settings** UI
 (`ai` in `config.json`) or supplied as process-env fallbacks
 (`OPENAI_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`). Ask AI also supports provider
 `codex` (**Codex OAuth** via PKCE in Settings → Credentials). Voice STT can use
-`openai` or `groq`; TTS remains OpenAI for now. Models and Enabled toggles are set
+`openai` or `groq`; TTS can use `openai` or Groq Orpheus. Accent and voice are set
+per instance in Settings → Features (accent is shared across providers). Models and Enabled toggles are set
 per feature in Settings → Features; for Codex OAuth the dropdown prefers the
 live Codex catalog when linked (else a hard-coded fallback).
 Env key fallbacks are **not** folded into `config.json` at boot — see

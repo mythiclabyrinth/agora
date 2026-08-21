@@ -146,7 +146,13 @@ CREATE TABLE IF NOT EXISTS agents (
     -- Whether the agent's home instance offers a profile picture, plus a
     -- cache-busting stamp (file mtime there); the bytes are proxied on demand.
     has_avatar INTEGER NOT NULL DEFAULT 0,
-    avatar_v INTEGER NOT NULL DEFAULT 0
+    avatar_v INTEGER NOT NULL DEFAULT 0,
+    -- Per-agent spoken accent/voice. Pantheo agents push these on hello;
+    -- pairing/dial-in agents are edited in Agora. Empty = instance default
+    -- (except Pantheo, which overlays provider defaults instead).
+    tts_accent TEXT NOT NULL DEFAULT '',
+    tts_voice_openai TEXT NOT NULL DEFAULT '',
+    tts_voice_groq TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agent_dm_policies (
     agent_id TEXT PRIMARY KEY,
@@ -321,6 +327,15 @@ fn migrate(conn: &Connection) {
         if !has_column("agents", column) {
             conn.execute(
                 &format!("ALTER TABLE agents ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"),
+                [],
+            )
+            .unwrap();
+        }
+    }
+    for column in ["tts_accent", "tts_voice_openai", "tts_voice_groq"] {
+        if !has_column("agents", column) {
+            conn.execute(
+                &format!("ALTER TABLE agents ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"),
                 [],
             )
             .unwrap();
@@ -3326,6 +3341,23 @@ impl Store {
 
     // ------------------------------------------------------------- agents
 
+    fn agent_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+        Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "name": r.get::<_, String>(1)?,
+            "source": r.get::<_, String>(2)?,
+            "requires_mention": r.get::<_, i64>(3)? != 0,
+            "last_seen": r.get::<_, f64>(4)?,
+            "has_avatar": r.get::<_, i64>(5)? != 0,
+            "avatar_v": r.get::<_, i64>(6)?,
+            "tts_accent": r.get::<_, String>(7)?,
+            "tts_voices": {
+                "openai": r.get::<_, String>(8)?,
+                "groq": r.get::<_, String>(9)?,
+            },
+        }))
+    }
+
     /// Remember an agent seen on a connection (upsert; refreshes name/flags).
     pub fn upsert_agent(
         &self,
@@ -3348,45 +3380,45 @@ impl Store {
         .unwrap();
     }
 
+    pub fn update_agent_tts(
+        &self,
+        id: &str,
+        accent: &str,
+        voice_openai: &str,
+        voice_groq: &str,
+    ) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET tts_accent = ?1, tts_voice_openai = ?2, tts_voice_groq = ?3 \
+             WHERE id = ?4",
+            params![accent, voice_openai, voice_groq, id],
+        )
+        .unwrap();
+    }
+
     pub fn known_agents(&self) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, source, requires_mention, last_seen, has_avatar, avatar_v \
+                "SELECT id, name, source, requires_mention, last_seen, has_avatar, avatar_v, \
+                 tts_accent, tts_voice_openai, tts_voice_groq \
                  FROM agents ORDER BY name",
             )
             .unwrap();
-        stmt.query_map([], |r| {
-            Ok(json!({
-                "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?,
-                "source": r.get::<_, String>(2)?,
-                "requires_mention": r.get::<_, i64>(3)? != 0,
-                "last_seen": r.get::<_, f64>(4)?,
-                "has_avatar": r.get::<_, i64>(5)? != 0,
-                "avatar_v": r.get::<_, i64>(6)?,
-            }))
-        })
-        .unwrap()
-        .filter_map(Result::ok)
-        .collect()
+        stmt.query_map([], |r| Self::agent_row(r))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
     }
 
     pub fn agent(&self, id: &str) -> Option<Value> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, source, requires_mention, last_seen, has_avatar, avatar_v \
+            "SELECT id, name, source, requires_mention, last_seen, has_avatar, avatar_v, \
+             tts_accent, tts_voice_openai, tts_voice_groq \
              FROM agents WHERE id = ?1",
             params![id],
-            |r| {
-                Ok(json!({
-                    "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?,
-                    "source": r.get::<_, String>(2)?,
-                    "requires_mention": r.get::<_, i64>(3)? != 0,
-                    "last_seen": r.get::<_, f64>(4)?,
-                    "has_avatar": r.get::<_, i64>(5)? != 0,
-                    "avatar_v": r.get::<_, i64>(6)?,
-                }))
-            },
+            |r| Self::agent_row(r),
         )
         .ok()
     }

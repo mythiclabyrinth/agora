@@ -36,8 +36,6 @@ function SectionHead({
   );
 }
 
-const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
-
 function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
   const [sttProvider, setSttProvider] = useState(data.stt_provider);
@@ -105,6 +103,11 @@ function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
 
 function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
+  const [ttsProvider, setTtsProvider] = useState(data.tts_provider);
+
+  useEffect(() => {
+    setTtsProvider(data.tts_provider);
+  }, [data.tts_provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
@@ -115,10 +118,34 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
 
   const ttsProviders = data.tts_providers?.length
     ? data.tts_providers
-    : [{ id: "openai", label: "OpenAI" }];
-  const tts = data.tts_model.value;
-  const voice = data.tts_voice.value;
-  const voices = data.suggested_tts_voices;
+    : [
+        { id: "openai", label: "OpenAI" },
+        { id: "groq", label: "Groq" },
+      ];
+  const tts = (data.tts_models?.[ttsProvider as "openai" | "groq"] || data.tts_model).value;
+  const voice = (data.tts_voices?.[ttsProvider as "openai" | "groq"] || data.tts_voice).value;
+  const accent = data.tts_accent?.value || "american";
+  const suggested = data.suggested_tts_models_by_provider?.[ttsProvider]
+    || data.suggested_tts_models
+    || [];
+  const voices = data.suggested_tts_voices_by_provider?.[ttsProvider]
+    || data.suggested_tts_voices
+    || [];
+  const accents = data.tts_accents?.length
+    ? data.tts_accents
+    : [
+        { id: "american", label: "American English" },
+        { id: "british", label: "British English" },
+        { id: "arabic", label: "Arabic (Saudi)" },
+      ];
+  const voiceOptions = [
+    ...(data.suggested_tts_voice_options_by_provider?.[ttsProvider]
+      || data.suggested_tts_voice_options
+      || voices.map(id => ({ id, label: id }))),
+  ];
+  if (voice && !voiceOptions.some(o => o.id === voice)) {
+    voiceOptions.push({ id: voice, label: voice });
+  }
 
   return (
     <div className="ai-section">
@@ -127,13 +154,17 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         enabled={data.tts_enabled}
         onEnabled={tts_enabled => save({ tts_enabled })}
       />
-      <p className="conn-hint">Speak-aloud, and live voice together with speech to text.</p>
+      <p className="conn-hint">Speak-aloud, and live voice together with speech to text. Live voice only plays replies when the speaker button is on. These defaults apply to pairing agents that have no voice of their own; Pantheo agents use the accent and voice set on that agent.</p>
       <div className="ai-row">
         <label>Provider</label>
         <select
-          value={data.tts_provider}
+          value={ttsProvider}
           disabled={update.isPending}
-          onChange={e => save({ tts_provider: e.target.value })}
+          onChange={e => {
+            const next = e.target.value;
+            setTtsProvider(next);
+            save({ tts_provider: next });
+          }}
         >
           {ttsProviders.map(p => (
             <option key={p.id} value={p.id}>{p.label}</option>
@@ -141,14 +172,15 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         </select>
       </div>
       <div className="ai-row">
-        <label>Model</label>
+        <label>Accent</label>
         <select
-          value={tts}
+          value={accent}
           disabled={update.isPending}
-          onChange={e => save({ tts_model: e.target.value })}
+          onChange={e => save({ tts_accent: e.target.value, tts_model_provider: ttsProvider })}
         >
-          {TTS_MODELS.map(m => <option key={m} value={m}>{m}</option>)}
-          {tts && !TTS_MODELS.includes(tts) && <option value={tts}>{tts}</option>}
+          {accents.map(a => (
+            <option key={a.id} value={a.id}>{a.label}</option>
+          ))}
         </select>
       </div>
       <div className="ai-row">
@@ -156,12 +188,37 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         <select
           value={voice}
           disabled={update.isPending}
-          onChange={e => save({ tts_voice: e.target.value })}
+          onChange={e => save({ tts_voice: e.target.value, tts_model_provider: ttsProvider })}
         >
-          {voices.map(v => <option key={v} value={v}>{v}</option>)}
-          {voice && !voices.includes(voice) && <option value={voice}>{voice}</option>}
+          {voiceOptions.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
         </select>
       </div>
+      <div className="ai-row">
+        <label>Model</label>
+        <select
+          value={tts}
+          disabled={update.isPending}
+          onChange={e => save({ tts_model: e.target.value, tts_model_provider: ttsProvider })}
+        >
+          {suggested.map(m => <option key={m} value={m}>{m}</option>)}
+          {tts && !suggested.includes(tts) && <option value={tts}>{tts}</option>}
+        </select>
+      </div>
+      {ttsProvider === "groq" && (accent === "american" || accent === "british") && (
+        <p className="conn-hint">On Groq, American and British share the English Orpheus voices. Arabic switches to the Arabic model.</p>
+      )}
+      {ttsProvider === "openai" && tts.startsWith("tts-1") && (
+        <p className="conn-hint">Accent is applied on gpt-4o-mini-tts. tts-1 uses the voice&apos;s built-in accent only.</p>
+      )}
+      {ttsProvider === "groq" && (
+        <p className="conn-hint">
+          Groq Orpheus needs a one-time terms accept in the{" "}
+          <a href="https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english" target="_blank" rel="noreferrer">
+            Groq playground
+          </a>{" "}
+          before TTS will play.
+        </p>
+      )}
     </div>
   );
 }

@@ -28,8 +28,6 @@ import { toast, toastErr } from "../../src/components/Toast";
 import { colors } from "../../src/lib/theme";
 import * as Linking from "expo-linking";
 
-const TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
-
 type SelectOption = { id: string; label: string };
 
 function SelectField({
@@ -166,6 +164,11 @@ function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
 
 function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
   const update = useUpdateInstanceAi();
+  const [ttsProvider, setTtsProvider] = useState(data.tts_provider);
+
+  useEffect(() => {
+    setTtsProvider(data.tts_provider);
+  }, [data.tts_provider]);
 
   const save = (patch: NonNullable<InstanceAiUpdate["voice"]>) => {
     update.mutate({ voice: patch }, {
@@ -176,10 +179,34 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
 
   const ttsProviders = data.tts_providers?.length
     ? data.tts_providers
-    : [{ id: "openai", label: "OpenAI" }];
-  const tts = data.tts_model.value;
-  const voice = data.tts_voice.value;
-  const voices = data.suggested_tts_voices;
+    : [
+        { id: "openai", label: "OpenAI" },
+        { id: "groq", label: "Groq" },
+      ];
+  const tts = (data.tts_models?.[ttsProvider as "openai" | "groq"] || data.tts_model).value;
+  const voice = (data.tts_voices?.[ttsProvider as "openai" | "groq"] || data.tts_voice).value;
+  const accent = data.tts_accent?.value || "american";
+  const suggested = data.suggested_tts_models_by_provider?.[ttsProvider]
+    || data.suggested_tts_models
+    || [];
+  const voices = data.suggested_tts_voices_by_provider?.[ttsProvider]
+    || data.suggested_tts_voices
+    || [];
+  const accents = data.tts_accents?.length
+    ? data.tts_accents
+    : [
+        { id: "american", label: "American English" },
+        { id: "british", label: "British English" },
+        { id: "arabic", label: "Arabic (Saudi)" },
+      ];
+  const voiceOptions = [
+    ...(data.suggested_tts_voice_options_by_provider?.[ttsProvider]
+      || data.suggested_tts_voice_options
+      || voices.map((id) => ({ id, label: id }))),
+  ];
+  if (voice && !voiceOptions.some((o) => o.id === voice)) {
+    voiceOptions.push({ id: voice, label: voice });
+  }
 
   return (
     <View style={styles.card}>
@@ -195,30 +222,34 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
       <Text style={styles.hint}>Speak-aloud, and live voice together with speech to text.</Text>
       <SelectField
         label="Provider"
-        value={data.tts_provider}
+        value={ttsProvider}
         options={ttsProviders}
         disabled={update.isPending}
-        onChange={(id) => save({ tts_provider: id })}
+        onChange={(id) => { setTtsProvider(id); save({ tts_provider: id }); }}
+      />
+      <SelectField
+        label="Accent"
+        value={accent}
+        options={accents}
+        disabled={update.isPending}
+        onChange={(id) => save({ tts_accent: id, tts_model_provider: ttsProvider })}
+      />
+      <SelectField
+        label="Voice"
+        value={voice}
+        options={voiceOptions}
+        disabled={update.isPending}
+        onChange={(id) => save({ tts_voice: id, tts_model_provider: ttsProvider })}
       />
       <SelectField
         label="Model"
         value={tts}
         options={[
-          ...TTS_MODELS.map((m) => ({ id: m, label: m })),
-          ...(tts && !TTS_MODELS.includes(tts) ? [{ id: tts, label: tts }] : []),
+          ...suggested.map((m) => ({ id: m, label: m })),
+          ...(tts && !suggested.includes(tts) ? [{ id: tts, label: tts }] : []),
         ]}
         disabled={update.isPending}
-        onChange={(id) => save({ tts_model: id })}
-      />
-      <SelectField
-        label="Voice"
-        value={voice}
-        options={[
-          ...voices.map((v) => ({ id: v, label: v })),
-          ...(voice && !voices.includes(voice) ? [{ id: voice, label: voice }] : []),
-        ]}
-        disabled={update.isPending}
-        onChange={(id) => save({ tts_voice: id })}
+        onChange={(id) => save({ tts_model: id, tts_model_provider: ttsProvider })}
       />
     </View>
   );
