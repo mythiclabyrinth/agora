@@ -25,9 +25,10 @@ import {
 } from "@agora/core";
 import { colors } from "../lib/theme";
 import {
-  ACTION_COL,
   INTERACTIVE_COL_GUTTER,
   MIN_COL,
+  actionButtonWidth,
+  actionColumnLayout,
   columnWidthsFromStrings,
   interactiveColumnWidth,
 } from "../lib/tableLayout";
@@ -65,9 +66,6 @@ export function MessageTable({ message }: { message: Message }) {
   const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const inputRefs = useRef<Record<string, TextInputType | null>>({});
-  // Inside a shrink-to-fit bubble nothing gives ScrollView a definite width,
-  // so measure the bubble's inner width and cap the table to it.
-  const [width, setWidth] = useState<number>();
 
   const table = message.meta?.table;
   const state = message.meta?.table_state ?? {};
@@ -89,6 +87,16 @@ export function MessageTable({ message }: { message: Message }) {
       return interactiveColumnWidth(estimated[i] ?? MIN_COL, c.width);
     });
   }, [columns, rows, state]);
+  const actionLayout = useMemo(() => {
+    const layouts = rows
+      .filter((row) => row.actions.length > 0)
+      .map((row) => actionColumnLayout(row.actions.map((action) => action.label || action.id)));
+    if (layouts.length === 0) return actionColumnLayout([]);
+    return {
+      width: Math.max(...layouts.map((layout) => layout.width)),
+      horizontal: layouts.every((layout) => layout.horizontal),
+    };
+  }, [rows]);
 
   if (!table || columns.length === 0 || rows.length === 0) return null;
 
@@ -217,15 +225,17 @@ export function MessageTable({ message }: { message: Message }) {
   };
 
   return (
-    <View style={styles.wrap} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+    <View testID="message-table" style={styles.wrap}>
       <ScrollView
         horizontal
         nestedScrollEnabled
         showsHorizontalScrollIndicator
-        style={[styles.scroll, width ? { maxWidth: width } : null]}
+        testID="message-table-scroll"
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
       >
-        <View>
-          <View style={[styles.tr, styles.thead]}>
+        <View testID="message-table-grid" style={styles.grid}>
+          <View testID="message-table-header" style={[styles.tr, styles.thead]}>
             {columns.map((c, i) => (
               <View
                 key={c.id}
@@ -235,7 +245,7 @@ export function MessageTable({ message }: { message: Message }) {
                 <Text style={[styles.cell, styles.headCell]}>{c.label}</Text>
               </View>
             ))}
-            <View style={[styles.columnShell, { width: ACTION_COL }]}>
+            <View style={[styles.columnShell, { width: actionLayout.width }]}>
               <Text style={[styles.cell, styles.headCell]}>Actions</Text>
             </View>
           </View>
@@ -280,13 +290,14 @@ export function MessageTable({ message }: { message: Message }) {
                       <View style={styles.editStack}>
                         <View style={styles.editRow}>
                           <TextInput
+                            testID={`table-input-${row.id}-${col.id}`}
                             ref={(el) => {
                               inputRefs.current[key] = el;
                             }}
                             style={[
                               styles.cell,
                               styles.input,
-                              { flex: 1 },
+                              styles.editInput,
                               err ? styles.inputInvalid : null,
                             ]}
                             value={draft ?? server}
@@ -323,15 +334,26 @@ export function MessageTable({ message }: { message: Message }) {
                     </View>
                   );
                 })}
-                <View style={[styles.columnShell, styles.actionsCell, { width: ACTION_COL }]}>
+                <View
+                  style={[
+                    styles.columnShell,
+                    styles.actionsCell,
+                    actionLayout.horizontal ? styles.actionsHorizontal : null,
+                    { width: actionLayout.width },
+                  ]}
+                >
                   {(row.actions || []).map((a) => {
                     const pressed = lock?.action_id === a.id;
                     const disabled = busy || tableLocked || (!!lock && !pressed);
                     return (
                       <Pressable
                         key={a.id}
+                        testID={`table-action-${row.id}-${a.id}`}
                         style={[
                           styles.button,
+                          actionLayout.horizontal
+                            ? { width: actionButtonWidth(a.label || a.id) }
+                            : null,
                           a.style === "primary" && styles.buttonPrimary,
                           pressed && styles.buttonPressed,
                           disabled && !pressed && styles.buttonDisabled,
@@ -409,8 +431,11 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
   },
   scroll: {
-    alignSelf: "flex-start",
+    alignSelf: "stretch",
+    width: "100%",
   },
+  scrollContent: { minWidth: "100%" },
+  grid: { minWidth: "100%" },
   thead: { backgroundColor: colors.panelStrong },
   tr: {
     flexDirection: "row",
@@ -437,6 +462,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     marginVertical: 2,
   },
+  editInput: { flex: 1, minWidth: 0 },
   inputInvalid: {
     borderColor: "rgba(239,68,68,0.55)",
   },
@@ -466,6 +492,7 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingVertical: 4,
   },
+  actionsHorizontal: { flexDirection: "row" },
   footer: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -474,6 +501,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     paddingTop: 10,
+    width: "100%",
   },
   button: {
     borderWidth: 1,
@@ -481,6 +509,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 6,
+    minHeight: 44,
+    justifyContent: "center",
   },
   buttonPrimary: {
     backgroundColor: "rgba(72,187,120,0.18)",

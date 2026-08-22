@@ -2,13 +2,15 @@ jest.mock("lucide-react-native", () => new Proxy({}, { get: () => () => null }))
 
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { ScrollView, StyleSheet } from "react-native";
+import { StyleSheet } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiClient, ApiProvider, type Message, type Session } from "@agora/core";
 import { MessageTable } from "../src/components/MessageTable";
 import {
   INTERACTIVE_COL_GUTTER,
   MAX_COL,
+  actionButtonWidth,
+  actionColumnLayout,
   interactiveColumnWidth,
 } from "../src/lib/tableLayout";
 
@@ -33,7 +35,10 @@ const message: Message = {
       rows: [{
         id: "txn_1",
         cells: { title: "HMS Host Services India", merchant: "HMS Host Services India Pvt Ltd", amount: 1028 },
-        actions: [],
+        actions: [
+          { id: "approve", label: "Approve", style: "primary" },
+          { id: "reject", label: "Reject", style: "secondary" },
+        ],
       }],
       buttons: [{ id: "approve_all", label: "Approve all", style: "primary" }],
     },
@@ -73,16 +78,68 @@ test("header and editable cells share aligned outer widths and gutters", () => {
   }
 });
 
-test("narrow viewport caps the scroll frame while wide content overflows", () => {
+test("editable inputs can shrink to the shell content width without overlap", () => {
   const tree = render();
-  const layoutHost = tree.root.findAll((node) => typeof node.props.onLayout === "function")[0];
-  act(() => layoutHost.props.onLayout({ nativeEvent: { layout: { width: 280, height: 40, x: 0, y: 0 } } }));
-  const scroll = tree.root.findByType(ScrollView);
-  expect(StyleSheet.flatten(scroll.props.style).maxWidth).toBe(280);
+  const shell = tree.root.findByProps({ testID: "table-cell-txn_1-merchant" });
+  const input = tree.root.findByProps({ testID: "table-input-txn_1-merchant" });
+  const shellStyle = StyleSheet.flatten(shell.props.style);
+  const inputStyle = StyleSheet.flatten(input.props.style);
+  expect(shellStyle.paddingHorizontal).toBe(INTERACTIVE_COL_GUTTER);
+  expect(inputStyle.flex).toBe(1);
+  expect(inputStyle.minWidth).toBe(0);
+  expect(width(shell) - INTERACTIVE_COL_GUTTER * 2).toBeGreaterThan(0);
+});
+
+test("row actions use label-driven columns and 44pt tap targets", () => {
+  const tree = render();
+  const approve = tree.root.findByProps({ testID: "table-action-txn_1-approve" });
+  const approveStyle = StyleSheet.flatten(approve.props.style);
+  expect(approveStyle.minHeight).toBeGreaterThanOrEqual(44);
+  // The rendered 12.5px semibold label measures 51.17px in the Storybook
+  // audit. Its button must also budget 20px padding and two 1px borders;
+  // integer layout therefore needs at least 74px to avoid an ellipsis.
+  expect(approveStyle.width).toBeGreaterThanOrEqual(Math.ceil(51.17 + 20 + 2));
+  const reject = tree.root.findByProps({ testID: "table-action-txn_1-reject" });
+  expect(StyleSheet.flatten(reject.props.style).width).toBeGreaterThanOrEqual(
+    actionButtonWidth("Reject"),
+  );
+  const compact = actionColumnLayout(["Approve", "Reject"]);
+  expect(compact.horizontal).toBe(true);
+  expect(compact.width).toBeGreaterThan(112);
+  const long = actionColumnLayout(["Approve & notify accounting", "Reject permanently"]);
+  expect(long.horizontal).toBe(false);
+  expect(long.width).toBeLessThanOrEqual(MAX_COL);
+});
+
+test("grid and footer share the card content-box width while wide content overflows", () => {
+  const tree = render();
+  const wrap = tree.root.findByProps({ testID: "message-table" });
+  const scroll = tree.root.findByProps({ testID: "message-table-scroll" });
+  const grid = tree.root.findByProps({ testID: "message-table-grid" });
+  const header = tree.root.findByProps({ testID: "message-table-header" });
+  const footer = tree.root.findByProps({ testID: "table-footer" });
+  const scrollStyle = StyleSheet.flatten(scroll.props.style);
+  const contentStyle = StyleSheet.flatten(scroll.props.contentContainerStyle);
+  const gridStyle = StyleSheet.flatten(grid.props.style);
+  const footerStyle = StyleSheet.flatten(footer.props.style);
+
+  // A percentage width resolves against the parent's content box, excluding
+  // its padding and border. Both siblings therefore occupy the same frame.
+  expect(scrollStyle.width).toBe("100%");
+  expect(scrollStyle.alignSelf).toBe("stretch");
+  expect(footerStyle.width).toBe(scrollStyle.width);
+  expect(contentStyle.minWidth).toBe(footerStyle.width);
+  expect(gridStyle.minWidth).toBe(footerStyle.width);
+  // The header has no fixed width of its own: its row layout stretches to
+  // the grid's 100% minimum, so its painted strip reaches the footer edge.
+  expect(StyleSheet.flatten(header.props.style).width).toBeUndefined();
+  expect(scrollStyle.maxWidth).toBeUndefined();
+  expect(wrap.props.onLayout).toBeUndefined();
+
   const total = ["title", "merchant", "amount"]
     .map((id) => width(tree.root.findByProps({ testID: `table-header-${id}` })))
     .reduce((sum, value) => sum + value, 112);
-  expect(total).toBeGreaterThan(280);
+  expect(total).toBeGreaterThan(280); // content remains horizontally scrollable
 });
 
 test("footer is visibly separated from the scrollable grid", () => {
