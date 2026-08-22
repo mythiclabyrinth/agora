@@ -2,7 +2,7 @@ jest.mock("lucide-react-native", () => new Proxy({}, { get: () => () => null }))
 
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { ScrollView, StyleSheet } from "react-native";
+import { StyleSheet } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiClient, ApiProvider, type Message, type Session } from "@agora/core";
 import { MessageTable } from "../src/components/MessageTable";
@@ -73,16 +73,26 @@ test("header and editable cells share aligned outer widths and gutters", () => {
   }
 });
 
-test("narrow viewport caps the scroll frame while wide content overflows", () => {
+test("grid and footer share the card content-box width while wide content overflows", () => {
   const tree = render();
-  const layoutHost = tree.root.findAll((node) => typeof node.props.onLayout === "function")[0];
-  act(() => layoutHost.props.onLayout({ nativeEvent: { layout: { width: 280, height: 40, x: 0, y: 0 } } }));
-  const scroll = tree.root.findByType(ScrollView);
-  expect(StyleSheet.flatten(scroll.props.style).maxWidth).toBe(280);
+  const wrap = tree.root.findByProps({ testID: "message-table" });
+  const scroll = tree.root.findByProps({ testID: "message-table-scroll" });
+  const footer = tree.root.findByProps({ testID: "table-footer" });
+  const scrollStyle = StyleSheet.flatten(scroll.props.style);
+  const footerStyle = StyleSheet.flatten(footer.props.style);
+
+  // A percentage width resolves against the parent's content box, excluding
+  // its padding and border. Both siblings therefore occupy the same frame.
+  expect(scrollStyle.width).toBe("100%");
+  expect(scrollStyle.alignSelf).toBe("stretch");
+  expect(footerStyle.width).toBe(scrollStyle.width);
+  expect(scrollStyle.maxWidth).toBeUndefined();
+  expect(wrap.props.onLayout).toBeUndefined();
+
   const total = ["title", "merchant", "amount"]
     .map((id) => width(tree.root.findByProps({ testID: `table-header-${id}` })))
     .reduce((sum, value) => sum + value, 112);
-  expect(total).toBeGreaterThan(280);
+  expect(total).toBeGreaterThan(280); // content remains horizontally scrollable
 });
 
 test("footer is visibly separated from the scrollable grid", () => {

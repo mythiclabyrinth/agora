@@ -65,9 +65,6 @@ export function MessageTable({ message }: { message: Message }) {
   const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const inputRefs = useRef<Record<string, TextInputType | null>>({});
-  // Inside a shrink-to-fit bubble nothing gives ScrollView a definite width,
-  // so measure the bubble's inner width and cap the table to it.
-  const [width, setWidth] = useState<number>();
 
   const table = message.meta?.table;
   const state = message.meta?.table_state ?? {};
@@ -217,12 +214,13 @@ export function MessageTable({ message }: { message: Message }) {
   };
 
   return (
-    <View style={styles.wrap} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+    <View testID="message-table" style={styles.wrap}>
       <ScrollView
         horizontal
         nestedScrollEnabled
         showsHorizontalScrollIndicator
-        style={[styles.scroll, width ? { maxWidth: width } : null]}
+        testID="message-table-scroll"
+        style={styles.scroll}
       >
         <View>
           <View style={[styles.tr, styles.thead]}>
@@ -409,7 +407,8 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
   },
   scroll: {
-    alignSelf: "flex-start",
+    alignSelf: "stretch",
+    width: "100%",
   },
   thead: { backgroundColor: colors.panelStrong },
   tr: {
@@ -474,6 +473,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     paddingTop: 10,
+    width: "100%",
   },
   button: {
     borderWidth: 1,
