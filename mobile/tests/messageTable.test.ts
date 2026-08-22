@@ -9,6 +9,7 @@ import { MessageTable } from "../src/components/MessageTable";
 import {
   INTERACTIVE_COL_GUTTER,
   MAX_COL,
+  actionButtonWidth,
   actionColumnLayout,
   interactiveColumnWidth,
 } from "../src/lib/tableLayout";
@@ -92,7 +93,13 @@ test("editable inputs can shrink to the shell content width without overlap", ()
 test("row actions use label-driven columns and 44pt tap targets", () => {
   const tree = render();
   const approve = tree.root.findByProps({ testID: "table-action-txn_1-approve" });
-  expect(StyleSheet.flatten(approve.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  const approveStyle = StyleSheet.flatten(approve.props.style);
+  expect(approveStyle.minHeight).toBeGreaterThanOrEqual(44);
+  expect(approveStyle.width).toBeGreaterThanOrEqual(actionButtonWidth("Approve"));
+  const reject = tree.root.findByProps({ testID: "table-action-txn_1-reject" });
+  expect(StyleSheet.flatten(reject.props.style).width).toBeGreaterThanOrEqual(
+    actionButtonWidth("Reject"),
+  );
   const compact = actionColumnLayout(["Approve", "Reject"]);
   expect(compact.horizontal).toBe(true);
   expect(compact.width).toBeGreaterThan(112);

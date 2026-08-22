@@ -14,6 +14,8 @@ export const MAX_COL = 260;
 export const INTERACTIVE_COL_GUTTER = 4;
 const CELL_HPAD = 20; // cell paddingHorizontal * 2
 const CHAR_W = 8; // ~average glyph width of the system font at fontSize 13.5
+const ACTION_CHAR_W = 7.5; // 12.5px semibold action label
+const ACTION_HPAD = 20; // button paddingHorizontal * 2
 
 export function estimateWidthFromChars(chars: number): number {
   return chars * CHAR_W + CELL_HPAD;
@@ -32,12 +34,14 @@ export function interactiveColumnWidth(estimated: number, explicit?: number): nu
 
 const ACTION_GAP = 4;
 
+export function actionButtonWidth(label: string): number {
+  return Math.ceil(label.length * ACTION_CHAR_W + ACTION_HPAD);
+}
+
 /** Size row actions from their real labels. Prefer one compact horizontal row
     when every action fits; otherwise stack full-width 44pt targets. */
 export function actionColumnLayout(labels: string[]): { width: number; horizontal: boolean } {
-  const estimates = (labels.length ? labels : ["Actions"]).map((label) =>
-    estimateWidthFromChars(label.length),
-  );
+  const estimates = (labels.length ? labels : ["Actions"]).map(actionButtonWidth);
   const horizontalWidth = estimates.reduce((sum, width) => sum + width, 0)
     + ACTION_GAP * Math.max(estimates.length - 1, 0)
     + INTERACTIVE_COL_GUTTER * 2;

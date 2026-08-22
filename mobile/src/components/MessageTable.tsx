@@ -27,6 +27,7 @@ import { colors } from "../lib/theme";
 import {
   INTERACTIVE_COL_GUTTER,
   MIN_COL,
+  actionButtonWidth,
   actionColumnLayout,
   columnWidthsFromStrings,
   interactiveColumnWidth,
@@ -350,7 +351,9 @@ export function MessageTable({ message }: { message: Message }) {
                         testID={`table-action-${row.id}-${a.id}`}
                         style={[
                           styles.button,
-                          actionLayout.horizontal ? styles.actionButtonHorizontal : null,
+                          actionLayout.horizontal
+                            ? { width: actionButtonWidth(a.label || a.id) }
+                            : null,
                           a.style === "primary" && styles.buttonPrimary,
                           pressed && styles.buttonPressed,
                           disabled && !pressed && styles.buttonDisabled,
@@ -490,7 +493,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   actionsHorizontal: { flexDirection: "row" },
-  actionButtonHorizontal: { flex: 1, minWidth: 0 },
   footer: {
     flexDirection: "row",
     flexWrap: "wrap",
