@@ -10,11 +10,25 @@ import type { Span } from "@agora/core";
 export const MIN_COL = 80;
 export const MAX_COL = 260;
 export const ACTION_COL = 112;
+/** Space between neighboring interactive-table field borders. Kept outside
+    the input so header, editable, and locked cells share one outer width. */
+export const INTERACTIVE_COL_GUTTER = 4;
 const CELL_HPAD = 20; // cell paddingHorizontal * 2
 const CHAR_W = 8; // ~average glyph width of the system font at fontSize 13.5
 
 export function estimateWidthFromChars(chars: number): number {
   return chars * CHAR_W + CELL_HPAD;
+}
+
+/** Turn a content estimate (or agent-supplied width) into the outer width of
+    an interactive column, including its visible inter-field gutters. */
+export function interactiveColumnWidth(estimated: number, explicit?: number): number {
+  if (typeof explicit === "number" && explicit > 0) {
+    return Math.ceil(
+      Math.min(Math.max(explicit + INTERACTIVE_COL_GUTTER * 2, MIN_COL), MAX_COL),
+    );
+  }
+  return Math.ceil(Math.min(Math.max(estimated + INTERACTIVE_COL_GUTTER * 2, MIN_COL), MAX_COL));
 }
 
 export function estimateWidth(spans: Span[]): number {
