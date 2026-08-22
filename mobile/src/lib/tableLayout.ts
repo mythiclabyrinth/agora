@@ -24,7 +24,9 @@ export function estimateWidthFromChars(chars: number): number {
     an interactive column, including its visible inter-field gutters. */
 export function interactiveColumnWidth(estimated: number, explicit?: number): number {
   if (typeof explicit === "number" && explicit > 0) {
-    return Math.ceil(Math.min(Math.max(explicit, MIN_COL), MAX_COL));
+    return Math.ceil(
+      Math.min(Math.max(explicit + INTERACTIVE_COL_GUTTER * 2, MIN_COL), MAX_COL),
+    );
   }
   return Math.ceil(Math.min(Math.max(estimated + INTERACTIVE_COL_GUTTER * 2, MIN_COL), MAX_COL));
 }

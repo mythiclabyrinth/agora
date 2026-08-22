@@ -95,3 +95,8 @@ test("footer is visibly separated from the scrollable grid", () => {
 test("long interactive values remain capped after adding outer gutters", () => {
   expect(interactiveColumnWidth(900)).toBe(MAX_COL);
 });
+
+test("an explicit width describes the input content before outer gutters", () => {
+  expect(interactiveColumnWidth(80, 100)).toBe(100 + INTERACTIVE_COL_GUTTER * 2);
+  expect(interactiveColumnWidth(80, MAX_COL)).toBe(MAX_COL);
+});
