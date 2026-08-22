@@ -9,6 +9,7 @@ import { MessageTable } from "../src/components/MessageTable";
 import {
   INTERACTIVE_COL_GUTTER,
   MAX_COL,
+  actionColumnLayout,
   interactiveColumnWidth,
 } from "../src/lib/tableLayout";
 
@@ -33,7 +34,10 @@ const message: Message = {
       rows: [{
         id: "txn_1",
         cells: { title: "HMS Host Services India", merchant: "HMS Host Services India Pvt Ltd", amount: 1028 },
-        actions: [],
+        actions: [
+          { id: "approve", label: "Approve", style: "primary" },
+          { id: "reject", label: "Reject", style: "secondary" },
+        ],
       }],
       buttons: [{ id: "approve_all", label: "Approve all", style: "primary" }],
     },
@@ -71,6 +75,30 @@ test("header and editable cells share aligned outer widths and gutters", () => {
     expect(StyleSheet.flatten(header.props.style).paddingHorizontal).toBe(INTERACTIVE_COL_GUTTER);
     expect(StyleSheet.flatten(cell.props.style).paddingHorizontal).toBe(INTERACTIVE_COL_GUTTER);
   }
+});
+
+test("editable inputs can shrink to the shell content width without overlap", () => {
+  const tree = render();
+  const shell = tree.root.findByProps({ testID: "table-cell-txn_1-merchant" });
+  const input = tree.root.findByProps({ testID: "table-input-txn_1-merchant" });
+  const shellStyle = StyleSheet.flatten(shell.props.style);
+  const inputStyle = StyleSheet.flatten(input.props.style);
+  expect(shellStyle.paddingHorizontal).toBe(INTERACTIVE_COL_GUTTER);
+  expect(inputStyle.flex).toBe(1);
+  expect(inputStyle.minWidth).toBe(0);
+  expect(width(shell) - INTERACTIVE_COL_GUTTER * 2).toBeGreaterThan(0);
+});
+
+test("row actions use label-driven columns and 44pt tap targets", () => {
+  const tree = render();
+  const approve = tree.root.findByProps({ testID: "table-action-txn_1-approve" });
+  expect(StyleSheet.flatten(approve.props.style).minHeight).toBeGreaterThanOrEqual(44);
+  const compact = actionColumnLayout(["Approve", "Reject"]);
+  expect(compact.horizontal).toBe(true);
+  expect(compact.width).toBeGreaterThan(112);
+  const long = actionColumnLayout(["Approve & notify accounting", "Reject permanently"]);
+  expect(long.horizontal).toBe(false);
+  expect(long.width).toBeLessThanOrEqual(MAX_COL);
 });
 
 test("grid and footer share the card content-box width while wide content overflows", () => {

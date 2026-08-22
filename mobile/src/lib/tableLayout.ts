@@ -9,7 +9,6 @@ import type { Span } from "@agora/core";
 
 export const MIN_COL = 80;
 export const MAX_COL = 260;
-export const ACTION_COL = 112;
 /** Space between neighboring interactive-table field borders. Kept outside
     the input so header, editable, and locked cells share one outer width. */
 export const INTERACTIVE_COL_GUTTER = 4;
@@ -29,6 +28,26 @@ export function interactiveColumnWidth(estimated: number, explicit?: number): nu
     );
   }
   return Math.ceil(Math.min(Math.max(estimated + INTERACTIVE_COL_GUTTER * 2, MIN_COL), MAX_COL));
+}
+
+const ACTION_GAP = 4;
+
+/** Size row actions from their real labels. Prefer one compact horizontal row
+    when every action fits; otherwise stack full-width 44pt targets. */
+export function actionColumnLayout(labels: string[]): { width: number; horizontal: boolean } {
+  const estimates = (labels.length ? labels : ["Actions"]).map((label) =>
+    estimateWidthFromChars(label.length),
+  );
+  const horizontalWidth = estimates.reduce((sum, width) => sum + width, 0)
+    + ACTION_GAP * Math.max(estimates.length - 1, 0)
+    + INTERACTIVE_COL_GUTTER * 2;
+  if (labels.length > 0 && horizontalWidth <= MAX_COL) {
+    return { width: Math.max(horizontalWidth, MIN_COL), horizontal: true };
+  }
+  return {
+    width: Math.min(Math.max(...estimates) + INTERACTIVE_COL_GUTTER * 2, MAX_COL),
+    horizontal: false,
+  };
 }
 
 export function estimateWidth(spans: Span[]): number {
