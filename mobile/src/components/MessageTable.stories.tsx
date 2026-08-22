@@ -81,6 +81,56 @@ type Story = StoryObj<typeof meta>;
     Approve / Reject. */
 export const Editable: Story = {};
 
+/** Regression fixture for the compact iPhone message bubble: long imported
+    merchant/title values remain aligned and readable with a visible gutter
+    between editable fields, while the grid scrolls horizontally. */
+export const NarrowIPhoneLongValues: Story = {
+  args: {
+    message: {
+      ...tableMessage,
+      text: "1 card transaction is missing. Review the imported values before approving it.",
+      meta: {
+        ...tableMessage.meta,
+        table: {
+          ...tableMessage.meta!.table!,
+          columns: [
+            { id: "title", label: "Title", kind: "text" },
+            { id: "merchant", label: "Merchant", kind: "text" },
+            { id: "amount", label: "Amount", kind: "number" },
+            { id: "category", label: "Category", kind: "text" },
+          ],
+          rows: [
+            {
+              id: "txn_1",
+              cells: {
+                title: "HMS Host Services India",
+                merchant: "HMS Host Services India Pvt Ltd",
+                amount: 1028,
+                category: "Food & Drink",
+              },
+              actions: [
+                { id: "approve", label: "Approve", style: "primary" },
+                { id: "reject", label: "Reject", style: "secondary" },
+              ],
+            },
+          ],
+        },
+        table_state: {
+          txn_1: {
+            title: "HMS Host Services India",
+            merchant: "HMS Host Services India Pvt Ltd",
+            amount: 1028,
+            category: "Food & Drink",
+          },
+        },
+      },
+    },
+  },
+  parameters: {
+    layout: "fullscreen",
+  },
+};
+
 /** One row approved locks that row alone — its cells go read-only and the
     pressed button stays marked while the rest of the table carries on. */
 export const RowApproved: Story = {

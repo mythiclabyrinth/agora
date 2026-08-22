@@ -26,9 +26,10 @@ import {
 import { colors } from "../lib/theme";
 import {
   ACTION_COL,
-  MAX_COL,
+  INTERACTIVE_COL_GUTTER,
   MIN_COL,
   columnWidthsFromStrings,
+  interactiveColumnWidth,
 } from "../lib/tableLayout";
 import { Icon } from "./Icon";
 
@@ -85,10 +86,7 @@ export function MessageTable({ message }: { message: Message }) {
     });
     const estimated = columnWidthsFromStrings(head, body);
     return columns.map((c, i) => {
-      if (typeof c.width === "number" && c.width > 0) {
-        return Math.ceil(Math.min(Math.max(c.width, MIN_COL), MAX_COL));
-      }
-      return estimated[i] ?? MIN_COL;
+      return interactiveColumnWidth(estimated[i] ?? MIN_COL, c.width);
     });
   }, [columns, rows, state]);
 
@@ -229,11 +227,17 @@ export function MessageTable({ message }: { message: Message }) {
         <View>
           <View style={[styles.tr, styles.thead]}>
             {columns.map((c, i) => (
-              <Text key={c.id} style={[styles.cell, styles.headCell, { width: colWidths[i] }]}>
-                {c.label}
-              </Text>
+              <View
+                key={c.id}
+                testID={`table-header-${c.id}`}
+                style={[styles.columnShell, { width: colWidths[i] }]}
+              >
+                <Text style={[styles.cell, styles.headCell]}>{c.label}</Text>
+              </View>
             ))}
-            <Text style={[styles.cell, styles.headCell, { width: ACTION_COL }]}>Actions</Text>
+            <View style={[styles.columnShell, { width: ACTION_COL }]}>
+              <Text style={[styles.cell, styles.headCell]}>Actions</Text>
+            </View>
           </View>
           {rows.map((row) => {
             const lock = rowLocks[row.id];
@@ -250,17 +254,17 @@ export function MessageTable({ message }: { message: Message }) {
                   const server = displayValue(values[col.id]);
                   if (rowLocked || col.kind === "readonly") {
                     return (
-                      <TextInput
+                      <View
                         key={col.id}
-                        style={[
-                          styles.cell,
-                          styles.input,
-                          styles.locked,
-                          { width: colWidths[i] },
-                        ]}
-                        value={server || "—"}
-                        editable={false}
-                      />
+                        testID={`table-cell-${row.id}-${col.id}`}
+                        style={[styles.columnShell, { width: colWidths[i] }]}
+                      >
+                        <TextInput
+                          style={[styles.cell, styles.input, styles.locked]}
+                          value={server || "—"}
+                          editable={false}
+                        />
+                      </View>
                     );
                   }
                   const key = cellKey(row.id, col.id);
@@ -268,7 +272,11 @@ export function MessageTable({ message }: { message: Message }) {
                   const dirty = draft !== undefined && draft !== server;
                   const err = cellErrors[key];
                   return (
-                    <View key={col.id} style={[styles.editCell, { width: colWidths[i] }]}>
+                    <View
+                      key={col.id}
+                      testID={`table-cell-${row.id}-${col.id}`}
+                      style={[styles.columnShell, { width: colWidths[i] }]}
+                    >
                       <View style={styles.editStack}>
                         <View style={styles.editRow}>
                           <TextInput
@@ -315,7 +323,7 @@ export function MessageTable({ message }: { message: Message }) {
                     </View>
                   );
                 })}
-                <View style={[styles.actionsCell, { width: ACTION_COL }]}>
+                <View style={[styles.columnShell, styles.actionsCell, { width: ACTION_COL }]}>
                   {(row.actions || []).map((a) => {
                     const pressed = lock?.action_id === a.id;
                     const disabled = busy || tableLocked || (!!lock && !pressed);
@@ -350,7 +358,7 @@ export function MessageTable({ message }: { message: Message }) {
         </View>
       </ScrollView>
       {buttons.length > 0 ? (
-        <View style={styles.footer}>
+        <View testID="table-footer" style={styles.footer}>
           {buttons.map((b) => {
             const pressed = tableDone?.button_id === b.id;
             const disabled = busy || (tableLocked && !pressed);
@@ -416,6 +424,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
   },
+  columnShell: {
+    paddingHorizontal: INTERACTIVE_COL_GUTTER,
+    justifyContent: "center",
+  },
   headCell: { fontWeight: "700", color: colors.faint },
   input: {
     backgroundColor: colors.panelStrong,
@@ -432,10 +444,6 @@ const styles = StyleSheet.create({
     color: colors.faint,
     backgroundColor: "transparent",
     borderColor: "transparent",
-  },
-  editCell: {
-    paddingRight: 4,
-    justifyContent: "center",
   },
   editStack: { flex: 1, gap: 2 },
   editRow: {
@@ -457,10 +465,16 @@ const styles = StyleSheet.create({
   actionsCell: {
     gap: 4,
     paddingVertical: 4,
-    paddingHorizontal: 6,
-    justifyContent: "center",
   },
-  footer: { flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" },
+  footer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    alignItems: "center",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: 10,
+  },
   button: {
     borderWidth: 1,
     borderColor: colors.border,
