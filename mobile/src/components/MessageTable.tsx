@@ -221,9 +221,10 @@ export function MessageTable({ message }: { message: Message }) {
         showsHorizontalScrollIndicator
         testID="message-table-scroll"
         style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
       >
-        <View>
-          <View style={[styles.tr, styles.thead]}>
+        <View testID="message-table-grid" style={styles.grid}>
+          <View testID="message-table-header" style={[styles.tr, styles.thead]}>
             {columns.map((c, i) => (
               <View
                 key={c.id}
@@ -410,6 +411,8 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
     width: "100%",
   },
+  scrollContent: { minWidth: "100%" },
+  grid: { minWidth: "100%" },
   thead: { backgroundColor: colors.panelStrong },
   tr: {
     flexDirection: "row",

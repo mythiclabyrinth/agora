@@ -77,8 +77,12 @@ test("grid and footer share the card content-box width while wide content overfl
   const tree = render();
   const wrap = tree.root.findByProps({ testID: "message-table" });
   const scroll = tree.root.findByProps({ testID: "message-table-scroll" });
+  const grid = tree.root.findByProps({ testID: "message-table-grid" });
+  const header = tree.root.findByProps({ testID: "message-table-header" });
   const footer = tree.root.findByProps({ testID: "table-footer" });
   const scrollStyle = StyleSheet.flatten(scroll.props.style);
+  const contentStyle = StyleSheet.flatten(scroll.props.contentContainerStyle);
+  const gridStyle = StyleSheet.flatten(grid.props.style);
   const footerStyle = StyleSheet.flatten(footer.props.style);
 
   // A percentage width resolves against the parent's content box, excluding
@@ -86,6 +90,11 @@ test("grid and footer share the card content-box width while wide content overfl
   expect(scrollStyle.width).toBe("100%");
   expect(scrollStyle.alignSelf).toBe("stretch");
   expect(footerStyle.width).toBe(scrollStyle.width);
+  expect(contentStyle.minWidth).toBe(footerStyle.width);
+  expect(gridStyle.minWidth).toBe(footerStyle.width);
+  // The header has no fixed width of its own: its row layout stretches to
+  // the grid's 100% minimum, so its painted strip reaches the footer edge.
+  expect(StyleSheet.flatten(header.props.style).width).toBeUndefined();
   expect(scrollStyle.maxWidth).toBeUndefined();
   expect(wrap.props.onLayout).toBeUndefined();
 
