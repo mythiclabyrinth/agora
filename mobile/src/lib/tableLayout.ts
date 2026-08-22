@@ -15,7 +15,7 @@ export const INTERACTIVE_COL_GUTTER = 4;
 const CELL_HPAD = 20; // cell paddingHorizontal * 2
 const CHAR_W = 8; // ~average glyph width of the system font at fontSize 13.5
 const ACTION_CHAR_W = 7.5; // 12.5px semibold action label
-const ACTION_HPAD = 20; // button paddingHorizontal * 2
+const ACTION_HPAD = 22; // button paddingHorizontal * 2 + two 1px borders
 
 export function estimateWidthFromChars(chars: number): number {
   return chars * CHAR_W + CELL_HPAD;

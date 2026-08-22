@@ -95,7 +95,10 @@ test("row actions use label-driven columns and 44pt tap targets", () => {
   const approve = tree.root.findByProps({ testID: "table-action-txn_1-approve" });
   const approveStyle = StyleSheet.flatten(approve.props.style);
   expect(approveStyle.minHeight).toBeGreaterThanOrEqual(44);
-  expect(approveStyle.width).toBeGreaterThanOrEqual(actionButtonWidth("Approve"));
+  // The rendered 12.5px semibold label measures 51.17px in the Storybook
+  // audit. Its button must also budget 20px padding and two 1px borders;
+  // integer layout therefore needs at least 74px to avoid an ellipsis.
+  expect(approveStyle.width).toBeGreaterThanOrEqual(Math.ceil(51.17 + 20 + 2));
   const reject = tree.root.findByProps({ testID: "table-action-txn_1-reject" });
   expect(StyleSheet.flatten(reject.props.style).width).toBeGreaterThanOrEqual(
     actionButtonWidth("Reject"),
