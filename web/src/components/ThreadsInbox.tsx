@@ -1,7 +1,7 @@
 /* Threads inbox (.ago-inbox-list): every thread the user participates in,
    newest first, with rename and two-step remove on each row. */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   fmtTs, keys, useGroups, useHideThread, useMe, useRenameThread, useThreads,
@@ -12,11 +12,46 @@ import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { PromptDialog } from "./PromptDialog";
+import type { ThreadsFilter, ThreadsSort } from "../state/ui";
 
 function snippet(m: { alias?: string | null; text?: string }): string {
   const alias = (m.alias || "").trim();
   if (alias) return alias;
   return (m.text || "").split("\n")[0].slice(0, 140);
+}
+
+function activityTs(t: ThreadRow): number {
+  return t.last_reply_ts || t.root.ts;
+}
+
+function sortKey(t: ThreadRow): string {
+  return snippet(t.root).trim().toLocaleLowerCase().slice(0, 10);
+}
+
+function compareNames(a: ThreadRow, b: ThreadRow, direction: 1 | -1): number {
+  const aKey = sortKey(a);
+  const bKey = sortKey(b);
+  // Attachment-only roots without an alias stay below named rows in either direction.
+  if (!aKey || !bKey) {
+    if (!aKey && bKey) return 1;
+    if (aKey && !bKey) return -1;
+  }
+  const byName = aKey.localeCompare(bKey, undefined, { sensitivity: "base", numeric: true });
+  if (byName) return byName * direction;
+  return activityTs(b) - activityTs(a) || a.root.id - b.root.id;
+}
+
+function visibleThreads(threads: ThreadRow[], sort: ThreadsSort, filter: ThreadsFilter): ThreadRow[] {
+  const filtered = threads.filter(t => {
+    const saved = !!t.root.alias?.trim();
+    return filter === "all" || (filter === "saved" ? saved : !saved);
+  });
+  // Preserve the server/cache order for the default so the current experience is unchanged.
+  if (sort === "recent") return filtered;
+  return [...filtered].sort((a, b) => {
+    if (sort === "oldest") return activityTs(a) - activityTs(b) || a.root.id - b.root.id;
+    return compareNames(a, b, sort === "az" ? 1 : -1);
+  });
 }
 
 function InboxRow({ t }: { t: ThreadRow }) {
@@ -92,6 +127,14 @@ export function ThreadsInbox() {
   const ui = useUiState();
   const qc = useQueryClient();
   const threads = useThreads().data || [];
+  const sort = useUiState(state => state.threadsSort);
+  const filter = useUiState(state => state.threadsFilter);
+  const setSort = useUiState(state => state.setThreadsSort);
+  const setFilter = useUiState(state => state.setThreadsFilter);
+  const displayedThreads = useMemo(
+    () => visibleThreads(threads, sort, filter),
+    [threads, sort, filter],
+  );
 
   return (
     <div className="agora-main" id="agora-main">
@@ -104,6 +147,25 @@ export function ThreadsInbox() {
           <span className="dim">conversations you're part of</span>
         </div>
         <div className="ago-head-actions">
+          <label className="ago-inbox-control">
+            <span>Sort by</span>
+            <select className="ago-search-scope" aria-label="Sort threads"
+              value={sort} onChange={event => setSort(event.target.value as ThreadsSort)}>
+              <option value="recent">Recent</option>
+              <option value="oldest">Oldest</option>
+              <option value="az">A–Z</option>
+              <option value="za">Z–A</option>
+            </select>
+          </label>
+          <label className="ago-inbox-control">
+            <span>Show</span>
+            <select className="ago-search-scope" aria-label="Filter threads"
+              value={filter} onChange={event => setFilter(event.target.value as ThreadsFilter)}>
+              <option value="all">All Threads</option>
+              <option value="saved">Saved Threads</option>
+              <option value="unset">Unset Threads</option>
+            </select>
+          </label>
           <button className="btn sm" title="Refresh"
             onClick={() => void qc.invalidateQueries({ queryKey: keys.threads })}>
             <Icon name="refresh-cw" />
@@ -111,13 +173,15 @@ export function ThreadsInbox() {
         </div>
       </div>
       <div className="ago-log ago-inbox-list">
-        {threads.length
-          ? threads.map(t => <InboxRow key={t.root.id} t={t} />)
+        {displayedThreads.length
+          ? displayedThreads.map(t => <InboxRow key={t.root.id} t={t} />)
           : (
             <div className="empty">
               <div className="glyph"><Icon name="messages-square" /></div>
-              <div>No threads yet</div>
-              <div className="hint">Threads you start or reply in show up here, with unread counts as replies land.</div>
+              <div>{threads.length ? "No matching threads" : "No threads yet"}</div>
+              <div className="hint">{threads.length
+                ? "Try showing a different set of threads."
+                : "Threads you start or reply in show up here, with unread counts as replies land."}</div>
             </div>
           )}
       </div>
