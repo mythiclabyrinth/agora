@@ -2,7 +2,8 @@
    Selection persists to localStorage: agora_sel = {g,c}; agora_open = an
    array of expanded group ids, or null meaning "just the selected group";
    agora_thread = "expanded"/"open"; agora_unreads_only = "1"/"0";
-   agora_chan_collapsed = channel ids whose sidebar threads are collapsed. */
+   agora_chan_collapsed = channel ids whose sidebar threads are collapsed;
+   agora_threads_sort and agora_threads_filter control the Threads inbox. */
 
 import { create } from "zustand";
 import { deepLinkPath } from "@agora/core";
@@ -16,6 +17,8 @@ export type MainView =
   | { kind: "group" };
 
 export type Panel = "people" | "connections" | "settings" | null;
+export type ThreadsSort = "recent" | "oldest" | "az" | "za";
+export type ThreadsFilter = "all" | "saved" | "unset";
 
 interface Selection { g?: string | null; c?: string | null; }
 
@@ -28,6 +31,11 @@ function loadJSON<T>(key: string, fallback: T): T {
   }
 }
 
+function loadEnum<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  const value = localStorage.getItem(key);
+  return allowed.includes(value as T) ? value as T : fallback;
+}
+
 interface UiState {
   sel: Selection;
   view: MainView;
@@ -38,6 +46,8 @@ interface UiState {
   expanded: string[] | null;
   collapsedChannels: string[];
   unreadsOnly: boolean;
+  threadsSort: ThreadsSort;
+  threadsFilter: ThreadsFilter;
   hiddenOpen: boolean;
   sideCollapsed: boolean;
   threadRoot: number | null;
@@ -56,6 +66,8 @@ interface UiState {
   isChannelCollapsed: (c: string) => boolean;
   toggleChannelThreads: (c: string) => void;
   setUnreadsOnly: (on: boolean) => void;
+  setThreadsSort: (sort: ThreadsSort) => void;
+  setThreadsFilter: (filter: ThreadsFilter) => void;
   toggleHiddenSection: () => void;
   toggleSide: () => void;
   openThread: (rootId: number, history?: "push" | "replace" | "none") => void;
@@ -76,6 +88,8 @@ export const useUiState = create<UiState>((set, get) => ({
   expanded: loadJSON<string[] | null>("agora_open", null),
   collapsedChannels: loadJSON<string[]>("agora_chan_collapsed", []),
   unreadsOnly: localStorage.getItem("agora_unreads_only") === "1",
+  threadsSort: loadEnum("agora_threads_sort", ["recent", "oldest", "az", "za"], "recent"),
+  threadsFilter: loadEnum("agora_threads_filter", ["all", "saved", "unset"], "all"),
   hiddenOpen: false,
   sideCollapsed: localStorage.getItem("agora_side") === "collapsed",
   threadRoot: null,
@@ -133,6 +147,14 @@ export const useUiState = create<UiState>((set, get) => ({
   setUnreadsOnly: (on) => {
     localStorage.setItem("agora_unreads_only", on ? "1" : "0");
     set({ unreadsOnly: on });
+  },
+  setThreadsSort: (sort) => {
+    localStorage.setItem("agora_threads_sort", sort);
+    set({ threadsSort: sort });
+  },
+  setThreadsFilter: (filter) => {
+    localStorage.setItem("agora_threads_filter", filter);
+    set({ threadsFilter: filter });
   },
   toggleHiddenSection: () => set((s) => ({ hiddenOpen: !s.hiddenOpen })),
   toggleSide: () => set((s) => {
