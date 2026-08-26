@@ -9,6 +9,7 @@ export type AgoraAgentDescriptor = {
   name: string;
   requires_mention?: boolean;
   wants_context_feed?: boolean;
+  bot_loop_limit?: number | string;
   avatar?: { mime: string; data: string };
 };
 

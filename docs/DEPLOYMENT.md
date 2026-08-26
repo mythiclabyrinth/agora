@@ -220,6 +220,14 @@ Env key fallbacks are **not** folded into `config.json` at boot — see
 `AGORA_*` environment overrides are written into `config.json` at boot, so
 unsetting one later keeps the last value rather than reverting.
 
+`AGORA_BOT_LOOP_LIMIT` and `AGORA_BOT_LOOP_MAX` are exceptions: they are read
+straight from the process env and are not persisted to `config.json`.
+`AGORA_BOT_LOOP_LIMIT` is the default consecutive-agent relay budget (`10`),
+while `AGORA_BOT_LOOP_MAX` is the safety ceiling (`50`) applied to a per-agent
+cap requested in its live registration. Missing per-agent values inherit the
+server default; invalid/non-positive ones also fall back, and values above the
+ceiling are clamped. Both env values are read once at server startup.
+
 ## Notifications
 
 Agent replies that land while nobody is looking pop native banners: the

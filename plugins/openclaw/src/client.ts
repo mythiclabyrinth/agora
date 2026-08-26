@@ -18,6 +18,7 @@ export type AgoraClientOptions = {
   agentName: string;
   requireMention: boolean;
   contextFeed: boolean;
+  botLoopLimit?: number | string;
   onInbound: (frame: AgoraInboundFrame) => void | Promise<void>;
   onConnected?: () => void;
   onDisconnected?: (reason: string) => void;
@@ -101,6 +102,7 @@ export class AgoraClient {
             name: this.options.agentName,
             requires_mention: this.options.requireMention,
             wants_context_feed: this.options.contextFeed,
+            ...(this.options.botLoopLimit == null ? {} : { bot_loop_limit: this.options.botLoopLimit }),
           },
         ],
       }).catch(error => this.options.warn?.(`agora: hello failed: ${this.safeError(error)}`));

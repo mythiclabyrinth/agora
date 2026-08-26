@@ -45,8 +45,19 @@ describe("resolveAgoraAccount", () => {
     const account = resolveAgoraAccount(cfg({}), undefined, {
       AGORA_URL: "https://agora.example",
       AGORA_PAIRING_TOKEN: "env-token",
+      AGORA_BOT_LOOP_LIMIT: "17",
     } as NodeJS.ProcessEnv);
     expect(account.token).toBe("env-token");
+    expect(account.botLoopLimit).toBe("17");
+  });
+
+  it("prefers an account-specific bot loop limit over the environment", () => {
+    const account = resolveAgoraAccount(
+      cfg({ url: "https://agora.example", pairingToken: "tok", botLoopLimit: 23 }),
+      undefined,
+      { AGORA_BOT_LOOP_LIMIT: "17" } as NodeJS.ProcessEnv,
+    );
+    expect(account.botLoopLimit).toBe(23);
   });
 
   it("reads a token file so the secret stays out of config.json", () => {

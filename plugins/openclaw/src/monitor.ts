@@ -50,6 +50,7 @@ export async function startAgoraAccount(
     agentName: account.agentName,
     requireMention: account.requireMention,
     contextFeed: account.contextFeed,
+    botLoopLimit: account.botLoopLimit,
     log: message => ctx.log?.info?.(message),
     warn: message => ctx.log?.warn?.(message),
     onConnected: () => {

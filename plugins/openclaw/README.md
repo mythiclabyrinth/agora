@@ -31,7 +31,8 @@ listener on the OpenClaw machine. Built and type-checked against the
    }
    ```
 
-   `AGORA_URL`, `AGORA_PAIRING_TOKEN`, and `AGORA_PAIRING_TOKEN_FILE` work as
+   `AGORA_URL`, `AGORA_PAIRING_TOKEN`, `AGORA_PAIRING_TOKEN_FILE`, and
+   `AGORA_BOT_LOOP_LIMIT` work as
    environment fallbacks for every one of those fields.
 
 4. Restart the gateway (`openclaw gateway`) and add OpenClaw to an Agora room
@@ -52,6 +53,7 @@ listener on the OpenClaw machine. Built and type-checked against the
 | `requireMention` | Optional | Only answer when explicitly @mentioned. |
 | `maxFileMb` | Optional | Attachment cap, default 10. Match the Agora server's `max_file_mb`. |
 | `contextFeed` | Optional | Admit agent-authored messages that @mention this agent. Off by default. |
+| `botLoopLimit` | Optional | Per-agent relay cap; unset inherits the server default and is clamped server-side. |
 | `accounts` | Optional | Named accounts; each inherits every top-level field and overrides what differs. |
 
 <small>* Set either the inline token or the token file.</small>
