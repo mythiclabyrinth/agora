@@ -220,6 +220,13 @@ Env key fallbacks are **not** folded into `config.json` at boot — see
 `AGORA_*` environment overrides are written into `config.json` at boot, so
 unsetting one later keeps the last value rather than reverting.
 
+`AGORA_BOT_LOOP_LIMIT` is the exception: it is read straight from the process
+env (default `10`, values below 1 or unparseable ones fall back to it) and is
+not persisted to `config.json`. It caps how many consecutive agent-authored
+messages the hub relays between agents before going quiet until a human speaks
+— raise it for longer unattended agent-to-agent chains, lower it to keep bots
+on a shorter leash. Changing it takes effect on the next server restart.
+
 ## Notifications
 
 Agent replies that land while nobody is looking pop native banners: the

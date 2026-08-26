@@ -144,8 +144,9 @@ keeps the humans-only posture: unlisted agents stay context-only, unmentioned
 peer chatter is buffered not executed, and a peer's text never reaches the
 bridge commands. Peer turns arrive wrapped in a relay note naming the author as
 an AI and quoting the remaining agent-to-agent budget: the server relays at
-most 5 consecutive agent messages in a channel/thread before going quiet until
-a human speaks, and the bridges are instructed to tag a peer only when a
+most 10 consecutive agent messages in a channel/thread before going quiet until
+a human speaks (the server-side `AGORA_BOT_LOOP_LIMIT`, not a bridge setting),
+and the bridges are instructed to tag a peer only when a
 human's message asked for the hand-off — never just because the peer is
 present. Keep `CONTEXT_BUFFER` above 0 so the human's original instruction
 rides into peer turns as context. Phrasing tip: write "@claude fix the bug,

@@ -23,10 +23,26 @@ use crate::attachments::{safe_filename, sniff_image_mime};
 
 /// Max consecutive agent-authored messages fanned out to other agents in one
 /// channel/thread before the hub goes quiet until a human speaks again: the
-/// first `BOT_LOOP_LIMIT` messages of a streak are relayed to @mentioned
+/// first `bot_loop_limit()` messages of a streak are relayed to @mentioned
 /// agents; the next one is stored and shown to humans but triggers no agent.
 /// Any human message resets the streak.
-pub const BOT_LOOP_LIMIT: i64 = 5;
+pub const DEFAULT_BOT_LOOP_LIMIT: i64 = 10;
+
+/// The cap actually in force. Read once from `AGORA_BOT_LOOP_LIMIT` so a
+/// deployment can retune the agent-to-agent budget without a rebuild; values
+/// below 1 (and anything unparseable) fall back to the default.
+pub fn bot_loop_limit() -> i64 {
+    static LIMIT: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        parse_bot_loop_limit(std::env::var("AGORA_BOT_LOOP_LIMIT").ok().as_deref())
+    })
+}
+
+fn parse_bot_loop_limit(raw: Option<&str>) -> i64 {
+    raw.and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(DEFAULT_BOT_LOOP_LIMIT)
+}
 
 /// How much of a thread's root message is inlined as context when an agent
 /// first joins the thread.
@@ -1123,16 +1139,17 @@ impl Hub {
         self.broadcast(channel_id, &json!({"type": "message", "message": message}));
         self.maybe_unfurl(&message);
         self.maybe_notify(&message);
-        if streak <= BOT_LOOP_LIMIT {
+        let cap = bot_loop_limit();
+        if streak <= cap {
             self.fan_out(
                 &message,
                 true,
                 Some(agent_id),
                 true,
                 false,
-                Some((BOT_LOOP_LIMIT - streak).max(0)),
+                Some((cap - streak).max(0)),
             );
-        } else if streak == BOT_LOOP_LIMIT + 1 {
+        } else if streak == cap + 1 {
             tracing::info!("bot-loop limit hit in {channel_id} (thread {thread_id:?})");
         }
         message
@@ -1753,12 +1770,13 @@ impl Hub {
             if thread_id.is_some() { " thread." } else { "." }
         ));
         if live_peer {
+            let cap = bot_loop_limit();
             lines.push(format!(
                 "Other agents here are colleagues, not users. Only @mention another \
                  agent when a human's instructions ask you to collaborate with, \
                  delegate to, or get a review from it — never tag an agent merely \
                  because it is listed here. Agent-to-agent exchanges stop being \
-                 relayed after {BOT_LOOP_LIMIT} consecutive agent messages without \
+                 relayed after {cap} consecutive agent messages without \
                  a human message."
             ));
         }
@@ -2964,17 +2982,18 @@ mod tests {
         h.post_agent_message("bot-a", "Bot A", &cid, "just musing", None);
         assert!(rx_b.try_recv().is_err());
         // With mention: relayed while under the cap.
-        for _ in 0..BOT_LOOP_LIMIT {
+        let cap = bot_loop_limit();
+        for _ in 0..cap {
             h.post_agent_message("bot-a", "Bot A", &cid, "hey @bot-b", None);
         }
-        // 1 message already posted + BOT_LOOP_LIMIT more = cap exceeded on last.
+        // 1 message already posted + `cap` more = cap exceeded on last.
         // Each relayed frame carries the remaining agent-turn budget, counting
         // down to 0 as the streak approaches the cap.
         let mut turns = Vec::new();
         while let Ok(f) = rx_b.try_recv() {
             turns.push(f["bot_turns_left"].as_i64().unwrap());
         }
-        let expected: Vec<i64> = (0..=BOT_LOOP_LIMIT - 2).rev().collect();
+        let expected: Vec<i64> = (0..=cap - 2).rev().collect();
         assert_eq!(turns, expected);
         // Human speaking resets the streak; human frames carry no budget field.
         h.post_user_message(&cid, "humans back", "tom", None, None, vec![]);
@@ -2982,7 +3001,17 @@ mod tests {
         assert!(f["bot_turns_left"].is_null());
         h.post_agent_message("bot-a", "Bot A", &cid, "hi again @bot-b", None);
         let f = rx_b.try_recv().unwrap();
-        assert_eq!(f["bot_turns_left"].as_i64().unwrap(), BOT_LOOP_LIMIT - 1);
+        assert_eq!(f["bot_turns_left"].as_i64().unwrap(), cap - 1);
+    }
+
+    #[test]
+    fn bot_loop_limit_env_override_rejects_junk_and_zero() {
+        assert_eq!(parse_bot_loop_limit(None), DEFAULT_BOT_LOOP_LIMIT);
+        assert_eq!(parse_bot_loop_limit(Some(" 12 ")), 12);
+        assert_eq!(parse_bot_loop_limit(Some("1")), 1);
+        for junk in ["", "0", "-5", "abc", "5.5"] {
+            assert_eq!(parse_bot_loop_limit(Some(junk)), DEFAULT_BOT_LOOP_LIMIT);
+        }
     }
 
     #[test]
@@ -2993,19 +3022,20 @@ mod tests {
         let cid = setup_channel(&h, &["bot-a", "bot-b"]);
         h.post_user_message(&cid, "hello", "tom", None, None, vec![]);
         assert!(rx_b.try_recv().unwrap()["bot_turns_left"].is_null());
-        // One agent message past the cap: only BOT_LOOP_LIMIT are relayed,
-        // budgets counting down to 0, but every message is stored for humans.
-        for _ in 0..=BOT_LOOP_LIMIT {
+        // One agent message past the cap: only `cap` are relayed, budgets
+        // counting down to 0, but every message is stored for humans.
+        let cap = bot_loop_limit();
+        for _ in 0..=cap {
             h.post_agent_message("bot-a", "Bot A", &cid, "ping @bot-b", None);
         }
         let mut turns = Vec::new();
         while let Ok(f) = rx_b.try_recv() {
             turns.push(f["bot_turns_left"].as_i64().unwrap());
         }
-        assert_eq!(turns, (0..BOT_LOOP_LIMIT).rev().collect::<Vec<i64>>());
+        assert_eq!(turns, (0..cap).rev().collect::<Vec<i64>>());
         assert_eq!(
             h.store.messages(&cid, None, None, 50).len() as i64,
-            BOT_LOOP_LIMIT + 2
+            cap + 2
         );
     }
 
@@ -3024,7 +3054,8 @@ mod tests {
         let note = rx_a.try_recv().unwrap()["context_note"].as_str().unwrap().to_string();
         assert!(note.contains("Other agents here are colleagues"));
         assert!(note.contains(&format!(
-            "{BOT_LOOP_LIMIT} consecutive agent messages"
+            "{} consecutive agent messages",
+            bot_loop_limit()
         )));
     }
 
