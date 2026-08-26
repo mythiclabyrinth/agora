@@ -60,7 +60,7 @@ const isPages = flavor === "pages";
 const GUIDE_GROUPS = [
   { label: "Getting started", slugs: ["getting-started"] },
   { label: "Using Agora", slugs: ["groups-and-channels", "people", "agents"] },
-  { label: "Self-hosting", slugs: ["self-hosting", "configuration", "google-sign-in"] },
+  { label: "Self-hosting", slugs: ["self-hosting", "configuration", "sign-in"] },
 ];
 // Flat pages: rendered with the same chrome, emitted at the site root under
 // their load-bearing URLs; kept out of the guide nav group and the pager.
@@ -127,16 +127,56 @@ const unescapeHtml = (value) =>
 function addHeadingAnchors(html) {
   const seen = new Map();
   const toc = [];
-  const out = html.replace(/<h([1-4])>([\s\S]*?)<\/h\1>/g, (_m, level, inner) => {
+  let activeTab = "";
+  const out = html.replace(
+    /<!-- tab:([a-z0-9-]+):[^>]+ -->|<!-- \/tab -->|<h([1-4])>([\s\S]*?)<\/h\2>/g,
+    (match, tab, level, inner) => {
+    if (tab) {
+      activeTab = tab;
+      return match;
+    }
+    if (match === "<!-- /tab -->") {
+      activeTab = "";
+      return match;
+    }
     let slug = slugify(inner);
+    if (activeTab && slug !== activeTab && !slug.startsWith(`${activeTab}-`)) {
+      slug = `${activeTab}-${slug}`;
+    }
     const n = seen.get(slug) ?? 0;
     seen.set(slug, n + 1);
     if (n > 0) slug = `${slug}-${n}`;
     const text = unescapeHtml(inner.replace(/<[^>]+>/g, ""));
-    if (level === "2" || level === "3") toc.push({ level: Number(level), id: slug, text });
+    if (level === "2" || level === "3") {
+      toc.push({ level: Number(level), id: slug, text, tab: activeTab });
+    }
     return `<h${level} id="${slug}">${inner}<a class="anchor" href="#${slug}" aria-label="Link to this section">#</a></h${level}>`;
   });
   return { html: out, toc };
+}
+
+// Tab groups stay plain, readable Markdown on GitHub. Comment fences are
+// converted after rendering so headings still feed anchors, TOC, and search.
+function wrapTabs(html) {
+  return html.replace(/<!-- tabs:start -->([\s\S]*?)<!-- tabs:end -->/g, (_group, body) => {
+    const markers = [...body.matchAll(/<!-- tab:([a-z0-9-]+):([^>]+?) -->/g)];
+    if (markers.length < 2) return body;
+    const tabs = markers.map((marker, index) => {
+      const id = marker[1];
+      const label = marker[2].trim();
+      const start = marker.index + marker[0].length;
+      const end = index + 1 < markers.length ? markers[index + 1].index : body.length;
+      const content = body.slice(start, end).replace(/<!-- \/tab -->\s*$/, "");
+      return { id, label, content };
+    });
+    const buttons = tabs.map((tab, index) =>
+      `<button type="button" role="tab" id="tab-${tab.id}" aria-controls="tab-panel-${tab.id}" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}" data-tab="${tab.id}">${escapeHtml(tab.label)}</button>`,
+    ).join("\n");
+    const panels = tabs.map((tab) =>
+      `<section class="doc-tab-panel" role="tabpanel" id="tab-panel-${tab.id}" aria-labelledby="tab-${tab.id}" data-tab="${tab.id}">${tab.content}</section>`,
+    ).join("\n");
+    return `<div class="doc-tabs" data-doc-tabs>\n<div class="doc-tablist" role="tablist" aria-label="Sign-in provider">${buttons}</div>\n${panels}\n</div>`;
+  });
 }
 
 // Wrap fenced code in .code-block (lang label + copy-button mount point) and
@@ -178,7 +218,7 @@ function loadDoc(slug) {
     slug,
     title,
     intro: firstParagraph(md),
-    body: wrapBlocks(rendered.html),
+    body: wrapBlocks(wrapTabs(rendered.html)),
     toc: rendered.toc,
   };
 }
@@ -293,7 +333,7 @@ function contentPage(doc, { pager, root, currentKey }) {
   const tocHtml = doc.toc
     .map(
       (h) =>
-        `<a class="${h.level === 3 ? "lvl3" : "lvl2"}" href="#${h.id}">${escapeHtml(h.text)}</a>`,
+        `<a class="${h.level === 3 ? "lvl3" : "lvl2"}"${h.tab ? ` data-tab="${h.tab}"` : ""} href="#${h.id}">${escapeHtml(h.text)}</a>`,
     )
     .join("\n");
   return `<!doctype html>
@@ -439,6 +479,14 @@ guideSlugs.forEach((slug, i) => {
     contentPage(doc, { pager: { prev, next }, root: "../", currentKey: slug }),
   );
 });
+// Compatibility for the Google-only guide URL published before the combined
+// Sign in page. Keep it out of GUIDE_GROUPS so it has no nav/card/search slot.
+const googleAliasDir = path.join(outDir, "google-sign-in");
+fs.mkdirSync(googleAliasDir, { recursive: true });
+fs.writeFileSync(
+  path.join(googleAliasDir, "index.html"),
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0; url=../sign-in/#google"><link rel="canonical" href="${PAGES_URL}sign-in/#google"><title>Google sign-in — Agora docs</title></head><body><p>This guide moved to <a href="../sign-in/#google">Sign in with Google</a>.</p></body></html>`,
+);
 flatDocs.forEach((doc) =>
   fs.writeFileSync(
     path.join(outDir, `${doc.slug}.html`),

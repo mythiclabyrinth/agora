@@ -20,11 +20,11 @@ boot, so unsetting one later keeps the last value.
 | `pairing_tokens` | `[]` | Dial-in agent credentials — likewise managed from the UI. |
 | `max_file_mb` | `10` | Per-attachment upload cap. |
 | `max_video_mb` | `100` | Cap for video attachments (MP4, MOV, M4V, WebM). |
-| `google_client_id` | `""` | Google OAuth client id — see [Google sign-in](google-sign-in.md). |
-| `google_client_secret` | `""` | Google OAuth client secret. |
-| `google_allowed_emails` | `[]` | Fallback admission list for Google accounts; empty is invite-only, while a value of `*` lets anyone who completes Google OAuth create a member account. |
-| `apple_allowed_emails` | `[]` | Apple emails allowed to sign in; empty keeps Apple sign-in off. |
-| `apple_bundle_id` | `""` | iOS bundle id for Apple sign-in; empty means the App Store app. |
+| `google_client_id` | `""` | Google OAuth client id — see [Sign in with Google](sign-in.md#google). |
+| `google_client_secret` | `""` | Google OAuth client secret — see [Sign in with Google](sign-in.md#google). |
+| `google_allowed_emails` | `[]` | Google admission list — see [Google allowlist](sign-in.md#google-allowlist). |
+| `apple_allowed_emails` | `[]` | Apple admission list — see [Apple allowlist](sign-in.md#apple-allowlist). |
+| `apple_bundle_id` | `""` | iOS bundle id — see [Sign in with Apple](sign-in.md#apple). |
 | `public_url` | `""` | Public https origin, used to build the OAuth redirect URI. |
 | `map_style_url` | `""` | MapLibre style URL for map artifacts; empty uses the built-in default, `"none"` disables external tiles. |
 | `ai.voice` / `ai.search` | defaults | Instance-admin AI settings (keys, models, enable flags). Set from the **AI & voice** panel in the clients, or leave empty and supply process-env fallbacks. |
@@ -56,39 +56,3 @@ Ask AI **providers** (set in the UI Features tab):
 | `codex` | **Codex OAuth** via PKCE — **Authorize Codex** in Credentials (loopback on desktop/localhost; paste the redirected URL when hosted). Model list is fetched live from the Codex catalog when linked. |
 
 Models are chosen per provider in the Features tab. If a call fails (bad key, expired OAuth, unknown model), Ask AI / voice returns an explicit error naming the provider and model.
-
-## Sign in with Google and Apple
-
-A deployed server can offer real sign-in instead of the pasted admin key.
-Who gets in: existing users first, then email invites, then invite links,
-then these allowlists (wildcards work — `*@example.com` for a domain, `*`
-for open sign-up).
-
-**Google** — create an OAuth client (type *Web application*) in the
-[Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-with the redirect URI `https://<your-host>/api/auth/google/callback`, then:
-
-```bash
-AGORA_GOOGLE_CLIENT_ID=....apps.googleusercontent.com
-AGORA_GOOGLE_CLIENT_SECRET=GOCSPX-...
-AGORA_GOOGLE_ALLOWED_EMAILS=you@gmail.com          # comma-separated
-AGORA_PUBLIC_URL=https://agora.up.railway.app      # must match the redirect URI
-```
-
-A personal Gmail account can own the project; configure an External audience
-and add each account as a test user while Google's app status is Testing.
-Google's test-user list permits OAuth consent, while Agora's existing users,
-invites, and allowlists independently decide who may join. For the complete
-walkthrough, verification steps, and troubleshooting, see
-[Google sign-in](google-sign-in.md).
-
-**Apple** (iPhone app) — no Apple-side credentials needed, just the
-allowlist:
-
-```bash
-AGORA_APPLE_ALLOWED_EMAILS=you@icloud.com   # comma-separated
-```
-
-Restart, and the sign-in buttons appear in the browser, the desktop server
-picker, and the iPhone connect screen. Using Apple's **Hide My Email**?
-Allowlist the relay address — it's stable per Apple ID.
