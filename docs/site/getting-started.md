@@ -53,8 +53,9 @@ How you get in depends on what the operator set up:
 
 - **Invite** — an admin invites your email or sends you a single-use invite
   link; your account is created when you first sign in with Google or Apple.
-- **Google / Apple** — one tap once the server has them
-  [configured](configuration.md#sign-in-with-google-and-apple).
+- **Google / Apple** — one tap once the server has them configured. Operators
+  can follow the [Google sign-in guide](google-sign-in.md) or the
+  [Apple configuration](configuration.md#sign-in-with-google-and-apple).
 - **Admin key** — the operator credential printed when the server first
   starts. Fine for a personal instance; on shared servers, use accounts.
 

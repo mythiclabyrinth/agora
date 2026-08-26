@@ -20,7 +20,7 @@ boot, so unsetting one later keeps the last value.
 | `pairing_tokens` | `[]` | Dial-in agent credentials — likewise managed from the UI. |
 | `max_file_mb` | `10` | Per-attachment upload cap. |
 | `max_video_mb` | `100` | Cap for video attachments (MP4, MOV, M4V, WebM). |
-| `google_client_id` | `""` | Google OAuth client id — see below. |
+| `google_client_id` | `""` | Google OAuth client id — see [Google sign-in](google-sign-in.md). |
 | `google_client_secret` | `""` | Google OAuth client secret. |
 | `google_allowed_emails` | `[]` | Fallback admission list for Google accounts; empty is invite-only, while a value of `*` lets anyone who completes Google OAuth create a member account. |
 | `apple_allowed_emails` | `[]` | Apple emails allowed to sign in; empty keeps Apple sign-in off. |
@@ -80,7 +80,7 @@ and add each account as a test user while Google's app status is Testing.
 Google's test-user list permits OAuth consent, while Agora's existing users,
 invites, and allowlists independently decide who may join. For the complete
 walkthrough, verification steps, and troubleshooting, see
-[Google sign-in](https://github.com/tomjose92/agora/blob/main/docs/AUTH.md#google-sign-in).
+[Google sign-in](google-sign-in.md).
 
 **Apple** (iPhone app) — no Apple-side credentials needed, just the
 allowlist:

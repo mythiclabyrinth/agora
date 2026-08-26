@@ -18,7 +18,8 @@ Two ways, both in the People pane:
 Either way, sign-in itself is Google or Apple — see
 [getting started](getting-started.md#signing-in). For the operator-side
 setup (OAuth client, allowlists), see
-[configuration](configuration.md#sign-in-with-google-and-apple).
+[Google sign-in](google-sign-in.md) or the
+[Apple configuration](configuration.md#sign-in-with-google-and-apple).
 
 ## Add people to a group
 

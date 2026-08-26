@@ -60,7 +60,7 @@ const isPages = flavor === "pages";
 const GUIDE_GROUPS = [
   { label: "Getting started", slugs: ["getting-started"] },
   { label: "Using Agora", slugs: ["groups-and-channels", "people", "agents"] },
-  { label: "Self-hosting", slugs: ["self-hosting", "configuration"] },
+  { label: "Self-hosting", slugs: ["self-hosting", "configuration", "google-sign-in"] },
 ];
 // Flat pages: rendered with the same chrome, emitted at the site root under
 // their load-bearing URLs; kept out of the guide nav group and the pager.
