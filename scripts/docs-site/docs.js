@@ -16,6 +16,82 @@
   menuBtn?.addEventListener("click", () => document.body.classList.toggle("nav-open"));
   scrim?.addEventListener("click", closeNav);
 
+  // ----- progressive-enhancement tabs -----
+  const tabGroups = Array.from(document.querySelectorAll("[data-doc-tabs]"));
+  const activateTab = (group, tabId, { focus = false } = {}) => {
+    const tabs = Array.from(group.querySelectorAll('[role="tab"]'));
+    const panels = Array.from(group.querySelectorAll('[role="tabpanel"]'));
+    const selected = tabs.find((tab) => tab.dataset.tab === tabId) || tabs[0];
+    if (!selected) return;
+    tabs.forEach((tab) => {
+      const active = tab === selected;
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+    });
+    panels.forEach((panel) => { panel.hidden = panel.dataset.tab !== selected.dataset.tab; });
+    if (focus) selected.focus();
+    document.dispatchEvent(new CustomEvent("docs:tabchange"));
+  };
+  // pushState only on the first hash entry into a tab group; later switches
+  // within the same group replace so Arrow keys don't flood Back history.
+  const setTabHash = (group, tabId) => {
+    const next = `#${tabId}`;
+    if (location.hash === next) return;
+    const current = location.hash
+      ? document.getElementById(decodeURIComponent(location.hash.slice(1)))
+      : null;
+    const sameGroup = current?.closest("[data-doc-tabs]") === group;
+    if (sameGroup) history.replaceState(null, "", next);
+    else history.pushState(null, "", next);
+  };
+  const activateTabForHash = ({ scroll = false } = {}) => {
+    // Back to a hash-less URL must restore the default (first) tab so the
+    // address bar and the visible panel stay aligned.
+    if (!location.hash) {
+      tabGroups.forEach((group) => {
+        const first = group.querySelector('[role="tab"]');
+        if (first) activateTab(group, first.dataset.tab);
+      });
+      return;
+    }
+    const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    const panel = target?.closest('[role="tabpanel"]');
+    const group = panel?.closest("[data-doc-tabs]");
+    if (!panel || !group) return;
+    activateTab(group, panel.dataset.tab);
+    if (scroll) requestAnimationFrame(() => target.scrollIntoView());
+  };
+  tabGroups.forEach((group) => {
+    group.classList.add("tabs-enhanced");
+    const tabs = Array.from(group.querySelectorAll('[role="tab"]'));
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => {
+        activateTab(group, tab.dataset.tab);
+        setTabHash(group, tab.dataset.tab);
+      });
+      tab.addEventListener("keydown", (event) => {
+        let next = index;
+        if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+        else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = tabs.length - 1;
+        else return;
+        event.preventDefault();
+        activateTab(group, tabs[next].dataset.tab, { focus: true });
+        setTabHash(group, tabs[next].dataset.tab);
+      });
+    });
+    const initialPanel = location.hash
+      ? document.getElementById(decodeURIComponent(location.hash.slice(1)))?.closest('[role="tabpanel"]')
+      : null;
+    activateTab(group, initialPanel?.dataset.tab || tabs[0]?.dataset.tab);
+  });
+  window.addEventListener("hashchange", () => activateTabForHash({ scroll: true }));
+  window.addEventListener("popstate", () => activateTabForHash({ scroll: true }));
+  // Cold loads resolve the fragment while both panels are still laid out;
+  // re-activate + scroll after the taller inactive panel has been hidden.
+  activateTabForHash({ scroll: true });
+
   // ----- copy buttons on code blocks -----
   document.querySelectorAll(".code-block").forEach((block) => {
     const pre = block.querySelector("pre");
@@ -43,12 +119,22 @@
   // ----- TOC scroll-spy -----
   const tocLinks = Array.from(document.querySelectorAll(".toc a"));
   if (tocLinks.length) {
-    const pairs = tocLinks
+    let pairs = [];
+    const rebuildPairs = () => {
+      const activeTabs = new Set(
+        Array.from(document.querySelectorAll('[role="tab"][aria-selected="true"]')).map((tab) => tab.dataset.tab),
+      );
+      tocLinks.forEach((link) => {
+        link.hidden = !!link.dataset.tab && !activeTabs.has(link.dataset.tab);
+      });
+      pairs = tocLinks
+      .filter((link) => !link.hidden)
       .map((link) => {
         const heading = document.getElementById(decodeURIComponent(link.hash.slice(1)));
         return heading ? { heading, link } : null;
       })
       .filter(Boolean);
+    };
     const spy = () => {
       let current = pairs[0];
       for (const pair of pairs) {
@@ -70,6 +156,11 @@
       },
       { passive: true },
     );
+    document.addEventListener("docs:tabchange", () => {
+      rebuildPairs();
+      spy();
+    });
+    rebuildPairs();
     spy();
   }
 
