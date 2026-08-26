@@ -22,7 +22,7 @@ boot, so unsetting one later keeps the last value.
 | `max_video_mb` | `100` | Cap for video attachments (MP4, MOV, M4V, WebM). |
 | `google_client_id` | `""` | Google OAuth client id — see below. |
 | `google_client_secret` | `""` | Google OAuth client secret. |
-| `google_allowed_emails` | `[]` | Fallback admission list for Google accounts; empty makes Google sign-in invite-only. |
+| `google_allowed_emails` | `[]` | Fallback admission list for Google accounts; empty is invite-only, while a value of `*` lets anyone who completes Google OAuth create a member account. |
 | `apple_allowed_emails` | `[]` | Apple emails allowed to sign in; empty keeps Apple sign-in off. |
 | `apple_bundle_id` | `""` | iOS bundle id for Apple sign-in; empty means the App Store app. |
 | `public_url` | `""` | Public https origin, used to build the OAuth redirect URI. |
