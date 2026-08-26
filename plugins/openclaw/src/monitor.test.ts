@@ -36,12 +36,14 @@ describe("Agora monitor", () => {
       account: {
         socketUrl: "wss://agora.example/agent/ws?token=tok", agentId: "openclaw",
         agentName: "OpenClaw", requireMention: false, contextFeed: false,
+        botLoopLimit: 19,
         allowFrom: ["alice"], token: "tok", maxFileBytes: 1024,
       },
       cfg: {}, channelRuntime: runtime, abortSignal: abort.signal,
       setStatus: vi.fn(), getStatus: () => ({}), log: {},
     } as never);
     while (!state.options) await new Promise(resolve => setImmediate(resolve));
+    expect(state.options.botLoopLimit).toBe(19);
     await state.options.onInbound({
       type: "inbound", channel_id: "c1", thread_id: 42, message_id: 7,
       text: "hello", author: { id: "alice", name: "Alice", type: "user" },

@@ -69,14 +69,15 @@ function createClient(over: Partial<ConstructorParameters<typeof AgoraClient>[0]
 
 describe("AgoraClient", () => {
   it("announces the agent roster before anything else", async () => {
-    const { client, sockets } = createClient();
+    const { client, sockets } = createClient({ botLoopLimit: 17 });
     client.start();
     sockets[0]!.emitOpen();
     const hello = sockets[0]!.sent[0]!;
     expect(hello).toMatchObject({
       type: "hello",
       agents: [
-        { id: "openclaw", name: "OpenClaw", requires_mention: false, wants_context_feed: false },
+        { id: "openclaw", name: "OpenClaw", requires_mention: false,
+          wants_context_feed: false, bot_loop_limit: 17 },
       ],
     });
     await client.stop();

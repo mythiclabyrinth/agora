@@ -30,6 +30,8 @@ export type AgoraAccountConfig = {
    * default: it turns an ambient bot conversation into an execution path.
    */
   contextFeed?: boolean;
+  /** Per-agent relay cap; unset inherits the Agora server default. */
+  botLoopLimit?: number;
   accounts?: Record<string, AgoraAccountConfig>;
 };
 
@@ -45,6 +47,7 @@ export type ResolvedAgoraAccount = {
   dmPolicy: string | undefined;
   maxFileBytes: number;
   contextFeed: boolean;
+  botLoopLimit: number | string | undefined;
   config: AgoraAccountConfig;
 };
 
@@ -60,6 +63,7 @@ type ConfigLike = { channels?: Record<string, unknown> };
 const ENV_URL = "AGORA_URL";
 const ENV_TOKEN = "AGORA_PAIRING_TOKEN";
 const ENV_TOKEN_FILE = "AGORA_PAIRING_TOKEN_FILE";
+const ENV_BOT_LOOP_LIMIT = "AGORA_BOT_LOOP_LIMIT";
 
 export function readChannelSection(cfg: ConfigLike | undefined): AgoraAccountConfig {
   const section = cfg?.channels?.[CHANNEL_ID];
@@ -145,6 +149,7 @@ export function resolveAgoraAccount(
     dmPolicy: section.dmSecurity,
     maxFileBytes: resolveMaxFileBytes(section),
     contextFeed: section.contextFeed === true,
+    botLoopLimit: section.botLoopLimit ?? env[ENV_BOT_LOOP_LIMIT],
     config: section,
   };
 }

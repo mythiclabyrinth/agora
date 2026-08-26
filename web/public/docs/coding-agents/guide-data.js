@@ -11,6 +11,7 @@ export const sharedEnv = [
   ["STATE_FILE", "Optional", "state.json", "Persists channel and thread session bindings plus per-channel settings."],
   ["SESSIONS_LIMIT", "Optional", "10", "Maximum recent sessions returned by /sessions."],
   ["CONTEXT_BUFFER", "Optional", "50", "Messages retained as context while another agent is addressed. Set 0 to disable."],
+  ["AGORA_BOT_LOOP_LIMIT", "Optional", "Empty", "Per-agent relay cap requested at registration. Unset inherits the Agora server default; the server applies its safety ceiling."],
   ["AGORA_PEER_AGENTS", "Optional", "Empty", "Comma-separated agent IDs allowed to drive this agent through explicit mentions. Keep empty for humans-only operation."],
   ["AGORA_MAX_FILE_MB", "Optional", "10", "Per-image outbound attachment limit in MB. Should match the server's max_file_mb."],
 ];

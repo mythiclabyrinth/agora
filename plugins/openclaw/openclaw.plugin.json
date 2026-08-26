@@ -7,7 +7,7 @@
     "onStartup": false
   },
   "channelEnvVars": {
-    "agora": ["AGORA_URL", "AGORA_PAIRING_TOKEN", "AGORA_PAIRING_TOKEN_FILE"]
+    "agora": ["AGORA_URL", "AGORA_PAIRING_TOKEN", "AGORA_PAIRING_TOKEN_FILE", "AGORA_BOT_LOOP_LIMIT"]
   },
   "configSchema": {
     "type": "object",
@@ -57,6 +57,11 @@
           "contextFeed": {
             "type": "boolean",
             "description": "Admit agent-authored messages that mention this agent"
+          },
+          "botLoopLimit": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Per-agent relay cap; unset inherits the Agora server default"
           },
           "accounts": {
             "type": "object",

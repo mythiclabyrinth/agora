@@ -570,6 +570,7 @@ class Bridge:
         # we're actually addressed, so a late @mention arrives already caught up.
         self.context_buffer: dict[str, list[str]] = {}
         self.context_buffer_limit = max(0, args.context_buffer)
+        self.bot_loop_limit = getattr(args, "bot_loop_limit", None)
         # Agent ids whose @mentions may drive Codex (see handle_inbound).
         # Empty (the default) keeps the humans-only posture.
         self.peer_agents = parse_peer_agents(args.peer_agents)
@@ -1519,6 +1520,8 @@ class Bridge:
                     }
                     if self.avatar:
                         agent["avatar"] = self.avatar
+                    if self.bot_loop_limit is not None:
+                        agent["bot_loop_limit"] = self.bot_loop_limit
                     await ws.send(json.dumps({
                         "type": "hello",
                         "agents": [agent],
@@ -1725,6 +1728,8 @@ def main() -> None:
                     default=int(os.environ.get("CONTEXT_BUFFER", "50")),
                     help="max messages to buffer per channel while staying silent "
                          "(replayed as context when next @mentioned; 0 disables)")
+    ap.add_argument("--bot-loop-limit", default=os.environ.get("AGORA_BOT_LOOP_LIMIT"),
+                    help="per-agent relay cap (unset inherits the Agora server default)")
     ap.add_argument("--peer-agents", default=os.environ.get("AGORA_PEER_AGENTS", ""),
                     help="comma-separated agent ids whose @mentions may drive "
                          "Codex (e.g. claude-cli). Empty (the default) keeps "

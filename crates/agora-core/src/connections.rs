@@ -17,12 +17,12 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::attachments::agent_wire_limit;
 use crate::config::Config;
-use crate::hub::{AgentHandle, Hub};
+use crate::hub::{agent_bot_loop_limit, AgentHandle, Hub};
 
 #[derive(Clone, serde::Serialize)]
 pub struct ConnStatus {
@@ -229,6 +229,7 @@ impl ConnectionManager {
                 agent_id: id.to_string(),
                 agent_name: a["name"].as_str().unwrap_or(id).to_string(),
                 requires_mention: a["requires_mention"].as_bool().unwrap_or(false),
+                bot_loop_limit: agent_bot_loop_limit(&a["bot_loop_limit"]),
                 wants_context_feed: a["wants_context_feed"].as_bool().unwrap_or(false),
                 has_avatar: a["has_avatar"].as_bool().unwrap_or(false),
                 avatar_v: a["avatar_v"].as_i64().unwrap_or(0),
@@ -295,6 +296,7 @@ impl ConnectionManager {
                                             agent_id: id.to_string(),
                                             agent_name: a["name"].as_str().unwrap_or(id).to_string(),
                                             requires_mention: a["requires_mention"].as_bool().unwrap_or(false),
+                                            bot_loop_limit: agent_bot_loop_limit(&a["bot_loop_limit"]),
                                             wants_context_feed: a["wants_context_feed"].as_bool().unwrap_or(false),
                                             has_avatar: a["has_avatar"].as_bool().unwrap_or(false),
                                             avatar_v: a["avatar_v"].as_i64().unwrap_or(0),
