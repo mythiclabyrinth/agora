@@ -129,13 +129,13 @@ function addHeadingAnchors(html) {
   const toc = [];
   let activeTab = "";
   const out = html.replace(
-    /<!-- tab:([a-z0-9-]+):[^>]+ -->|<!-- \/tab -->|<h([1-4])>([\s\S]*?)<\/h\2>/g,
+    /<!-- tab:([a-z0-9-]+):[^>]+ -->|<!-- \/tab -->|<!-- tabs:end -->|<h([1-4])>([\s\S]*?)<\/h\2>/g,
     (match, tab, level, inner) => {
     if (tab) {
       activeTab = tab;
       return match;
     }
-    if (match === "<!-- /tab -->") {
+    if (match === "<!-- /tab -->" || match === "<!-- tabs:end -->") {
       activeTab = "";
       return match;
     }
@@ -481,11 +481,14 @@ guideSlugs.forEach((slug, i) => {
 });
 // Compatibility for the Google-only guide URL published before the combined
 // Sign in page. Keep it out of GUIDE_GROUPS so it has no nav/card/search slot.
+// Canonical is flavor-aware (self-hosted docs must not claim github.io) and
+// omits the fragment — search engines strip those from rel=canonical anyway.
 const googleAliasDir = path.join(outDir, "google-sign-in");
+const googleAliasCanonical = isPages ? `${PAGES_URL}sign-in/` : "../sign-in/";
 fs.mkdirSync(googleAliasDir, { recursive: true });
 fs.writeFileSync(
   path.join(googleAliasDir, "index.html"),
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0; url=../sign-in/#google"><link rel="canonical" href="${PAGES_URL}sign-in/#google"><title>Google sign-in — Agora docs</title></head><body><p>This guide moved to <a href="../sign-in/#google">Sign in with Google</a>.</p></body></html>`,
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="refresh" content="0; url=../sign-in/#google"><link rel="canonical" href="${googleAliasCanonical}"><title>Google sign-in — Agora docs</title></head><body><p>This guide moved to <a href="../sign-in/#google">Sign in with Google</a>.</p></body></html>`,
 );
 flatDocs.forEach((doc) =>
   fs.writeFileSync(

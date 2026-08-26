@@ -32,8 +32,28 @@
     if (focus) selected.focus();
     document.dispatchEvent(new CustomEvent("docs:tabchange"));
   };
+  // pushState only on the first hash entry into a tab group; later switches
+  // within the same group replace so Arrow keys don't flood Back history.
+  const setTabHash = (group, tabId) => {
+    const next = `#${tabId}`;
+    if (location.hash === next) return;
+    const current = location.hash
+      ? document.getElementById(decodeURIComponent(location.hash.slice(1)))
+      : null;
+    const sameGroup = current?.closest("[data-doc-tabs]") === group;
+    if (sameGroup) history.replaceState(null, "", next);
+    else history.pushState(null, "", next);
+  };
   const activateTabForHash = ({ scroll = false } = {}) => {
-    if (!location.hash) return;
+    // Back to a hash-less URL must restore the default (first) tab so the
+    // address bar and the visible panel stay aligned.
+    if (!location.hash) {
+      tabGroups.forEach((group) => {
+        const first = group.querySelector('[role="tab"]');
+        if (first) activateTab(group, first.dataset.tab);
+      });
+      return;
+    }
     const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
     const panel = target?.closest('[role="tabpanel"]');
     const group = panel?.closest("[data-doc-tabs]");
@@ -47,7 +67,7 @@
     tabs.forEach((tab, index) => {
       tab.addEventListener("click", () => {
         activateTab(group, tab.dataset.tab);
-        history.pushState(null, "", `#${tab.dataset.tab}`);
+        setTabHash(group, tab.dataset.tab);
       });
       tab.addEventListener("keydown", (event) => {
         let next = index;
@@ -58,7 +78,7 @@
         else return;
         event.preventDefault();
         activateTab(group, tabs[next].dataset.tab, { focus: true });
-        history.pushState(null, "", `#${tabs[next].dataset.tab}`);
+        setTabHash(group, tabs[next].dataset.tab);
       });
     });
     const initialPanel = location.hash
@@ -68,6 +88,9 @@
   });
   window.addEventListener("hashchange", () => activateTabForHash({ scroll: true }));
   window.addEventListener("popstate", () => activateTabForHash({ scroll: true }));
+  // Cold loads resolve the fragment while both panels are still laid out;
+  // re-activate + scroll after the taller inactive panel has been hidden.
+  activateTabForHash({ scroll: true });
 
   // ----- copy buttons on code blocks -----
   document.querySelectorAll(".code-block").forEach((block) => {
