@@ -6,7 +6,7 @@
    agora_threads_sort and agora_threads_filter control the Threads inbox. */
 
 import { create } from "zustand";
-import { deepLinkPath } from "@agora/core";
+import { deepLinkPath, type ThreadFilter, type ThreadSort } from "@agora/core";
 import { voiceCancel } from "./voiceRec";
 import { liveStop, useLiveVoice } from "./liveVoice";
 import { speakStop } from "./speak";
@@ -17,8 +17,6 @@ export type MainView =
   | { kind: "group" };
 
 export type Panel = "people" | "connections" | "settings" | null;
-export type ThreadsSort = "recent" | "oldest" | "az" | "za";
-export type ThreadsFilter = "all" | "saved" | "unset";
 
 interface Selection { g?: string | null; c?: string | null; }
 
@@ -46,8 +44,8 @@ interface UiState {
   expanded: string[] | null;
   collapsedChannels: string[];
   unreadsOnly: boolean;
-  threadsSort: ThreadsSort;
-  threadsFilter: ThreadsFilter;
+  threadsSort: ThreadSort;
+  threadsFilter: ThreadFilter;
   hiddenOpen: boolean;
   sideCollapsed: boolean;
   threadRoot: number | null;
@@ -66,8 +64,8 @@ interface UiState {
   isChannelCollapsed: (c: string) => boolean;
   toggleChannelThreads: (c: string) => void;
   setUnreadsOnly: (on: boolean) => void;
-  setThreadsSort: (sort: ThreadsSort) => void;
-  setThreadsFilter: (filter: ThreadsFilter) => void;
+  setThreadsSort: (sort: ThreadSort) => void;
+  setThreadsFilter: (filter: ThreadFilter) => void;
   toggleHiddenSection: () => void;
   toggleSide: () => void;
   openThread: (rootId: number, history?: "push" | "replace" | "none") => void;

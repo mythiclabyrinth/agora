@@ -19,6 +19,8 @@ beforeEach(() => {
     recentEmoji: [],
     preferNativeApps: true,
     linkBrowser: "in-app",
+    threadSort: "recent",
+    threadFilter: "all",
     requireAgentOffThreads: [],
   });
 });
@@ -50,6 +52,31 @@ it("persists both link preference axes", () => {
   usePrefs.getState().setLinkBrowser("system");
   const saved = JSON.parse(mockWrite.mock.calls.at(-1)![1]);
   expect(saved).toMatchObject({ preferNativeApps: false, linkBrowser: "system" });
+});
+
+it("persists thread sorting and filtering", () => {
+  usePrefs.getState().setThreadSort("za");
+  usePrefs.getState().setThreadFilter("saved");
+  expect(JSON.parse(mockWrite.mock.calls.at(-1)![1])).toMatchObject({
+    threadSort: "za",
+    threadFilter: "saved",
+  });
+});
+
+it("loads valid thread preferences", async () => {
+  mockRead.mockResolvedValue(JSON.stringify({ threadSort: "oldest", threadFilter: "unset" }));
+  await usePrefs.getState().load();
+  expect(usePrefs.getState()).toMatchObject({ threadSort: "oldest", threadFilter: "unset" });
+});
+
+it("defaults missing or invalid thread preferences", async () => {
+  mockRead.mockResolvedValue(JSON.stringify({ threadSort: "newest", threadFilter: 12 }));
+  await usePrefs.getState().load();
+  expect(usePrefs.getState()).toMatchObject({ threadSort: "recent", threadFilter: "all" });
+
+  mockRead.mockResolvedValue(JSON.stringify({ collapsedGroups: [], unreadsOnly: true }));
+  await usePrefs.getState().load();
+  expect(usePrefs.getState()).toMatchObject({ threadSort: "recent", threadFilter: "all" });
 });
 
 it("expands only the requested collapsed group and persists the change", () => {

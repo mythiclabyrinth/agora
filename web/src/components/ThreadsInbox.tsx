@@ -4,54 +4,19 @@
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  fmtTs, keys, useGroups, useHideThread, useMe, useRenameThread, useThreads,
-  type ThreadRow,
+  filterAndSortThreads, fmtTs, keys, useGroups, useHideThread, useMe, useRenameThread, useThreads,
+  type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { PromptDialog } from "./PromptDialog";
-import type { ThreadsFilter, ThreadsSort } from "../state/ui";
 
 function snippet(m: { alias?: string | null; text?: string }): string {
   const alias = (m.alias || "").trim();
   if (alias) return alias;
   return (m.text || "").split("\n")[0].slice(0, 140);
-}
-
-function activityTs(t: ThreadRow): number {
-  return t.last_reply_ts || t.root.ts;
-}
-
-function sortKey(t: ThreadRow): string {
-  return snippet(t.root).trim().toLocaleLowerCase().slice(0, 10);
-}
-
-function compareNames(a: ThreadRow, b: ThreadRow, direction: 1 | -1): number {
-  const aKey = sortKey(a);
-  const bKey = sortKey(b);
-  // Attachment-only roots without an alias stay below named rows in either direction.
-  if (!aKey || !bKey) {
-    if (!aKey && bKey) return 1;
-    if (aKey && !bKey) return -1;
-  }
-  const byName = aKey.localeCompare(bKey, undefined, { sensitivity: "base", numeric: true });
-  if (byName) return byName * direction;
-  return activityTs(b) - activityTs(a) || a.root.id - b.root.id;
-}
-
-function visibleThreads(threads: ThreadRow[], sort: ThreadsSort, filter: ThreadsFilter): ThreadRow[] {
-  const filtered = threads.filter(t => {
-    const saved = !!t.root.alias?.trim();
-    return filter === "all" || (filter === "saved" ? saved : !saved);
-  });
-  // Preserve the server/cache order for the default so the current experience is unchanged.
-  if (sort === "recent") return filtered;
-  return [...filtered].sort((a, b) => {
-    if (sort === "oldest") return activityTs(a) - activityTs(b) || a.root.id - b.root.id;
-    return compareNames(a, b, sort === "az" ? 1 : -1);
-  });
 }
 
 function InboxRow({ t }: { t: ThreadRow }) {
@@ -132,7 +97,7 @@ export function ThreadsInbox() {
   const setSort = useUiState(state => state.setThreadsSort);
   const setFilter = useUiState(state => state.setThreadsFilter);
   const displayedThreads = useMemo(
-    () => visibleThreads(threads, sort, filter),
+    () => filterAndSortThreads(threads, sort, filter),
     [threads, sort, filter],
   );
 
@@ -150,7 +115,7 @@ export function ThreadsInbox() {
           <label className="ago-inbox-control">
             <span>Sort by</span>
             <select className="ago-search-scope" aria-label="Sort threads"
-              value={sort} onChange={event => setSort(event.target.value as ThreadsSort)}>
+              value={sort} onChange={event => setSort(event.target.value as ThreadSort)}>
               <option value="recent">Recent</option>
               <option value="oldest">Oldest</option>
               <option value="az">A–Z</option>
@@ -160,7 +125,7 @@ export function ThreadsInbox() {
           <label className="ago-inbox-control">
             <span>Show</span>
             <select className="ago-search-scope" aria-label="Filter threads"
-              value={filter} onChange={event => setFilter(event.target.value as ThreadsFilter)}>
+              value={filter} onChange={event => setFilter(event.target.value as ThreadFilter)}>
               <option value="all">All Threads</option>
               <option value="saved">Saved Threads</option>
               <option value="unset">Unset Threads</option>

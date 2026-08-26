@@ -17,17 +17,33 @@ import {
   View,
 } from "react-native";
 import { Stack, router } from "expo-router";
-import { MessagesSquare } from "lucide-react-native";
+import { Check, ListFilter, MessagesSquare, X } from "lucide-react-native";
 import {
+  filterAndSortThreads,
   useHideThread,
   useRenameThread,
   useThreads,
 } from "@agora/core";
-import type { ThreadRow } from "@agora/core";
+import type { ThreadFilter, ThreadRow, ThreadSort } from "@agora/core";
 import { Icon } from "../../src/components/Icon";
 import { toastErr } from "../../src/components/Toast";
 import { fmtTs } from "@agora/core";
+import { headerActions } from "../../src/lib/headerItems";
 import { colors } from "../../src/lib/theme";
+import { usePrefs } from "../../src/state/prefs";
+
+const SORT_OPTIONS: { value: ThreadSort; label: string }[] = [
+  { value: "recent", label: "Recent" },
+  { value: "oldest", label: "Oldest" },
+  { value: "az", label: "A–Z" },
+  { value: "za", label: "Z–A" },
+];
+
+const FILTER_OPTIONS: { value: ThreadFilter; label: string }[] = [
+  { value: "all", label: "All Threads" },
+  { value: "saved", label: "Saved Threads" },
+  { value: "unset", label: "Unset Threads" },
+];
 
 function snippet(t: ThreadRow): string {
   const alias = (t.root.alias ?? "").trim();
@@ -166,17 +182,117 @@ export function RenameModal({
   );
 }
 
+export function ThreadViewSheet({
+  sort,
+  filter,
+  onSort,
+  onFilter,
+  onClose,
+}: {
+  sort: ThreadSort;
+  filter: ThreadFilter;
+  onSort: (sort: ThreadSort) => void;
+  onFilter: (filter: ThreadFilter) => void;
+  onClose: () => void;
+}) {
+  const choices = <T extends string>(
+    options: { value: T; label: string }[],
+    selected: T,
+    onSelect: (value: T) => void,
+  ) => options.map((option) => {
+    const checked = option.value === selected;
+    return (
+      <Pressable
+        key={option.value}
+        style={[styles.choice, checked ? styles.choiceSelected : null]}
+        accessibilityRole="radio"
+        accessibilityState={{ checked }}
+        onPress={() => onSelect(option.value)}
+      >
+        <Text style={[styles.choiceText, checked ? styles.choiceTextSelected : null]}>
+          {option.label}
+        </Text>
+        {checked ? <Icon icon={Check} size={18} color={colors.a1} /> : null}
+      </Pressable>
+    );
+  });
+
+  return (
+    <Modal transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.sheetBackdropBottom} onPress={onClose}>
+        <Pressable
+          style={styles.viewSheet}
+          onPress={() => {}}
+          accessibilityViewIsModal
+          accessibilityLabel="Thread view options"
+          testID="thread-view-sheet"
+        >
+          <View style={styles.sheetHead}>
+            <View style={styles.sheetTitleBlock}>
+              <Text style={styles.sheetTitle}>Thread view</Text>
+              <Text style={styles.sheetHint}>Changes apply immediately.</Text>
+            </View>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close thread view options"
+              onPress={onClose} hitSlop={10}>
+              <Icon icon={X} size={20} color={colors.dim} />
+            </Pressable>
+          </View>
+          <Text style={styles.sectionLabel}>Sort by</Text>
+          <View accessibilityRole="radiogroup" style={styles.choiceGroup}>
+            {choices(SORT_OPTIONS, sort, onSort)}
+          </View>
+          <Text style={styles.sectionLabel}>Show</Text>
+          <View accessibilityRole="radiogroup" style={styles.choiceGroup}>
+            {choices(FILTER_OPTIONS, filter, onFilter)}
+          </View>
+          <Pressable accessibilityRole="button" style={styles.doneButton} onPress={onClose}>
+            <Text style={styles.doneText}>Done</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 export default function ThreadsScreen() {
   const threads = useThreads();
   const [renaming, setRenaming] = React.useState<ThreadRow | null>(null);
+  const [viewOptionsOpen, setViewOptionsOpen] = React.useState(false);
+  const sort = usePrefs((state) => state.threadSort);
+  const filter = usePrefs((state) => state.threadFilter);
+  const setSort = usePrefs((state) => state.setThreadSort);
+  const setFilter = usePrefs((state) => state.setThreadFilter);
+  const displayedThreads = React.useMemo(
+    () => filterAndSortThreads(threads.data ?? [], sort, filter),
+    [threads.data, sort, filter],
+  );
+  const optionsActive = sort !== "recent" || filter !== "all";
   return (
     <>
-      <Stack.Screen options={{ title: "Threads", headerShown: true }} />
+      <Stack.Screen options={{
+        title: "Threads",
+        headerShown: true,
+        ...headerActions(
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Thread view options${optionsActive ? ", filters active" : ""}`}
+            hitSlop={10}
+            style={[styles.headerButton, optionsActive ? styles.headerButtonActive : null]}
+            onPress={() => setViewOptionsOpen(true)}
+          >
+            <Icon icon={ListFilter} size={21} color={optionsActive ? colors.a1 : colors.text} />
+          </Pressable>,
+        ),
+      }} />
       <RenameModal thread={renaming} onClose={() => setRenaming(null)} />
+      {viewOptionsOpen ? (
+        <ThreadViewSheet sort={sort} filter={filter} onSort={setSort} onFilter={setFilter}
+          onClose={() => setViewOptionsOpen(false)} />
+      ) : null}
       <FlatList
         style={styles.root}
         contentContainerStyle={styles.content}
-        data={threads.data ?? []}
+        data={displayedThreads}
         keyExtractor={(t) => String(t.root.id)}
         renderItem={({ item }) => (
           <Row thread={item} onRename={setRenaming} />
@@ -191,6 +307,12 @@ export default function ThreadsScreen() {
         ListEmptyComponent={
           threads.isLoading ? (
             <ActivityIndicator color={colors.dim} style={{ paddingVertical: 40 }} />
+          ) : (threads.data?.length ?? 0) > 0 ? (
+            <View style={styles.empty}>
+              <Icon icon={MessagesSquare} size={34} color={colors.faint} />
+              <Text style={styles.emptyText}>No matching threads</Text>
+              <Text style={styles.emptyHint}>Try showing a different set of threads.</Text>
+            </View>
           ) : (
             <View style={styles.empty}>
               <Icon icon={MessagesSquare} size={34} color={colors.faint} />
@@ -209,6 +331,8 @@ export default function ThreadsScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
+  headerButton: { padding: 6, borderRadius: 9 },
+  headerButtonActive: { backgroundColor: "rgba(139,124,255,0.14)" },
   content: { padding: 14, gap: 10, paddingBottom: 40 },
   row: {
     backgroundColor: colors.panel,
@@ -282,4 +406,56 @@ const styles = StyleSheet.create({
   },
   dialogCancel: { color: colors.dim, fontSize: 15, fontWeight: "600" },
   dialogOk: { color: colors.a1, fontSize: 15, fontWeight: "800" },
+  sheetBackdropBottom: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  viewSheet: {
+    backgroundColor: colors.sheet,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    padding: 18,
+    paddingBottom: 34,
+    gap: 12,
+  },
+  sheetHead: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  sheetTitleBlock: { flex: 1, gap: 3 },
+  sheetTitle: { color: colors.text, fontSize: 18, fontWeight: "800" },
+  sheetHint: { color: colors.faint, fontSize: 12.5 },
+  sectionLabel: {
+    color: colors.faint,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    marginTop: 2,
+  },
+  choiceGroup: { gap: 6 },
+  choice: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 11,
+    backgroundColor: colors.panel,
+  },
+  choiceSelected: {
+    borderColor: "rgba(139,124,255,0.5)",
+    backgroundColor: "rgba(139,124,255,0.10)",
+  },
+  choiceText: { color: colors.dim, fontSize: 14, fontWeight: "600" },
+  choiceTextSelected: { color: colors.text },
+  doneButton: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+    backgroundColor: colors.a1,
+    marginTop: 2,
+  },
+  doneText: { color: "#fff", fontSize: 14, fontWeight: "800" },
 });

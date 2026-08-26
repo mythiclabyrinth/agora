@@ -10,6 +10,8 @@ import {
   isRequireAgentOn,
   parseRequireAgentKeys,
   rememberRequireAgentOff,
+  type ThreadFilter,
+  type ThreadSort,
 } from "@agora/core";
 
 const PREFS_FILE = `${FileSystem.documentDirectory ?? ""}ui-prefs.json`;
@@ -23,6 +25,8 @@ interface PersistedPrefs {
   recentEmoji: string[];
   preferNativeApps: boolean;
   linkBrowser: LinkBrowser;
+  threadSort: ThreadSort;
+  threadFilter: ThreadFilter;
   /** Conversation keys (`threadAddressKey`) where require-agent was switched
       OFF. Absent = on, which is the default. Renamed from the old
       `requireAgentThreads` on-list so stale blobs are ignored, not inverted. */
@@ -42,6 +46,8 @@ interface PrefsState {
   recentEmoji: string[];
   preferNativeApps: boolean;
   linkBrowser: LinkBrowser;
+  threadSort: ThreadSort;
+  threadFilter: ThreadFilter;
   requireAgentOffThreads: string[];
   load: () => Promise<void>;
   toggleGroup: (groupId: string) => void;
@@ -51,6 +57,8 @@ interface PrefsState {
   rememberEmoji: (ch: string) => void;
   setPreferNativeApps: (on: boolean) => void;
   setLinkBrowser: (browser: LinkBrowser) => void;
+  setThreadSort: (sort: ThreadSort) => void;
+  setThreadFilter: (filter: ThreadFilter) => void;
   isRequireAgent: (key: string) => boolean;
   setRequireAgent: (key: string, on: boolean) => void;
   toggleRequireAgent: (key: string) => void;
@@ -64,6 +72,8 @@ function persist(state: PrefsState): void {
     recentEmoji: state.recentEmoji,
     preferNativeApps: state.preferNativeApps,
     linkBrowser: state.linkBrowser,
+    threadSort: state.threadSort,
+    threadFilter: state.threadFilter,
     requireAgentOffThreads: state.requireAgentOffThreads,
   };
   FileSystem.writeAsStringAsync(PREFS_FILE, JSON.stringify(data)).catch(() => {
@@ -79,6 +89,8 @@ export const usePrefs = create<PrefsState>((set, get) => ({
   recentEmoji: [],
   preferNativeApps: true,
   linkBrowser: "in-app",
+  threadSort: "recent",
+  threadFilter: "all",
   requireAgentOffThreads: [],
 
   async load() {
@@ -102,6 +114,12 @@ export const usePrefs = create<PrefsState>((set, get) => ({
         linkBrowser: ["in-app", "system", "chrome"].includes(data.linkBrowser ?? "")
           ? data.linkBrowser as LinkBrowser
           : "in-app",
+        threadSort: ["recent", "oldest", "az", "za"].includes(data.threadSort ?? "")
+          ? data.threadSort as ThreadSort
+          : "recent",
+        threadFilter: ["all", "saved", "unset"].includes(data.threadFilter ?? "")
+          ? data.threadFilter as ThreadFilter
+          : "all",
         requireAgentOffThreads: parseRequireAgentKeys(data.requireAgentOffThreads),
       });
     } catch {
@@ -149,6 +167,16 @@ export const usePrefs = create<PrefsState>((set, get) => ({
 
   setLinkBrowser(browser) {
     set({ linkBrowser: browser });
+    persist(get());
+  },
+
+  setThreadSort(sort) {
+    set({ threadSort: sort });
+    persist(get());
+  },
+
+  setThreadFilter(filter) {
+    set({ threadFilter: filter });
     persist(get());
   },
 

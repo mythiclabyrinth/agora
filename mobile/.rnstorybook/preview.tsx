@@ -85,7 +85,9 @@ const preview: Preview = {
       recentEmoji: [],
       preferNativeApps: true,
       linkBrowser: "in-app",
-      requireAgentThreads: [],
+      threadSort: "recent",
+      threadFilter: "all",
+      requireAgentOffThreads: [],
     });
     useToasts.setState({ items: [] });
     useSession.setState({

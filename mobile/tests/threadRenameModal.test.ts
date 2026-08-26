@@ -3,7 +3,7 @@ import TestRenderer, { act } from "react-test-renderer";
 import { StyleSheet, TextInput } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiClient, ApiProvider, type ThreadRow } from "@agora/core";
-import { RenameModal } from "../app/(app)/threads";
+import { RenameModal, ThreadViewSheet } from "../app/(app)/threads";
 import { colors } from "../src/lib/theme";
 
 jest.mock("lucide-react-native", () => new Proxy({}, { get: () => () => null }));
@@ -50,4 +50,42 @@ it("renders the rename dialog on an opaque accessible modal surface", () => {
 
   act(() => tree.unmount());
   queryClient.clear();
+});
+
+it("applies thread view choices immediately and closes from its controls", () => {
+  const onSort = jest.fn();
+  const onFilter = jest.fn();
+  const onClose = jest.fn();
+  let tree!: TestRenderer.ReactTestRenderer;
+
+  act(() => {
+    tree = TestRenderer.create(React.createElement(ThreadViewSheet, {
+      sort: "recent",
+      filter: "all",
+      onSort,
+      onFilter,
+      onClose,
+    }));
+  });
+
+  const sheet = tree.root.findByProps({ testID: "thread-view-sheet" });
+  expect(sheet.props.accessibilityViewIsModal).toBe(true);
+  expect(sheet.props.accessibilityLabel).toBe("Thread view options");
+
+  const oldest = tree.root.find((node) => node.props.accessibilityRole === "radio"
+    && node.findAllByType(TextInput).length === 0
+    && node.findAll((child) => child.props.children === "Oldest").length > 0);
+  const saved = tree.root.find((node) => node.props.accessibilityRole === "radio"
+    && node.findAll((child) => child.props.children === "Saved Threads").length > 0);
+  act(() => oldest.props.onPress());
+  act(() => saved.props.onPress());
+  expect(onSort).toHaveBeenCalledWith("oldest");
+  expect(onFilter).toHaveBeenCalledWith("saved");
+
+  const done = tree.root.find((node) => node.props.accessibilityRole === "button"
+    && node.findAll((child) => child.props.children === "Done").length > 0);
+  act(() => done.props.onPress());
+  expect(onClose).toHaveBeenCalledTimes(1);
+
+  act(() => tree.unmount());
 });
