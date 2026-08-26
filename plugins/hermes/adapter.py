@@ -107,6 +107,7 @@ class AgoraAdapter(BasePlatformAdapter):
         self.agent_id = str(os.getenv("AGORA_AGENT_ID") or extra.get("agent_id", "hermes-agent")).strip()
         self.agent_name = str(os.getenv("AGORA_AGENT_NAME") or extra.get("agent_name", "Hermes")).strip()
         self.require_mention = _truthy(os.getenv("AGORA_REQUIRE_MENTION", extra.get("require_mention", "false")))
+        self.bot_loop_limit = os.getenv("AGORA_BOT_LOOP_LIMIT", extra.get("bot_loop_limit"))
         self.max_file_bytes = _max_file_bytes(extra)
         self.socket_url = _socket_url(self.base_url, self.token)
         self._socket = None
@@ -125,14 +126,17 @@ class AgoraAdapter(BasePlatformAdapter):
                 ping_timeout=20,
                 max_size=64 * 1024 * 1024,
             )
+            agent = {
+                "id": self.agent_id,
+                "name": self.agent_name,
+                "requires_mention": self.require_mention,
+                "wants_context_feed": False,
+            }
+            if self.bot_loop_limit is not None:
+                agent["bot_loop_limit"] = self.bot_loop_limit
             await self._write({
                 "type": "hello",
-                "agents": [{
-                    "id": self.agent_id,
-                    "name": self.agent_name,
-                    "requires_mention": self.require_mention,
-                    "wants_context_feed": False,
-                }],
+                "agents": [agent],
             })
             self._temp_dir = tempfile.TemporaryDirectory(prefix="hermes-agora-")
             self._reader_task = asyncio.create_task(self._read_loop(), name="agora-platform-reader")

@@ -100,6 +100,13 @@ class AdapterTests(unittest.TestCase):
                                      "AGORA_PAIRING_TOKEN": "secret"}, clear=True):
             return self.module.AgoraAdapter(PlatformConfig())
 
+    def test_reads_optional_per_agent_bot_loop_limit(self):
+        with patch.dict(os.environ, {"AGORA_URL": "http://127.0.0.1:4470",
+                                     "AGORA_PAIRING_TOKEN": "secret",
+                                     "AGORA_BOT_LOOP_LIMIT": "21"}, clear=True):
+            adapter = self.module.AgoraAdapter(PlatformConfig())
+        self.assertEqual(adapter.bot_loop_limit, "21")
+
     def test_remote_plaintext_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "loopback"):
             self.module._socket_url("ws://example.com", "secret")

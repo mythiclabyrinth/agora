@@ -18,30 +18,55 @@ use base64::Engine;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc::UnboundedSender, Notify};
 
-use crate::store::{slugify, NewAttachment, Store};
 use crate::attachments::{safe_filename, sniff_image_mime};
+use crate::store::{slugify, NewAttachment, Store};
 
-/// Max consecutive agent-authored messages fanned out to other agents in one
-/// channel/thread before the hub goes quiet until a human speaks again: the
-/// first `bot_loop_limit()` messages of a streak are relayed to @mentioned
-/// agents; the next one is stored and shown to humans but triggers no agent.
-/// Any human message resets the streak.
+/// Default consecutive agent-authored messages fanned out to a recipient in
+/// one channel/thread. Agents may request a connection-scoped override up to
+/// `bot_loop_max()`; any human message resets the shared streak.
 pub const DEFAULT_BOT_LOOP_LIMIT: i64 = 10;
+pub const DEFAULT_BOT_LOOP_MAX: i64 = 50;
 
 /// The cap actually in force. Read once from `AGORA_BOT_LOOP_LIMIT` so a
 /// deployment can retune the agent-to-agent budget without a rebuild; values
 /// below 1 (and anything unparseable) fall back to the default.
 pub fn bot_loop_limit() -> i64 {
     static LIMIT: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
-    *LIMIT.get_or_init(|| {
-        parse_bot_loop_limit(std::env::var("AGORA_BOT_LOOP_LIMIT").ok().as_deref())
-    })
+    *LIMIT
+        .get_or_init(|| parse_bot_loop_limit(std::env::var("AGORA_BOT_LOOP_LIMIT").ok().as_deref()))
 }
 
 fn parse_bot_loop_limit(raw: Option<&str>) -> i64 {
     raw.and_then(|raw| raw.trim().parse::<i64>().ok())
         .filter(|n| *n >= 1)
         .unwrap_or(DEFAULT_BOT_LOOP_LIMIT)
+}
+
+/// Upper bound for a client-requested per-agent cap. The deployment remains
+/// trusted to set its own default independently; this only constrains clients.
+pub fn bot_loop_max() -> i64 {
+    static MAX: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| parse_bot_loop_max(std::env::var("AGORA_BOT_LOOP_MAX").ok().as_deref()))
+}
+
+fn parse_bot_loop_max(raw: Option<&str>) -> i64 {
+    raw.and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(DEFAULT_BOT_LOOP_MAX)
+}
+
+/// Parse a connection-scoped client preference. Invalid and non-positive
+/// values mean "use the server default"; values above the safety ceiling are
+/// clamped instead of allowing a client to disable loop protection.
+pub(crate) fn agent_bot_loop_limit(value: &Value) -> Option<i64> {
+    parse_agent_bot_loop_limit(value, bot_loop_max())
+}
+
+fn parse_agent_bot_loop_limit(value: &Value, maximum: i64) -> Option<i64> {
+    let parsed = value
+        .as_i64()
+        .or_else(|| value.as_str()?.trim().parse::<i64>().ok());
+    parsed.filter(|n| *n >= 1).map(|n| n.min(maximum))
 }
 
 /// How much of a thread's root message is inlined as context when an agent
@@ -384,6 +409,9 @@ pub struct AgentHandle {
     pub agent_id: String,
     pub agent_name: String,
     pub requires_mention: bool,
+    /// Connection-scoped agent-to-agent relay cap. `None` inherits the
+    /// deployment's `AGORA_BOT_LOOP_LIMIT` default.
+    pub bot_loop_limit: Option<i64>,
     /// Whether this connection wants a *context feed*: copies of agent-authored
     /// messages it isn't @mentioned in, delivered so it can keep conversational
     /// context even while staying silent. Native agents leave this off; the CLI
@@ -969,7 +997,8 @@ impl Hub {
         );
         {
             let mut st = self.state.lock().unwrap();
-            st.bot_streak.remove(&(channel_id.to_string(), thread_id.unwrap_or(0)));
+            st.bot_streak
+                .remove(&(channel_id.to_string(), thread_id.unwrap_or(0)));
         }
         // Your own message is never unread to you.
         self.store
@@ -1139,17 +1168,9 @@ impl Hub {
         self.broadcast(channel_id, &json!({"type": "message", "message": message}));
         self.maybe_unfurl(&message);
         self.maybe_notify(&message);
-        let cap = bot_loop_limit();
-        if streak <= cap {
-            self.fan_out(
-                &message,
-                true,
-                Some(agent_id),
-                true,
-                false,
-                Some((cap - streak).max(0)),
-            );
-        } else if streak == cap + 1 {
+        let highest_eligible_cap =
+            self.fan_out(&message, true, Some(agent_id), true, false, Some(streak));
+        if highest_eligible_cap.is_some_and(|cap| streak == cap + 1) {
             tracing::info!("bot-loop limit hit in {channel_id} (thread {thread_id:?})");
         }
         message
@@ -1503,11 +1524,11 @@ impl Hub {
         exclude_agent: Option<&str>,
         mentioned_only: bool,
         voice: bool,
-        bot_turns_left: Option<i64>,
-    ) {
+        bot_streak: Option<i64>,
+    ) -> Option<i64> {
         let channel_id = message["channel_id"].as_str().unwrap_or_default();
         let Some(channel) = self.store.channel(channel_id) else {
-            return;
+            return None;
         };
         let tokens = mention_tokens(message["text"].as_str().unwrap_or_default());
         let is_dm = channel["kind"] == "agent_dm";
@@ -1528,6 +1549,7 @@ impl Hub {
                         .agent_handle(aid)
                         .is_some_and(|h| tokens.contains(&slugify(&h.agent_name)))
             });
+        let mut highest_eligible_cap = None;
         for agent_id in self.store.agents_for_channel(channel_id) {
             if Some(agent_id.as_str()) == exclude_agent {
                 continue;
@@ -1535,19 +1557,31 @@ impl Hub {
             let Some(handle) = self.agent_handle(&agent_id) else {
                 continue;
             };
-            let mentioned = is_dm || tokens.contains(&agent_id.to_lowercase())
+            let mentioned = is_dm
+                || tokens.contains(&agent_id.to_lowercase())
                 || tokens.contains(&slugify(&handle.agent_name));
             // Normally an unmentioned agent is skipped when the message is
             // agents-only (`mentioned_only`) or the agent opted into
             // mention-gating. A context-feed agent still gets a copy so it can
             // buffer the conversation while staying silent — bot loops are held
-            // off by the caller's bot-streak cap on agent-authored fan-out.
+            // off below by this recipient's effective bot-streak cap.
             if !mentioned
                 && (mentioned_only || handle.requires_mention)
                 && !handle.wants_context_feed
             {
                 continue;
             }
+            let bot_turns_left = if let Some(streak) = bot_streak {
+                let cap = handle.bot_loop_limit.unwrap_or_else(bot_loop_limit);
+                highest_eligible_cap =
+                    Some(highest_eligible_cap.map_or(cap, |current: i64| current.max(cap)));
+                if streak > cap {
+                    continue;
+                }
+                Some((cap - streak).max(0))
+            } else {
+                None
+            };
             let inbound = self.build_inbound(
                 message,
                 &channel,
@@ -1560,6 +1594,7 @@ impl Hub {
             );
             let _ = handle.tx.send(inbound);
         }
+        highest_eligible_cap
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1770,7 +1805,7 @@ impl Hub {
             if thread_id.is_some() { " thread." } else { "." }
         ));
         if live_peer {
-            let cap = bot_loop_limit();
+            let cap = handle.bot_loop_limit.unwrap_or_else(bot_loop_limit);
             lines.push(format!(
                 "Other agents here are colleagues, not users. Only @mention another \
                  agent when a human's instructions ask you to collaborate with, \
@@ -2238,11 +2273,34 @@ mod tests {
             agent_id: id.into(),
             agent_name: name.into(),
             requires_mention,
+            bot_loop_limit: None,
             wants_context_feed,
             has_avatar: false,
             avatar_v: 0,
             source: "test".into(),
             conn_id,
+            tx,
+        });
+        rx
+    }
+
+    fn add_agent_with_limit(
+        h: &Hub,
+        id: &str,
+        name: &str,
+        limit: Option<i64>,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<Value> {
+        let (tx, rx) = unbounded_channel();
+        h.register_agent(AgentHandle {
+            agent_id: id.into(),
+            agent_name: name.into(),
+            requires_mention: false,
+            bot_loop_limit: limit,
+            wants_context_feed: false,
+            has_avatar: false,
+            avatar_v: 0,
+            source: "test".into(),
+            conn_id: h.next_conn_id(),
             tx,
         });
         rx
@@ -3015,6 +3073,60 @@ mod tests {
     }
 
     #[test]
+    fn bot_loop_max_and_agent_override_are_defensive() {
+        assert_eq!(parse_bot_loop_max(None), DEFAULT_BOT_LOOP_MAX);
+        assert_eq!(parse_bot_loop_max(Some(" 75 ")), 75);
+        for junk in ["", "0", "-5", "abc", "5.5"] {
+            assert_eq!(parse_bot_loop_max(Some(junk)), DEFAULT_BOT_LOOP_MAX);
+        }
+        let max = 50;
+        assert_eq!(parse_agent_bot_loop_limit(&json!(12), max), Some(12));
+        assert_eq!(parse_agent_bot_loop_limit(&json!(" 13 "), max), Some(13));
+        assert_eq!(parse_agent_bot_loop_limit(&json!(999), max), Some(max));
+        for invalid in [json!(null), json!(0), json!(-1), json!("junk"), json!([])] {
+            assert_eq!(parse_agent_bot_loop_limit(&invalid, max), None);
+        }
+    }
+
+    #[test]
+    fn agent_relay_caps_are_per_recipient_and_human_reset_is_shared() {
+        let h = hub();
+        let _rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_low = add_agent_with_limit(&h, "bot-low", "Bot Low", Some(2));
+        let mut rx_high = add_agent_with_limit(&h, "bot-high", "Bot High", Some(4));
+        let cid = setup_channel(&h, &["bot-a", "bot-low", "bot-high"]);
+
+        for _ in 0..4 {
+            h.post_agent_message("bot-a", "Bot A", &cid, "review @bot-low @bot-high", None);
+        }
+        let low: Vec<i64> = std::iter::from_fn(|| rx_low.try_recv().ok())
+            .map(|f| f["bot_turns_left"].as_i64().unwrap())
+            .collect();
+        let high: Vec<i64> = std::iter::from_fn(|| rx_high.try_recv().ok())
+            .map(|f| f["bot_turns_left"].as_i64().unwrap())
+            .collect();
+        assert_eq!(low, vec![1, 0]);
+        assert_eq!(high, vec![3, 2, 1, 0]);
+
+        h.post_user_message(&cid, "continue", "tom", None, None, vec![]);
+        let low_human = rx_low.try_recv().unwrap();
+        let high_human = rx_high.try_recv().unwrap();
+        assert!(low_human["bot_turns_left"].is_null());
+        assert!(high_human["bot_turns_left"].is_null());
+        assert!(low_human["context_note"]
+            .as_str()
+            .unwrap()
+            .contains("after 2 consecutive agent messages"));
+        assert!(high_human["context_note"]
+            .as_str()
+            .unwrap()
+            .contains("after 4 consecutive agent messages"));
+        h.post_agent_message("bot-a", "Bot A", &cid, "again @bot-low @bot-high", None);
+        assert_eq!(rx_low.try_recv().unwrap()["bot_turns_left"], 1);
+        assert_eq!(rx_high.try_recv().unwrap()["bot_turns_left"], 3);
+    }
+
+    #[test]
     fn bot_turns_left_rides_agent_frames_only() {
         let h = hub();
         let _rx_a = add_agent(&h, "bot-a", "Bot A", false);
@@ -3046,17 +3158,20 @@ mod tests {
         let cid = setup_channel(&h, &["bot-a", "bot-b"]);
         // Peer is a member but offline: no etiquette note.
         h.post_user_message(&cid, "hi", "tom", None, None, vec![]);
-        let note = rx_a.try_recv().unwrap()["context_note"].as_str().unwrap().to_string();
+        let note = rx_a.try_recv().unwrap()["context_note"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(!note.contains("Other agents here are colleagues"));
         // Peer comes online: etiquette (with the cap) appears.
         let _rx_b = add_agent(&h, "bot-b", "Bot B", false);
         h.post_user_message(&cid, "hi again", "tom", None, None, vec![]);
-        let note = rx_a.try_recv().unwrap()["context_note"].as_str().unwrap().to_string();
+        let note = rx_a.try_recv().unwrap()["context_note"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(note.contains("Other agents here are colleagues"));
-        assert!(note.contains(&format!(
-            "{} consecutive agent messages",
-            bot_loop_limit()
-        )));
+        assert!(note.contains(&format!("{} consecutive agent messages", bot_loop_limit())));
     }
 
     #[test]
@@ -3127,6 +3242,7 @@ mod tests {
             agent_id: "bot-a".into(),
             agent_name: "Bot A".into(),
             requires_mention: false,
+            bot_loop_limit: None,
             wants_context_feed: false,
             has_avatar: false,
             avatar_v: 0,
@@ -3991,6 +4107,7 @@ mod tests {
             agent_id: "claw-1".into(),
             agent_name: "Claw".into(),
             requires_mention: false,
+            bot_loop_limit: None,
             wants_context_feed: false,
             has_avatar: false,
             avatar_v: 0,
@@ -4003,6 +4120,7 @@ mod tests {
             agent_id: "alpha-1".into(),
             agent_name: "Alpha".into(),
             requires_mention: false,
+            bot_loop_limit: None,
             wants_context_feed: false,
             has_avatar: false,
             avatar_v: 0,

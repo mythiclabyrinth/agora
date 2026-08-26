@@ -5060,6 +5060,7 @@ async fn handle_agent_socket(
                                     agent_id: id.to_string(),
                                     agent_name: a["name"].as_str().unwrap_or(id).to_string(),
                                     requires_mention: a["requires_mention"].as_bool().unwrap_or(false),
+                                    bot_loop_limit: crate::hub::agent_bot_loop_limit(&a["bot_loop_limit"]),
                                     wants_context_feed: a["wants_context_feed"].as_bool().unwrap_or(false),
                                     has_avatar: avatar_v.is_some(),
                                     avatar_v: avatar_v.unwrap_or(0),
@@ -6164,6 +6165,7 @@ mod tests {
         state.hub.register_pairing_conn(conn_a, "token-a");
         state.hub.register_agent(AgentHandle {
             agent_id: "bot-a".into(), agent_name: "Bot A".into(), requires_mention: false,
+            bot_loop_limit: None,
             wants_context_feed: false, has_avatar: false, avatar_v: 0,
             source: "pairing:duplicate".into(), conn_id: conn_a, tx,
         });
@@ -6188,7 +6190,8 @@ mod tests {
         let (outbound_tx, _outbound_rx) = unbounded_channel();
         state.hub.register_agent(AgentHandle {
             agent_id: "outbound".into(), agent_name: "Outbound".into(),
-            requires_mention: false, wants_context_feed: false, has_avatar: false,
+            requires_mention: false, bot_loop_limit: None,
+            wants_context_feed: false, has_avatar: false,
             avatar_v: 0, source: "remote".into(), conn_id: state.hub.next_conn_id(),
             tx: outbound_tx,
         });
@@ -6205,6 +6208,7 @@ mod tests {
         let (gone_tx, _gone_rx) = unbounded_channel();
         state.hub.register_agent(AgentHandle {
             agent_id: "gone".into(), agent_name: "Gone".into(), requires_mention: false,
+            bot_loop_limit: None,
             wants_context_feed: false, has_avatar: false, avatar_v: 0,
             source: "pairing:duplicate".into(), conn_id: gone_conn, tx: gone_tx,
         });
@@ -6572,6 +6576,7 @@ mod tests {
             agent_id: "bridge-agent".into(),
             agent_name: "Bridge Agent".into(),
             requires_mention: false,
+            bot_loop_limit: None,
             wants_context_feed: false,
             has_avatar: false,
             avatar_v: 0,
@@ -7003,6 +7008,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         state.hub.register_agent(AgentHandle {
             agent_id: "bot".into(), agent_name: "Bot".into(), requires_mention: false,
+            bot_loop_limit: None,
             wants_context_feed: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx,
         });

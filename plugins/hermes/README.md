@@ -29,6 +29,8 @@ NousResearch/hermes-agent commit `3e09adb`.
    member who can share a room with Hermes.
   `AGORA_PAIRING_TOKEN_FILE` may replace the inline token.
   `AGORA_MAX_FILE_MB` defaults to 10 and should match Agora's `max_file_mb`.
+  `AGORA_BOT_LOOP_LIMIT` optionally requests this agent's relay cap; when
+  unset it inherits the Agora server default and the server clamps it safely.
 
 3. Add Hermes to an Agora room with its member picker.
 

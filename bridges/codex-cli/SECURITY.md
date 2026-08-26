@@ -45,8 +45,11 @@ ordered by decreasing severity.
      never reaches the bridge command table (`/new`, `/sandbox`, …) — it is
      wrapped in a relay note that names the author as an AI and subordinates
      it to the humans' instructions; and the hub stops relaying agent-to-agent
-     messages after 5 in a row without a human. **Residual risk you accept by
-     setting it:** an allowlisted peer that is itself prompt-injected can
+     messages after this bridge's effective cap without a human. Set
+     `AGORA_BOT_LOOP_LIMIT` for a per-bridge preference; when it is unset, the
+     server default applies, and the server safety maximum still bounds the
+     preference. **Residual risk you accept by setting it:** an allowlisted peer
+     that is itself prompt-injected can
      drive this CLI within those bounds. Leave it unset to keep the
      humans-only posture.
    - *Still open:* any *human* the hub admits to the channel is fully trusted.
