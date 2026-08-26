@@ -200,7 +200,7 @@ run the first command, then flip the desktop app to remote mode
 | `max_video_mb` | `100` | Cap for recognized video containers (MP4, MOV, M4V, WebM). |
 | `google_client_id` | `""` | Google OAuth client id — see [AUTH.md](AUTH.md#google-sign-in). |
 | `google_client_secret` | `""` | Google OAuth client secret. |
-| `google_allowed_emails` | `[]` | Google accounts allowed to sign in; empty keeps Google sign-in off. |
+| `google_allowed_emails` | `[]` | Fallback admission list for Google accounts; empty makes Google sign-in invite-only. |
 | `apple_allowed_emails` | `[]` | Apple emails allowed to sign in — see [AUTH.md](AUTH.md#sign-in-with-apple). |
 | `apple_bundle_id` | `""` | iOS bundle id for Apple sign-in; empty means the stock app. |
 | `public_url` | `""` | Public https origin used to build the OAuth redirect URI. |

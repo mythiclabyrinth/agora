@@ -21,13 +21,42 @@ Google button once the server is configured. A successful sign-in mints a
 30-day session token (HMAC-signed with `session_secret`) that is accepted
 everywhere the admin key is; Google credentials are never stored.
 
-Setup:
+### Set up Google Cloud
 
-1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-   create an OAuth client of type **Web application** and add the redirect URI
-   `https://<your-agora-host>/api/auth/google/callback`.
-2. Configure the server — either env vars (Railway-friendly; persisted into
-   `config.json` at boot):
+A personal Gmail account is enough to own the Google Cloud project; Google
+Workspace is not required. If you do use a Workspace organization, you may
+choose an Internal audience to restrict consent to that organization. For a
+personal account, use an External audience.
+
+1. Create or select a project in the
+   [Google Cloud Console](https://console.cloud.google.com/).
+2. Configure the Google Auth Platform branding and audience. Choose
+   **External** when using personal Gmail accounts. While the app is in
+   **Testing**, add every Google account that should sign in as a test user.
+   Google limits Testing projects to 100 test users. Move the app to **In
+   production** when it should serve users outside the test list; Google may
+   require verification depending on the branding and scopes you configure.
+   Agora requests only the basic OpenID Connect identity scopes (`openid`,
+   `email`, `profile`).
+3. Create an OAuth client of type **Web application** and add this authorized
+   redirect URI, substituting the public origin of your Agora deployment:
+
+   ```text
+   https://<your-agora-host>/api/auth/google/callback
+   ```
+
+   Google matches redirect URIs exactly, including the `http`/`https` scheme,
+   hostname, port, path, case, and trailing slash. Do not add a trailing slash.
+   Agora's browser, desktop, and mobile clients all use this one server-side
+   web client; do not create separate Android, iOS, or desktop OAuth clients.
+
+Keep the generated client secret private. Do not commit it to the repository,
+put it in a client-side environment variable, or expose it in a browser build.
+
+### Configure Agora
+
+Set these variables on the hosted Agora server (for example, in Railway's
+service variables):
 
 ```bash
 AGORA_GOOGLE_CLIENT_ID=....apps.googleusercontent.com
@@ -36,20 +65,79 @@ AGORA_GOOGLE_ALLOWED_EMAILS=you@gmail.com          # comma-separated
 AGORA_PUBLIC_URL=https://agora.up.railway.app      # must match the redirect URI
 ```
 
-   or the same keys directly in `config.json`.
-3. Restart. `GET /api/auth/config` now reports `{"google":{"enabled":true}}`
-   and the sign-in buttons appear.
+The same values can be set as `google_client_id`, `google_client_secret`,
+`google_allowed_emails`, and `public_url` in `config.json`. Environment values
+are persisted into that file at boot, so removing an environment variable
+later does not erase its last value. Restart or redeploy Agora after changing
+them.
+
+`AGORA_PUBLIC_URL` should be the public HTTPS origin only, with no path or
+trailing slash. Setting it explicitly is strongly recommended behind a reverse
+proxy. Without it, Agora derives the callback origin from the request's `Host`
+and `X-Forwarded-Proto` headers and defaults to `http` when the forwarded
+protocol is absent.
+
+The client ID and secret control whether Google sign-in is offered. When both
+are non-empty, `GET /api/auth/config` reports `{"google":{"enabled":true}}`
+and the sign-in buttons appear, even if the allowlist is empty.
+
+### Decide who can join
 
 Admission is decided by the sign-in rules (existing user → email invite →
 valid invite link → config allowlist); the `google_allowed_emails` list is the
-fallback that lets a fresh email in and becomes that person's account. An empty
-allowlist with no invites keeps Google sign-in disabled outright.
+fallback that lets a fresh email create a member account. An invite can assign
+a different instance role. With an empty allowlist, Google sign-in stays
+visible but the instance is invite-only: existing users and invited emails can
+sign in, while other accounts finish Google's flow and are refused by Agora.
 
 Allowlist entries may be wildcards: `*@example.com` admits everyone at that
 domain, and a bare `*` is **open sign-up** — anyone with a Google (or Apple)
 account gets a member account on your instance, so only use it on servers
 meant to be public. Both allowlists feed the same admission check, so a
 wildcard on either admits sign-ins from both providers.
+
+Google's audience and test-user settings and Agora's admission rules are two
+separate gates. Being a Google OAuth test user permits the Google consent flow;
+it does not grant access to the Agora instance. Conversely, an Agora allowlist
+entry cannot bypass Google's test-user restriction while the OAuth app is in
+Testing.
+
+### Verify and troubleshoot
+
+After restarting or redeploying:
+
+1. Open `https://<your-agora-host>/api/auth/config` and confirm it contains
+   `"google":{"enabled":true}`.
+2. Open Agora in a private browser window and confirm **Continue with Google**
+   appears.
+3. Sign in with an account admitted by an existing account, email invite,
+   invite link, or allowlist entry.
+
+Common failures:
+
+- **`redirect_uri_mismatch` from Google** — compare the complete URI shown in
+  the error with the authorized redirect URI. The most common hosted cause is
+  an unset `AGORA_PUBLIC_URL` combined with a proxy that does not send
+  `X-Forwarded-Proto`, causing Agora to generate an `http://` callback. Set
+  `AGORA_PUBLIC_URL` to the public HTTPS origin and redeploy.
+- **Google blocks access or says the app is being tested** — for an External
+  app in Testing, add that exact Google account under test users. For broader
+  access, move the OAuth app to In production and complete any verification
+  Google requests.
+- **The account is not a member (`no_access`)** — Google authenticated the
+  account, but Agora did not find an existing user, applicable invitation, or
+  matching allowlist entry. Invite the email or update the allowlist and
+  restart. This is distinct from `disabled`, which means an Agora administrator
+  disabled an existing account.
+- **Google silently reuses the wrong account** — iPhone retries request
+  Google's account chooser automatically. On the web, sign out of the wrong
+  Google account or open `/api/auth/google/start?select_account=1` directly.
+- **`429 Too many sign-in attempts`** — wait for the short authentication rate
+  limit window before retrying.
+- **Old settings remain after changing deployment variables** — Agora writes
+  these environment overrides into `config.json` at boot. Unsetting a variable
+  does not clear the persisted value; replace it explicitly or edit the
+  deployment's `config.json`, then restart.
 
 > **Token trust:** the `id_token` is validated by its claims (`iss`, `aud`,
 > `exp`, `email_verified`, allowlist) but **not** by an RS256/JWKS signature
@@ -63,7 +151,7 @@ wildcard on either admits sign-ins from both providers.
 
 Per client:
 
-- **Browser** — the auth gate shows *Sign in with Google*; the callback lands
+- **Browser** — the auth gate shows *Continue with Google*; the callback lands
   the session in the URL fragment and the UI stores it like a pasted token.
 - **Desktop** — *Server → Server Settings… → Sign in with Google instead*
   opens your default browser (Google refuses embedded webviews) and catches
