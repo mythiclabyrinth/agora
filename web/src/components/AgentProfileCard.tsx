@@ -23,6 +23,22 @@ function relTime(ts: number): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+function useBoundedRefreshing(refreshing: boolean, updatedAt: number): boolean {
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    setExpired(false);
+    if (!refreshing) return;
+    const remaining = Math.max(0, 30_000 - (Date.now() - updatedAt));
+    if (!remaining) {
+      setExpired(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setExpired(true), remaining);
+    return () => window.clearTimeout(timer);
+  }, [refreshing, updatedAt]);
+  return refreshing && !expired && Date.now() - updatedAt < 30_000;
+}
+
 export function AgentProfileCard() {
   const { openId, close } = useAgentProfile();
   const agents = useAgents().data || [];
@@ -58,10 +74,6 @@ export function AgentProfileCard() {
           {a.source && (
             <div className="ago-profile-row"><span className="k">Connection</span><span className="v">{a.source}</span></div>
           )}
-          <div className="ago-profile-row">
-            <span className="k">Responds</span>
-            <span className="v">{a.requires_mention ? "Only when @-mentioned" : "To every message in its channels"}</span>
-          </div>
           <AgentUsageRows agentId={a.id} live={a.live} />
           <AgentVoiceRows agentId={a.id} admin={admin} />
         </div>
@@ -74,19 +86,12 @@ function AgentUsageRows({ agentId, live }: { agentId: string; live: boolean }) {
   const query = useAgentUsage(agentId);
   const response = query.data;
   const usage = response?.usage;
+  const refreshing = useBoundedRefreshing(!!response?.refreshing, query.dataUpdatedAt);
   if (query.isLoading) {
     return null;
   }
-  if (!usage) {
+  if (!usage || usage.windows.length === 0) {
     return null;
-  }
-  if (usage.availability === "external") {
-    return (
-      <div className="ago-usage-section">
-        <div className="ago-usage-head"><strong>Usage</strong><span>Cursor reports usage in its dashboard</span></div>
-        {usage.external_url && <a className="ago-usage-link" href={usage.external_url} target="_blank" rel="noreferrer">Open usage dashboard</a>}
-      </div>
-    );
   }
   const age = Math.max(0, Date.now() / 1000 - usage.captured_at);
   const freshness = age < 60 ? "Updated just now" : `Updated ${relTime(usage.captured_at)}`;
@@ -94,7 +99,7 @@ function AgentUsageRows({ agentId, live }: { agentId: string; live: boolean }) {
     <div className="ago-usage-section">
       <div className="ago-usage-head">
         <strong>Usage{usage.plan ? ` · ${usage.plan}` : ""}</strong>
-        <span>{response?.refreshing ? "Updating…" : freshness}{!live ? " · agent offline" : response?.stale ? " · may be outdated" : ""}</span>
+        <span>{refreshing ? "Updating…" : freshness}{!live ? " · agent offline" : response?.stale ? " · may be outdated" : ""}</span>
       </div>
       {usage.windows.map(window => (
         <div className="ago-usage-window" key={window.key}>

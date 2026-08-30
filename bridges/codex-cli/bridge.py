@@ -671,8 +671,8 @@ class Bridge:
     def send(self, frame: dict) -> None:
         self.outbox.put_nowait(frame)
 
-    def refresh_usage(self, thread_id: str | None = None) -> None:
-        usage = read_codex_usage(thread_id)
+    async def refresh_usage(self, thread_id: str | None = None) -> None:
+        usage = await asyncio.to_thread(read_codex_usage, thread_id)
         if usage:
             self.last_usage_frame = {"type": "usage_update", "agent_id": self.agent_id, **usage}
             self.send(self.last_usage_frame)
@@ -1496,7 +1496,7 @@ class Bridge:
                         elif kind == "turn.completed":
                             break
                     await proc.wait()
-                    self.refresh_usage(new_session_id or binding.get("session_id"))
+                    await self.refresh_usage(new_session_id or binding.get("session_id"))
             except TimeoutError:
                 raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
@@ -1621,7 +1621,7 @@ class Bridge:
                 if kind == "inbound":
                     asyncio.create_task(self.handle_inbound(frame))
                 elif kind == "usage_refresh":
-                    self.refresh_usage()
+                    asyncio.create_task(self.refresh_usage())
                 elif kind == "error":
                     log(
                         f"{frame.get('frame_type', 'frame')} rejected"

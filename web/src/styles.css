@@ -2227,7 +2227,6 @@ select {
 .ago-usage-window > div:first-child strong { font-size: 11px; white-space: nowrap; }
 .ago-usage-track { height: 7px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.08); }
 .ago-usage-track > span { display: block; height: 100%; border-radius: inherit; background: var(--a1); }
-.ago-usage-link { color: var(--a1); font-size: 12px; font-weight: 700; }
 .ago-template-pop { position: fixed; z-index: 80; width: min(340px, calc(100vw - 16px)); max-height: 420px; overflow: auto; overscroll-behavior: contain; padding: 8px; border: 1px solid var(--border-strong); border-radius: 12px; background: #10141f; box-shadow: 0 18px 48px rgba(0,0,0,.55); animation: rise .12s ease; }
 .ago-template-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 5px 6px 9px; }
 .ago-template-head > button:not(.btn), .ago-template-state button { border: 0; background: none; color: var(--a1); cursor: pointer; }
