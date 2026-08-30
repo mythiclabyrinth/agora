@@ -42,6 +42,7 @@ export const guides = {
     ],
     env: [
       ["CODEX_BIN", "Optional", "codex", "Executable name or absolute path."],
+      ["CODEX_HOME", "Optional", "~/.codex", "Codex CLI home directory. The bridge reads session rollout files from <CODEX_HOME>/sessions to report account usage."],
       ["CODEX_MODEL", "Optional", "sol", "Default model: sol, terra, or luna. /model overrides it per conversation."],
       ["CODEX_SANDBOX", "Optional", "Empty (effective: workspace-write)", "Default sandbox: read-only, workspace-write, workspace-git, danger-full-access, or bypass."],
       ["CODEX_ARGS", "Optional", "Empty", "Additional arguments appended to every codex invocation. Avoid conflicting sandbox flags."],

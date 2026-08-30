@@ -181,6 +181,8 @@ reasoning snippets) to the channel.
 
 Everything is env-overridable (flags take precedence): `AGORA_URL`,
 `AGORA_PAIRING_TOKEN`, `AGENT_ID` / `AGENT_NAME`, `AGENT_AVATAR`, `CODEX_BIN`,
+`CODEX_HOME` (Codex CLI home directory; defaults to `~/.codex` and its
+`sessions` directory supplies account usage snapshots),
 `CODEX_SANDBOX` (default sandbox mode, `workspace-write` when unset —
 overridable per channel with `/sandbox`), `CODEX_ARGS` (extra args for every
 run, e.g. `-c` config overrides or `--profile`), `CODEX_MODEL` (default model
