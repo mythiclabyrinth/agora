@@ -23,6 +23,7 @@ import {
 } from "../ws/reducer";
 import type {
   AgentInfo,
+  AgentUsageResponse,
   AgentDmList,
   AgentDmPolicy,
   AgentSource,
@@ -874,6 +875,16 @@ export function useAgents(staleTime?: number) {
     queryFn: async () =>
       (await api.get<{ agents: AgentInfo[] }>("/api/agents")).agents,
     staleTime,
+  });
+}
+
+export function useAgentUsage(agentId: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.agentUsage(agentId),
+    queryFn: () => api.get<AgentUsageResponse>(`/api/agents/${encodeURIComponent(agentId)}/usage`),
+    enabled: !!agentId,
+    staleTime: 5 * 60 * 1000,
   });
 }
 

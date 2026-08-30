@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import {
   useAgents,
+  useAgentUsage,
   useInstanceAi,
   useMe,
   useUpdateAgentTts,
@@ -61,9 +62,51 @@ export function AgentProfileCard() {
             <span className="k">Responds</span>
             <span className="v">{a.requires_mention ? "Only when @-mentioned" : "To every message in its channels"}</span>
           </div>
+          <AgentUsageRows agentId={a.id} live={a.live} />
           <AgentVoiceRows agentId={a.id} admin={admin} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgentUsageRows({ agentId, live }: { agentId: string; live: boolean }) {
+  const query = useAgentUsage(agentId);
+  const response = query.data;
+  const usage = response?.usage;
+  if (query.isLoading) {
+    return <div className="ago-usage-state dim">Loading usage…</div>;
+  }
+  if (!usage) {
+    return <div className="ago-usage-state dim">Usage has not been reported by this agent.</div>;
+  }
+  if (usage.availability === "external") {
+    return (
+      <div className="ago-usage-section">
+        <div className="ago-usage-head"><strong>Usage</strong><span>Cursor reports usage in its dashboard</span></div>
+        {usage.external_url && <a className="ago-usage-link" href={usage.external_url} target="_blank" rel="noreferrer">Open usage dashboard</a>}
+      </div>
+    );
+  }
+  const age = Math.max(0, Date.now() / 1000 - usage.captured_at);
+  const freshness = age < 60 ? "Updated just now" : `Updated ${relTime(usage.captured_at)}`;
+  return (
+    <div className="ago-usage-section">
+      <div className="ago-usage-head">
+        <strong>Usage{usage.plan ? ` · ${usage.plan}` : ""}</strong>
+        <span>{response?.refreshing ? "Updating…" : freshness}{!live ? " · agent offline" : response?.stale ? " · may be outdated" : ""}</span>
+      </div>
+      {usage.windows.map(window => (
+        <div className="ago-usage-window" key={window.key}>
+          <div><span>{window.label}</span><strong>{Math.round(window.used_percent)}% used</strong></div>
+          <div className="ago-usage-track" role="progressbar" aria-label={window.label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(window.used_percent)}>
+            <span style={{ width: `${Math.max(0, Math.min(100, window.used_percent))}%` }} />
+          </div>
+          {window.resets_at && <small>Resets {new Date(window.resets_at * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</small>}
+        </div>
+      ))}
+      {usage.credits?.unlimited ? <div className="ago-usage-credit">Credits: unlimited</div>
+        : usage.credits?.has_credits ? <div className="ago-usage-credit">Credit balance: {usage.credits.balance ?? "available"}</div> : null}
     </div>
   );
 }

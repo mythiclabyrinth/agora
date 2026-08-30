@@ -511,5 +511,28 @@ class OutboundAttachmentTests(unittest.TestCase):
             self.assertEqual((len(attachments), notices), (1, []))
 
 
+class UsageTests(unittest.TestCase):
+    def test_rate_limit_event_normalizes_fractional_windows(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": 0.34, "resetsAt": 2000},
+            "seven_day_sonnet": {"utilization": 0.5, "resetsAt": 3000},
+            "seven_day_opus": None,
+        }}})
+        frame = instance.send.call_args.args[0]
+        self.assertEqual(frame["windows"][0]["used_percent"], 34)
+        self.assertEqual(frame["windows"][1]["used_percent"], 50)
+        self.assertEqual(frame["windows"][1]["window_minutes"], 10080)
+
+    def test_malformed_rate_limit_event_is_ignored(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": "nope"}}}})
+        instance.send.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

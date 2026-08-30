@@ -1510,6 +1510,12 @@ class Bridge:
                         "type": "hello",
                         "agents": [agent],
                     }))
+                    await ws.send(json.dumps({
+                        "type": "usage_update", "agent_id": self.agent_id,
+                        "provider": "cursor", "availability": "external",
+                        "captured_at": time.time(), "windows": [],
+                        "external_url": "https://cursor.com/dashboard",
+                    }))
                     backoff = 1.0
                     await self._pump(ws)
             except (OSError, websockets.WebSocketException) as e:
@@ -1538,6 +1544,13 @@ class Bridge:
                 kind = frame.get("type")
                 if kind == "inbound":
                     asyncio.create_task(self.handle_inbound(frame))
+                elif kind == "usage_refresh":
+                    self.send({
+                        "type": "usage_update", "agent_id": self.agent_id,
+                        "provider": "cursor", "availability": "external",
+                        "captured_at": time.time(), "windows": [],
+                        "external_url": "https://cursor.com/dashboard",
+                    })
                 elif kind == "error":
                     log(
                         f"{frame.get('frame_type', 'frame')} rejected"

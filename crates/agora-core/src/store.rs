@@ -159,6 +159,16 @@ CREATE TABLE IF NOT EXISTS agent_dm_policies (
     is_public INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL
 );
+-- Latest provider-reported quota snapshot for an agent. This is deliberately
+-- separate from the agent registry: it is optional, time-sensitive metadata
+-- and may outlive a bridge connection so offline profiles can show it as stale.
+CREATE TABLE IF NOT EXISTS agent_usage (
+    agent_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    captured_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_dm_grants (
     agent_id TEXT NOT NULL,
     username TEXT NOT NULL,
@@ -3425,9 +3435,38 @@ impl Store {
 
     pub fn remove_agent(&self, id: &str) -> bool {
         let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM agent_usage WHERE agent_id = ?1", params![id]).unwrap();
         conn.execute("DELETE FROM agent_dm_grants WHERE agent_id = ?1", params![id]).unwrap();
         conn.execute("DELETE FROM agent_dm_policies WHERE agent_id = ?1", params![id]).unwrap();
         conn.execute("DELETE FROM agents WHERE id = ?1", params![id]).unwrap() > 0
+    }
+
+    pub fn set_agent_usage(&self, agent_id: &str, provider: &str, snapshot: &Value, captured_at: f64) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO agent_usage (agent_id, provider, snapshot, captured_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(agent_id) DO UPDATE SET \
+             provider = excluded.provider, snapshot = excluded.snapshot, \
+             captured_at = excluded.captured_at, updated_at = excluded.updated_at",
+            params![agent_id, provider, snapshot.to_string(), captured_at, now()],
+        ).unwrap();
+    }
+
+    pub fn agent_usage(&self, agent_id: &str) -> Option<Value> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT provider, snapshot, captured_at, updated_at FROM agent_usage WHERE agent_id = ?1",
+            params![agent_id],
+            |r| {
+                let snapshot: String = r.get(1)?;
+                let mut value: Value = serde_json::from_str(&snapshot).unwrap_or(Value::Null);
+                if !value.is_object() { value = json!({}); }
+                value["provider"] = json!(r.get::<_, String>(0)?);
+                value["captured_at"] = json!(r.get::<_, f64>(2)?);
+                value["updated_at"] = json!(r.get::<_, f64>(3)?);
+                Ok(value)
+            },
+        ).ok()
     }
 
     // ------------------------------------------------------------- push tokens
@@ -4694,6 +4733,20 @@ mod tests {
         assert_eq!(agents[0]["avatar_v"], 1234);
         assert!(s.remove_agent("mimir"));
         assert!(s.known_agents().is_empty());
+    }
+
+    #[test]
+    fn agent_usage_replaces_latest_snapshot_and_is_removed_with_agent() {
+        let s = store();
+        s.upsert_agent("codex", "Codex", "bridge", false, false, 0);
+        s.set_agent_usage("codex", "codex", &json!({"windows": [{"key": "weekly"}]}), 10.0);
+        s.set_agent_usage("codex", "codex", &json!({"windows": [{"key": "five_hour"}]}), 20.0);
+        let usage = s.agent_usage("codex").unwrap();
+        assert_eq!(usage["provider"], "codex");
+        assert_eq!(usage["captured_at"], 20.0);
+        assert_eq!(usage["windows"][0]["key"], "five_hour");
+        s.remove_agent("codex");
+        assert!(s.agent_usage("codex").is_none());
     }
 
     #[test]

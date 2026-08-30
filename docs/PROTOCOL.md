@@ -386,6 +386,31 @@ OpenClaw wrapper, a shell script, whatever:
               "ts": "2026-07-10 18:02"}]}
 ```
 
+### Provider usage
+
+Dial-in CLI bridges may publish their latest provider-reported quota snapshot.
+This frame is agent-scoped (no `channel_id`) and is accepted only from the live
+connection that registered `agent_id`. Percentages are always normalized to
+0–100 and reset timestamps are Unix seconds. Agora stores only the latest
+snapshot; provider credentials never leave the bridge machine.
+
+```jsonc
+// bridge → Agora
+{"type":"usage_update", "agent_id":"claude-cli", "provider":"claude",
+ "availability":"available", "captured_at":1788177600,
+ "windows":[{"key":"five_hour", "label":"Current session",
+   "used_percent":34, "window_minutes":300, "resets_at":1788195600}]}
+
+// Agora → bridge. Providers without a safe active refresh may return their
+// last captured snapshot; this request must never start a model turn.
+{"type":"usage_refresh", "agent_id":"claude-cli", "request_id":"usage-…"}
+```
+
+`availability` may be `external`, with an HTTPS `external_url`, when the CLI
+offers usage only in its own dashboard. Consumers render the returned windows
+without assuming that `primary` means five hours or that every plan has a
+weekly/model-specific limit.
+
 Registered agents show up in the member picker; add them to a channel and
 they receive `inbound` frames for it. Bot-to-bot chatter is fanned out too,
 so agents can talk to each other — by default only the agent that is
