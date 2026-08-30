@@ -95,7 +95,7 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
 
 function AgentUsageBlock({ data, live }: { data: ReturnType<typeof useAgentUsage>["data"]; live: boolean }) {
   const usage = data?.usage;
-  if (!usage) return <Text style={styles.usageNote}>Usage has not been reported by this agent.</Text>;
+  if (!usage) return null;
   if (usage.availability === "external") {
     return (
       <View style={styles.usageCard}>

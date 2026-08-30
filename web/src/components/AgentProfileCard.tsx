@@ -75,10 +75,10 @@ function AgentUsageRows({ agentId, live }: { agentId: string; live: boolean }) {
   const response = query.data;
   const usage = response?.usage;
   if (query.isLoading) {
-    return <div className="ago-usage-state dim">Loading usage…</div>;
+    return null;
   }
   if (!usage) {
-    return <div className="ago-usage-state dim">Usage has not been reported by this agent.</div>;
+    return null;
   }
   if (usage.availability === "external") {
     return (

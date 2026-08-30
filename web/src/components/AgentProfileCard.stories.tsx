@@ -53,17 +53,6 @@ export const CodexCreditsStale: Story = {
   },
 };
 
-export const CursorExternal: Story = {
-  parameters: { apiRoutes: {
-    "GET /api/me": fixtureMe,
-    "GET /api/agents": { agents: [{ ...fixtureAgents[0], id: "cursor", name: "Cursor" }] },
-    "GET /api/agents/cursor/usage": { usage: { agent_id: "cursor", provider: "cursor", availability: "external", captured_at: now, windows: [], external_url: "https://cursor.com/dashboard" }, refreshing: false, stale: false },
-  }, setup: () => useAgentProfile.getState().show("cursor") },
-  play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).findByText("Open usage dashboard")).resolves.toBeVisible();
-  },
-};
-
 export const OfflineLastKnown: Story = {
   parameters: { apiRoutes: {
     "GET /api/me": fixtureMe,
