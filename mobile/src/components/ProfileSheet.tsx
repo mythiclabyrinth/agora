@@ -5,8 +5,8 @@
    MessageActions. */
 
 import React from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
-import { useAgents, useUsers } from "@agora/core";
+import { Linking, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { useAgents, useAgentUsage, useUsers } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtTs } from "@agora/core";
 import { colors } from "../lib/theme";
@@ -27,6 +27,7 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
   const isAgent = message.author_type === "agent";
   const agents = useAgents();
   const users = useUsers(!isAgent);
+  const usageQuery = useAgentUsage(isAgent ? message.author_id : "");
   const agent = isAgent
     ? ((agents.data ?? []).find((a) => a.id === message.author_id) ?? null)
     : null;
@@ -76,6 +77,7 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
                     : "To every message in its channels"
                 }
               />
+              <AgentUsageBlock data={usageQuery.data} live={agent.live} />
             </View>
           ) : null}
           {user ? (
@@ -88,6 +90,30 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
         </View>
       </Pressable>
     </Modal>
+  );
+}
+
+function AgentUsageBlock({ data, live }: { data: ReturnType<typeof useAgentUsage>["data"]; live: boolean }) {
+  const usage = data?.usage;
+  if (!usage) return null;
+  if (usage.availability === "external") {
+    return (
+      <View style={styles.usageCard}>
+        <Text style={styles.usageTitle}>USAGE</Text>
+        <Text style={styles.usageNote}>Cursor reports usage in its dashboard.</Text>
+        {usage.external_url ? <Pressable onPress={() => void Linking.openURL(usage.external_url!)}><Text style={styles.usageLink}>Open usage dashboard</Text></Pressable> : null}
+      </View>
+    );
+  }
+  return (
+    <View style={styles.usageCard}>
+      <View style={styles.usageHeading}><Text style={styles.usageTitle}>USAGE{usage.plan ? ` · ${usage.plan.toUpperCase()}` : ""}</Text><Text style={styles.usageNote}>{data?.refreshing ? "Updating…" : !live ? "Agent offline" : data?.stale ? "May be outdated" : "Current"}</Text></View>
+      {usage.windows.map(window => <View key={window.key} style={styles.usageWindow}>
+        <View style={styles.usageHeading}><Text style={styles.usageLabel}>{window.label}</Text><Text style={styles.usagePercent}>{Math.round(window.used_percent)}% used</Text></View>
+        <View style={styles.usageTrack}><View style={[styles.usageFill, { width: `${Math.max(0, Math.min(100, window.used_percent))}%` }]} /></View>
+        {window.resets_at ? <Text style={styles.usageNote}>Resets {new Date(window.resets_at * 1000).toLocaleString()}</Text> : null}
+      </View>)}
+    </View>
   );
 }
 
@@ -133,4 +159,14 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   rowVal: { color: colors.text, fontSize: 13.5, flex: 1 },
+  usageCard: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 12, gap: 10, marginTop: 3 },
+  usageHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: 8 },
+  usageTitle: { color: colors.text, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
+  usageWindow: { gap: 5 },
+  usageLabel: { color: colors.text, fontSize: 12.5 },
+  usagePercent: { color: colors.text, fontSize: 11.5, fontWeight: "700" },
+  usageTrack: { height: 7, borderRadius: 4, overflow: "hidden", backgroundColor: colors.panelStrong },
+  usageFill: { height: "100%", backgroundColor: colors.a1 },
+  usageNote: { color: colors.dim, fontSize: 11.5 },
+  usageLink: { color: colors.a1, fontSize: 12.5, fontWeight: "700" },
 });

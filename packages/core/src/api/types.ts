@@ -471,6 +471,38 @@ export interface AgentInfo {
   tts_voice_labels?: { openai: string; groq: string };
 }
 
+export interface AgentUsageWindow {
+  key: string;
+  label: string;
+  used_percent: number;
+  window_minutes: number | null;
+  resets_at: number | null;
+}
+
+export interface AgentUsage {
+  agent_id: string;
+  provider: string;
+  availability: "available" | "external" | "unavailable";
+  captured_at: number;
+  updated_at?: number;
+  windows: AgentUsageWindow[];
+  plan?: string | null;
+  credits?: { has_credits?: boolean; unlimited?: boolean; balance?: string } | null;
+  external_url?: string | null;
+}
+
+export interface AgentUsageResponse {
+  usage: AgentUsage | null;
+  refreshing: boolean;
+  stale: boolean;
+}
+
+export interface AgentUsageEvent {
+  type: "agent_usage";
+  agent_id: string;
+  usage: AgentUsage;
+}
+
 export interface ChannelAgent {
   id: string;
   name: string;
@@ -551,7 +583,8 @@ export type WsEvent =
   | ReadEvent
   | ThreadReadEvent
   | ThreadRenamedEvent
-  | PinEvent;
+  | PinEvent
+  | AgentUsageEvent;
 
 export interface ChannelActivity {
   typing: TypingEvent[];

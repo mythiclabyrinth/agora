@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -46,7 +47,7 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("missing dependency: pip install websockets")
 
-CODEX_SESSIONS = Path.home() / ".codex" / "sessions"
+CODEX_SESSIONS = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
 MAX_POST_CHARS = 8000
 MAX_TLDR_CHARS = 2000  # hub drops a longer tldr; pre-truncate so ours always lands
 PROGRESS_THROTTLE = 2.0  # seconds between progress frames
@@ -63,6 +64,63 @@ ATTACH_PROMPT_SUFFIX = (
     f"with one `{ATTACH_SENTINEL} /absolute/path` line per image. The relay removes "
     "those lines and uploads the files. Only use paths for images you intentionally want to share.)"
 )
+
+def read_codex_usage(thread_id: str | None = None) -> dict | None:
+    """Read the newest provider quota snapshot Codex persisted locally."""
+    pattern = f"rollout-*-{thread_id}.jsonl" if thread_id else "rollout-*.jsonl"
+    try:
+        paths = sorted(CODEX_SESSIONS.rglob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in paths[:20]:
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - TAIL_BYTES))
+                lines = fh.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = rec.get("payload") or {}
+            limits = payload.get("rate_limits") if payload.get("type") == "token_count" else None
+            if not isinstance(limits, dict):
+                continue
+            windows = []
+            for key in ("primary", "secondary"):
+                value = limits.get(key)
+                if not isinstance(value, dict) or not isinstance(value.get("used_percent"), (int, float)):
+                    continue
+                minutes = value.get("window_minutes")
+                if minutes == 300:
+                    label = "5-hour"
+                elif minutes == 10080:
+                    label = "Weekly"
+                else:
+                    label = f"{minutes}-minute window" if isinstance(minutes, int) else key.title()
+                windows.append({
+                    "key": key, "label": label, "used_percent": float(value["used_percent"]),
+                    "window_minutes": minutes if isinstance(minutes, int) else None,
+                    "resets_at": value.get("resets_at") if isinstance(value.get("resets_at"), int) else None,
+                })
+            if not windows:
+                continue
+            captured_at = path.stat().st_mtime
+            timestamp = rec.get("timestamp")
+            if isinstance(timestamp, str):
+                try:
+                    captured_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    pass
+            return {
+                "provider": "codex", "availability": "available", "captured_at": captured_at,
+                "windows": windows, "plan": limits.get("plan_type"), "credits": limits.get("credits"),
+            }
+    return None
 
 # TL;DR support. When enabled for a run we ask Codex to end a long reply with a
 # sentinel line the bridge lifts into the post frame's `tldr` field (a short
@@ -565,6 +623,7 @@ class Bridge:
         self.procs: dict[str, asyncio.subprocess.Process] = {}  # key -> running codex
         self.stop_requested: set[str] = set()  # keys cancelled via /stop
         self.outbox: asyncio.Queue = asyncio.Queue()
+        self.last_usage_frame: dict | None = None
         # Per-binding backlog of messages we saw but stayed silent on (someone
         # else was @mentioned). Flushed into the prompt as context the next time
         # we're actually addressed, so a late @mention arrives already caught up.
@@ -611,6 +670,12 @@ class Bridge:
 
     def send(self, frame: dict) -> None:
         self.outbox.put_nowait(frame)
+
+    def refresh_usage(self, thread_id: str | None = None) -> None:
+        usage = read_codex_usage(thread_id)
+        if usage:
+            self.last_usage_frame = {"type": "usage_update", "agent_id": self.agent_id, **usage}
+            self.send(self.last_usage_frame)
 
     def post(self, key_frame: dict, text: str, tldr: str | None = None,
              attachments: list[dict] | None = None) -> None:
@@ -1431,6 +1496,7 @@ class Bridge:
                         elif kind == "turn.completed":
                             break
                     await proc.wait()
+                    self.refresh_usage(new_session_id or binding.get("session_id"))
             except TimeoutError:
                 raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
@@ -1554,6 +1620,8 @@ class Bridge:
                 kind = frame.get("type")
                 if kind == "inbound":
                     asyncio.create_task(self.handle_inbound(frame))
+                elif kind == "usage_refresh":
+                    self.refresh_usage()
                 elif kind == "error":
                     log(
                         f"{frame.get('frame_type', 'frame')} rejected"

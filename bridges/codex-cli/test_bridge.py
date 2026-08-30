@@ -1,4 +1,5 @@
 import asyncio
+import json
 import importlib.util
 import io
 import tempfile
@@ -350,6 +351,30 @@ class OutboundAttachmentTests(unittest.TestCase):
             _, attachments, notices = bridge.Bridge._split_outbound_attachments(
                 f"{line}\n{line}", tmp, [], 1024)
             self.assertEqual((len(attachments), notices), (1, []))
+
+
+class UsageTests(unittest.TestCase):
+    def test_rollout_rate_limits_keep_percentage_units_and_duration_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "2026" / "08" / "31" / "rollout-test-thread-1.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"timestamp": "2026-08-31T01:23:45Z", "payload": {"type": "token_count", "rate_limits": {
+                "primary": {"used_percent": 4.0, "window_minutes": 10080, "resets_at": 3000},
+                "secondary": {"used_percent": 22.0, "window_minutes": 300, "resets_at": 2000},
+                "plan_type": "pro", "credits": {"has_credits": True, "balance": "5"},
+            }}}) + "\n")
+            with patch.object(bridge, "CODEX_SESSIONS", root):
+                usage = bridge.read_codex_usage("thread-1")
+        self.assertEqual(usage["windows"][0]["used_percent"], 4.0)
+        self.assertEqual(usage["windows"][0]["label"], "Weekly")
+        self.assertEqual(usage["windows"][1]["label"], "5-hour")
+        self.assertEqual(usage["credits"]["balance"], "5")
+        self.assertEqual(usage["captured_at"], 1788139425)
+
+    def test_rollout_without_rate_limits_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "CODEX_SESSIONS", Path(tmp)):
+            self.assertIsNone(bridge.read_codex_usage())
 
 
 if __name__ == "__main__":

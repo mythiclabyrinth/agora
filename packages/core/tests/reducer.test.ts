@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
 import { keys } from "../src/api/keys";
-import type { Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
+import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
 const msg = (id: number, text = `m${id}`): Message =>
   ({
@@ -86,6 +86,24 @@ describe("applyMessageUpdate", () => {
     expect(qc.getQueryData(keys.threads)).toBe(threads);
     expect(qc.getQueryData(keys.pins("c1"))).toBe(pins);
     expect(qc.getQueryData(keys.stars("c1"))).toBe(stars);
+  });
+});
+
+describe("agent usage events", () => {
+  it("replace a refreshing cached snapshot with the live provider update", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<AgentUsageResponse>(keys.agentUsage("claude"), {
+      usage: null, refreshing: true, stale: true,
+    });
+    applyWsEvent(qc, {
+      type: "agent_usage", agent_id: "claude",
+      usage: { agent_id: "claude", provider: "claude", availability: "available", captured_at: 10,
+        windows: [{ key: "five_hour", label: "Current session", used_percent: 34, window_minutes: 300, resets_at: 20 }] },
+    }, { username: "me" });
+    const next = qc.getQueryData<AgentUsageResponse>(keys.agentUsage("claude"))!;
+    expect(next.usage?.windows[0].used_percent).toBe(34);
+    expect(next.refreshing).toBe(false);
+    expect(next.stale).toBe(false);
   });
 });
 

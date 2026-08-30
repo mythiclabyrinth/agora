@@ -473,6 +473,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agents", get(available_agents))
         .route("/api/agents/{agent_id}", delete(forget_agent))
         .route("/api/agents/{agent_id}/avatar", get(agent_avatar))
+        .route("/api/agents/{agent_id}/usage", get(agent_usage))
         .route("/api/admin/agents/{agent_id}/tts", put(update_agent_tts_settings))
         .route("/api/dms", get(list_agent_dms))
         .route("/api/dms/{agent_id}", post(open_agent_dm))
@@ -2939,6 +2940,31 @@ async fn available_agents(
         })
         .collect();
     Ok(Json(json!({"agents": agents})))
+}
+
+async fn agent_usage(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_user(&state, &headers, &q)?;
+    if state.hub.store.agent(&agent_id).is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "Unknown agent"));
+    }
+    let usage = state.hub.store.agent_usage(&agent_id);
+    let age = usage.as_ref()
+        .and_then(|u| u["captured_at"].as_f64())
+        .map(|at| (crate::store::now() - at).max(0.0));
+    let should_refresh = age.is_none_or(|seconds| seconds >= 300.0);
+    let refreshing = should_refresh && state.hub.request_agent_usage_refresh(&agent_id);
+    let stale = age.is_some_and(|seconds| seconds >= 900.0)
+        || usage.as_ref().and_then(|u| u["windows"].as_array()).is_some_and(|windows| {
+            windows.iter().any(|w| {
+                w["resets_at"].as_i64().is_some_and(|at| at as f64 <= crate::store::now())
+            })
+        });
+    Ok(Json(json!({"usage": usage, "refreshing": refreshing, "stale": stale})))
 }
 
 /// The same-origin proxy path for an agent's picture (the browser can't reach
@@ -5679,6 +5705,24 @@ mod tests {
         assert_eq!(bot["tts_editable"], true);
         assert_eq!(bot["tts_accent_label"], "British English");
         assert_eq!(mimir["tts_editable"], false);
+    }
+
+    #[tokio::test]
+    async fn agent_usage_endpoint_returns_snapshot_and_staleness() {
+        let (state, _dir) = test_state();
+        state.hub.store.upsert_agent("claude", "Claude", "pairing:test", false, false, 0);
+        state.hub.store.set_agent_usage(
+            "claude", "claude",
+            &json!({"agent_id": "claude", "availability": "available", "windows": [{"key": "weekly", "used_percent": 25}]}),
+            crate::store::now() - 901.0,
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+        let response = agent_usage(
+            State(state), Path("claude".into()), Query(HashMap::new()), headers,
+        ).await.unwrap().0;
+        assert_eq!(response["usage"]["windows"][0]["used_percent"], 25);
+        assert_eq!(response["stale"], true);
     }
 
     #[tokio::test]

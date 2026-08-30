@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc::UnboundedSender, Notify};
 
 use crate::attachments::{safe_filename, sniff_image_mime};
-use crate::store::{slugify, NewAttachment, Store};
+use crate::store::{now, slugify, NewAttachment, Store};
 
 /// Default consecutive agent-authored messages fanned out to a recipient in
 /// one channel/thread. Agents may request a connection-scoped override up to
@@ -457,6 +457,9 @@ struct HubState {
     activity: HashMap<String, Activity>,
     /// channel_id -> when it was last notified (see NOTIFY_THROTTLE).
     last_notified: HashMap<String, Instant>,
+    /// Last on-demand usage refresh sent per live agent. Profile opens may be
+    /// concurrent across clients, so one request serves them all.
+    last_usage_refresh: HashMap<String, Instant>,
 }
 
 #[derive(Default, Clone)]
@@ -756,6 +759,60 @@ impl Hub {
 
     pub fn agent_handle(&self, agent_id: &str) -> Option<AgentHandle> {
         self.state.lock().unwrap().agents.get(agent_id).cloned()
+    }
+
+    /// Ask a live bridge to refresh account usage, at most once per five
+    /// minutes. Providers that cannot refresh safely may return their cache.
+    pub fn request_agent_usage_refresh(&self, agent_id: &str) -> bool {
+        let mut st = self.state.lock().unwrap();
+        if st.last_usage_refresh.get(agent_id).is_some_and(|at| at.elapsed() < Duration::from_secs(300)) {
+            return false;
+        }
+        let Some(handle) = st.agents.get(agent_id).cloned() else { return false };
+        st.last_usage_refresh.insert(agent_id.to_string(), Instant::now());
+        handle.tx.send(json!({
+            "type": "usage_refresh", "agent_id": agent_id,
+            "request_id": format!("usage-{:.0}", now() * 1000.0),
+        })).is_ok()
+    }
+
+    fn accept_agent_usage(&self, agent_id: &str, frame: &Value) {
+        let provider = frame["provider"].as_str().unwrap_or_default();
+        if provider.is_empty() || provider.len() > 32 { return; }
+        let availability = frame["availability"].as_str().unwrap_or("available");
+        if !matches!(availability, "available" | "external" | "unavailable") { return; }
+        let captured_at = frame["captured_at"].as_f64().unwrap_or_else(now);
+        let now_s = now();
+        if captured_at <= 0.0 || captured_at > now_s + 300.0 { return; }
+        let mut windows = Vec::new();
+        if let Some(items) = frame["windows"].as_array() {
+            for item in items.iter().take(8) {
+                let Some(key) = item["key"].as_str().filter(|s| !s.is_empty() && s.len() <= 64) else { continue };
+                let Some(used) = item["used_percent"].as_f64().filter(|n| n.is_finite()) else { continue };
+                windows.push(json!({
+                    "key": key,
+                    "label": item["label"].as_str().unwrap_or(key).chars().take(80).collect::<String>(),
+                    "used_percent": used.clamp(0.0, 100.0),
+                    "window_minutes": item["window_minutes"].as_i64().filter(|n| *n > 0),
+                    "resets_at": item["resets_at"].as_i64().filter(|n| *n > 0),
+                }));
+            }
+        }
+        let snapshot = json!({
+            "agent_id": agent_id, "provider": provider, "availability": availability,
+            "captured_at": captured_at, "windows": windows,
+            "plan": frame["plan"].as_str().map(|s| s.chars().take(64).collect::<String>()),
+            "credits": frame.get("credits").filter(|v| v.is_object()).map(|credits| json!({
+                "has_credits": credits["has_credits"].as_bool(),
+                "unlimited": credits["unlimited"].as_bool(),
+                "balance": credits["balance"].as_str().map(|s| s.chars().take(64).collect::<String>()),
+            })).unwrap_or(Value::Null),
+            "external_url": frame["external_url"].as_str().filter(|s| s.starts_with("https://")).map(|s| s.chars().take(500).collect::<String>()),
+        });
+        self.store.set_agent_usage(agent_id, provider, &snapshot, captured_at);
+        let event = json!({"type": "agent_usage", "agent_id": agent_id, "usage": snapshot});
+        let targets: Vec<UnboundedSender<Value>> = self.state.lock().unwrap().sockets.iter().map(|s| s.tx.clone()).collect();
+        for tx in targets { let _ = tx.send(event.clone()); }
     }
 
     /// Whether this exact pairing credential owns the live socket that
@@ -1876,6 +1933,12 @@ impl Hub {
         // the empty-channel drop below.
         if frame["type"].as_str() == Some("search_request") {
             self.handle_search_request(&agent_id, frame);
+            return;
+        }
+        // Account usage is agent-scoped, not channel-scoped. Ownership was
+        // checked above; handle it before the room-address and membership gates.
+        if frame["type"].as_str() == Some("usage_update") {
+            self.accept_agent_usage(&agent_id, frame);
             return;
         }
         if channel_id.is_empty() || self.store.channel(&channel_id).is_none() {
@@ -3595,6 +3658,46 @@ mod tests {
         assert_eq!(ev["type"], "message");
         assert_eq!(ev["message"]["author_id"], "bot-a");
         assert_eq!(h.store.messages(&cid, None, None, 10).len(), 1);
+    }
+
+    #[test]
+    fn usage_update_is_agent_scoped_clamped_and_broadcast() {
+        let h = hub();
+        let _rx_agent = add_agent(&h, "bot-a", "Bot A", false);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        h.attach_socket("tom", false, tx_ui);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [
+                {"key": "five_hour", "label": "Current session", "used_percent": 140, "resets_at": 2000000000},
+                {"key": "bad", "used_percent": "nope"}
+            ]
+        }));
+        let stored = h.store.agent_usage("bot-a").unwrap();
+        assert_eq!(stored["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(stored["windows"][0]["used_percent"], 100.0);
+        assert_eq!(rx_ui.try_recv().unwrap()["type"], "agent_usage");
+    }
+
+    #[test]
+    fn usage_update_from_wrong_connection_is_rejected() {
+        let h = hub();
+        let _rx_agent = add_agent(&h, "bot-a", "Bot A", false);
+        h.handle_agent_frame_from(999, &json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "weekly", "used_percent": 10}]
+        }));
+        assert!(h.store.agent_usage("bot-a").is_none());
+    }
+
+    #[test]
+    fn usage_refresh_is_deduplicated() {
+        let h = hub();
+        let mut rx = add_agent(&h, "bot-a", "Bot A", false);
+        assert!(h.request_agent_usage_refresh("bot-a"));
+        assert!(!h.request_agent_usage_refresh("bot-a"));
+        assert_eq!(rx.try_recv().unwrap()["type"], "usage_refresh");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

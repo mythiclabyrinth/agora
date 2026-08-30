@@ -5,6 +5,8 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type {
   Group,
+  AgentUsageEvent,
+  AgentUsageResponse,
   Message,
   MessageDeleteEvent,
   MessageEvent,
@@ -323,6 +325,13 @@ export function applyWsEvent(
   ctx: WsContext,
 ): void {
   switch (ev.type) {
+    case "agent_usage": {
+      const usage = ev as AgentUsageEvent;
+      qc.setQueryData<AgentUsageResponse>(keys.agentUsage(usage.agent_id), (old) => ({
+        ...old, usage: usage.usage, refreshing: false, stale: false,
+      }));
+      break;
+    }
     case "message": {
       const { message } = ev as MessageEvent;
       // Duplicate frames (leaked sockets) must not re-bump reply/unread

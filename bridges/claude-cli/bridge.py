@@ -550,6 +550,7 @@ class Bridge:
         self.procs: dict[str, asyncio.subprocess.Process] = {}  # key -> running claude
         self.stop_requested: set[str] = set()  # keys cancelled via /stop
         self.outbox: asyncio.Queue = asyncio.Queue()
+        self.last_usage_frame: dict | None = None
         # In-flight asks awaiting a channel response: options_id ->
         # (future, channel_id, thread_id). Futures resolve to
         # ("option", option_id, user) on a button tap, or ("text", reply, user)
@@ -607,6 +608,38 @@ class Bridge:
 
     def send(self, frame: dict) -> None:
         self.outbox.put_nowait(frame)
+
+    def capture_usage(self, event: dict) -> None:
+        info = event.get("rate_limit_info") or {}
+        raw_windows = info.get("unifiedWindows") or {}
+        windows = []
+        for key, value in raw_windows.items():
+            if not isinstance(value, dict):
+                continue
+            utilization = value.get("utilization")
+            if not isinstance(utilization, (int, float)):
+                continue
+            reset = value.get("resetsAt")
+            labels = {
+                "five_hour": "Current session",
+                "seven_day": "Current week",
+                "seven_day_opus": "Current week · Opus",
+                "seven_day_sonnet": "Current week · Sonnet",
+                "seven_day_oauth_apps": "Current week · OAuth apps",
+            }
+            windows.append({
+                "key": str(key), "label": labels.get(key, str(key).replace("_", " ").title()),
+                "used_percent": max(0.0, min(100.0, float(utilization) * 100.0)),
+                "window_minutes": 300 if key == "five_hour" else (10080 if key.startswith("seven_day") else None),
+                "resets_at": int(reset) if isinstance(reset, (int, float)) and reset > 0 else None,
+            })
+        if not windows:
+            return
+        self.last_usage_frame = {
+            "type": "usage_update", "agent_id": self.agent_id, "provider": "claude",
+            "availability": "available", "captured_at": time.time(), "windows": windows,
+        }
+        self.send(self.last_usage_frame)
 
     def post(self, key_frame: dict, text: str, tldr: str | None = None,
              attachments: list[dict] | None = None) -> None:
@@ -1417,6 +1450,9 @@ class Bridge:
                         except json.JSONDecodeError:
                             continue
                         kind = event.get("type")
+                        if kind == "rate_limit_event":
+                            self.capture_usage(event)
+                            continue
                         if kind == "system" and event.get("subtype") == "init":
                             raw_cmds = event.get("slash_commands") or []
                             if isinstance(raw_cmds, list):
@@ -1901,6 +1937,9 @@ class Bridge:
                 kind = frame.get("type")
                 if kind == "inbound":
                     asyncio.create_task(self.handle_inbound(frame))
+                elif kind == "usage_refresh":
+                    if self.last_usage_frame:
+                        self.send(self.last_usage_frame)
                 elif kind == "option_select":
                     self.handle_option_select(frame)
                 elif kind == "error":
