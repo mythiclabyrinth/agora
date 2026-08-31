@@ -409,7 +409,9 @@ snapshot; provider credentials never leave the bridge machine.
 `availability` is `available` when the snapshot has reportable windows and may
 be `unavailable` when a provider cannot report usage. Consumers render returned
 windows without assuming that `primary` means five hours or that every plan has
-a weekly/model-specific limit.
+a weekly/model-specific limit. A provider may satisfy `usage_refresh` through a
+token-free local CLI command; human-readable output must be parsed
+conservatively and a failed parse must preserve the last valid snapshot.
 
 Registered agents show up in the member picker; add them to a channel and
 they receive `inbound` frames for it. Bot-to-bot chatter is fanned out too,

@@ -43,9 +43,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     import websockets
@@ -53,6 +55,77 @@ except ImportError:  # pragma: no cover
     sys.exit("missing dependency: pip install websockets")
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+USAGE_REFRESH_TIMEOUT = 15
+_USAGE_LINE_RE = re.compile(
+    r"^(Current session|Current week(?: \(([^)]+)\))?):\s*"
+    r"(\d+(?:\.\d+)?)% used\s*[·•-]\s*resets\s+"
+    r"([A-Z][a-z]{2})\s+(\d{1,2})\s+at\s+"
+    r"(\d{1,2}:\d{2}\s*(?:am|pm))\s+\(([^)]+)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_subscription_usage(raw: str, now: float | None = None) -> list[dict] | None:
+    """Parse Claude's token-free /usage text, failing closed on format drift."""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        text = raw
+    else:
+        text = payload.get("result") if isinstance(payload, dict) else None
+        if not isinstance(text, str):
+            return None
+    now_s = time.time() if now is None else now
+    windows = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = _USAGE_LINE_RE.match(stripped)
+        if not match:
+            if stripped.startswith(("Current session", "Current week")) and "% used" in stripped:
+                return None
+            continue
+        raw_label, scope, raw_percent, month, day, clock, tz_name = match.groups()
+        if raw_label.lower() == "current session":
+            key, label, minutes = "five_hour", "Current session", 300
+        else:
+            scopes = {
+                "all models": ("seven_day", "Current week"),
+                "sonnet only": ("seven_day_sonnet", "Current week · Sonnet"),
+                "opus only": ("seven_day_opus", "Current week · Opus"),
+                "fable only": ("seven_day_fable", "Current week · Fable"),
+                "oauth apps": ("seven_day_oauth_apps", "Current week · OAuth apps"),
+            }
+            resolved = scopes.get((scope or "").lower())
+            if not resolved:
+                continue
+            key, label = resolved
+            minutes = 10080
+        percent = float(raw_percent)
+        if not 0 <= percent <= 100:
+            return None
+        try:
+            zone = ZoneInfo(tz_name)
+            now_dt = datetime.fromtimestamp(now_s, zone)
+            # The CLI omits seconds. Treat the displayed minute as inclusive so
+            # stale state cannot begin up to 59 seconds before the real reset.
+            reset_dt = datetime.strptime(
+                f"{month} {day} {now_dt.year} {clock.replace(' ', '')}",
+                "%b %d %Y %I:%M%p",
+            ).replace(tzinfo=zone, second=59)
+            if reset_dt.timestamp() <= now_s:
+                reset_dt = reset_dt.replace(year=now_dt.year + 1)
+            reset_at = int(reset_dt.timestamp())
+        except (ValueError, ZoneInfoNotFoundError):
+            return None
+        if reset_at <= now_s or reset_at - now_s > 8 * 24 * 60 * 60:
+            return None
+        windows.append({
+            "key": key, "label": label, "used_percent": percent,
+            "window_minutes": minutes, "resets_at": reset_at,
+        })
+    return windows or None
+
+
 MAX_POST_CHARS = 8000
 MAX_TLDR_CHARS = 2000  # hub drops a longer tldr; pre-truncate so ours always lands
 PROGRESS_THROTTLE = 2.0  # seconds between progress frames
@@ -640,6 +713,38 @@ class Bridge:
             "availability": "available", "captured_at": time.time(), "windows": windows,
         }
         self.send(self.last_usage_frame)
+
+    async def refresh_usage(self) -> None:
+        """Fetch live subscription limits through Claude's zero-turn /usage command."""
+        proc = None
+        windows = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.claude_bin, "-p", "/usage", "--output-format", "json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=USAGE_REFRESH_TIMEOUT
+            )
+            if proc.returncode == 0:
+                windows = parse_subscription_usage(
+                    stdout.decode("utf-8", errors="replace")
+                )
+        except (OSError, TimeoutError):
+            pass
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+        if windows:
+            self.last_usage_frame = {
+                "type": "usage_update", "agent_id": self.agent_id,
+                "provider": "claude", "availability": "available",
+                "captured_at": time.time(), "windows": windows,
+            }
+        if self.last_usage_frame:
+            self.send(self.last_usage_frame)
 
     def post(self, key_frame: dict, text: str, tldr: str | None = None,
              attachments: list[dict] | None = None) -> None:
@@ -1938,8 +2043,7 @@ class Bridge:
                 if kind == "inbound":
                     asyncio.create_task(self.handle_inbound(frame))
                 elif kind == "usage_refresh":
-                    if self.last_usage_frame:
-                        self.send(self.last_usage_frame)
+                    asyncio.create_task(self.refresh_usage())
                 elif kind == "option_select":
                     self.handle_option_select(frame)
                 elif kind == "error":

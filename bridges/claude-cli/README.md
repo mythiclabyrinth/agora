@@ -75,6 +75,13 @@ bindings — so one channel can plan read-only on Sonnet while another auto-appl
 on Opus. All persist in `state.json`. Bridge `/model` is intentional (not Claude's
 TUI `/model` picker): it sticks across runs via `--model`.
 
+When Agora requests a profile usage refresh, the bridge runs Claude Code's
+headless `/usage` command. It makes zero model turns and consumes zero tokens;
+the bridge conservatively converts recognized subscription-limit lines into the
+same structured windows emitted by normal `rate_limit_event` updates. If the
+localized CLI text is unrecognized or changes format, the last valid snapshot
+is retained rather than guessed or overwritten.
+
 **TL;DR summaries** are off by default. Enable them per channel with `/tldr on`,
 or bridge-wide with `CLAUDE_TLDR=1` / `--tldr` (channels still override). When on,
 each run appends a small `--append-system-prompt` asking Claude to end a long
