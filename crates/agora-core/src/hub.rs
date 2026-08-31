@@ -3732,6 +3732,28 @@ mod tests {
     }
 
     #[test]
+    fn usage_update_is_stale_when_a_reset_window_has_passed() {
+        let h = hub();
+        let _rx_agent = add_agent(&h, "bot-a", "Bot A", false);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        h.attach_socket("tom", false, tx_ui);
+        let now_s = now();
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now_s,
+            "windows": [{
+                "key": "five_hour", "label": "Current session",
+                "used_percent": 40, "resets_at": (now_s as i64) - 1
+            }]
+        }));
+        assert_eq!(rx_ui.try_recv().unwrap()["stale"], true);
+        assert!(agent_usage_is_stale(
+            &h.store.agent_usage("bot-a").unwrap(),
+            now_s,
+        ));
+    }
+
+    #[test]
     fn usage_update_from_wrong_connection_is_rejected() {
         let h = hub();
         let _rx_agent = add_agent(&h, "bot-a", "Bot A", false);

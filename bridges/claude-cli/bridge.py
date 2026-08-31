@@ -63,6 +63,54 @@ _USAGE_LINE_RE = re.compile(
     r"(\d{1,2}:\d{2}\s*(?:am|pm))\s+\(([^)]+)\)\s*$",
     re.IGNORECASE,
 )
+# Explicit English month names — avoid strptime %b/%p, which follow LC_TIME and
+# break under non-English locales even when Claude's /usage text stays English.
+_USAGE_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _parse_usage_reset(
+    month: str, day: str, clock: str, tz_name: str, now_s: float,
+) -> int | None:
+    """Convert a /usage reset phrase into a Unix timestamp, locale-independently.
+
+    Displayed times omit seconds; treat the minute as inclusive (second=59) so
+    stale state cannot begin up to ~60s before the real reset. Precision is
+    therefore ±60s relative to Anthropic's exact instant — safe for 5-hour and
+    weekly windows.
+    """
+    month_num = _USAGE_MONTHS.get(month.lower())
+    clock_match = re.fullmatch(
+        r"(\d{1,2}):(\d{2})\s*(am|pm)", clock.strip(), re.IGNORECASE,
+    )
+    if month_num is None or clock_match is None:
+        return None
+    try:
+        day_num = int(day)
+        hour = int(clock_match.group(1))
+        minute = int(clock_match.group(2))
+    except ValueError:
+        return None
+    if not (1 <= day_num <= 31 and 1 <= hour <= 12 and 0 <= minute <= 59):
+        return None
+    meridiem = clock_match.group(3).lower()
+    if meridiem == "am":
+        hour = 0 if hour == 12 else hour
+    else:
+        hour = hour if hour == 12 else hour + 12
+    try:
+        zone = ZoneInfo(tz_name)
+        now_dt = datetime.fromtimestamp(now_s, zone)
+        reset_dt = datetime(
+            now_dt.year, month_num, day_num, hour, minute, 59, tzinfo=zone,
+        )
+        if reset_dt.timestamp() <= now_s:
+            reset_dt = reset_dt.replace(year=now_dt.year + 1)
+        return int(reset_dt.timestamp())
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
 
 
 def parse_subscription_usage(raw: str, now: float | None = None) -> list[dict] | None:
@@ -72,7 +120,14 @@ def parse_subscription_usage(raw: str, now: float | None = None) -> list[dict] |
     except json.JSONDecodeError:
         text = raw
     else:
-        text = payload.get("result") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        # /usage must be a headless slash command: zero turns and zero cost.
+        # If the CLI treats it as a normal prompt, this envelope is billed —
+        # reject rather than display (or refresh from) a model reply.
+        if payload.get("is_error") or payload.get("num_turns") or payload.get("total_cost_usd"):
+            return None
+        text = payload.get("result")
         if not isinstance(text, str):
             return None
     now_s = time.time() if now is None else now
@@ -103,19 +158,8 @@ def parse_subscription_usage(raw: str, now: float | None = None) -> list[dict] |
         percent = float(raw_percent)
         if not 0 <= percent <= 100:
             return None
-        try:
-            zone = ZoneInfo(tz_name)
-            now_dt = datetime.fromtimestamp(now_s, zone)
-            # The CLI omits seconds. Treat the displayed minute as inclusive so
-            # stale state cannot begin up to 59 seconds before the real reset.
-            reset_dt = datetime.strptime(
-                f"{month} {day} {now_dt.year} {clock.replace(' ', '')}",
-                "%b %d %Y %I:%M%p",
-            ).replace(tzinfo=zone, second=59)
-            if reset_dt.timestamp() <= now_s:
-                reset_dt = reset_dt.replace(year=now_dt.year + 1)
-            reset_at = int(reset_dt.timestamp())
-        except (ValueError, ZoneInfoNotFoundError):
+        reset_at = _parse_usage_reset(month, day, clock, tz_name, now_s)
+        if reset_at is None:
             return None
         if reset_at <= now_s or reset_at - now_s > 8 * 24 * 60 * 60:
             return None

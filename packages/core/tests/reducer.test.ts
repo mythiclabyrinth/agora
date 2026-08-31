@@ -106,6 +106,21 @@ describe("agent usage events", () => {
     expect(next.refreshing).toBe(false);
     expect(next.stale).toBe(true);
   });
+
+  it("defaults missing stale to false for older hubs", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<AgentUsageResponse>(keys.agentUsage("claude"), {
+      usage: null, refreshing: true, stale: true,
+    });
+    applyWsEvent(qc, {
+      type: "agent_usage", agent_id: "claude",
+      usage: { agent_id: "claude", provider: "claude", availability: "available", captured_at: 10,
+        windows: [{ key: "five_hour", label: "Current session", used_percent: 12, window_minutes: 300, resets_at: 20 }] },
+    }, { username: "me" });
+    const next = qc.getQueryData<AgentUsageResponse>(keys.agentUsage("claude"))!;
+    expect(next.refreshing).toBe(false);
+    expect(next.stale).toBe(false);
+  });
 });
 
 describe("attachment browser invalidation", () => {

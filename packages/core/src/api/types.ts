@@ -500,7 +500,8 @@ export interface AgentUsageEvent {
   type: "agent_usage";
   agent_id: string;
   usage: AgentUsage;
-  stale: boolean;
+  /** Older hubs omit this; clients must default it to false. */
+  stale?: boolean;
 }
 
 export interface ChannelAgent {
