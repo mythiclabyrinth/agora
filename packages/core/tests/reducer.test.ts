@@ -90,7 +90,7 @@ describe("applyMessageUpdate", () => {
 });
 
 describe("agent usage events", () => {
-  it("replace a refreshing cached snapshot with the live provider update", () => {
+  it("preserves server-computed staleness on a provider update", () => {
     const qc = new QueryClient();
     qc.setQueryData<AgentUsageResponse>(keys.agentUsage("claude"), {
       usage: null, refreshing: true, stale: true,
@@ -99,9 +99,25 @@ describe("agent usage events", () => {
       type: "agent_usage", agent_id: "claude",
       usage: { agent_id: "claude", provider: "claude", availability: "available", captured_at: 10,
         windows: [{ key: "five_hour", label: "Current session", used_percent: 34, window_minutes: 300, resets_at: 20 }] },
+      stale: true,
     }, { username: "me" });
     const next = qc.getQueryData<AgentUsageResponse>(keys.agentUsage("claude"))!;
     expect(next.usage?.windows[0].used_percent).toBe(34);
+    expect(next.refreshing).toBe(false);
+    expect(next.stale).toBe(true);
+  });
+
+  it("defaults missing stale to false for older hubs", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<AgentUsageResponse>(keys.agentUsage("claude"), {
+      usage: null, refreshing: true, stale: true,
+    });
+    applyWsEvent(qc, {
+      type: "agent_usage", agent_id: "claude",
+      usage: { agent_id: "claude", provider: "claude", availability: "available", captured_at: 10,
+        windows: [{ key: "five_hour", label: "Current session", used_percent: 12, window_minutes: 300, resets_at: 20 }] },
+    }, { username: "me" });
+    const next = qc.getQueryData<AgentUsageResponse>(keys.agentUsage("claude"))!;
     expect(next.refreshing).toBe(false);
     expect(next.stale).toBe(false);
   });

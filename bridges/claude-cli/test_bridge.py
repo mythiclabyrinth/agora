@@ -512,6 +512,120 @@ class OutboundAttachmentTests(unittest.TestCase):
 
 
 class UsageTests(unittest.TestCase):
+    def test_subscription_usage_text_maps_to_existing_windows(self):
+        now = 1788160000
+        raw = json.dumps({"result": (
+            "Current session: 16% used · resets Aug 31 at 3:09pm (Asia/Calcutta)\n"
+            "Current week (all models): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)\n"
+            "Total cost: $0.0000"
+        )})
+        windows = bridge.parse_subscription_usage(raw, now=now)
+        self.assertEqual([window["key"] for window in windows], ["five_hour", "seven_day"])
+        self.assertEqual([window["used_percent"] for window in windows], [16, 9])
+        self.assertTrue(all(now < window["resets_at"] <= now + 8 * 86400 for window in windows))
+
+    def test_subscription_usage_parser_fails_closed_on_format_drift(self):
+        raw = json.dumps({"result": (
+            "Current session: 16% used · sometime Aug 31\n"
+            "Current week (all models): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)"
+        )})
+        self.assertIsNone(bridge.parse_subscription_usage(raw, now=1788160000))
+        self.assertIsNone(bridge.parse_subscription_usage('{"result":"Current week (mystery): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)"}', now=1788160000))
+
+    def test_subscription_usage_parser_skips_unknown_additive_scopes(self):
+        raw = json.dumps({"result": (
+            "Current session: 12% used · resets Aug 31 at 3:09pm (Asia/Calcutta)\n"
+            "Current week (all models): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)\n"
+            "Current week (Haiku only): 4% used · resets Sep 3 at 1:29pm (Asia/Calcutta)"
+        )})
+        windows = bridge.parse_subscription_usage(raw, now=1788160000)
+        self.assertEqual([window["key"] for window in windows], ["five_hour", "seven_day"])
+
+    def test_subscription_usage_rejects_billed_envelope(self):
+        raw = json.dumps({
+            "result": (
+                "Current session: 16% used · resets Aug 31 at 3:09pm (Asia/Calcutta)\n"
+                "Current week (all models): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)"
+            ),
+            "num_turns": 1,
+            "total_cost_usd": 0.012,
+            "duration_api_ms": 420,
+        })
+        self.assertIsNone(bridge.parse_subscription_usage(raw, now=1788160000))
+
+    def test_subscription_usage_parser_is_locale_independent(self):
+        import locale
+        raw = json.dumps({"result": (
+            "Current session: 16% used · resets Aug 31 at 3:09pm (Asia/Calcutta)\n"
+            "Current week (all models): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)"
+        )})
+        previous = locale.setlocale(locale.LC_TIME)
+        try:
+            try:
+                locale.setlocale(locale.LC_TIME, "fr_FR.UTF-8")
+            except locale.Error:
+                self.skipTest("fr_FR.UTF-8 locale unavailable")
+            windows = bridge.parse_subscription_usage(raw, now=1788160000)
+            self.assertEqual(
+                [window["key"] for window in windows],
+                ["five_hour", "seven_day"],
+            )
+            self.assertEqual([window["used_percent"] for window in windows], [16, 9])
+        finally:
+            locale.setlocale(locale.LC_TIME, previous)
+
+    def test_subscription_usage_refresh_is_zero_turn_subprocess_and_updates_cache(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.claude_bin = "claude-test"
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        proc = Mock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(json.dumps({"result": (
+            "Current session: 16% used · resets Aug 31 at 3:09pm (Asia/Calcutta)\n"
+            "Current week (all models): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)"
+        )}).encode(), b""))
+        with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)) as spawn, \
+             patch.object(bridge.time, "time", return_value=1788160000):
+            asyncio.run(instance.refresh_usage())
+        spawn.assert_awaited_once_with(
+            "claude-test", "-p", "/usage", "--output-format", "json",
+            stdout=bridge.asyncio.subprocess.PIPE,
+            stderr=bridge.asyncio.subprocess.PIPE,
+        )
+        self.assertEqual(instance.last_usage_frame["windows"][0]["used_percent"], 16)
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
+    def test_failed_subscription_refresh_keeps_last_good_snapshot(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.claude_bin = "claude-test"
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = {"type": "usage_update", "windows": [{"key": "five_hour"}]}
+        instance.send = Mock()
+        proc = Mock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(b'{"result":"unexpected"}', b""))
+        with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+            asyncio.run(instance.refresh_usage())
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
+    def test_subscription_usage_refresh_timeout_preserves_snapshot_and_kills_process(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.claude_bin = "claude-test"
+        instance.agent_id = "claude-cli"
+        good = {"type": "usage_update", "windows": [{"key": "five_hour", "used_percent": 12}]}
+        instance.last_usage_frame = good
+        instance.send = Mock()
+        proc = Mock(returncode=None)
+        proc.communicate = AsyncMock(side_effect=TimeoutError())
+        proc.kill = Mock()
+        proc.wait = AsyncMock(return_value=0)
+        with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+            asyncio.run(instance.refresh_usage())
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited()
+        self.assertIs(instance.last_usage_frame, good)
+        instance.send.assert_called_once_with(good)
+
     def test_rate_limit_event_normalizes_fractional_windows(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.agent_id = "claude-cli"

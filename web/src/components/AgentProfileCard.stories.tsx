@@ -31,6 +31,7 @@ export const ClaudeLive: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("34% used")).resolves.toBeVisible();
     await expect(canvas.findByText("Current week")).resolves.toBeVisible();
+    expect(canvas.queryByText("Responds")).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole("button"));
     expect(useAgentProfile.getState().openId).toBeNull();
     useAgentProfile.getState().show("claude");

@@ -328,7 +328,7 @@ export function applyWsEvent(
     case "agent_usage": {
       const usage = ev as AgentUsageEvent;
       qc.setQueryData<AgentUsageResponse>(keys.agentUsage(usage.agent_id), (old) => ({
-        ...old, usage: usage.usage, refreshing: false, stale: false,
+        ...old, usage: usage.usage, refreshing: false, stale: usage.stale ?? false,
       }));
       break;
     }

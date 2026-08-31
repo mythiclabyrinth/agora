@@ -2958,12 +2958,9 @@ async fn agent_usage(
         .map(|at| (crate::store::now() - at).max(0.0));
     let should_refresh = age.is_none_or(|seconds| seconds >= 300.0);
     let refreshing = should_refresh && state.hub.request_agent_usage_refresh(&agent_id);
-    let stale = age.is_some_and(|seconds| seconds >= 900.0)
-        || usage.as_ref().and_then(|u| u["windows"].as_array()).is_some_and(|windows| {
-            windows.iter().any(|w| {
-                w["resets_at"].as_i64().is_some_and(|at| at as f64 <= crate::store::now())
-            })
-        });
+    let stale = usage.as_ref().is_some_and(|usage| {
+        crate::hub::agent_usage_is_stale(usage, crate::store::now())
+    });
     Ok(Json(json!({"usage": usage, "refreshing": refreshing, "stale": stale})))
 }
 

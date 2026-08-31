@@ -41,3 +41,6 @@ web/storybook-static/
 # Claude Code local session/agent state
 .claude/
 .codex/
+
+# Playwright MCP scratch output (screenshots, console/snapshot dumps)
+.playwright-mcp/

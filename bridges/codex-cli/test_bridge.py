@@ -354,6 +354,19 @@ class OutboundAttachmentTests(unittest.TestCase):
 
 
 class UsageTests(unittest.TestCase):
+    def test_refresh_reads_rollouts_off_the_event_loop(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "codex-cli"
+        instance.send = Mock()
+        usage = {
+            "provider": "codex", "availability": "available", "captured_at": 10,
+            "windows": [{"key": "primary", "label": "Weekly", "used_percent": 4}],
+        }
+        with patch.object(bridge.asyncio, "to_thread", new=AsyncMock(return_value=usage)) as to_thread:
+            asyncio.run(instance.refresh_usage("thread-1"))
+        to_thread.assert_awaited_once_with(bridge.read_codex_usage, "thread-1")
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
     def test_rollout_rate_limits_keep_percentage_units_and_duration_labels(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

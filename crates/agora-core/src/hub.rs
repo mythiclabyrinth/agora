@@ -462,6 +462,16 @@ struct HubState {
     last_usage_refresh: HashMap<String, Instant>,
 }
 
+pub(crate) fn agent_usage_is_stale(usage: &Value, now_s: f64) -> bool {
+    usage["captured_at"].as_f64()
+        .is_some_and(|at| (now_s - at).max(0.0) >= 900.0)
+        || usage["windows"].as_array().is_some_and(|windows| {
+            windows.iter().any(|window| {
+                window["resets_at"].as_i64().is_some_and(|at| at as f64 <= now_s)
+            })
+        })
+}
+
 #[derive(Default, Clone)]
 struct Activity {
     typing: HashMap<String, Value>,
@@ -674,6 +684,7 @@ impl Hub {
             handle.avatar_v,
         );
         let mut st = self.state.lock().unwrap();
+        st.last_usage_refresh.remove(&handle.agent_id);
         st.agents.insert(handle.agent_id.clone(), handle);
     }
 
@@ -743,6 +754,7 @@ impl Hub {
             .collect();
         for id in &gone {
             st.agents.remove(id);
+            st.last_usage_refresh.remove(id);
         }
         let channels: Vec<String> = st.activity.keys().cloned().collect();
         for cid in channels {
@@ -769,18 +781,21 @@ impl Hub {
             return false;
         }
         let Some(handle) = st.agents.get(agent_id).cloned() else { return false };
-        st.last_usage_refresh.insert(agent_id.to_string(), Instant::now());
-        handle.tx.send(json!({
+        let sent = handle.tx.send(json!({
             "type": "usage_refresh", "agent_id": agent_id,
             "request_id": format!("usage-{:.0}", now() * 1000.0),
-        })).is_ok()
+        })).is_ok();
+        if sent {
+            st.last_usage_refresh.insert(agent_id.to_string(), Instant::now());
+        }
+        sent
     }
 
     fn accept_agent_usage(&self, agent_id: &str, frame: &Value) {
         let provider = frame["provider"].as_str().unwrap_or_default();
         if provider.is_empty() || provider.len() > 32 { return; }
         let availability = frame["availability"].as_str().unwrap_or("available");
-        if !matches!(availability, "available" | "external" | "unavailable") { return; }
+        if !matches!(availability, "available" | "unavailable") { return; }
         let captured_at = frame["captured_at"].as_f64().unwrap_or_else(now);
         let now_s = now();
         if captured_at <= 0.0 || captured_at > now_s + 300.0 { return; }
@@ -798,6 +813,7 @@ impl Hub {
                 }));
             }
         }
+        if availability == "available" && windows.is_empty() { return; }
         let snapshot = json!({
             "agent_id": agent_id, "provider": provider, "availability": availability,
             "captured_at": captured_at, "windows": windows,
@@ -807,10 +823,10 @@ impl Hub {
                 "unlimited": credits["unlimited"].as_bool(),
                 "balance": credits["balance"].as_str().map(|s| s.chars().take(64).collect::<String>()),
             })).unwrap_or(Value::Null),
-            "external_url": frame["external_url"].as_str().filter(|s| s.starts_with("https://")).map(|s| s.chars().take(500).collect::<String>()),
         });
         self.store.set_agent_usage(agent_id, provider, &snapshot, captured_at);
-        let event = json!({"type": "agent_usage", "agent_id": agent_id, "usage": snapshot});
+        let stale = agent_usage_is_stale(&snapshot, now_s);
+        let event = json!({"type": "agent_usage", "agent_id": agent_id, "usage": snapshot, "stale": stale});
         let targets: Vec<UnboundedSender<Value>> = self.state.lock().unwrap().sockets.iter().map(|s| s.tx.clone()).collect();
         for tx in targets { let _ = tx.send(event.clone()); }
     }
@@ -3676,7 +3692,65 @@ mod tests {
         let stored = h.store.agent_usage("bot-a").unwrap();
         assert_eq!(stored["windows"].as_array().unwrap().len(), 1);
         assert_eq!(stored["windows"][0]["used_percent"], 100.0);
-        assert_eq!(rx_ui.try_recv().unwrap()["type"], "agent_usage");
+        let event = rx_ui.try_recv().unwrap();
+        assert_eq!(event["type"], "agent_usage");
+        assert_eq!(event["stale"], false);
+    }
+
+    #[test]
+    fn malformed_usage_update_preserves_the_last_good_snapshot() {
+        let h = hub();
+        let _rx_agent = add_agent(&h, "bot-a", "Bot A", false);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        h.attach_socket("tom", false, tx_ui);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "weekly", "used_percent": 25}]
+        }));
+        let expected = h.store.agent_usage("bot-a").unwrap();
+        let _ = rx_ui.try_recv().unwrap();
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "bad", "used_percent": "nope"}]
+        }));
+        assert_eq!(h.store.agent_usage("bot-a").unwrap(), expected);
+        assert!(rx_ui.try_recv().is_err());
+    }
+
+    #[test]
+    fn usage_update_broadcasts_server_computed_staleness() {
+        let h = hub();
+        let _rx_agent = add_agent(&h, "bot-a", "Bot A", false);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        h.attach_socket("tom", false, tx_ui);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now() - 901.0,
+            "windows": [{"key": "weekly", "used_percent": 25}]
+        }));
+        assert_eq!(rx_ui.try_recv().unwrap()["stale"], true);
+    }
+
+    #[test]
+    fn usage_update_is_stale_when_a_reset_window_has_passed() {
+        let h = hub();
+        let _rx_agent = add_agent(&h, "bot-a", "Bot A", false);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        h.attach_socket("tom", false, tx_ui);
+        let now_s = now();
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now_s,
+            "windows": [{
+                "key": "five_hour", "label": "Current session",
+                "used_percent": 40, "resets_at": (now_s as i64) - 1
+            }]
+        }));
+        assert_eq!(rx_ui.try_recv().unwrap()["stale"], true);
+        assert!(agent_usage_is_stale(
+            &h.store.agent_usage("bot-a").unwrap(),
+            now_s,
+        ));
     }
 
     #[test]
@@ -3698,6 +3772,28 @@ mod tests {
         assert!(!h.request_agent_usage_refresh("bot-a"));
         assert_eq!(rx.try_recv().unwrap()["type"], "usage_refresh");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn usage_refresh_throttle_clears_when_agent_reconnects() {
+        let h = hub();
+        let mut first_rx = add_agent(&h, "bot-a", "Bot A", false);
+        assert!(h.request_agent_usage_refresh("bot-a"));
+        assert_eq!(first_rx.try_recv().unwrap()["type"], "usage_refresh");
+        let mut second_rx = add_agent(&h, "bot-a", "Bot A", false);
+        let _ = first_rx.try_recv().unwrap();
+        assert!(h.request_agent_usage_refresh("bot-a"));
+        assert_eq!(second_rx.try_recv().unwrap()["type"], "usage_refresh");
+    }
+
+    #[test]
+    fn failed_usage_refresh_send_is_not_throttled() {
+        let h = hub();
+        let rx = add_agent(&h, "bot-a", "Bot A", false);
+        drop(rx);
+        assert!(!h.request_agent_usage_refresh("bot-a"));
+        assert!(!h.request_agent_usage_refresh("bot-a"));
+        assert!(h.state.lock().unwrap().last_usage_refresh.is_empty());
     }
 
     #[test]

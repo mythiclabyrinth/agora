@@ -5,7 +5,7 @@
    MessageActions. */
 
 import React from "react";
-import { Linking, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAgents, useAgentUsage, useUsers } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtTs } from "@agora/core";
@@ -23,11 +23,36 @@ function Row({ k, v }: { k: string; v: string }) {
   );
 }
 
+function usageAge(ts: number): string {
+  const seconds = Math.max(0, Date.now() / 1000 - ts);
+  if (seconds < 60) return "Updated just now";
+  if (seconds < 3600) return `Updated ${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `Updated ${Math.floor(seconds / 3600)}h ago`;
+  return `Updated ${Math.floor(seconds / 86400)}d ago`;
+}
+
+function useBoundedRefreshing(refreshing: boolean, updatedAt: number): boolean {
+  const [expired, setExpired] = React.useState(false);
+  React.useEffect(() => {
+    setExpired(false);
+    if (!refreshing) return;
+    const remaining = Math.max(0, 30_000 - (Date.now() - updatedAt));
+    if (!remaining) {
+      setExpired(true);
+      return;
+    }
+    const timer = setTimeout(() => setExpired(true), remaining);
+    return () => clearTimeout(timer);
+  }, [refreshing, updatedAt]);
+  return refreshing && !expired && Date.now() - updatedAt < 30_000;
+}
+
 export function ProfileSheet({ message, onClose }: { message: Message; onClose: () => void }) {
   const isAgent = message.author_type === "agent";
   const agents = useAgents();
   const users = useUsers(!isAgent);
   const usageQuery = useAgentUsage(isAgent ? message.author_id : "");
+  const usageRefreshing = useBoundedRefreshing(!!usageQuery.data?.refreshing, usageQuery.dataUpdatedAt);
   const agent = isAgent
     ? ((agents.data ?? []).find((a) => a.id === message.author_id) ?? null)
     : null;
@@ -69,15 +94,7 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
                 v={agent.live ? "Online" : `Offline · last seen ${fmtTs(agent.last_seen)}`}
               />
               {agent.source ? <Row k="Connection" v={agent.source} /> : null}
-              <Row
-                k="Responds"
-                v={
-                  agent.requires_mention
-                    ? "Only when @-mentioned"
-                    : "To every message in its channels"
-                }
-              />
-              <AgentUsageBlock data={usageQuery.data} live={agent.live} />
+              <AgentUsageBlock data={usageQuery.data} live={agent.live} refreshing={usageRefreshing} />
             </View>
           ) : null}
           {user ? (
@@ -93,21 +110,13 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
   );
 }
 
-function AgentUsageBlock({ data, live }: { data: ReturnType<typeof useAgentUsage>["data"]; live: boolean }) {
+function AgentUsageBlock({ data, live, refreshing }: { data: ReturnType<typeof useAgentUsage>["data"]; live: boolean; refreshing: boolean }) {
   const usage = data?.usage;
-  if (!usage) return null;
-  if (usage.availability === "external") {
-    return (
-      <View style={styles.usageCard}>
-        <Text style={styles.usageTitle}>USAGE</Text>
-        <Text style={styles.usageNote}>Cursor reports usage in its dashboard.</Text>
-        {usage.external_url ? <Pressable onPress={() => void Linking.openURL(usage.external_url!)}><Text style={styles.usageLink}>Open usage dashboard</Text></Pressable> : null}
-      </View>
-    );
-  }
+  if (!usage || usage.windows.length === 0) return null;
+  const freshness = refreshing ? "Updating…" : usageAge(usage.captured_at);
   return (
     <View style={styles.usageCard}>
-      <View style={styles.usageHeading}><Text style={styles.usageTitle}>USAGE{usage.plan ? ` · ${usage.plan.toUpperCase()}` : ""}</Text><Text style={styles.usageNote}>{data?.refreshing ? "Updating…" : !live ? "Agent offline" : data?.stale ? "May be outdated" : "Current"}</Text></View>
+      <View style={styles.usageHeading}><Text style={styles.usageTitle}>USAGE{usage.plan ? ` · ${usage.plan.toUpperCase()}` : ""}</Text><Text style={styles.usageNote}>{freshness}{!live ? " · agent offline" : data?.stale ? " · may be outdated" : ""}</Text></View>
       {usage.windows.map(window => <View key={window.key} style={styles.usageWindow}>
         <View style={styles.usageHeading}><Text style={styles.usageLabel}>{window.label}</Text><Text style={styles.usagePercent}>{Math.round(window.used_percent)}% used</Text></View>
         <View style={styles.usageTrack}><View style={[styles.usageFill, { width: `${Math.max(0, Math.min(100, window.used_percent))}%` }]} /></View>
@@ -168,5 +177,4 @@ const styles = StyleSheet.create({
   usageTrack: { height: 7, borderRadius: 4, overflow: "hidden", backgroundColor: colors.panelStrong },
   usageFill: { height: "100%", backgroundColor: colors.a1 },
   usageNote: { color: colors.dim, fontSize: 11.5 },
-  usageLink: { color: colors.a1, fontSize: 12.5, fontWeight: "700" },
 });

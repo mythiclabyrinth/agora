@@ -482,13 +482,12 @@ export interface AgentUsageWindow {
 export interface AgentUsage {
   agent_id: string;
   provider: string;
-  availability: "available" | "external" | "unavailable";
+  availability: "available" | "unavailable";
   captured_at: number;
   updated_at?: number;
   windows: AgentUsageWindow[];
   plan?: string | null;
   credits?: { has_credits?: boolean; unlimited?: boolean; balance?: string } | null;
-  external_url?: string | null;
 }
 
 export interface AgentUsageResponse {
@@ -501,6 +500,8 @@ export interface AgentUsageEvent {
   type: "agent_usage";
   agent_id: string;
   usage: AgentUsage;
+  /** Older hubs omit this; clients must default it to false. */
+  stale?: boolean;
 }
 
 export interface ChannelAgent {
