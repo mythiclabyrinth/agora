@@ -985,7 +985,7 @@ async fn list_groups(
                 .is_some_and(|id| state.hub.store.user_can_start_agent_dm(&user.username, id))
         });
     if !dm_channels.is_empty() || can_dm_any {
-        groups.push(json!({"id":"__dms","name":"Direct messages","description":"Private conversations with agents",
+        groups.push(json!({"id":crate::store::DM_GROUP_ID,"name":crate::store::DM_GROUP_NAME,"description":"Private conversations with agents",
             "created_by":Value::Null,"created_at":0.0,"channels":dm_channels,"role":"member","hidden":false,
             "is_public":false,"kind":"agent_dms"}));
     }
@@ -1509,7 +1509,7 @@ async fn search(
             let owned = store.search_messages_ext(query, match_any, channel_id, group_id, author, None,
                 Some(&user.username), newest_first, has_files, file_type, limit + 1, offset);
             for row in owned {
-                if row["group_id"].as_str() == Some("") && !rows.iter().any(|x| x["id"] == row["id"]) { rows.push(row); }
+                if row["group_id"].as_str() == Some(crate::store::DM_GROUP_ID) && !rows.iter().any(|x| x["id"] == row["id"]) { rows.push(row); }
             }
         }
         let has_more = rows.len() > limit;
@@ -1662,7 +1662,7 @@ async fn search_ask(
         let owned = state.hub.store.search_messages(&retrieval, true, channel_id, group_id, None, None,
             Some(&user.username), false, crate::ai::CONTEXT_MESSAGES, 0);
         for row in owned {
-            if row["group_id"].as_str() == Some("") && !sources.iter().any(|x| x["id"] == row["id"]) { sources.push(row); }
+            if row["group_id"].as_str() == Some(crate::store::DM_GROUP_ID) && !sources.iter().any(|x| x["id"] == row["id"]) { sources.push(row); }
         }
         sources.truncate(crate::ai::CONTEXT_MESSAGES);
     }
@@ -7670,6 +7670,39 @@ mod tests {
             state.config.snapshot().max_file_mb,
         );
         assert_eq!(res.0["max_video_mb"], state.config.snapshot().max_video_mb);
+    }
+
+    #[tokio::test]
+    async fn admin_search_merges_owned_dm_hits_and_accepts_dm_group_scope() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("admin", "Admin", None, "admin").unwrap();
+        store.upsert_agent("codex", "Codex", "test", false, false, 1);
+        let dm = store.open_agent_dm("admin", "codex", "Codex");
+        let dm_message = store.add_message(
+            dm["id"].as_str().unwrap(), "unique needle", "agent", "codex", Some("Codex"), None, &[],
+        );
+
+        let run = |group_id: Option<&str>| {
+            let mut params = HashMap::from([
+                ("q".into(), "needle".into()),
+                ("types".into(), "messages".into()),
+            ]);
+            if let Some(group_id) = group_id {
+                params.insert("group_id".into(), group_id.into());
+            }
+            search(
+                State(state.clone()), Query(params), session_headers(&state, "admin"),
+            )
+        };
+
+        for result in [run(None).await.unwrap(), run(Some(crate::store::DM_GROUP_ID)).await.unwrap()] {
+            let items = result.0["messages"]["items"].as_array().unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0]["id"], dm_message["id"]);
+            assert_eq!(items[0]["group_id"], crate::store::DM_GROUP_ID);
+            assert_eq!(items[0]["group_name"], crate::store::DM_GROUP_NAME);
+        }
     }
 
     #[tokio::test]

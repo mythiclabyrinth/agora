@@ -18,7 +18,7 @@ export type MainView =
 
 export type Panel = "people" | "connections" | "settings" | null;
 
-interface Selection { g?: string | null; c?: string | null; }
+export interface Selection { g?: string | null; c?: string | null; }
 
 function loadJSON<T>(key: string, fallback: T): T {
   try {
@@ -33,6 +33,16 @@ function loadEnum<T extends string>(key: string, allowed: readonly T[], fallback
   const value = localStorage.getItem(key);
   return allowed.includes(value as T) ? value as T : fallback;
 }
+
+export function normalizeSelection(sel: Selection): Selection {
+  return sel.g === "" && sel.c ? { ...sel, g: "__dms" } : sel;
+}
+
+function loadSelection(): Selection {
+  return normalizeSelection(loadJSON<Selection>("agora_sel", {}));
+}
+
+const initialSelection = loadSelection();
 
 interface UiState {
   sel: Selection;
@@ -78,10 +88,10 @@ interface UiState {
 }
 
 export const useUiState = create<UiState>((set, get) => ({
-  sel: loadJSON<Selection>("agora_sel", {}),
+  sel: initialSelection,
   view: { kind: "channel" },
   // Phones land on the channel when one is remembered, else the group list.
-  mobileView: loadJSON<Selection>("agora_sel", {}).c ? "main" : "side",
+  mobileView: initialSelection.c ? "main" : "side",
   panel: null,
   expanded: loadJSON<string[] | null>("agora_open", null),
   collapsedChannels: loadJSON<string[]>("agora_chan_collapsed", []),
@@ -164,7 +174,7 @@ export const useUiState = create<UiState>((set, get) => ({
     // Switching threads ends a recording/live session scoped to another one.
     const scope = useLiveVoice.getState().scope;
     if (scope && scope.threadId != null && scope.threadId !== rootId) liveStop();
-    if (s.sel.g && s.sel.c) {
+    if (s.sel.g != null && s.sel.c != null) {
       writeHistory(deepLinkPath({
         kind: "thread", groupId: s.sel.g, channelId: s.sel.c, threadId: rootId,
       }), history);
@@ -174,7 +184,7 @@ export const useUiState = create<UiState>((set, get) => ({
   closeThread: (history = "replace") => set((s) => {
     const scope = useLiveVoice.getState().scope;
     if (scope && scope.threadId != null) liveStop();
-    if (s.sel.g && s.sel.c) {
+    if (s.sel.g != null && s.sel.c != null) {
       writeHistory(deepLinkPath({
         kind: "channel", groupId: s.sel.g, channelId: s.sel.c,
       }), history);

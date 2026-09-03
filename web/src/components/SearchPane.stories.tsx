@@ -38,6 +38,39 @@ const routes = {
   },
 };
 
+const dmHit = {
+  ...hit,
+  id: 10900,
+  thread_id: 10897,
+  channel_id: "claude-m5-5b85",
+  channel_name: "Claude M5",
+  group_id: "__dms",
+  group_name: "Direct messages",
+  text: "Private fixture result",
+  snippet: "Private \u0001fixture\u0002 result",
+  attachments: [],
+};
+
+const dmGroup = {
+  id: "__dms",
+  name: "Direct messages",
+  description: "Private conversations with agents",
+  created_by: null,
+  created_at: 0,
+  role: "member" as const,
+  is_public: false,
+  kind: "agent_dms",
+  channels: [{
+    id: "claude-m5-5b85",
+    group_id: "",
+    name: "Claude M5",
+    topic: "",
+    created_at: 0,
+    unread: 0,
+    mentions: 0,
+  }],
+};
+
 const meta = {
   title: "Web/Connected/Search",
   component: SearchPane,
@@ -76,5 +109,30 @@ export const ResultsAndKeyboardNavigation: Story = {
     const card = filename.closest(".ago-att-file");
     expect(card).not.toBeNull();
     expect(card?.querySelector(".ago-file-icon")).not.toBeNull();
+  },
+};
+
+export const AgentDirectMessageResult: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: [...fixtureGroups, dmGroup] },
+      "GET /api/search?q=fixture&group_id=__dms": {
+        query: "fixture",
+        groups: [],
+        channels: [],
+        messages: { items: [dmHit], has_more: false, offset: 0 },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.selectOptions(await canvas.findByTitle("Search scope"), "g:__dms");
+    await userEvent.type(canvas.getByPlaceholderText("Search messages, channels, groups…"), "fixture");
+    const crumb = await canvas.findByText("Direct messages / #Claude M5 · in thread");
+    await userEvent.click(crumb.closest(".ago-search-row.msg") as HTMLElement);
+    expect(useUiState.getState().sel).toEqual({ g: "__dms", c: "claude-m5-5b85" });
+    expect(useUiState.getState().threadRoot).toBe(10897);
+    expect(window.location.pathname).toMatch(/\/g\/__dms\/c\/claude-m5-5b85\/t\/10897$/);
   },
 };
