@@ -13,6 +13,7 @@ describe("deep links", () => {
       messageId: 481,
     },
     { kind: "thread", groupId: "team", channelId: "general", threadId: 450 },
+    { kind: "thread", groupId: "__dms", channelId: "claude-m5-5b85", threadId: 10897 },
     {
       kind: "message",
       groupId: "team",

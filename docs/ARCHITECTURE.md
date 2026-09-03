@@ -135,11 +135,14 @@ instance admins only.
 
 **Agent direct messages.** DMs reuse channels and messages, but an
 `agent_dm` channel has `group_id = ''` and names exactly one owning user and
-one agent. A newly seen agent is private by default. Instance admins may make
-it available to everyone or grant named users; group and channel admins have
-no DM-policy authority. Conversation content is owner-only even from the
-product UI of an instance admin: history, search/AI retrieval, files, threads,
-WebSocket events, and push tokens all apply that boundary independently.
+one agent. Storage keeps that empty group id, while thread-inbox and search
+API rows expose the synthetic `__dms` / `Direct messages` group so clients can
+build stable deep links. A newly seen agent is private by default. Instance
+admins may make it available to everyone or grant named users; group and
+channel admins have no DM-policy authority. Conversation content is
+owner-only even from the product UI of an instance admin: history, search/AI
+retrieval, files, threads, WebSocket events, and push tokens all apply that
+boundary independently.
 Revoking access keeps the owner's history as a read-only archive and stops
 both user-to-agent and agent-to-user routing. Export remains a complete
 operator backup and therefore contains DMs; an operator with filesystem

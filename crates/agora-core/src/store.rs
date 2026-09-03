@@ -14,6 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, params_from_iter, Connection, ErrorCode, OptionalExtension};
 use serde_json::{json, Value};
 
+pub const DM_GROUP_ID: &str = "__dms";
+pub const DM_GROUP_NAME: &str = "Direct messages";
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS groups (
     id TEXT PRIMARY KEY,
@@ -2603,7 +2606,7 @@ impl Store {
                 sql = String::from(
                     "SELECT m.id, m.channel_id, m.thread_id, m.author_type, m.author_id, \
                        m.author_name, m.text, m.ts, m.meta, \
-                       c.name, c.group_id, COALESCE(g.name, ''), COALESCE(th.snip, '') \
+                       c.name, c.group_id, COALESCE(g.name, ''), COALESCE(th.snip, ''), c.kind \
                      FROM (SELECT rowid AS mid FROM messages_fts WHERE messages_fts MATCH ?1 \
                            UNION \
                            SELECT message_id AS mid FROM files WHERE filename LIKE ?2 ESCAPE '\\') hits \
@@ -2620,7 +2623,7 @@ impl Store {
                 sql = String::from(
                     "SELECT m.id, m.channel_id, m.thread_id, m.author_type, m.author_id, \
                        m.author_name, m.text, m.ts, m.meta, \
-                       c.name, c.group_id, COALESCE(g.name, ''), '' \
+                       c.name, c.group_id, COALESCE(g.name, ''), '', c.kind \
                      FROM messages m \
                      JOIN channels c ON c.id = m.channel_id \
                      LEFT JOIN groups g ON g.id = c.group_id \
@@ -2633,8 +2636,12 @@ impl Store {
                 p.push(Box::new(cid.to_string()));
             }
             if let Some(gid) = group_id {
-                sql.push_str(&format!(" AND c.group_id = ?{}", p.len() + 1));
-                p.push(Box::new(gid.to_string()));
+                if gid == DM_GROUP_ID {
+                    sql.push_str(" AND c.kind = 'agent_dm'");
+                } else {
+                    sql.push_str(&format!(" AND c.group_id = ?{}", p.len() + 1));
+                    p.push(Box::new(gid.to_string()));
+                }
             }
             if let Some(a) = author {
                 let i = p.len() + 1;
@@ -2682,8 +2689,9 @@ impl Store {
             stmt.query_map(params_from_iter(p.iter().map(|b| b.as_ref())), |r| {
                 let mut msg = message_row(r, 0)?;
                 msg["channel_name"] = json!(r.get::<_, String>(9)?);
-                msg["group_id"] = json!(r.get::<_, String>(10)?);
-                msg["group_name"] = json!(r.get::<_, String>(11)?);
+                let is_dm = r.get::<_, String>(13)? == "agent_dm";
+                msg["group_id"] = json!(if is_dm { DM_GROUP_ID.into() } else { r.get::<_, String>(10)? });
+                msg["group_name"] = json!(if is_dm { DM_GROUP_NAME.into() } else { r.get::<_, String>(11)? });
                 msg["snippet"] = json!(r.get::<_, String>(12)?);
                 Ok(msg)
             })
@@ -3251,7 +3259,7 @@ impl Store {
                        SUM(CASE WHEN m.id > COALESCE(tr.last_read_id, 0) \
                              AND NOT (m.author_type = 'user' AND m.author_id = ?1) \
                            THEN 1 ELSE 0 END), \
-                       r.thread_alias \
+                       r.thread_alias, c.kind \
                      FROM messages r \
                      JOIN channels c ON c.id = r.channel_id \
                      LEFT JOIN groups g ON g.id = c.group_id \
@@ -3270,12 +3278,13 @@ impl Store {
                 let mut root = message_row(r, 0)?;
                 root["reply_count"] = json!(r.get::<_, i64>(12)?);
                 root["alias"] = json!(r.get::<_, Option<String>>(17)?);
+                let is_dm = r.get::<_, String>(18)? == "agent_dm";
                 Ok(json!({
                     "root": root,
                     "channel_id": r.get::<_, String>(1)?,
                     "channel_name": r.get::<_, String>(9)?,
-                    "group_id": r.get::<_, String>(10)?,
-                    "group_name": r.get::<_, String>(11)?,
+                    "group_id": if is_dm { DM_GROUP_ID.into() } else { r.get::<_, String>(10)? },
+                    "group_name": if is_dm { DM_GROUP_NAME.into() } else { r.get::<_, String>(11)? },
                     "reply_count": r.get::<_, i64>(12)?,
                     "last_reply_id": r.get::<_, i64>(13)?,
                     "last_reply_ts": r.get::<_, f64>(14)?,
@@ -4788,6 +4797,45 @@ mod tests {
         assert_eq!(s.search_messages("launch", false, None, None, None, None, Some("alice"), false, 20, 0).len(), 1);
         assert!(s.search_messages("launch", false, None, None, None, None, Some("bob"), false, 20, 0).is_empty());
         assert!(s.search_messages("launch", false, None, None, None, None, None, false, 20, 0).is_empty());
+    }
+
+    #[test]
+    fn agent_dm_threads_and_search_use_the_synthetic_group() {
+        let s = Store::open_in_memory().unwrap();
+        s.create_user("alice", "Alice", None, "member");
+        s.create_user("bob", "Bob", None, "member");
+        s.upsert_agent("codex", "Codex", "test", false, false, 1);
+        s.set_agent_dm_policy("codex", true, &[]);
+        let dm = s.open_agent_dm("alice", "codex", "Codex");
+        let cid = dm["id"].as_str().unwrap();
+        let root = s.add_message(cid, "private launch", "user", "alice", None, None, &[]);
+        s.add_message(
+            cid,
+            "launch reply",
+            "agent",
+            "codex",
+            Some("Codex"),
+            root["id"].as_i64(),
+            &[],
+        );
+
+        let hits = s.search_messages(
+            "launch", false, None, Some(DM_GROUP_ID), None, None, Some("alice"), false, 20, 0,
+        );
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|hit| hit["group_id"] == DM_GROUP_ID));
+        assert!(hits.iter().all(|hit| hit["group_name"] == DM_GROUP_NAME));
+        assert!(s.search_messages(
+            "launch", false, None, Some(DM_GROUP_ID), None, None, Some("bob"), false, 20, 0,
+        ).is_empty());
+        assert!(s.search_messages(
+            "launch", false, None, Some(DM_GROUP_ID), None, None, None, false, 20, 0,
+        ).is_empty());
+
+        let threads = s.my_threads("alice", 20);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0]["group_id"], DM_GROUP_ID);
+        assert_eq!(threads[0]["group_name"], DM_GROUP_NAME);
     }
 
     #[test]
