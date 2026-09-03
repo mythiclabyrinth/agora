@@ -116,7 +116,7 @@ def normalize_model(raw: str) -> str | None:
 # no -fast variant (sonnet, fable, kimi) map to their top regular id. Anything
 # not listed here is still reachable with the exact id: /model <id>.
 MODEL_ALIASES = {
-    "grok": "cursor-grok-4.5-high-fast",
+    "grok": "cursor-grok-4.6-high-fast",
     "opus": "claude-opus-5-thinking-high-fast",
     "sonnet": "claude-sonnet-5-thinking-high",
     "fable": "claude-fable-5-thinking-high",
