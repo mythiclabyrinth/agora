@@ -106,7 +106,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertIsNone(bridge.normalize_model("gpt-5; touch /tmp/no"))
 
     def test_aliases_resolve_to_full_ids(self):
-        self.assertEqual(bridge.resolve_model("grok"), "cursor-grok-4.5-high-fast")
+        self.assertEqual(bridge.resolve_model("grok"), "cursor-grok-4.6-high-fast")
         self.assertEqual(bridge.resolve_model("OPUS"), "claude-opus-5-thinking-high-fast")
         # Non-alias ids pass through validation unchanged.
         self.assertEqual(bridge.resolve_model("gpt-5.5-high-fast"), "gpt-5.5-high-fast")
