@@ -34,8 +34,12 @@ function loadEnum<T extends string>(key: string, allowed: readonly T[], fallback
   return allowed.includes(value as T) ? value as T : fallback;
 }
 
+export function normalizeGroupId(g: string): string {
+  return g === "" ? "__dms" : g;
+}
+
 export function normalizeSelection(sel: Selection): Selection {
-  return sel.g === "" && sel.c ? { ...sel, g: "__dms" } : sel;
+  return sel.g === "" && sel.c ? { ...sel, g: normalizeGroupId(sel.g) } : sel;
 }
 
 function loadSelection(): Selection {
@@ -108,16 +112,17 @@ export const useUiState = create<UiState>((set, get) => ({
   searchOpen: false,
 
   selectChannel: (g, c, history = "push") => set((s) => {
-    if (s.sel.c !== c || s.sel.g !== g) {
+    const normalizedGroupId = normalizeGroupId(g);
+    if (s.sel.c !== c || s.sel.g !== normalizedGroupId) {
       // A recording is tied to the channel it started in; so are a live
       // session and the speak queue.
       voiceCancel();
       liveStop();
       speakStop();
     }
-    localStorage.setItem("agora_sel", JSON.stringify({ g, c }));
-    writeHistory(deepLinkPath({ kind: "channel", groupId: g, channelId: c }), history);
-    return { sel: { g, c }, view: { kind: "channel" }, threadRoot: null,
+    localStorage.setItem("agora_sel", JSON.stringify({ g: normalizedGroupId, c }));
+    writeHistory(deepLinkPath({ kind: "channel", groupId: normalizedGroupId, channelId: c }), history);
+    return { sel: { g: normalizedGroupId, c }, view: { kind: "channel" }, threadRoot: null,
       filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
   openInbox: (history = "push") => {
@@ -174,7 +179,7 @@ export const useUiState = create<UiState>((set, get) => ({
     // Switching threads ends a recording/live session scoped to another one.
     const scope = useLiveVoice.getState().scope;
     if (scope && scope.threadId != null && scope.threadId !== rootId) liveStop();
-    if (s.sel.g != null && s.sel.c != null) {
+    if (s.sel.g && s.sel.c) {
       writeHistory(deepLinkPath({
         kind: "thread", groupId: s.sel.g, channelId: s.sel.c, threadId: rootId,
       }), history);
@@ -184,7 +189,7 @@ export const useUiState = create<UiState>((set, get) => ({
   closeThread: (history = "replace") => set((s) => {
     const scope = useLiveVoice.getState().scope;
     if (scope && scope.threadId != null) liveStop();
-    if (s.sel.g != null && s.sel.c != null) {
+    if (s.sel.g && s.sel.c) {
       writeHistory(deepLinkPath({
         kind: "channel", groupId: s.sel.g, channelId: s.sel.c,
       }), history);

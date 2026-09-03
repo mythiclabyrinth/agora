@@ -76,8 +76,10 @@ export const AgentDirectMessageThread: Story = {
     expect(normalizeSelection({ g: "", c: "claude-m5-5b85" }))
       .toEqual({ g: "__dms", c: "claude-m5-5b85" });
 
-    useUiState.getState().selectChannel("__dms", "claude-m5-5b85", "replace");
+    useUiState.getState().selectChannel("", "claude-m5-5b85", "replace");
+    expect(useUiState.getState().sel).toEqual({ g: "__dms", c: "claude-m5-5b85" });
     useUiState.getState().openThread(10897, "replace");
+    expect(window.location.pathname).toMatch(/\/g\/__dms\/c\/claude-m5-5b85\/t\/10897$/);
   },
 };
 

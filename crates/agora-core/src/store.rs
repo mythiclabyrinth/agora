@@ -3278,12 +3278,13 @@ impl Store {
                 let mut root = message_row(r, 0)?;
                 root["reply_count"] = json!(r.get::<_, i64>(12)?);
                 root["alias"] = json!(r.get::<_, Option<String>>(17)?);
+                let is_dm = r.get::<_, String>(18)? == "agent_dm";
                 Ok(json!({
                     "root": root,
                     "channel_id": r.get::<_, String>(1)?,
                     "channel_name": r.get::<_, String>(9)?,
-                    "group_id": if r.get::<_, String>(18)? == "agent_dm" { DM_GROUP_ID.into() } else { r.get::<_, String>(10)? },
-                    "group_name": if r.get::<_, String>(18)? == "agent_dm" { DM_GROUP_NAME.into() } else { r.get::<_, String>(11)? },
+                    "group_id": if is_dm { DM_GROUP_ID.into() } else { r.get::<_, String>(10)? },
+                    "group_name": if is_dm { DM_GROUP_NAME.into() } else { r.get::<_, String>(11)? },
                     "reply_count": r.get::<_, i64>(12)?,
                     "last_reply_id": r.get::<_, i64>(13)?,
                     "last_reply_ts": r.get::<_, f64>(14)?,
@@ -4802,6 +4803,7 @@ mod tests {
     fn agent_dm_threads_and_search_use_the_synthetic_group() {
         let s = Store::open_in_memory().unwrap();
         s.create_user("alice", "Alice", None, "member");
+        s.create_user("bob", "Bob", None, "member");
         s.upsert_agent("codex", "Codex", "test", false, false, 1);
         s.set_agent_dm_policy("codex", true, &[]);
         let dm = s.open_agent_dm("alice", "codex", "Codex");
@@ -4823,6 +4825,12 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert!(hits.iter().all(|hit| hit["group_id"] == DM_GROUP_ID));
         assert!(hits.iter().all(|hit| hit["group_name"] == DM_GROUP_NAME));
+        assert!(s.search_messages(
+            "launch", false, None, Some(DM_GROUP_ID), None, None, Some("bob"), false, 20, 0,
+        ).is_empty());
+        assert!(s.search_messages(
+            "launch", false, None, Some(DM_GROUP_ID), None, None, None, false, 20, 0,
+        ).is_empty());
 
         let threads = s.my_threads("alice", 20);
         assert_eq!(threads.len(), 1);

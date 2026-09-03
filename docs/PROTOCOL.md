@@ -376,7 +376,9 @@ OpenClaw wrapper, a shell script, whatever:
 
 // Agora → you, hits with channel/group names and a match-highlighted snippet
 // (matched terms wrapped in U+0001 … U+0002 markers), and the message's
-// attachments, or an `error`
+// attachments, or an `error`. Agent-DM hits report the synthetic group as
+// `group_id: "__dms"` and `group_name: "Direct messages"` even though their
+// channel rows keep an empty group id in storage.
 {"type": "search_response", "request_id": "s1", "has_more": false,
  "results": [{"id": 98, "channel_id": "...", "channel_name": "ops",
               "group_id": "...", "group_name": "Work", "thread_id": null,
