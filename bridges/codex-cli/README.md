@@ -62,7 +62,7 @@ one shows at a time. Messages addressed to another agent have the
 | `/use <n \| session-id>` | bind this channel/thread to a session |
 | `/new <dir>` | bind to a fresh session started in `<dir>` — **`<dir>` must be under an allowed root** (see below); disabled entirely when no roots are configured |
 | `/worktree <repo> [branch]` | isolate this thread in a fresh git worktree + branch; `/worktree [show]`, `/worktree remove [force]`, `/worktrees` work like the Claude bridge |
-| `/model <sol\|terra\|luna\|default>` | switch this channel to the named model (`default` resets it to the bridge default, `sol` unless configured otherwise); persists in the binding and is passed as `codex -m` on every run |
+| `/model <astra\|sol\|terra\|luna\|default>` | switch this channel to the named model (`default` resets it to the bridge default, `sol` unless configured otherwise); persists in the binding and is passed as `codex -m` on every run. Astra requires Codex CLI 0.153.0 or newer. |
 | `/sandbox <read-only\|workspace-write\|workspace-git\|full\|bypass\|reset>` | set the sandbox mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CODEX_ALLOW_SANDBOX_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override) |
 | `/stop` | cancel the run in flight on this channel (kills the `codex` child) |
@@ -186,7 +186,7 @@ Everything is env-overridable (flags take precedence): `AGORA_URL`,
 `CODEX_SANDBOX` (default sandbox mode, `workspace-write` when unset —
 overridable per channel with `/sandbox`), `CODEX_ARGS` (extra args for every
 run, e.g. `-c` config overrides or `--profile`), `CODEX_MODEL` (default model
-for every run: `sol`, `terra`, or `luna`; defaults to `sol`, and channels
+for every run: `astra`, `sol`, `terra`, or `luna`; defaults to `sol`, and channels
 override it with `/model`),
 `CODEX_ALLOW_SANDBOX_ESCALATION` (`1` to let `/sandbox` raise privilege above
 the default — off by default), `CODEX_TLDR` (`1` to add short summaries to long

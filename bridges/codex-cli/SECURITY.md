@@ -88,7 +88,7 @@ ordered by decreasing severity.
      autonomous agent (a hostile image/file could carry a prompt-injection
      payload the model then acts on). Bounded only by the sandbox mode (#1).
 
-7. **Models are allowlisted.** `/model` accepts only `sol`, `terra`, or `luna` and
+7. **Models are allowlisted.** `/model` accepts only `astra`, `sol`, `terra`, or `luna` and
    maps those friendly names to fixed Codex model ids before constructing the
    argument vector. Values are never interpreted by a shell.
 

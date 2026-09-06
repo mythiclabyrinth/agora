@@ -33,7 +33,7 @@ export const guides = {
       ["/new <dir>", "Start under an allowed root."],
       ["/worktree <repo> [branch]", "Create an isolated worktree."],
       ["/worktrees", "List worktrees managed by this agent."],
-      ["/model <sol|terra|luna|default>", "Set the model for this conversation."],
+      ["/model <astra|sol|terra|luna|default>", "Set the model for this conversation. Astra requires Codex CLI 0.153.0 or newer."],
       ["/sandbox <mode>", "Change the sandbox within locally allowed limits."],
       ["/tldr <on|off|default>", "Toggle compact summaries."],
       ["/stop", "Cancel the current run."],
@@ -43,7 +43,7 @@ export const guides = {
     env: [
       ["CODEX_BIN", "Optional", "codex", "Executable name or absolute path."],
       ["CODEX_HOME", "Optional", "~/.codex", "Codex CLI home directory. The bridge reads session rollout files from <CODEX_HOME>/sessions to report account usage."],
-      ["CODEX_MODEL", "Optional", "sol", "Default model: sol, terra, or luna. /model overrides it per conversation."],
+      ["CODEX_MODEL", "Optional", "sol", "Default model: astra, sol, terra, or luna. /model overrides it per conversation."],
       ["CODEX_SANDBOX", "Optional", "Empty (effective: workspace-write)", "Default sandbox: read-only, workspace-write, workspace-git, danger-full-access, or bypass."],
       ["CODEX_ARGS", "Optional", "Empty", "Additional arguments appended to every codex invocation. Avoid conflicting sandbox flags."],
       ["CODEX_ALLOWED_ROOTS", "Recommended", "Empty", "Colon-separated directories allowed for /new and worktrees. /new is disabled while empty."],
