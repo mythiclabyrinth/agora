@@ -96,6 +96,7 @@ class AttachmentFetchTests(unittest.TestCase):
 
 class ModelSelectionTests(unittest.TestCase):
     def test_friendly_names_are_case_insensitive(self):
+        self.assertEqual(bridge.normalize_model("astra"), "gpt-6-astra")
         self.assertEqual(bridge.normalize_model("sol"), "gpt-5.6-sol")
         self.assertEqual(bridge.normalize_model("TERRA"), "gpt-5.6-terra")
         self.assertEqual(bridge.normalize_model(" luna "), "gpt-5.6-luna")

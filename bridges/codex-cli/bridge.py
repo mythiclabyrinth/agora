@@ -165,12 +165,13 @@ def parse_peer_agents(raw: str) -> frozenset[str]:
 # Friendly model choices exposed in chat. Keep the raw ids out of channel
 # state so a future id change only needs this mapping updated.
 MODEL_IDS = {
+    "astra": "gpt-6-astra",
     "sol": "gpt-5.6-sol",
     "terra": "gpt-5.6-terra",
     "luna": "gpt-5.6-luna",
 }
 DEFAULT_MODEL = MODEL_IDS["sol"]
-MODEL_CHOICES = "sol | terra | luna | default"
+MODEL_CHOICES = "astra | sol | terra | luna | default"
 
 
 def normalize_model(raw: str) -> str | None:
@@ -263,7 +264,7 @@ HELP = """Bridge commands (anything else is sent to the bound Codex session):
 /worktree <repo> [branch] - isolate this thread in a fresh git worktree + branch
 /worktree [show] - show this thread's worktree; /worktree remove [force] - delete it
 /worktrees - list every tracked worktree
-/model <sol|terra|luna|default> - set the model for this channel (codex -m)
+/model <astra|sol|terra|luna|default> - set the model for this channel (codex -m)
 /sandbox <read-only|workspace-write|workspace-git|full|bypass|reset> - set the sandbox mode
 /tldr <on|off|default> - add a toggleable short summary to long replies
 /stop - cancel the run in flight on this channel
