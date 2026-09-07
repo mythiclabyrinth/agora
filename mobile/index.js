@@ -22,5 +22,6 @@ if (process.env.EXPO_PUBLIC_STORYBOOK_ENABLED === "true") {
   const entry = require("./.rnstorybook");
   registerRootComponent(entry.default || entry);
 } else {
+  require("./src/lib/notificationActionRuntime").installNotificationActionHandlers();
   require("expo-router/entry");
 }

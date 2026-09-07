@@ -21,7 +21,8 @@ import {
   saveUnreadSnapshot,
   unregisterBackgroundPolling,
 } from "../../src/lib/background";
-import { notificationTarget, totalThreadUnread, totalUnread } from "@agora/core";
+import { notificationTarget, notificationContext, totalThreadUnread, totalUnread } from "@agora/core";
+import { currentStoredSession, readActionRegistration } from "../../src/lib/notificationRegistration";
 import { useGroups, useThreads } from "@agora/core";
 import { headerBack } from "../../src/lib/headerItems";
 import { notificationNavigationAction } from "../../src/lib/notificationRouting";
@@ -44,14 +45,15 @@ function LiveSocket() {
 /** Badge = channel unreads + thread unreads; snapshot feeds the poll
     fallback's diff so messages read here don't come back as stale banners. */
 function UnreadSync() {
+  const session = useSession((s) => s.session);
   const groups = useGroups().data;
   const threads = useThreads().data;
   useEffect(() => {
     if (!groups) return;
     setBadge(totalUnread(groups) + totalThreadUnread(threads ?? []));
     saveUnreadSnapshot(groups);
-    void reconcileNotifications(groups, threads ?? []);
-  }, [groups, threads]);
+    void reconcileNotifications(groups, threads ?? [], session ?? undefined);
+  }, [groups, threads, session]);
   return null;
 }
 
@@ -62,19 +64,30 @@ export function NotificationTapRouter() {
   const pathname = usePathname();
   const handled = useRef<string | null>(null);
   useEffect(() => {
-    if (!response) return;
+    if (!response || response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
     const id = response.notification.request.identifier;
     if (handled.current === id) return;
-    handled.current = id;
     const target = notificationTarget(response.notification.request.content.data);
     if (!target) return;
     // The tapped card normally auto-dismisses; make that deterministic. Other
     // cards wait for the read marker so a newer racing message is preserved.
-    void Notifications.dismissNotificationAsync(id);
-
-    const action = notificationNavigationAction({ pathname, target });
-    if (action === "none") return;
-    router.push(target as Href);
+    const navigate = () => {
+      if (handled.current === id) return;
+      handled.current = id;
+      void Notifications.dismissNotificationAsync(id);
+      const action = notificationNavigationAction({ pathname, target });
+      if (action !== "none") router.push(target as Href);
+    };
+    const context = notificationContext(response.notification.request.content.data);
+    if (!context) { navigate(); return; }
+    let cancelled = false;
+    void Promise.all([readActionRegistration(), currentStoredSession()]).then(([registration, session]) => {
+      // Missing/unavailable local bindings must not strand a body tap. Only a
+      // known foreign binding prevents navigation; actions remain stricter.
+      if (!cancelled && (!registration ||
+          (registration.context === context && registration.baseUrl === session?.baseUrl))) navigate();
+    }).catch(() => { if (!cancelled) navigate(); });
+    return () => { cancelled = true; };
   }, [pathname, response]);
   return null;
 }

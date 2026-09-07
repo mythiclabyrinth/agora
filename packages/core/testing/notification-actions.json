@@ -1,0 +1,112 @@
+[
+  {
+    "name": "Claude tool approval keeps the actual ids and explicit short label",
+    "pending": true,
+    "meta": {
+      "options_id": "perm-42",
+      "options": [
+        { "id": "allow", "label": "Approve", "style": "primary" },
+        { "id": "allow_always", "label": "Always allow Bash (this session)", "notification": { "enabled": true, "label": "Always allow this tool" } },
+        { "id": "deny", "label": "Reject" }
+      ]
+    },
+    "expected": {
+      "version": 1,
+      "category": "agora.v1.approve-tool-reject.d0",
+      "actions": [
+        { "kind": "select", "id": "allow", "interaction_id": "perm-42", "label": "Approve", "destructive": false },
+        { "kind": "select", "id": "allow_always", "interaction_id": "perm-42", "label": "Always allow this tool", "destructive": false },
+        { "kind": "select", "id": "deny", "interaction_id": "perm-42", "label": "Reject", "destructive": false }
+      ]
+    }
+  },
+  {
+    "name": "editable form opts in per button",
+    "pending": true,
+    "meta": {
+      "form_id": "release",
+      "form": { "fields": [{ "id": "note", "kind": "input", "label": "Note", "value": "" }], "buttons": [
+        { "id": "release", "label": "Submit", "notification": { "enabled": true } },
+        { "id": "cancel", "label": "Cancel", "notification": { "enabled": true, "role": "destructive" } }
+      ] }
+    },
+    "expected": {
+      "version": 1,
+      "category": "agora.v1.submit-cancel.d2",
+      "actions": [
+        { "kind": "form_submit", "id": "release", "interaction_id": "release", "label": "Submit", "destructive": false },
+        { "kind": "form_submit", "id": "cancel", "interaction_id": "release", "label": "Cancel", "destructive": true }
+      ]
+    }
+  },
+  {
+    "name": "readonly table defaults enabled",
+    "pending": true,
+    "meta": { "table_id": "review", "table": {
+      "columns": [{ "id": "name", "kind": "readonly" }],
+      "buttons": [{ "id": "yes", "label": "Approve all" }, { "id": "no", "label": "Reject all" }]
+    } },
+    "expected": {
+      "version": 1,
+      "category": "agora.v1.approve-all-reject.d0",
+      "actions": [
+        { "kind": "table_submit", "id": "yes", "interaction_id": "review", "label": "Approve all", "destructive": false },
+        { "kind": "table_submit", "id": "no", "interaction_id": "review", "label": "Reject all", "destructive": false }
+      ]
+    }
+  },
+  {
+    "name": "completed options clear reminder cards without action envelopes",
+    "pending": false,
+    "meta": { "options": [{ "id": "yes", "label": "Approve" }], "resolved": { "by": "ana", "option_id": "yes" } },
+    "expected": null
+  },
+  {
+    "name": "completed forms clear reminder cards",
+    "pending": false,
+    "meta": { "form": { "fields": [], "buttons": [{ "id": "send", "label": "Submit" }] }, "form_submitted": { "by": "ana", "button_id": "send" } },
+    "expected": null
+  },
+  {
+    "name": "row-only table stays pending while an actionable row remains",
+    "pending": true,
+    "meta": { "table": { "columns": [], "buttons": [], "rows": [
+      { "id": "r1", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] },
+      { "id": "r2", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] }
+    ] }, "table_rows": { "r1": { "by": "ana", "button_id": "yes" } } },
+    "expected": null
+  },
+  {
+    "name": "row-only table clears after every actionable row resolves",
+    "pending": false,
+    "meta": { "table": { "columns": [], "buttons": [], "rows": [
+      { "id": "r1", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] },
+      { "id": "info", "cells": {}, "actions": [] }
+    ] }, "table_rows": { "r1": { "by": "ana", "button_id": "yes" } } },
+    "expected": null
+  },
+  {
+    "name": "table submission closes remaining row actions",
+    "pending": false,
+    "meta": { "table": { "columns": [], "buttons": [{ "id": "yes", "label": "Approve" }], "rows": [
+      { "id": "r1", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] }
+    ] }, "table_submitted": { "by": "ana", "button_id": "yes" } },
+    "expected": null
+  },
+  {
+    "name": "ordinary message has no pending interaction",
+    "pending": false,
+    "meta": {},
+    "expected": null
+  },
+  {
+    "name": "mixed option and form actions must not share one notification prompt",
+    "pending": true,
+    "meta": {
+      "options": [{ "id": "yes", "label": "Approve" }],
+      "form": { "fields": [{ "id": "note", "kind": "input", "label": "Note" }],
+        "buttons": [{ "id": "no", "label": "Reject", "notification": { "enabled": true } }] }
+    },
+    "expected": null
+  }
+]

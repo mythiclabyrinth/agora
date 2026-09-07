@@ -117,10 +117,18 @@ export interface Attachment {
   size: number;
 }
 
+export interface NotificationButton {
+  enabled: boolean;
+  /** Explicit short title; must match a registered notification vocabulary. */
+  label?: string;
+  role?: "confirm" | "cancel" | "destructive";
+}
+
 export interface MessageOption {
   id: string;
   label: string;
   style?: "primary" | "danger" | "default" | string;
+  notification?: NotificationButton;
 }
 
 /** One element of an interactive form (meta.form): a text input or a
@@ -138,6 +146,7 @@ export interface FormButton {
   id: string;
   label: string;
   style?: "primary" | "secondary" | string;
+  notification?: NotificationButton;
 }
 
 /** An agent-authored interactive form rendered inside the message bubble.
@@ -161,6 +170,7 @@ export interface MessageTableAction {
   id: string;
   label: string;
   style?: "primary" | "secondary" | string;
+  notification?: NotificationButton;
 }
 
 export interface MessageTableRow {

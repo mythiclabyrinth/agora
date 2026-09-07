@@ -224,6 +224,9 @@ pub fn sanitize_form(form: &Value) -> Option<Value> {
             "label": label,
             "style": normalize_button_style(b["style"].as_str()),
         }));
+        if let Some(notification) = b.get("notification") {
+            buttons.last_mut().unwrap()["notification"] = crate::notify_actions::sanitize_notification(notification);
+        }
     }
     if fields.is_empty() || buttons.is_empty() {
         return None;
@@ -302,6 +305,9 @@ pub fn sanitize_table(table: &Value) -> Option<Value> {
                 "label": label,
                 "style": normalize_button_style(a["style"].as_str()),
             }));
+            if let Some(notification) = a.get("notification") {
+                actions.last_mut().unwrap()["notification"] = crate::notify_actions::sanitize_notification(notification);
+            }
         }
         rows.push(json!({"id": id, "cells": cells, "actions": actions}));
     }
@@ -330,6 +336,9 @@ pub fn sanitize_table(table: &Value) -> Option<Value> {
             "label": label,
             "style": normalize_button_style(b["style"].as_str()),
         }));
+        if let Some(notification) = b.get("notification") {
+            buttons.last_mut().unwrap()["notification"] = crate::notify_actions::sanitize_notification(notification);
+        }
     }
     // Need at least one way to resolve: a table-level button, or a row action
     // on some row. Mirrors sanitize_form's empty-buttons rejection.
@@ -457,6 +466,7 @@ struct HubState {
     activity: HashMap<String, Activity>,
     /// channel_id -> when it was last notified (see NOTIFY_THROTTLE).
     last_notified: HashMap<String, Instant>,
+    action_alert_budget: HashMap<String, crate::notify_actions::AlertBudget>,
     /// Last on-demand usage refresh sent per live agent. Profile opens may be
     /// concurrent across clients, so one request serves them all.
     last_usage_refresh: HashMap<String, Instant>,
@@ -563,25 +573,36 @@ impl Hub {
     /// suspended while the desktop is focused. Throttled per channel so
     /// bursts collapse into one banner / push.
     fn maybe_notify(&self, message: &Value) {
+        let mut pending = crate::notify_actions::pending(&message["meta"]);
+        let mut actions = crate::notify_actions::for_meta(&message["meta"]);
+        let mut overflow = false;
         let channel_id = message["channel_id"].as_str().unwrap_or_default();
         let is_dm = self.store.channel(channel_id).is_some_and(|c| c["kind"] == "agent_dm");
         let want_desktop = !is_dm && !self.ui_active.load(Ordering::Relaxed)
             && self.notifier.lock().unwrap().is_some();
         let author = (message["author_type"] == "user")
             .then(|| message["author_id"].as_str().unwrap_or_default());
-        let tokens = self.store.push_tokens_for_channel(channel_id, author);
+        let targets = self.store.push_targets_for_channel(channel_id, author);
+        let tokens: Vec<String> = targets.iter().map(|(token, _)| token.clone()).collect();
         let want_push = !tokens.is_empty();
         if !want_desktop && !want_push {
             return;
         }
         {
             let mut st = self.state.lock().unwrap();
-            if let Some(at) = st.last_notified.get(channel_id) {
-                if at.elapsed() < NOTIFY_THROTTLE {
-                    return;
-                }
+            if pending && !st.action_alert_budget.entry(channel_id.to_string()).or_default().take(Instant::now()) {
+                // Beyond the burst allowance, tell the user to review the
+                // remaining asks in-app through the ordinary throttled path.
+                pending = false;
+                actions = None;
+                overflow = true;
             }
-            st.last_notified.insert(channel_id.to_string(), Instant::now());
+            if !pending {
+                if let Some(at) = st.last_notified.get(channel_id) {
+                    if at.elapsed() < NOTIFY_THROTTLE { return; }
+                }
+                st.last_notified.insert(channel_id.to_string(), Instant::now());
+            }
         }
         let place = match self.store.channel(channel_id) {
             Some(channel) => {
@@ -616,7 +637,7 @@ impl Hub {
             thread_id: message["thread_id"].as_i64(),
             message_id: message["id"].as_i64().unwrap_or_default(),
             title: format!("{author} — {place}"),
-            body,
+            body: if overflow { "More requests are waiting. Open Agora to review them.".into() } else { body },
         };
         if want_desktop {
             let notifier = self.notifier.lock().unwrap();
@@ -632,9 +653,13 @@ impl Hub {
                 channel_id: event.channel_id,
                 thread_id: event.thread_id,
                 message_id: event.message_id,
+                pending_interaction: pending,
+                actions,
             };
+            let contexts = targets.into_iter().filter_map(|(token, context)|
+                context.map(|context| (token, context))).collect();
             std::thread::spawn(move || {
-                let dead = crate::push::send(&push, &tokens);
+                let dead = crate::push::send(&push, &tokens, &contexts);
                 for token in dead {
                     store.delete_push_token(&token);
                 }
@@ -1160,7 +1185,13 @@ impl Hub {
         let mut meta_obj = serde_json::Map::new();
         if let Some(opts) = options {
             if opts.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
-                meta_obj.insert("options".into(), opts.clone());
+                let mut opts = opts.clone();
+                for option in opts.as_array_mut().unwrap() {
+                    if let Some(notification) = option.get("notification").cloned() {
+                        option["notification"] = crate::notify_actions::sanitize_notification(&notification);
+                    }
+                }
+                meta_obj.insert("options".into(), opts);
                 meta_obj.insert("options_id".into(), json!(options_id.unwrap_or("")));
                 meta_obj.insert("resolved".into(), Value::Null);
             }
@@ -1257,28 +1288,8 @@ impl Hub {
         option_id: &str,
         user: &str,
     ) -> Result<Value, &'static str> {
-        let message = self.store.message(message_id).ok_or("Message not found")?;
-        let meta = message.get("meta").cloned().unwrap_or(Value::Null);
-        let options = meta
-            .get("options")
-            .and_then(|o| o.as_array())
-            .ok_or("Message has no options")?;
-        if meta.get("resolved").map(|r| !r.is_null()).unwrap_or(false) {
-            return Err("Options already resolved");
-        }
-        if !options.iter().any(|o| o["id"].as_str() == Some(option_id)) {
-            return Err("Unknown option");
-        }
-        let options_id = meta["options_id"].as_str().unwrap_or("").to_string();
-        let resolved = json!({
-            "option_id": option_id,
-            "by": user,
-            "ts": crate::store::now(),
-        });
-        let updated = self
-            .store
-            .update_message_meta(message_id, &json!({"resolved": resolved}))
-            .ok_or("Failed to update message")?;
+        let updated = self.store.resolve_options(message_id, Some(option_id), user, None)?;
+        let options_id = updated["meta"]["options_id"].as_str().unwrap_or("");
         let channel_id = updated["channel_id"].as_str().unwrap_or_default();
         self.broadcast(
             channel_id,
@@ -2264,21 +2275,7 @@ impl Hub {
     }
 
     fn resolve_options_by_agent(&self, message_id: i64, text: &str) -> Result<Value, &'static str> {
-        let message = self.store.message(message_id).ok_or("Message not found")?;
-        let meta = message.get("meta").cloned().unwrap_or(Value::Null);
-        if meta.get("resolved").map(|r| !r.is_null()).unwrap_or(false) {
-            return Err("Options already resolved");
-        }
-        let resolved = json!({
-            "option_id": "",
-            "by": "agent",
-            "label": text,
-            "ts": crate::store::now(),
-        });
-        let updated = self
-            .store
-            .update_message_meta(message_id, &json!({"resolved": resolved}))
-            .ok_or("Failed to update message")?;
+        let updated = self.store.resolve_options(message_id, None, "agent", Some(text))?;
         let channel_id = updated["channel_id"].as_str().unwrap_or_default();
         self.broadcast(
             channel_id,
@@ -2964,6 +2961,54 @@ mod tests {
         // A user's own post never notifies.
         h.post_user_message(&cid, "back!", "tom", None, None, vec![]);
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pending_approval_bursts_have_their_own_bounded_budget() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        let seen: Arc<Mutex<Vec<NotifyEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        h.set_notifier(move |ev| sink.lock().unwrap().push(ev));
+        h.set_ui_active(false);
+        for id in 1..=9 {
+            h.maybe_notify(&json!({
+                "id":id, "channel_id":cid, "author_type":"agent", "author_id":"bot-a",
+                "text":"Approve this request", "meta":{"options":[{"id":"yes","label":"Approve"}]}
+            }));
+        }
+        let events = seen.lock().unwrap();
+        // Six distinct requests followed by one throttled overflow summary.
+        assert_eq!(events.len(), 7);
+        assert_eq!(events[0].message_id, 1);
+        assert_eq!(events[1].message_id, 2);
+        assert_eq!(events[6].body, "More requests are waiting. Open Agora to review them.");
+        drop(events);
+        let other_channel = setup_channel(&h, &["bot-a"]);
+        h.maybe_notify(&json!({
+            "id":10, "channel_id":other_channel, "author_type":"agent", "author_id":"bot-a",
+            "text":"Independent approval", "meta":{"options":[{"id":"yes","label":"Approve"}]}
+        }));
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 8);
+        assert_eq!(events[7].body, "Independent approval");
+    }
+
+    #[test]
+    fn form_and_table_sanitizers_preserve_explicit_notification_intent() {
+        let button = json!({"id":"send","label":"Submit",
+            "notification":{"enabled":true,"label":"Submit","role":"confirm","extra":"ignored"}});
+        let form = sanitize_form(&json!({
+            "fields":[{"id":"x","kind":"input","label":"Note"}],"buttons":[button.clone()]
+        })).unwrap();
+        assert_eq!(form["buttons"][0]["notification"], json!({"enabled":true,"label":"Submit","role":"confirm"}));
+        let table = sanitize_table(&json!({
+            "columns":[{"id":"x","label":"Note","kind":"text"}],
+            "rows":[{"id":"r1","cells":{"x":""},"actions":[button.clone()]}],"buttons":[button]
+        })).unwrap();
+        assert_eq!(table["buttons"][0]["notification"], form["buttons"][0]["notification"]);
+        assert_eq!(table["rows"][0]["actions"][0]["notification"], form["buttons"][0]["notification"]);
     }
 
     #[test]

@@ -366,6 +366,14 @@ fn migrate(conn: &Connection) {
         )
         .unwrap();
     }
+    for (column, definition) in [
+        ("action_context", "TEXT NOT NULL DEFAULT ''"),
+        ("action_version", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !has_column("push_tokens", column) {
+            conn.execute(&format!("ALTER TABLE push_tokens ADD COLUMN {column} {definition}"), []).unwrap();
+        }
+    }
     // A user-chosen display name for a thread; only meaningful on root rows
     // (thread_id IS NULL). NULL = fall back to the root message's first line.
     if !has_column("messages", "thread_alias") {
@@ -2041,6 +2049,31 @@ impl Store {
         Ok(self.message(message_id).map(|message| (message, changed)))
     }
 
+    /// Both human choices and agent cancellation share this lock. A stale
+    /// notification must never overwrite a choice or revive a cancelled ask.
+    pub fn resolve_options(
+        &self, message_id: i64, option_id: Option<&str>, by: &str, label: Option<&str>,
+    ) -> Result<Value, &'static str> {
+        {
+            let conn = self.conn.lock().unwrap();
+            let raw: Option<String> = conn.query_row(
+                "SELECT meta FROM messages WHERE id = ?1", params![message_id], |r| r.get(0),
+            ).map_err(|_| "Message not found")?;
+            let mut meta: Value = raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+            let options = meta["options"].as_array().ok_or("Message has no options")?;
+            if !meta["resolved"].is_null() { return Err("Options already resolved"); }
+            if let Some(id) = option_id {
+                if !options.iter().any(|o| o["id"].as_str() == Some(id)) { return Err("Unknown option"); }
+            }
+            let mut resolved = json!({"option_id":option_id.unwrap_or(""),"by":by,"ts":now()});
+            if let Some(label) = label { resolved["label"] = json!(label); }
+            meta["resolved"] = resolved;
+            conn.execute("UPDATE messages SET meta = ?1 WHERE id = ?2", params![meta.to_string(),message_id])
+                .map_err(|_| "Failed to update message")?;
+        }
+        self.message(message_id).ok_or("Message not found")
+    }
+
     /// Load a message's meta for a form mutation, or the error the caller
     /// should surface: rows without a form can't take form writes, and a
     /// locked form refuses everything. Callers hold the connection lock.
@@ -3489,10 +3522,47 @@ impl Store {
             "INSERT INTO push_tokens (token, platform, username, updated_at) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(token) DO UPDATE SET platform = excluded.platform, \
-             username = excluded.username, updated_at = excluded.updated_at",
+             username = excluded.username, updated_at = excluded.updated_at, \
+             action_context = '', action_version = 0",
             params![token, platform, username, now()],
         )
         .unwrap();
+    }
+
+    /// A non-secret registration context prevents a notification from a prior
+    /// account/server session acting through the credentials currently stored.
+    /// Refresh preserves pending cards only when the device proves continuity.
+    pub fn register_action_push_token(
+        &self, username: &str, token: &str, platform: &str, previous: &str,
+    ) -> String {
+        let conn = self.conn.lock().unwrap();
+        let existing: Option<String> = conn.query_row(
+            "SELECT action_context FROM push_tokens WHERE token = ?1 AND username = ?2 AND action_version = 1",
+            params![token,username], |r| r.get(0),
+        ).ok();
+        let context = existing.filter(|s| !s.is_empty() && s == previous).unwrap_or_else(new_token);
+        conn.execute(
+            "INSERT INTO push_tokens(token, platform, username, updated_at, action_context, action_version) \
+             VALUES (?1,?2,?3,?4,?5,1) ON CONFLICT(token) DO UPDATE SET platform=excluded.platform, \
+             username=excluded.username, updated_at=excluded.updated_at, \
+             action_context=excluded.action_context, action_version=1",
+            params![token,platform,username,now(),context],
+        ).unwrap();
+        context
+    }
+
+    #[cfg(test)]
+    pub fn push_action_context(&self, token: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT action_context FROM push_tokens WHERE token = ?1 AND action_version = 1",
+            params![token], |r| r.get::<_,String>(0)).ok().filter(|s| !s.is_empty())
+    }
+
+    pub fn owns_push_action_context(&self, username: &str, context: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        !context.is_empty() && conn.query_row(
+            "SELECT 1 FROM push_tokens WHERE username = ?1 AND action_context = ?2 AND action_version = 1",
+            params![username,context], |_| Ok(())).is_ok()
     }
 
     pub fn delete_push_token(&self, token: &str) -> bool {
@@ -3518,6 +3588,17 @@ impl Store {
         channel_id: &str,
         exclude_user: Option<&str>,
     ) -> Vec<String> {
+        self.push_targets_for_channel(channel_id, exclude_user).into_iter().map(|(token, _)| token).collect()
+    }
+
+    /// Read the context alongside the visibility-filtered token. Looking it up
+    /// later could attach a new account's context to a push selected for its
+    /// previous owner during a concurrent device re-registration.
+    pub fn push_targets_for_channel(
+        &self,
+        channel_id: &str,
+        exclude_user: Option<&str>,
+    ) -> Vec<(String, Option<String>)> {
         let Some(chan) = self.channel(channel_id) else {
             return Vec::new();
         };
@@ -3525,14 +3606,14 @@ impl Store {
             let owner = chan["dm_user_id"].as_str().unwrap_or_default();
             if exclude_user == Some(owner) { return Vec::new(); }
             let conn = self.conn.lock().unwrap();
-            let mut stmt = conn.prepare("SELECT pt.token FROM push_tokens pt JOIN users u ON u.username = pt.username WHERE pt.username = ?1 AND u.disabled = 0").unwrap();
-            return stmt.query_map(params![owner], |r| r.get::<_, String>(0)).unwrap().filter_map(Result::ok).collect();
+            let mut stmt = conn.prepare("SELECT pt.token, CASE WHEN pt.action_version = 1 THEN NULLIF(pt.action_context, '') END FROM push_tokens pt JOIN users u ON u.username = pt.username WHERE pt.username = ?1 AND u.disabled = 0").unwrap();
+            return stmt.query_map(params![owner], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(Result::ok).collect();
         }
         let group_id = chan["group_id"].as_str().unwrap_or_default().to_string();
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT pt.token FROM push_tokens pt \
+                "SELECT pt.token, CASE WHEN pt.action_version = 1 THEN NULLIF(pt.action_context, '') END FROM push_tokens pt \
                  JOIN users u ON u.username = pt.username \
                  WHERE u.disabled = 0 AND u.username != ?1 \
                  AND (u.instance_role = 'admin' OR EXISTS ( \
@@ -3542,7 +3623,7 @@ impl Store {
             )
             .unwrap();
         stmt.query_map(params![exclude_user.unwrap_or(""), group_id, channel_id], |r| {
-            r.get::<_, String>(0)
+            Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap()
         .filter_map(Result::ok)
@@ -3601,6 +3682,45 @@ mod tests {
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn notification_registration_requires_continuity_and_tracks_account_changes() {
+        let s = store();
+        let first = s.register_action_push_token("ana", "device", "android", "");
+        assert!(s.owns_push_action_context("ana", &first));
+        assert!(!s.owns_push_action_context("mal", &first));
+        assert_eq!(s.register_action_push_token("ana", "device", "android", &first), first);
+        let second = s.register_action_push_token("mal", "device", "android", &first);
+        assert_ne!(second, first);
+        assert!(!s.owns_push_action_context("ana", &first));
+        s.upsert_push_token("mal", "device", "ios");
+        assert!(s.push_action_context("device").is_none());
+        assert!(!s.owns_push_action_context("mal", &second));
+    }
+
+    #[test]
+    fn simultaneous_option_choices_and_agent_cancellation_have_one_winner() {
+        use std::sync::{Arc, Barrier};
+        let s = Arc::new(store());
+        let group = s.create_group("Team", "", None);
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "general", "");
+        let m = s.add_message(channel["id"].as_str().unwrap(), "Approve?", "agent", "bot", None, None, &[]);
+        let mid = m["id"].as_i64().unwrap();
+        s.update_message_meta(mid, &json!({"options":[{"id":"yes"},{"id":"no"}],"resolved":null}));
+        let barrier = Arc::new(Barrier::new(3));
+        let threads: Vec<_> = [Some("yes"), Some("no"), None].into_iter().map(|choice| {
+            let s = s.clone(); let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                s.resolve_options(mid, choice, if choice.is_none() { "agent" } else { "ana" }, None)
+            })
+        }).collect();
+        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|r| **r == Err("Options already resolved")).count(), 2);
+        let winner = results.into_iter().find_map(Result::ok).unwrap();
+        assert_eq!(s.message(mid).unwrap()["meta"]["resolved"], winner["meta"]["resolved"]);
     }
 
     fn disk_store() -> (Store, TempDir) {

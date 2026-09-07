@@ -1,0 +1,14 @@
+[
+  { "id": "approve-reject", "labels": ["Approve", "Reject"] },
+  { "id": "approve-tool-reject", "labels": ["Approve", "Always allow this tool", "Reject"] },
+  { "id": "plan-reject", "labels": ["Approve plan", "Reject"] },
+  { "id": "approve-all-reject", "labels": ["Approve all", "Reject all"] },
+  { "id": "submit-cancel", "labels": ["Submit", "Cancel"] },
+  { "id": "confirm-cancel", "labels": ["Confirm", "Cancel"] },
+  { "id": "yes-no", "labels": ["Yes", "No"] },
+  { "id": "approve", "labels": ["Approve"] },
+  { "id": "reject", "labels": ["Reject"] },
+  { "id": "submit", "labels": ["Submit"] },
+  { "id": "confirm", "labels": ["Confirm"] },
+  { "id": "cancel", "labels": ["Cancel"] }
+]

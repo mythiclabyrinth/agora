@@ -1,3 +1,5 @@
+import { notificationNumber as numeric, notificationIsPending } from "@agora/core/src/notifications/actions";
+
 export interface PresentedNotification {
   identifier: string;
   data: unknown;
@@ -19,15 +21,6 @@ interface ThreadReadState {
   last_read_id: number;
 }
 
-function numeric(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
 /** Select only delivered cards made obsolete by the user's current read state.
     Channel reads deliberately never clear thread cards. Cards without a
     message id are aggregate notifications and clear only at zero unread. */
@@ -44,6 +37,9 @@ export function obsoleteNotificationIds(
   return presented.flatMap(({ identifier, data }) => {
     if (!data || typeof data !== "object") return [];
     const payload = data as Record<string, unknown>;
+    // Reading a request does not answer it. Resolution is reconciled against
+    // message state separately, including when another device answers it.
+    if (notificationIsPending(payload)) return [];
     const channelId = typeof payload.channel_id === "string" ? payload.channel_id : null;
     const threadId = numeric(payload.thread_id);
     const messageId = numeric(payload.message_id);

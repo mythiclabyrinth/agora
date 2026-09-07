@@ -13,6 +13,7 @@ import {
   type Message,
   type Session,
 } from "@agora/core";
+import { dismissResolvedNotification } from "../lib/notifications";
 
 export function useAgoraSocket(
   session: Session,
@@ -31,11 +32,13 @@ export function useAgoraSocket(
     const sock = createAgoraSocket(
       { url: () => wsUrl(session) },
       {
-        onEvent: (ev) =>
+        onEvent: (ev) => {
+          if (ev.type === "message_update") void dismissResolvedNotification(ev.message as Message);
           applyWsEvent(qc, ev, {
             username,
             onAgentMessage: (m) => onAgentMessageRef.current?.(m),
-          }),
+          });
+        },
         onConnectedChange: setConnected,
         onReopen: () => {
           // Same-server restore can restart SQLite rowids while baseUrl/token

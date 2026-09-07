@@ -16,10 +16,10 @@ import {
 import type { Me } from "@agora/core";
 import { unregisterPushToken } from "../lib/notifications";
 import { rememberServer } from "./servers";
+import { KEY_URL, KEY_TOKEN, clearActionRegistration } from "../lib/notificationRegistration";
 
 /* Shared with the background poller, which reads credentials without the store. */
-export const KEY_URL = "agora_server_url";
-export const KEY_TOKEN = "agora_admin_key";
+export { KEY_URL, KEY_TOKEN } from "../lib/notificationRegistration";
 export const KEY_INSTANCE_ADMIN = "agora_instance_admin";
 /** Pre-rename keychain slot ("owner token" era); migrated in load(). */
 const KEY_TOKEN_LEGACY = "agora_owner_token";
@@ -157,6 +157,7 @@ export const useSession = create<SessionState>((set) => ({
       baseUrl: originOf(res.url, guess),
       token: trimmed,
     };
+    await clearActionRegistration();
     await Promise.all([
       SecureStore.setItemAsync(KEY_URL, session.baseUrl),
       SecureStore.setItemAsync(KEY_TOKEN, session.token),
@@ -182,6 +183,7 @@ export const useSession = create<SessionState>((set) => ({
   },
 
   async signOut() {
+    await clearActionRegistration();
     const session = useSession.getState().session;
     useMessageDrafts.getState().resetAll();
     useAddressed.getState().resetAll();
@@ -205,6 +207,7 @@ export const useSession = create<SessionState>((set) => ({
   },
 
   async forgetServer() {
+    await clearActionRegistration();
     const session = useSession.getState().session;
     useMessageDrafts.getState().resetAll();
     useAddressed.getState().resetAll();
