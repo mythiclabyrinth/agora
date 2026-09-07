@@ -14,6 +14,7 @@ pub mod config;
 pub mod connections;
 pub mod hub;
 pub mod migrate;
+pub mod notify_actions;
 pub mod push;
 pub mod server;
 pub mod sources;

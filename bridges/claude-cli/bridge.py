@@ -1858,7 +1858,8 @@ class Bridge:
                 {"id": "deny", "label": "Reject"},
             ] if tool == "ExitPlanMode" else [
                 {"id": "allow", "label": "Approve", "style": "primary"},
-                {"id": "allow_always", "label": f"Always allow {tool} (this session)"},
+                {"id": "allow_always", "label": f"Always allow {tool} (this session)",
+                 "notification": {"enabled": True, "label": "Always allow this tool"}},
                 {"id": "deny", "label": "Reject"},
             ]),
         })

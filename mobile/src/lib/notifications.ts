@@ -15,6 +15,9 @@ import {
   conversationKey,
   obsoleteNotificationIds,
 } from "./notificationCleanup";
+import { notificationIsResolved, notificationContext, type Me } from "@agora/core";
+import { setupNotificationActions } from "./notificationActionRuntime";
+import { readActionRegistration, registrationEpoch, saveActionRegistration } from "./notificationRegistration";
 
 const KEY_PUSH_TOKEN = "agora_push_token";
 
@@ -48,6 +51,7 @@ export async function setupNotifications(): Promise<void> {
 /** Obtain an Expo push token and register it with the server. Returns true
     when remote push is live (caller can drop the background unread poll). */
 export async function registerPushToken(session: Session): Promise<boolean> {
+  const started = registrationEpoch();
   await setupNotifications();
   const projectId = easProjectId();
   if (!projectId) return false;
@@ -60,10 +64,24 @@ export async function registerPushToken(session: Session): Promise<boolean> {
   }
   try {
     const api = new ApiClient(session);
-    await api.post("/api/push-tokens", {
+    const actionSupport = await setupNotificationActions();
+    const previous = actionSupport ? await readActionRegistration() : null;
+    const registered = await api.post<{ notification_action_context?: string }>("/api/push-tokens", {
       token,
       platform: Platform.OS,
+      ...(actionSupport ? {
+        notification_action_version: 1,
+        notification_action_context: previous?.baseUrl === session.baseUrl ? previous.context : undefined,
+      } : {}),
     });
+    if (actionSupport && registered.notification_action_context) {
+      const me = await api.get<Me>("/api/me");
+      const saved = await saveActionRegistration({
+        baseUrl: session.baseUrl, username: me.username, context: registered.notification_action_context,
+      }, session, started);
+      if (!saved) return false;
+    }
+    if (started !== registrationEpoch()) return false;
     await SecureStore.setItemAsync(KEY_PUSH_TOKEN, token);
     pushActive = true;
     return true;
@@ -140,9 +158,48 @@ export function notifyUnreadChannel(
   });
 }
 
-export async function reconcileNotifications(groups: Group[], threads: ThreadRow[]): Promise<void> {
+export async function dismissResolvedNotification(message: Message): Promise<void> {
+  const meta = message.meta;
+  // Row-only tables also finish through row resolutions, not table submission.
+  if (!meta?.resolved && !meta?.form_submitted && !meta?.table_submitted &&
+      !Object.keys(meta?.table_rows ?? {}).length) return;
   try {
+    const started = registrationEpoch();
+    const registration = await readActionRegistration();
     const presented = await Notifications.getPresentedNotificationsAsync();
+    if (started !== registrationEpoch()) return;
+    await Promise.all(presented.filter((n) => {
+      const context = notificationContext(n.request.content.data);
+      return (!context || context === registration?.context) && notificationIsResolved(n.request.content.data, message);
+    })
+      .map((n) => Notifications.dismissNotificationAsync(n.request.identifier)));
+  } catch { /* best effort while the process is alive */ }
+}
+
+type Reconciliation = { groups: Group[]; threads: ThreadRow[]; session?: Session };
+let queuedReconciliation: Reconciliation | null = null;
+let reconciliation: Promise<void> | null = null;
+
+export function reconcileNotifications(groups: Group[], threads: ThreadRow[], session?: Session): Promise<void> {
+  queuedReconciliation = { groups, threads, session };
+  if (!reconciliation) {
+    reconciliation = (async () => {
+      while (queuedReconciliation) {
+        const next = queuedReconciliation;
+        queuedReconciliation = null;
+        await reconcileNotificationBatch(next.groups, next.threads, next.session);
+      }
+    })().finally(() => { reconciliation = null; });
+  }
+  return reconciliation;
+}
+
+async function reconcileNotificationBatch(groups: Group[], threads: ThreadRow[], session?: Session): Promise<void> {
+  try {
+    const started = registrationEpoch();
+    const registration = await readActionRegistration();
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    if (started !== registrationEpoch()) return;
     const obsolete = obsoleteNotificationIds(
       presented.map((notification) => ({
         identifier: notification.request.identifier,
@@ -153,6 +210,34 @@ export async function reconcileNotifications(groups: Group[], threads: ThreadRow
     );
     await Promise.all(obsolete.map((identifier) =>
       Notifications.dismissNotificationAsync(identifier)));
+    if (session) {
+      // Notification Center can contain older messages outside every loaded
+      // query page. Reconcile those against the authenticated message endpoint.
+      for (const notification of presented) {
+        const data = notification.request.content.data;
+        if (data?.pending_interaction !== true || !Number.isSafeInteger(data.message_id)) continue;
+        const context = notificationContext(data);
+        if (context && context !== registration?.context) {
+          await Notifications.dismissNotificationAsync(notification.request.identifier);
+          continue;
+        }
+        if (started !== registrationEpoch()) return;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        try {
+          const response = await fetch(`${session.baseUrl}/api/messages/${data.message_id}`, {
+            headers: { Authorization: `Bearer ${session.token}` }, signal: controller.signal, redirect: "error",
+          });
+          if (started !== registrationEpoch()) return;
+          if (response.status === 403 || response.status === 404) {
+            await Notifications.dismissNotificationAsync(notification.request.identifier);
+          } else if (response.ok && notificationIsResolved(data, await response.json() as Message)) {
+            await Notifications.dismissNotificationAsync(notification.request.identifier);
+          }
+        } catch { /* offline: retain the pending request */ }
+        finally { clearTimeout(timeout); }
+      }
+    }
   } catch {
     /* Notification Center access is best-effort. */
   }

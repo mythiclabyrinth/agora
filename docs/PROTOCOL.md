@@ -214,8 +214,11 @@ OpenClaw wrapper, a shell script, whatever:
 // Those ambiguous rows remain user-typed rather than risking cross-identity
 // deletion. Fully namespacing the legacy reaction key is a future migration.
 
-// approval buttons: a post can carry `options` (each {id, label, style?}) plus a
+// approval buttons: a post can carry `options` (each {id, label, style?, notification?}) plus a
 // stable `options_id`. The UI renders them as clickable buttons.
+// `notification` may specify {enabled: boolean, label?: string,
+// role?: "confirm" | "cancel" | "destructive"}. See docs/NOTIFICATION_ACTIONS.md
+// for exact-label categories, platform support, and editable-state opt-in.
 {"type": "post", "agent_id": "claw-1", "channel_id": "...", "text": "Deploy to prod?",
  "options_id": "deploy-42", "options": [{"id": "yes", "label": "Ship it", "style": "primary"},
                                         {"id": "no", "label": "Cancel"}]}

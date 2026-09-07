@@ -157,6 +157,35 @@ def peer_frame(**overrides):
     return frame
 
 
+class NotificationApprovalTests(unittest.TestCase):
+    def test_tool_approval_keeps_detail_and_supplies_explicit_notification_label(self):
+        async def run():
+            b = make_bridge()
+            b.session_allows = {}
+            b.pending_perms = {}
+            b.permission_timeout = 1
+            b._send_to_claude = AsyncMock()
+
+            def choose(post):
+                self.assertEqual(post["options"][1]["label"], "Always allow Bash (this session)")
+                self.assertEqual(post["options"][1]["notification"], {
+                    "enabled": True, "label": "Always allow this tool",
+                })
+                fut = b.pending_perms[post["options_id"]][0]
+                fut.set_result(("option", "allow_always", "ana"))
+
+            b.send = Mock(side_effect=choose)
+            await b._handle_control_request("c1", {"channel_id": "c1"}, Mock(), {
+                "request_id": "ask-42", "request": {
+                    "subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "pwd"},
+                },
+            }, [])
+            self.assertIn("Bash", b.session_allows["c1"])
+            b._send_to_claude.assert_awaited_once()
+
+        asyncio.run(run())
+
+
 class PeerConfigTests(unittest.TestCase):
     def test_parse_normalizes_case_whitespace_and_empties(self):
         self.assertEqual(

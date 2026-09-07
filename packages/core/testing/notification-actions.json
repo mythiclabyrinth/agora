@@ -1,0 +1,55 @@
+[
+  {
+    "name": "Claude tool approval keeps the actual ids and explicit short label",
+    "meta": {
+      "options_id": "perm-42",
+      "options": [
+        { "id": "allow", "label": "Approve", "style": "primary" },
+        { "id": "allow_always", "label": "Always allow Bash (this session)", "notification": { "enabled": true, "label": "Always allow this tool" } },
+        { "id": "deny", "label": "Reject" }
+      ]
+    },
+    "expected": {
+      "version": 1,
+      "category": "agora.v1.approve-tool-reject.d0",
+      "actions": [
+        { "kind": "select", "id": "allow", "interaction_id": "perm-42", "label": "Approve", "destructive": false },
+        { "kind": "select", "id": "allow_always", "interaction_id": "perm-42", "label": "Always allow this tool", "destructive": false },
+        { "kind": "select", "id": "deny", "interaction_id": "perm-42", "label": "Reject", "destructive": false }
+      ]
+    }
+  },
+  {
+    "name": "editable form opts in per button",
+    "meta": {
+      "form_id": "release",
+      "form": { "fields": [{ "id": "note", "kind": "input", "label": "Note", "value": "" }], "buttons": [
+        { "id": "release", "label": "Submit", "notification": { "enabled": true } },
+        { "id": "cancel", "label": "Cancel", "notification": { "enabled": true, "role": "destructive" } }
+      ] }
+    },
+    "expected": {
+      "version": 1,
+      "category": "agora.v1.submit-cancel.d2",
+      "actions": [
+        { "kind": "form_submit", "id": "release", "interaction_id": "release", "label": "Submit", "destructive": false },
+        { "kind": "form_submit", "id": "cancel", "interaction_id": "release", "label": "Cancel", "destructive": true }
+      ]
+    }
+  },
+  {
+    "name": "readonly table defaults enabled",
+    "meta": { "table_id": "review", "table": {
+      "columns": [{ "id": "name", "kind": "readonly" }],
+      "buttons": [{ "id": "yes", "label": "Approve all" }, { "id": "no", "label": "Reject all" }]
+    } },
+    "expected": {
+      "version": 1,
+      "category": "agora.v1.approve-all-reject.d0",
+      "actions": [
+        { "kind": "table_submit", "id": "yes", "interaction_id": "review", "label": "Approve all", "destructive": false },
+        { "kind": "table_submit", "id": "no", "interaction_id": "review", "label": "Reject all", "destructive": false }
+      ]
+    }
+  }
+]

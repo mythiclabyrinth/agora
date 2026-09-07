@@ -424,6 +424,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/channels/{channel_id}/read", put(mark_read))
         .route("/api/messages/{message_id}", get(get_message))
         .route("/api/messages/{message_id}/select", post(select_message_option))
+        .route("/api/messages/{message_id}/notification_action", post(submit_notification_action))
         .route(
             "/api/messages/{message_id}/form_state",
             post(update_message_form_state),
@@ -2209,6 +2210,52 @@ async fn get_message(
         message["reply_count"] = json!(state.hub.store.thread_size(message_id));
     }
     Ok(Json(message))
+}
+
+/// Validate the notification's binding, then reuse the canonical interaction
+/// handlers. No credentials or server-selected URLs travel in a push payload.
+async fn submit_notification_action(
+    State(state): State<AppState>,
+    Path(message_id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let message = require_message_visible(&state, &user, message_id)?;
+    let context = payload["context"].as_str().unwrap_or_default();
+    if payload["version"] != 1 || !state.hub.store.owns_push_action_context(&user.username, context) {
+        return Err(err(StatusCode::CONFLICT, "Notification belongs to an inactive session"));
+    }
+    let action: crate::notify_actions::Action = serde_json::from_value(payload["action"].clone())
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "Invalid notification action"))?;
+    let meta = &message["meta"];
+    if meta[action.kind.interaction_key()].as_str().unwrap_or_default() != action.interaction_id {
+        return Err(err(StatusCode::CONFLICT, "Notification interaction changed"));
+    }
+    let done = &meta[action.kind.resolution_key()];
+    let id_key = if action.kind == crate::notify_actions::Kind::Select { "option_id" } else { "button_id" };
+    if !done.is_null() {
+        if done["by"] == user.username && done[id_key] == action.id {
+            return Ok(Json(json!({"message":message,"outcome":"already_recorded"})));
+        }
+        return Err((StatusCode::CONFLICT, Json(json!({"detail":"Already handled","message":message}))));
+    }
+    let eligible = crate::notify_actions::for_meta(meta).is_some_and(|set|
+        payload["category"] == set.category && set.actions.contains(&action));
+    if !eligible { return Err(err(StatusCode::CONFLICT, "Notification action is no longer available")); }
+    let hub = Arc::clone(&state.hub);
+    let username = user.username;
+    let result = tokio::task::spawn_blocking(move || match action.kind {
+        crate::notify_actions::Kind::Select => hub.select_option(message_id, &action.id, &username),
+        crate::notify_actions::Kind::FormSubmit => hub.submit_form(message_id, &action.id, &username),
+        crate::notify_actions::Kind::TableSubmit => hub.submit_table(message_id, &action.id, &username),
+    }).await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Notification action failed"))?;
+    match result {
+        Ok(message) => Ok(Json(json!({"message":message,"outcome":"recorded"}))),
+        Err("Message not found") => Err(err(StatusCode::NOT_FOUND, "Unknown message")),
+        Err(detail) => Err(err(StatusCode::CONFLICT, detail)),
+    }
 }
 
 async fn select_message_option(
@@ -4611,6 +4658,11 @@ async fn register_push_token(
         return Err(err(StatusCode::BAD_REQUEST, "Invalid Expo push token"));
     }
     let platform = payload["platform"].as_str().unwrap_or("").trim().to_string();
+    if payload["notification_action_version"] == 1 {
+        let previous = payload["notification_action_context"].as_str().unwrap_or_default();
+        let context = state.hub.store.register_action_push_token(&user.username, &token, &platform, previous);
+        return Ok(Json(json!({"ok":true,"notification_action_context":context})));
+    }
     state.hub.store.upsert_push_token(&user.username, &token, &platform);
     Ok(Json(json!({"ok": true})))
 }
@@ -7119,6 +7171,99 @@ mod tests {
             .iter().any(|m| m["id"] == mid));
         assert!(store.search_messages("old", false, Some(&cid), None, None, None, None, false, 10, 0)
             .iter().all(|m| m["id"] != mid));
+    }
+
+    #[tokio::test]
+    async fn notification_actions_validate_binding_visibility_and_retry_identity() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        for name in ["ana", "mal"] { store.create_user(name, "", None, "member").unwrap(); }
+        let group = store.create_group("Team", "", Some("ana"));
+        let gid = group["id"].as_str().unwrap();
+        store.add_member(gid, "user", "ana", "admin", None);
+        let channel = store.create_channel(gid, "general", "");
+        let meta = json!({"options_id":"ask-42", "options":[
+            {"id":"yes","label":"Approve"},{"id":"no","label":"Reject"}
+        ]});
+        let message = store.add_message_with_meta(channel["id"].as_str().unwrap(), "Review", "agent", "bot", None, None, &[], Some(&meta));
+        let mid = message["id"].as_i64().unwrap();
+        let context = store.register_action_push_token("ana", "device", "android", "");
+        let actions = crate::notify_actions::for_meta(&meta).unwrap();
+        let payload = json!({"version":1,"context":context,"category":actions.category,"action":actions.actions[0]});
+        let submit = |headers, body| submit_notification_action(State(state.clone()), Path(mid), Query(HashMap::new()), headers, Json(body));
+        assert_eq!(submit(HeaderMap::new(), payload.clone()).await.unwrap_err().0, StatusCode::UNAUTHORIZED);
+        assert_eq!(submit(session_headers(&state,"mal"), payload.clone()).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        for (field, value) in [("context", json!("stale")), ("category",json!("wrong")), ("version",json!(2))] {
+            let mut bad = payload.clone(); bad[field] = value;
+            assert_eq!(submit(session_headers(&state,"ana"), bad).await.unwrap_err().0, StatusCode::CONFLICT);
+        }
+        let mut stale = payload.clone(); stale["action"]["interaction_id"] = json!("other-ask");
+        assert_eq!(submit(session_headers(&state,"ana"), stale).await.unwrap_err().0, StatusCode::CONFLICT);
+        assert!(store.message(mid).unwrap()["meta"]["resolved"].is_null());
+        let first = submit(session_headers(&state,"ana"), payload.clone()).await.unwrap().0;
+        assert_eq!(first["outcome"], "recorded");
+        assert_eq!(first["message"]["meta"]["resolved"]["option_id"], "yes");
+        assert_eq!(submit(session_headers(&state,"ana"), payload.clone()).await.unwrap().0["outcome"], "already_recorded");
+        let mut other_choice = payload.clone(); other_choice["action"] = json!(actions.actions[1]);
+        assert_eq!(submit(session_headers(&state,"ana"), other_choice).await.unwrap_err().0, StatusCode::CONFLICT);
+        store.add_member(gid, "user", "mal", "member", None);
+        let other_context = store.register_action_push_token("mal", "other-device", "android", "");
+        let mut other_user = payload; other_user["context"] = json!(other_context);
+        assert_eq!(submit(session_headers(&state,"mal"), other_user).await.unwrap_err().0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn notification_form_and_table_submit_current_shared_state() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "", None, "member").unwrap();
+        let g = store.create_group("Team", "", Some("ana"));
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "ana", "admin", None);
+        let c = store.create_channel(gid, "general", "");
+        let context = store.register_action_push_token("ana", "device", "android", "");
+        for meta in [
+            json!({"form_id":"f1","form":{"fields":[{"id":"note","kind":"input","label":"Note"}],
+                "buttons":[{"id":"send","label":"Submit","notification":{"enabled":true}}]},
+                "form_state":{"note":"edited by another member"}}),
+            json!({"table_id":"t1","table":{"columns":[{"id":"item","kind":"text"}],
+                "rows":[{"id":"r1"},{"id":"r2"}],
+                "buttons":[{"id":"send","label":"Submit","notification":{"enabled":true}}]},
+                "table_state":{"r1":{"item":"first"},"r2":{"item":"changed"}},
+                "table_rows":{"r1":{"action_id":"no","by":"ana"}}}),
+        ] {
+            let actions = crate::notify_actions::for_meta(&meta).unwrap();
+            let m = store.add_message_with_meta(c["id"].as_str().unwrap(),"Review","agent","bot",None,None,&[],Some(&meta));
+            let result = submit_notification_action(State(state.clone()),Path(m["id"].as_i64().unwrap()),Query(HashMap::new()),
+                session_headers(&state,"ana"),Json(json!({"version":1,"context":context,"category":actions.category,"action":actions.actions[0]})))
+                .await.unwrap().0;
+            let updated = &result["message"]["meta"];
+            if meta.get("form").is_some() {
+                assert_eq!(updated["form_submitted"]["values"]["note"], "edited by another member");
+            } else {
+                assert_eq!(updated["table_submitted"]["rows"], json!({"r2":{"item":"changed"}}));
+                assert_eq!(updated["table_rows"], meta["table_rows"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn notification_action_cannot_bypass_editable_form_opt_in() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana","",None,"admin").unwrap();
+        let g = store.create_group("Team","",None);
+        let c = store.create_channel(g["id"].as_str().unwrap(),"general","");
+        let meta = json!({"form_id":"f1","form":{"fields":[{"id":"x","kind":"input"}],
+            "buttons":[{"id":"send","label":"Submit"}]},"form_state":{"x":"prefilled"}});
+        let m = store.add_message_with_meta(c["id"].as_str().unwrap(),"Review","agent","bot",None,None,&[],Some(&meta));
+        let context = store.register_action_push_token("ana","device","android","");
+        let result = submit_notification_action(State(state.clone()),Path(m["id"].as_i64().unwrap()),Query(HashMap::new()),session_headers(&state,"ana"),
+            Json(json!({"version":1,"context":context,"category":"agora.v1.submit.d0","action":{
+                "kind":"form_submit","id":"send","interaction_id":"f1","label":"Submit","destructive":false
+            }}))).await;
+        assert_eq!(result.unwrap_err().0, StatusCode::CONFLICT);
+        assert!(store.message(m["id"].as_i64().unwrap()).unwrap()["meta"]["form_submitted"].is_null());
     }
 
     #[tokio::test]

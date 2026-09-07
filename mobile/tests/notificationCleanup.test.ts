@@ -13,6 +13,11 @@ const threads = [
 ];
 
 describe("notification cleanup", () => {
+  it("retains pending approvals even when their conversation is read", () => {
+    expect(obsoleteNotificationIds([
+      { identifier: "pending", data: { channel_id: "c1", message_id: 1, pending_interaction: true } },
+    ], groups, threads)).toEqual([]);
+  });
   it("uses stable channel and thread conversation keys", () => {
     expect(conversationKey("c1")).toBe("channel:c1");
     expect(conversationKey("c1", 42)).toBe("thread:42");

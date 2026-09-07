@@ -6,6 +6,7 @@
 //! to drop stale tokens from the store.
 
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 const EXPO_PUSH_URL: &str = "https://exp.host/--/api/v2/push/send";
 
@@ -17,6 +18,8 @@ pub struct PushMessage {
     pub channel_id: String,
     pub thread_id: Option<i64>,
     pub message_id: i64,
+    pub pending_interaction: bool,
+    pub actions: Option<crate::notify_actions::Actions>,
 }
 
 impl PushMessage {
@@ -28,7 +31,7 @@ impl PushMessage {
     }
 }
 
-fn payload(message: &PushMessage, token: &str) -> Value {
+fn payload(message: &PushMessage, token: &str, context: Option<&str>) -> Value {
     let mut data = json!({
         "channel_id": message.channel_id,
         "message_id": message.message_id,
@@ -36,28 +39,40 @@ fn payload(message: &PushMessage, token: &str) -> Value {
     if let Some(tid) = message.thread_id {
         data["thread_id"] = json!(tid);
     }
-    let conversation = message.conversation_key();
-    json!({
+    if message.pending_interaction {
+        data["pending_interaction"] = json!(true);
+    }
+    let key = if message.pending_interaction {
+        format!("msg:{}", message.message_id)
+    } else { message.conversation_key() };
+    let mut result = json!({
         "to": token,
         "title": message.title,
         "body": message.body,
         "data": data,
         "sound": "default",
-        "collapseId": conversation,
-        "tag": conversation,
-    })
+        "collapseId": key,
+        "tag": key,
+    });
+    if let (Some(actions), Some(context)) = (&message.actions, context) {
+        let mut envelope = serde_json::to_value(actions).expect("notification actions serialize");
+        envelope["context"] = json!(context);
+        result["data"]["notification_actions"] = envelope;
+        result["categoryId"] = json!(actions.category);
+    }
+    result
 }
 
 /// POST `message` to each `token` via Expo. Returns tokens Expo says are dead
 /// so the caller can prune them. Best-effort: network failures return no
 /// prunes (retry next message) rather than wiping the table.
-pub fn send(message: &PushMessage, tokens: &[String]) -> Vec<String> {
+pub fn send(message: &PushMessage, tokens: &[String], contexts: &HashMap<String, String>) -> Vec<String> {
     if tokens.is_empty() {
         return Vec::new();
     }
     let messages: Vec<Value> = tokens
         .iter()
-        .map(|token| payload(message, token))
+        .map(|token| payload(message, token, contexts.get(token).map(String::as_str)))
         .collect();
 
     let response = match ureq::post(EXPO_PUSH_URL)
@@ -123,21 +138,39 @@ mod tests {
             channel_id: "channel-1".into(),
             thread_id,
             message_id: 91,
+            pending_interaction: false,
+            actions: None,
         }
     }
 
     #[test]
     fn payload_replaces_notifications_per_conversation() {
-        let thread = payload(&message(Some(42)), "ExponentPushToken[x]");
+        let thread = payload(&message(Some(42)), "ExponentPushToken[x]", None);
         assert_eq!(thread["collapseId"], "thread:42");
         assert_eq!(thread["tag"], "thread:42");
         assert_eq!(thread["data"]["thread_id"], 42);
         assert_eq!(thread["data"]["message_id"], 91);
 
-        let channel = payload(&message(None), "ExponentPushToken[x]");
+        let channel = payload(&message(None), "ExponentPushToken[x]", None);
         assert_eq!(channel["collapseId"], "channel:channel-1");
         assert_eq!(channel["tag"], "channel:channel-1");
         assert!(channel["data"].get("thread_id").is_none());
+    }
+
+    #[test]
+    fn pending_messages_do_not_replace_each_other_and_old_clients_get_no_actions() {
+        let mut first = message(None);
+        first.pending_interaction = true;
+        first.actions = crate::notify_actions::for_meta(&json!({"options":[{"id":"ok","label":"Approve"}]}));
+        let capable = payload(&first, "ExponentPushToken[x]", Some("device-context"));
+        assert_eq!(capable["collapseId"], "msg:91");
+        assert_eq!(capable["categoryId"], "agora.v1.approve.d0");
+        assert_eq!(capable["data"]["notification_actions"]["context"], "device-context");
+        let old = payload(&first, "ExponentPushToken[x]", None);
+        assert!(old.get("categoryId").is_none());
+        assert_eq!(old["data"]["pending_interaction"], true);
+        first.message_id = 92;
+        assert_eq!(payload(&first, "ExponentPushToken[x]", None)["collapseId"], "msg:92");
     }
 
     #[test]

@@ -44,6 +44,9 @@ export function obsoleteNotificationIds(
   return presented.flatMap(({ identifier, data }) => {
     if (!data || typeof data !== "object") return [];
     const payload = data as Record<string, unknown>;
+    // Reading a request does not answer it. Resolution is reconciled against
+    // message state separately, including when another device answers it.
+    if (payload.pending_interaction === true) return [];
     const channelId = typeof payload.channel_id === "string" ? payload.channel_id : null;
     const threadId = numeric(payload.thread_id);
     const messageId = numeric(payload.message_id);
