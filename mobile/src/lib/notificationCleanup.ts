@@ -1,4 +1,4 @@
-import { notificationNumber as numeric } from "@agora/core";
+import { notificationNumber as numeric, notificationIsPending } from "@agora/core/src/notifications/actions";
 
 export interface PresentedNotification {
   identifier: string;
@@ -39,7 +39,7 @@ export function obsoleteNotificationIds(
     const payload = data as Record<string, unknown>;
     // Reading a request does not answer it. Resolution is reconciled against
     // message state separately, including when another device answers it.
-    if (payload.pending_interaction === true) return [];
+    if (notificationIsPending(payload)) return [];
     const channelId = typeof payload.channel_id === "string" ? payload.channel_id : null;
     const threadId = numeric(payload.thread_id);
     const messageId = numeric(payload.message_id);

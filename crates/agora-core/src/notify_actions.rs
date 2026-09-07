@@ -163,6 +163,10 @@ pub fn for_meta(meta: &Value) -> Option<Actions> {
     if actions.is_empty() || actions.len() > 4 {
         return None;
     }
+    // One notification must not combine unrelated interaction state machines.
+    if actions.iter().any(|action| action.kind != actions[0].kind) {
+        return None;
+    }
     static CATEGORIES: OnceLock<Vec<Category>> = OnceLock::new();
     let categories = CATEGORIES.get_or_init(|| {
         serde_json::from_str(include_str!(

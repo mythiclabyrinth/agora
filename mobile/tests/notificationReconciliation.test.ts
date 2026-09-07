@@ -26,8 +26,8 @@ const message = (resolved: boolean): Message => ({ id: 42, meta: {
   ...fixture[0].meta, ...(resolved ? { resolved: { by: "another-member", option_id: "allow" } } : {}),
 } } as Message);
 
-beforeEach(() => { mockDismiss.mockClear(); mockPresented.mockClear(); mockPresented.mockResolvedValue([card("pending")]); });
-afterEach(() => { jest.restoreAllMocks(); });
+beforeEach(() => { mockEpoch += 1; mockDismiss.mockClear(); mockPresented.mockClear(); mockPresented.mockResolvedValue([card("pending")]); });
+afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); });
 
 test("ordinary unresolved message edits skip notification enumeration", async () => {
   await dismissResolvedNotification(message(false));
@@ -41,10 +41,10 @@ test("WS completion dismisses the matching request, including another member's c
   expect(mockDismiss.mock.calls).toEqual([["pending"]]);
 });
 
-test.each([42, "42"])("resume fetches pending message %s outside loaded query pages", async (message_id) => {
+test.each([[42, true], ["42", "true"]])("resume fetches pending message %s with flag %s outside loaded query pages", async (message_id, pending_interaction) => {
   const pending = card("pending");
   mockPresented.mockResolvedValue([{ request: { ...pending.request, content: {
-    data: { ...pending.request.content.data, message_id },
+    data: { ...pending.request.content.data, message_id, pending_interaction },
   } } }]);
   const fetch = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200,
     json: async () => message(true) } as Response);
@@ -53,6 +53,42 @@ test.each([42, "42"])("resume fetches pending message %s outside loaded query pa
     headers: { Authorization: "Bearer token" }, redirect: "error",
   }));
   expect(mockDismiss).toHaveBeenCalledWith("pending");
+});
+
+test("an unchanged card set cools down briefly, then checks again", async () => {
+  const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+  const fetch = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200,
+    json: async () => message(false) } as Response);
+  await reconcileNotifications([], [], session);
+  await reconcileNotifications([], [], session);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  now.mockReturnValue(6001);
+  await reconcileNotifications([], [], session);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  mockPresented.mockResolvedValue([card("new-card")]);
+  await reconcileNotifications([], [], session);
+  expect(fetch).toHaveBeenCalledTimes(3);
+  mockEpoch += 1;
+  await reconcileNotifications([], [], session);
+  expect(fetch).toHaveBeenCalledTimes(4);
+});
+
+test("all cards start concurrently and share one deadline; late results cannot dismiss", async () => {
+  jest.useFakeTimers();
+  mockPresented.mockResolvedValue([card("one"), card("two"), card("three")]);
+  let finish!: (response: Response) => void;
+  const waiting = new Promise<Response>((resolve) => { finish = resolve; });
+  const fetch = jest.spyOn(global, "fetch").mockReturnValue(waiting);
+  const run = reconcileNotifications([], [], session);
+  await jest.advanceTimersByTimeAsync(0);
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(new Set(fetch.mock.calls.map(([, init]) => init?.signal)).size).toBe(1);
+  await jest.advanceTimersByTimeAsync(8000);
+  await run;
+  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  finish({ ok: true, status: 200, json: async () => message(true) } as Response);
+  await jest.advanceTimersByTimeAsync(0);
+  expect(mockDismiss).not.toHaveBeenCalled();
 });
 
 test.each([403,404])("inaccessible/deleted requests (%s) are removed", async (status) => {
@@ -65,6 +101,16 @@ test("an offline resume preserves pending cards", async () => {
   jest.spyOn(global,"fetch").mockRejectedValue(new Error("offline"));
   await reconcileNotifications([],[],session);
   expect(mockDismiss).not.toHaveBeenCalled();
+});
+
+test.each([false, "false"])("a nonpending flag %s does not trigger reconciliation fetches", async (pending_interaction) => {
+  const existing = card("done");
+  mockPresented.mockResolvedValue([{ request: { ...existing.request, content: {
+    data: { ...existing.request.content.data, pending_interaction },
+  } } }]);
+  const fetch = jest.spyOn(global, "fetch");
+  await reconcileNotifications([], [], session);
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 test("old-account cards are removed without fetching a same-id message on the new server", async () => {

@@ -47,6 +47,10 @@ export function notificationMessageId(data: unknown): number | null {
   return id !== null && Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
+export function notificationIsPending(data: unknown): boolean {
+  return record(data) && (data.pending_interaction === true || data.pending_interaction === "true");
+}
+
 export function notificationContext(data: unknown): string | null {
   if (!record(data)) return null;
   if (typeof data.notification_context === "string") return data.notification_context;
@@ -66,7 +70,7 @@ export function parseNotificationActions(data: unknown): NotificationActions | n
   for (const [index, action] of envelope.actions.entries()) {
     if (!record(action) || !["select", "form_submit", "table_submit"].includes(String(action.kind)) ||
         typeof action.id !== "string" || !action.id || action.id.length > 256 ||
-        typeof action.interaction_id !== "string" || action.interaction_id.length > 1024 ||
+        typeof action.interaction_id !== "string" || action.interaction_id.length > 256 ||
         action.label !== category.actions[index].buttonTitle ||
         action.destructive !== category.actions[index].options.isDestructive) return null;
     const key = `${action.kind}:${action.id}`;
@@ -106,7 +110,7 @@ export function hasPendingInteraction(meta?: MessageMeta | null): boolean {
 }
 
 export function notificationIsResolved(data: unknown, message: Message): boolean {
-  if (!record(data) || notificationMessageId(data) !== message.id || !data.pending_interaction) return false;
+  if (!record(data) || notificationMessageId(data) !== message.id || !notificationIsPending(data)) return false;
   const actions = parseNotificationActions(data);
   if (!actions) return !hasPendingInteraction(message.meta);
   return actions.actions.every((action) =>

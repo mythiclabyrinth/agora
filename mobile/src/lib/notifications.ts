@@ -15,7 +15,7 @@ import {
   conversationKey,
   obsoleteNotificationIds,
 } from "./notificationCleanup";
-import { notificationIsResolved, notificationContext, notificationMessageId, type Me } from "@agora/core";
+import { notificationIsResolved, notificationIsPending, notificationContext, notificationMessageId, type Me } from "@agora/core";
 import { setupNotificationActions } from "./notificationActionRuntime";
 import { readActionRegistration, registrationEpoch, saveActionRegistration } from "./notificationRegistration";
 
@@ -179,6 +179,7 @@ export async function dismissResolvedNotification(message: Message): Promise<voi
 type Reconciliation = { groups: Group[]; threads: ThreadRow[]; session?: Session };
 let queuedReconciliation: Reconciliation | null = null;
 let reconciliation: Promise<void> | null = null;
+let lastPendingCheck: { key: string; token: string; until: number } | null = null;
 
 export function reconcileNotifications(groups: Group[], threads: ThreadRow[], session?: Session): Promise<void> {
   queuedReconciliation = { groups, threads, session };
@@ -213,30 +214,48 @@ async function reconcileNotificationBatch(groups: Group[], threads: ThreadRow[],
     if (session) {
       // Notification Center can contain older messages outside every loaded
       // query page. Reconcile those against the authenticated message endpoint.
-      for (const notification of presented) {
+      const pending = presented.filter((notification) => notificationIsPending(notification.request.content.data) &&
+        notificationMessageId(notification.request.content.data) !== null);
+      const key = JSON.stringify([started, session.baseUrl, registration?.context,
+        pending.map(({ request }) => [request.identifier, notificationMessageId(request.content.data),
+          notificationContext(request.content.data)]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))]);
+      if (!pending.length) { lastPendingCheck = null; return; }
+      if (lastPendingCheck?.key === key && lastPendingCheck.token === session.token &&
+          Date.now() < lastPendingCheck.until) return;
+      const controller = new AbortController();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<void>((resolve) => {
+        timeout = setTimeout(() => { controller.abort(); resolve(); }, 8000);
+      });
+      const checks = pending.map(async (notification) => {
         const data = notification.request.content.data;
         const messageId = notificationMessageId(data);
-        if (data?.pending_interaction !== true || messageId === null) continue;
         const context = notificationContext(data);
-        if (context && context !== registration?.context) {
-          await Notifications.dismissNotificationAsync(notification.request.identifier);
-          continue;
-        }
-        if (started !== registrationEpoch()) return;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
         try {
+          if (started !== registrationEpoch() || controller.signal.aborted) return;
+          if (context && context !== registration?.context) {
+            await Notifications.dismissNotificationAsync(notification.request.identifier);
+            return;
+          }
           const response = await fetch(`${session.baseUrl}/api/messages/${messageId}`, {
             headers: { Authorization: `Bearer ${session.token}` }, signal: controller.signal, redirect: "error",
           });
-          if (started !== registrationEpoch()) return;
-          if (response.status === 403 || response.status === 404) {
-            await Notifications.dismissNotificationAsync(notification.request.identifier);
-          } else if (response.ok && notificationIsResolved(data, await response.json() as Message)) {
+          const resolved = response.status === 403 || response.status === 404 ||
+            (response.ok && notificationIsResolved(data, await response.json() as Message));
+          if (started !== registrationEpoch() || controller.signal.aborted) return;
+          if (resolved) {
             await Notifications.dismissNotificationAsync(notification.request.identifier);
           }
         } catch { /* offline: retain the pending request */ }
-        finally { clearTimeout(timeout); }
+      });
+      try {
+        // One deadline for the whole set, including body decoding. Late results
+        // cannot mutate cards after timeout or account changes.
+        await Promise.race([Promise.all(checks), deadline]);
+      } finally {
+        clearTimeout(timeout);
+        controller.abort();
+        lastPendingCheck = { key, token: session.token, until: Date.now() + 5000 };
       }
     }
   } catch {

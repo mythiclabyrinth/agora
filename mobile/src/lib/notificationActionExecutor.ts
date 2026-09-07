@@ -1,7 +1,8 @@
 import {
   notificationActionOutcome, notificationActionSlot, parseNotificationActions, notificationMessageId,
-  type Message, type Session,
-} from "@agora/core";
+} from "@agora/core/src/notifications/actions";
+import type { Message } from "@agora/core/src/api/types";
+import type { Session } from "@agora/core/src/api/client";
 import type { ActionRegistration } from "./notificationRegistration";
 
 export type ActionResult = "recorded" | "handled" | "retry" | "open" | "ignored";

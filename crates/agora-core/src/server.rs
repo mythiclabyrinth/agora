@@ -2224,7 +2224,10 @@ async fn submit_notification_action(
     let user = require_user(&state, &headers, &q)?;
     let message = require_message_visible(&state, &user, message_id)?;
     let context = payload["context"].as_str().unwrap_or_default();
-    if payload["version"] != 1 || !state.hub.store.owns_push_action_context(&user.username, context) {
+    if payload["version"] != 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "Unsupported notification action version"));
+    }
+    if !state.hub.store.owns_push_action_context(&user.username, context) {
         return Err(err(StatusCode::CONFLICT, "Notification belongs to an inactive session"));
     }
     let action: crate::notify_actions::Action = serde_json::from_value(payload["action"].clone())
@@ -7193,10 +7196,12 @@ mod tests {
         let submit = |headers, body| submit_notification_action(State(state.clone()), Path(mid), Query(HashMap::new()), headers, Json(body));
         assert_eq!(submit(HeaderMap::new(), payload.clone()).await.unwrap_err().0, StatusCode::UNAUTHORIZED);
         assert_eq!(submit(session_headers(&state,"mal"), payload.clone()).await.unwrap_err().0, StatusCode::FORBIDDEN);
-        for (field, value) in [("context", json!("stale")), ("category",json!("wrong")), ("version",json!(2))] {
+        for (field, value) in [("context", json!("stale")), ("category",json!("wrong"))] {
             let mut bad = payload.clone(); bad[field] = value;
             assert_eq!(submit(session_headers(&state,"ana"), bad).await.unwrap_err().0, StatusCode::CONFLICT);
         }
+        let mut unsupported = payload.clone(); unsupported["version"] = json!(2);
+        assert_eq!(submit(session_headers(&state,"ana"), unsupported).await.unwrap_err().0, StatusCode::BAD_REQUEST);
         let mut stale = payload.clone(); stale["action"]["interaction_id"] = json!("other-ask");
         assert_eq!(submit(session_headers(&state,"ana"), stale).await.unwrap_err().0, StatusCode::CONFLICT);
         assert!(store.message(mid).unwrap()["meta"]["resolved"].is_null());

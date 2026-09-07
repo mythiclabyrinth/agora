@@ -28,9 +28,6 @@ jest.mock("../src/lib/notificationRegistration", () => ({
   readActionRegistration: async () => mockRegistration,
 }));
 
-// Runtime imports helpers directly to avoid loading React through the barrel.
-jest.mock("@agora/core", () => jest.requireActual("../../packages/core/src/notifications/actions"));
-
 import fixture from "../../packages/core/testing/notification-actions.json";
 import { installNotificationActionHandlers, setupNotificationActions } from "../src/lib/notificationActionRuntime";
 

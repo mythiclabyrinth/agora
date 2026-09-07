@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
-import { notificationCategories, parseNotificationActions } from "@agora/core";
+import { notificationCategories, parseNotificationActions } from "@agora/core/src/notifications/actions";
 import { executeNotificationAction } from "./notificationActionExecutor";
 import { currentStoredSession, readActionRegistration } from "./notificationRegistration";
 

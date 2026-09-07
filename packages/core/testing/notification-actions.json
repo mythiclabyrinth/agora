@@ -98,5 +98,15 @@
     "pending": false,
     "meta": {},
     "expected": null
+  },
+  {
+    "name": "mixed option and form actions must not share one notification prompt",
+    "pending": true,
+    "meta": {
+      "options": [{ "id": "yes", "label": "Approve" }],
+      "form": { "fields": [{ "id": "note", "kind": "input", "label": "Note" }],
+        "buttons": [{ "id": "no", "label": "Reject", "notification": { "enabled": true } }] }
+    },
+    "expected": null
   }
 ]

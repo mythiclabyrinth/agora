@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import fixtures from "../testing/notification-actions.json";
 import {
   notificationActionSlot, notificationCategories, notificationIsResolved,
-  parseNotificationActions, hasPendingInteraction, notificationMessageId,
+  parseNotificationActions, hasPendingInteraction, notificationMessageId, notificationIsPending,
 } from "../src/notifications/actions";
 import type { Message, MessageMeta } from "../src/api/types";
 
 const context = "a".repeat(32);
-const data = () => ({ message_id: 42, pending_interaction: true,
-  notification_actions: { ...structuredClone(fixtures[0].expected), context } });
+const data = () => {
+  const expected = fixtures[0].expected;
+  if (!expected) throw new Error("The approval fixture must contain notification actions");
+  return { message_id: 42, pending_interaction: true,
+    notification_actions: { ...structuredClone(expected), context } };
+};
 
 describe("notification contract shared with Rust", () => {
   for (const fixture of fixtures) {
@@ -19,8 +23,12 @@ describe("notification contract shared with Rust", () => {
       expect(hasPendingInteraction(meta)).toBe(fixture.pending);
       // Feedback removes notification_actions from tap-to-open reminder cards.
       for (const message_id of [42, "42"]) {
-        expect(notificationIsResolved({ message_id, pending_interaction: true },
-          { id: 42, meta } as Message)).toBe(!fixture.pending);
+        for (const pending_interaction of [true, "true", false, "false"]) {
+          const pending = pending_interaction === true || pending_interaction === "true";
+          expect(notificationIsPending({ pending_interaction })).toBe(pending);
+          expect(notificationIsResolved({ message_id, pending_interaction },
+            { id: 42, meta } as Message)).toBe(pending && !fixture.pending);
+        }
       }
     });
   }
@@ -45,6 +53,9 @@ describe("notification contract shared with Rust", () => {
   });
 
   it("rejects unknown versions, mismatched labels, role masks, ids and categories", () => {
+    const boundary = data();
+    boundary.notification_actions.actions[0].interaction_id = "x".repeat(256);
+    expect(parseNotificationActions(boundary)).not.toBeNull();
     for (const modify of [
       (d: any) => { d.notification_actions.version = 2; },
       (d: any) => { d.notification_actions.category = "unknown"; },
@@ -53,6 +64,7 @@ describe("notification contract shared with Rust", () => {
       (d: any) => { d.notification_actions.actions[1].id = "allow"; },
       (d: any) => { d.message_id = 1.2; },
       (d: any) => { d.notification_actions.context = ""; },
+      (d: any) => { d.notification_actions.actions[0].interaction_id = "x".repeat(257); },
     ]) {
       const invalid = data(); modify(invalid);
       expect(parseNotificationActions(invalid)).toBeNull();
