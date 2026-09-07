@@ -8,6 +8,10 @@ FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# agora-core include_str!s the notification label vocabulary that mobile also
+# registers, so Rust and TypeScript cannot drift. Copied narrowly: the whole
+# packages/ tree would rebuild this layer on any unrelated TypeScript edit.
+COPY packages/core/src/notifications ./packages/core/src/notifications
 RUN cargo build --release -p agora-server
 
 # The web UI is built from source (web/ + packages/core), never committed.
