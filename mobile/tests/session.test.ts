@@ -3,6 +3,7 @@
    Authorization header on iOS). */
 
 jest.mock("expo-secure-store", () => ({
+  AFTER_FIRST_UNLOCK: "after-first-unlock",
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => undefined),
   deleteItemAsync: jest.fn(async () => undefined),
@@ -64,7 +65,8 @@ describe("signIn", () => {
     const state = useSession.getState();
     expect(state.status).toBe("signedIn");
     expect(state.session).toEqual({ baseUrl: "https://a.example", token: "tok" });
-    expect(SecureStore.setItemAsync).toHaveBeenCalledWith(KEY_URL, "https://a.example");
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith(KEY_URL, "https://a.example",
+      { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK });
     // A successful sign-in records the server in the recent list.
     expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
       KEY_RECENT,
@@ -121,6 +123,16 @@ describe("cached instance role", () => {
       expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(
         KEY_INSTANCE_ADMIN,
       );
+      for (const key of [KEY_TOKEN, "agora_admin_key", "agora_owner_token",
+        "agora_notification_registration_v1", "agora_notification_registration_v2"]) {
+        expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(key);
+      }
+      if (action === "forgetServer") {
+        expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith(KEY_URL);
+        expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith("agora_server_url");
+      } else {
+        expect(SecureStore.deleteItemAsync).not.toHaveBeenCalledWith(KEY_URL);
+      }
       expect(useMessageDrafts.getState().byConvo).toEqual({});
       expect(useAddressed.getState().byConvo).toEqual({});
     },

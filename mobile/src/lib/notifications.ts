@@ -17,7 +17,7 @@ import {
 } from "./notificationCleanup";
 import { notificationIsResolved, notificationIsPending, notificationContext, notificationMessageId, type Me } from "@agora/core";
 import { setupNotificationActions } from "./notificationActionRuntime";
-import { readActionRegistration, registrationEpoch, saveActionRegistration } from "./notificationRegistration";
+import { readActionRegistration, registrationEpoch, saveActionRegistration, prepareNotificationCredentials } from "./notificationRegistration";
 
 const KEY_PUSH_TOKEN = "agora_push_token";
 
@@ -64,7 +64,7 @@ export async function registerPushToken(session: Session): Promise<boolean> {
   }
   try {
     const api = new ApiClient(session);
-    const actionSupport = await setupNotificationActions();
+    const actionSupport = await prepareNotificationCredentials(session) && await setupNotificationActions();
     const previous = actionSupport ? await readActionRegistration() : null;
     const registered = await api.post<{ notification_action_context?: string }>("/api/push-tokens", {
       token,

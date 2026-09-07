@@ -3,7 +3,7 @@ import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
 import { notificationCategories, parseNotificationActions } from "@agora/core/src/notifications/actions";
 import { executeNotificationAction } from "./notificationActionExecutor";
-import { currentStoredSession, readActionRegistration } from "./notificationRegistration";
+import { currentStoredSession, readActionRegistration, registrationEpoch } from "./notificationRegistration";
 
 const TASK = "agora-notification-actions-v1";
 const inFlight = new Map<string, Promise<void>>();
@@ -19,13 +19,18 @@ async function respond(response: Notifications.NotificationResponse) {
   const { content, identifier } = response.notification.request;
   const envelope = parseNotificationActions(content.data);
   if (!envelope) return;
-  const result = await executeNotificationAction(content.data, response.actionIdentifier, credentials)
-    .catch(() => "retry" as const);
+  const started = registrationEpoch();
+  let result = await executeNotificationAction(content.data, response.actionIdentifier, credentials)
+    .catch(() => "open" as const);
   if (result === "ignored") return;
-  const current = await credentials().catch(() => null);
+  const [session, registration] = await Promise.all([
+    currentStoredSession().catch(() => null), readActionRegistration().catch(() => null),
+  ]);
   // Sign-out clears notifications; a late network callback must not recreate
   // another account's card after that cleanup.
-  if (current?.registration.context !== envelope.context) return;
+  if (started !== registrationEpoch() || (registration && (registration.context !== envelope.context ||
+      (session && registration.baseUrl !== session.baseUrl)))) return;
+  if (!session || !registration) result = "open";
   const retry = result === "retry";
   const data: Record<string, unknown> = { ...content.data, notification_context: envelope.context };
   if (!retry) {
@@ -56,27 +61,29 @@ function handle(response: Notifications.NotificationResponse): Promise<void> {
   return work;
 }
 
-/** Imported by index.js before the router so Android can load the task when
-    the UI is absent. iOS remains tap-to-open until the native handler ships. */
+/** Installed before the router: iOS handles warm-process responses through JS;
+    Android additionally defines its headless task. No killed-iOS guarantee. */
 export function installNotificationActionHandlers() {
-  if (installed || Platform.OS !== "android") return;
+  if (installed || (Platform.OS !== "android" && Platform.OS !== "ios")) return;
   installed = true;
-  TaskManager.defineTask<Notifications.NotificationTaskPayload>(TASK, async ({ data, error }) => {
-    if (!error && data && "actionIdentifier" in data) await handle(data);
-  });
+  if (Platform.OS === "android") {
+    TaskManager.defineTask<Notifications.NotificationTaskPayload>(TASK, async ({ data, error }) => {
+      if (!error && data && "actionIdentifier" in data) await handle(data);
+    });
+  }
   Notifications.addNotificationResponseReceivedListener((response) => { void handle(response); });
 }
 
 export async function setupNotificationActions(): Promise<boolean> {
-  if (Platform.OS !== "android") return false;
+  if (Platform.OS !== "android" && Platform.OS !== "ios") return false;
   if (!setup) {
     setup = (async () => {
       installNotificationActionHandlers();
-      // Category registration is read-modify-write on some platforms.
+      // Serialize updates so concurrent writes cannot lose registered categories.
       for (const category of notificationCategories) {
         await Notifications.setNotificationCategoryAsync(category.identifier, category.actions);
       }
-      await Notifications.registerTaskAsync(TASK);
+      if (Platform.OS === "android") await Notifications.registerTaskAsync(TASK);
       return true;
     })().catch(() => { setup = null; return false; });
   }

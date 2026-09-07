@@ -6,11 +6,10 @@
    UnreadSync component), so reading messages in-app suppresses stale banners. */
 
 import * as FileSystem from "expo-file-system/legacy";
-import * as SecureStore from "expo-secure-store";
 import * as TaskManager from "expo-task-manager";
 import * as BackgroundTask from "expo-background-task";
 import type { Group } from "@agora/core";
-import { KEY_TOKEN, KEY_URL } from "../state/session";
+import { currentStoredSession } from "./notificationRegistration";
 import { notifyUnreadChannel } from "./notifications";
 import {
   channelsToNotify,
@@ -45,11 +44,9 @@ export function saveUnreadSnapshot(groups: Group[]): void {
 }
 
 async function pollOnce(): Promise<void> {
-  const [baseUrl, token] = await Promise.all([
-    SecureStore.getItemAsync(KEY_URL),
-    SecureStore.getItemAsync(KEY_TOKEN),
-  ]);
-  if (!baseUrl || !token) return; // signed out
+  const session = await currentStoredSession();
+  if (!session) return; // signed out
+  const { baseUrl, token } = session;
   const res = await fetch(`${baseUrl}/api/groups`, {
     headers: { Authorization: `Bearer ${token}` },
   });
