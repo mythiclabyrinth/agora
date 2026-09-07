@@ -1,6 +1,7 @@
 [
   {
     "name": "Claude tool approval keeps the actual ids and explicit short label",
+    "pending": true,
     "meta": {
       "options_id": "perm-42",
       "options": [
@@ -21,6 +22,7 @@
   },
   {
     "name": "editable form opts in per button",
+    "pending": true,
     "meta": {
       "form_id": "release",
       "form": { "fields": [{ "id": "note", "kind": "input", "label": "Note", "value": "" }], "buttons": [
@@ -39,6 +41,7 @@
   },
   {
     "name": "readonly table defaults enabled",
+    "pending": true,
     "meta": { "table_id": "review", "table": {
       "columns": [{ "id": "name", "kind": "readonly" }],
       "buttons": [{ "id": "yes", "label": "Approve all" }, { "id": "no", "label": "Reject all" }]
@@ -51,5 +54,49 @@
         { "kind": "table_submit", "id": "no", "interaction_id": "review", "label": "Reject all", "destructive": false }
       ]
     }
+  },
+  {
+    "name": "completed options clear reminder cards without action envelopes",
+    "pending": false,
+    "meta": { "options": [{ "id": "yes", "label": "Approve" }], "resolved": { "by": "ana", "option_id": "yes" } },
+    "expected": null
+  },
+  {
+    "name": "completed forms clear reminder cards",
+    "pending": false,
+    "meta": { "form": { "fields": [], "buttons": [{ "id": "send", "label": "Submit" }] }, "form_submitted": { "by": "ana", "button_id": "send" } },
+    "expected": null
+  },
+  {
+    "name": "row-only table stays pending while an actionable row remains",
+    "pending": true,
+    "meta": { "table": { "columns": [], "buttons": [], "rows": [
+      { "id": "r1", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] },
+      { "id": "r2", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] }
+    ] }, "table_rows": { "r1": { "by": "ana", "button_id": "yes" } } },
+    "expected": null
+  },
+  {
+    "name": "row-only table clears after every actionable row resolves",
+    "pending": false,
+    "meta": { "table": { "columns": [], "buttons": [], "rows": [
+      { "id": "r1", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] },
+      { "id": "info", "cells": {}, "actions": [] }
+    ] }, "table_rows": { "r1": { "by": "ana", "button_id": "yes" } } },
+    "expected": null
+  },
+  {
+    "name": "table submission closes remaining row actions",
+    "pending": false,
+    "meta": { "table": { "columns": [], "buttons": [{ "id": "yes", "label": "Approve" }], "rows": [
+      { "id": "r1", "cells": {}, "actions": [{ "id": "yes", "label": "Approve" }] }
+    ] }, "table_submitted": { "by": "ana", "button_id": "yes" } },
+    "expected": null
+  },
+  {
+    "name": "ordinary message has no pending interaction",
+    "pending": false,
+    "meta": {},
+    "expected": null
   }
 ]

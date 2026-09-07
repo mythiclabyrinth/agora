@@ -67,21 +67,27 @@ export function NotificationTapRouter() {
     if (!response || response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
     const id = response.notification.request.identifier;
     if (handled.current === id) return;
-    handled.current = id;
     const target = notificationTarget(response.notification.request.content.data);
     if (!target) return;
     // The tapped card normally auto-dismisses; make that deterministic. Other
     // cards wait for the read marker so a newer racing message is preserved.
     const navigate = () => {
+      if (handled.current === id) return;
+      handled.current = id;
       void Notifications.dismissNotificationAsync(id);
       const action = notificationNavigationAction({ pathname, target });
       if (action !== "none") router.push(target as Href);
     };
     const context = notificationContext(response.notification.request.content.data);
     if (!context) { navigate(); return; }
+    let cancelled = false;
     void Promise.all([readActionRegistration(), currentStoredSession()]).then(([registration, session]) => {
-      if (registration?.context === context && registration.baseUrl === session?.baseUrl) navigate();
-    }).catch(() => {});
+      // Missing/unavailable local bindings must not strand a body tap. Only a
+      // known foreign binding prevents navigation; actions remain stricter.
+      if (!cancelled && (!registration ||
+          (registration.context === context && registration.baseUrl === session?.baseUrl))) navigate();
+    }).catch(() => { if (!cancelled) navigate(); });
+    return () => { cancelled = true; };
   }, [pathname, response]);
   return null;
 }

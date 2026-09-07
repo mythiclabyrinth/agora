@@ -41,7 +41,11 @@ test("WS completion dismisses the matching request, including another member's c
   expect(mockDismiss.mock.calls).toEqual([["pending"]]);
 });
 
-test("resume fetches pending messages that are outside the loaded query pages", async () => {
+test.each([42, "42"])("resume fetches pending message %s outside loaded query pages", async (message_id) => {
+  const pending = card("pending");
+  mockPresented.mockResolvedValue([{ request: { ...pending.request, content: {
+    data: { ...pending.request.content.data, message_id },
+  } } }]);
   const fetch = jest.spyOn(global, "fetch").mockResolvedValue({ ok: true, status: 200,
     json: async () => message(true) } as Response);
   await reconcileNotifications([],[],session);

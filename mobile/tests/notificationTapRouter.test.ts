@@ -95,6 +95,42 @@ test("a matching-context body tap opens the conversation", async () => {
   expect(mockPush).toHaveBeenCalledWith("/channel/c1");
 });
 
+test.each(["missing", "unreadable"])("a %s registration falls back to body-tap navigation exactly once", async (state) => {
+  if (state === "missing") mockRegistration.mockResolvedValue(null);
+  else mockRegistration.mockRejectedValue(new Error("SecureStore unavailable"));
+  mockResponse = response("n1", "c1", undefined, "current");
+  let tree!: TestRenderer.ReactTestRenderer;
+  await act(async () => { tree = TestRenderer.create(React.createElement(NotificationTapRouter)); });
+  expect(mockPush).toHaveBeenCalledWith("/channel/c1");
+  expect(mockDismiss).toHaveBeenCalledWith("n1");
+  mockPathname = "/channel/c1";
+  await act(async () => { tree.update(React.createElement(NotificationTapRouter)); });
+  expect(mockPush).toHaveBeenCalledTimes(1);
+});
+
+test("a rejected foreign-context tap does not consume the notification identifier", async () => {
+  mockResponse = response("n1", "c1", undefined, "current");
+  mockRegistration.mockResolvedValue({ context: "foreign", baseUrl: "https://foreign.example" });
+  let tree!: TestRenderer.ReactTestRenderer;
+  await act(async () => { tree = TestRenderer.create(React.createElement(NotificationTapRouter)); });
+  expect(mockPush).not.toHaveBeenCalled();
+  mockRegistration.mockResolvedValue(null);
+  mockResponse = response("n1", "c1", undefined, "current");
+  await act(async () => { tree.update(React.createElement(NotificationTapRouter)); });
+  expect(mockPush).toHaveBeenCalledWith("/channel/c1");
+});
+
+test("an unmounted router ignores a late registration result", async () => {
+  let finish!: (value: null) => void;
+  mockRegistration.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  mockResponse = response("n1", "c1", undefined, "current");
+  const tree = renderRouter();
+  act(() => tree.unmount());
+  await act(async () => { finish(null); });
+  expect(mockPush).not.toHaveBeenCalled();
+  expect(mockDismiss).not.toHaveBeenCalled();
+});
+
 test("pushes exactly once for a different notification target", () => {
   mockResponse = response("n1", "c1", 42);
   renderRouter();

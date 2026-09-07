@@ -219,6 +219,7 @@ mod tests {
         ))
         .unwrap();
         for fixture in fixtures {
+            assert_eq!(pending(&fixture["meta"]), fixture["pending"].as_bool().unwrap(), "{}", fixture["name"]);
             let actual = serde_json::to_value(for_meta(&fixture["meta"])).unwrap();
             assert_eq!(actual, fixture["expected"], "{}", fixture["name"]);
         }

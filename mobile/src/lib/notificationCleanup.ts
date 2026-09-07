@@ -1,3 +1,5 @@
+import { notificationNumber as numeric } from "@agora/core";
+
 export interface PresentedNotification {
   identifier: string;
   data: unknown;
@@ -17,15 +19,6 @@ interface ThreadReadState {
   root: { id: number };
   unread?: number;
   last_read_id: number;
-}
-
-function numeric(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
 }
 
 /** Select only delivered cards made obsolete by the user's current read state.

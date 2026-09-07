@@ -32,6 +32,21 @@ export const notificationCategories = vocabulary.flatMap(({ id, labels }) =>
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+/** Delivered notification data can encode numeric ids as strings. */
+export function notificationNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function notificationMessageId(data: unknown): number | null {
+  const id = record(data) ? notificationNumber(data.message_id) : null;
+  return id !== null && Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 export function notificationContext(data: unknown): string | null {
   if (!record(data)) return null;
   if (typeof data.notification_context === "string") return data.notification_context;
@@ -40,7 +55,7 @@ export function notificationContext(data: unknown): string | null {
 }
 
 export function parseNotificationActions(data: unknown): NotificationActions | null {
-  if (!record(data) || !Number.isSafeInteger(data.message_id) || Number(data.message_id) <= 0) return null;
+  if (!record(data) || notificationMessageId(data) === null) return null;
   const envelope = data.notification_actions;
   if (!record(envelope) || envelope.version !== 1 ||
       typeof envelope.context !== "string" || !/^[a-f0-9]{32}$/.test(envelope.context) ||
@@ -91,7 +106,7 @@ export function hasPendingInteraction(meta?: MessageMeta | null): boolean {
 }
 
 export function notificationIsResolved(data: unknown, message: Message): boolean {
-  if (!record(data) || data.message_id !== message.id || !data.pending_interaction) return false;
+  if (!record(data) || notificationMessageId(data) !== message.id || !data.pending_interaction) return false;
   const actions = parseNotificationActions(data);
   if (!actions) return !hasPendingInteraction(message.meta);
   return actions.actions.every((action) =>

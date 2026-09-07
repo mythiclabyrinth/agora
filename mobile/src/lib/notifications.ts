@@ -15,7 +15,7 @@ import {
   conversationKey,
   obsoleteNotificationIds,
 } from "./notificationCleanup";
-import { notificationIsResolved, notificationContext, type Me } from "@agora/core";
+import { notificationIsResolved, notificationContext, notificationMessageId, type Me } from "@agora/core";
 import { setupNotificationActions } from "./notificationActionRuntime";
 import { readActionRegistration, registrationEpoch, saveActionRegistration } from "./notificationRegistration";
 
@@ -215,7 +215,8 @@ async function reconcileNotificationBatch(groups: Group[], threads: ThreadRow[],
       // query page. Reconcile those against the authenticated message endpoint.
       for (const notification of presented) {
         const data = notification.request.content.data;
-        if (data?.pending_interaction !== true || !Number.isSafeInteger(data.message_id)) continue;
+        const messageId = notificationMessageId(data);
+        if (data?.pending_interaction !== true || messageId === null) continue;
         const context = notificationContext(data);
         if (context && context !== registration?.context) {
           await Notifications.dismissNotificationAsync(notification.request.identifier);
@@ -225,7 +226,7 @@ async function reconcileNotificationBatch(groups: Group[], threads: ThreadRow[],
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
         try {
-          const response = await fetch(`${session.baseUrl}/api/messages/${data.message_id}`, {
+          const response = await fetch(`${session.baseUrl}/api/messages/${messageId}`, {
             headers: { Authorization: `Bearer ${session.token}` }, signal: controller.signal, redirect: "error",
           });
           if (started !== registrationEpoch()) return;

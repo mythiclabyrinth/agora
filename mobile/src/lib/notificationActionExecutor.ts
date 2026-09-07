@@ -1,5 +1,5 @@
 import {
-  notificationActionOutcome, notificationActionSlot, parseNotificationActions,
+  notificationActionOutcome, notificationActionSlot, parseNotificationActions, notificationMessageId,
   type Message, type Session,
 } from "@agora/core";
 import type { ActionRegistration } from "./notificationRegistration";
@@ -24,7 +24,7 @@ export async function executeNotificationAction(
       credentials.session.baseUrl !== credentials.registration.baseUrl) return "open";
   const { session, registration } = credentials;
   const action = envelope.actions[slot];
-  const messageId = (data as { message_id: number }).message_id;
+  const messageId = notificationMessageId(data);
   const url = `${session.baseUrl}/api/messages/${messageId}`;
   const headers = { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" };
   const bounded = async (target: string, init?: RequestInit) => {

@@ -57,7 +57,7 @@ test("Android defines the headless task before registration and feedback preserv
   mockExecute.mockResolvedValueOnce("retry");
   await task({ data: response });
   expect(mockSchedule.mock.calls[0][0]).toMatchObject({
-    identifier: "msg:42", content: { categoryIdentifier: fixture[0].expected.category,
+    identifier: "msg:42", content: { categoryIdentifier: fixture[0].expected!.category,
       data: { pending_interaction: true, notification_actions: { context: mockRegistration.context } } },
   });
   mockExecute.mockResolvedValueOnce("recorded");
