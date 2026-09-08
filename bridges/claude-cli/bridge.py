@@ -241,7 +241,7 @@ ALLOWED_MODELS = {
     "opus": "opus",
     "sonnet": "sonnet",
     "haiku": "haiku",
-    "fable": "fable",
+    "fable": "claude-fable-5-1",
     "best": "best",
     "opusplan": "opusplan",
     "sonnet[1m]": "sonnet[1m]",

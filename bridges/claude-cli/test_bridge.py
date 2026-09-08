@@ -16,6 +16,11 @@ assert SPEC.loader
 SPEC.loader.exec_module(bridge)
 
 
+class ModelAliasTests(unittest.TestCase):
+    def test_fable_uses_5_1(self):
+        self.assertEqual(bridge.ALLOWED_MODELS["fable"], "claude-fable-5-1")
+
+
 class FakeResponse(io.BytesIO):
     def __enter__(self): return self
     def __exit__(self, *_args): self.close()
