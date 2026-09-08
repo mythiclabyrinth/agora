@@ -5,6 +5,9 @@ const mockDefine = jest.fn();
 const mockListen = jest.fn();
 const mockSchedule = jest.fn();
 const mockExecute = jest.fn();
+const mockSessionRead = jest.fn();
+const mockRegistrationRead = jest.fn();
+let mockEpoch = 0;
 const mockSession = { baseUrl: "https://agora.example", token: "token" };
 const mockRegistration = { baseUrl: mockSession.baseUrl, context: "a".repeat(32), username: "ana" };
 
@@ -24,26 +27,45 @@ jest.mock("../src/lib/notificationActionExecutor", () => ({
   executeNotificationAction: (...args: unknown[]) => mockExecute(...args),
 }));
 jest.mock("../src/lib/notificationRegistration", () => ({
-  currentStoredSession: async () => mockSession,
-  readActionRegistration: async () => mockRegistration,
+  currentStoredSession: () => mockSessionRead(),
+  readActionRegistration: () => mockRegistrationRead(),
+  registrationEpoch: () => mockEpoch,
 }));
 
 import fixture from "../../packages/core/testing/notification-actions.json";
-import { installNotificationActionHandlers, setupNotificationActions } from "../src/lib/notificationActionRuntime";
+let runtime: typeof import("../src/lib/notificationActionRuntime");
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.resetModules();
+  mockSessionRead.mockResolvedValue(mockSession);
+  mockRegistrationRead.mockResolvedValue(mockRegistration);
+});
 
-test("iOS does not advertise action support before the native handler exists", async () => {
-  mockPlatform = "ios";
-  installNotificationActionHandlers();
-  expect(await setupNotificationActions()).toBe(false);
+function loadRuntime(platform: string) {
+  mockPlatform = platform;
+  runtime = require("../src/lib/notificationActionRuntime");
+}
+
+test("iOS registers warm-process actions without defining or registering Android tasks", async () => {
+  loadRuntime("ios");
+  runtime.installNotificationActionHandlers();
+  expect(await runtime.setupNotificationActions()).toBe(true);
+  expect(await runtime.setupNotificationActions()).toBe(true);
+  expect(mockDefine).not.toHaveBeenCalled();
   expect(mockRegister).not.toHaveBeenCalled();
-  expect(mockListen).not.toHaveBeenCalled();
+  expect(mockListen).toHaveBeenCalledTimes(1);
+  expect(mockCategories).toHaveBeenCalledTimes(42);
+  for (const [, actions] of mockCategories.mock.calls) {
+    expect((actions as { options: { opensAppToForeground: boolean } }[])
+      .every((action) => !action.options.opensAppToForeground)).toBe(true);
+  }
 });
 
 test("Android defines the headless task before registration and feedback preserves retry bindings", async () => {
-  mockPlatform = "android";
-  installNotificationActionHandlers();
+  loadRuntime("android");
+  runtime.installNotificationActionHandlers();
   expect(mockDefine).toHaveBeenCalledTimes(1);
-  expect(await setupNotificationActions()).toBe(true);
+  expect(await runtime.setupNotificationActions()).toBe(true);
   expect(mockRegister).toHaveBeenCalledTimes(1);
   expect(mockCategories.mock.calls.length).toBeGreaterThan(0);
   const task = mockDefine.mock.calls[0][1];
@@ -70,4 +92,55 @@ test("Android defines the headless task before registration and feedback preserv
   expect(reminder.content.data.pending_interaction).toBe(true);
   expect(reminder.content.data.notification_actions).toBeUndefined();
   expect(reminder.content.categoryIdentifier).toBeUndefined();
+});
+
+const response = { actionIdentifier: "agora.action.0", notification: { request: {
+  identifier: "msg:42", content: { body: "Bash command", data: { message_id: 42, pending_interaction: true,
+    notification_actions: { ...fixture[0].expected, context: mockRegistration.context } } },
+} } };
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test.each(["recorded", "retry", "open"])("iOS listener handles %s feedback", async (outcome) => {
+  loadRuntime("ios");
+  await runtime.setupNotificationActions();
+  mockExecute.mockResolvedValueOnce(outcome);
+  mockListen.mock.calls[0][0](response);
+  await flush();
+  expect(mockSchedule).toHaveBeenCalledTimes(1);
+  const content = mockSchedule.mock.calls[0][0].content;
+  expect(content.title).toBe(outcome === "recorded" ? "Response sent" : outcome === "retry"
+    ? "Could not confirm — retry or open Agora" : "Open Agora to review this request");
+  expect(content.data.pending_interaction).toBe(outcome !== "recorded");
+});
+
+test.each(["missing", "unreadable"])("iOS preserves an open-app reminder for %s credentials", async (state) => {
+  loadRuntime("ios");
+  await runtime.setupNotificationActions();
+  mockExecute.mockRejectedValueOnce(new Error("Keychain unavailable"));
+  if (state === "missing") {
+    mockSessionRead.mockResolvedValue(null);
+    mockRegistrationRead.mockResolvedValue(null);
+  } else {
+    mockSessionRead.mockRejectedValue(new Error("locked"));
+    mockRegistrationRead.mockRejectedValue(new Error("locked"));
+  }
+  mockListen.mock.calls[0][0](response);
+  await flush();
+  expect(mockSchedule.mock.calls[0][0].content).toMatchObject({
+    title: "Open Agora to review this request", data: { pending_interaction: true },
+  });
+  expect(mockSchedule.mock.calls[0][0].content.data.notification_actions).toBeUndefined();
+});
+
+test.each(["epoch", "context"])("iOS never recreates an old-account card after a %s change", async (change) => {
+  loadRuntime("ios");
+  await runtime.setupNotificationActions();
+  mockExecute.mockImplementationOnce(async () => {
+    if (change === "epoch") mockEpoch += 1;
+    else mockRegistrationRead.mockResolvedValue({ ...mockRegistration, context: "b".repeat(32) });
+    return "recorded";
+  });
+  mockListen.mock.calls[0][0](response);
+  await flush();
+  expect(mockSchedule).not.toHaveBeenCalled();
 });

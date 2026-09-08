@@ -16,13 +16,12 @@ import {
 import type { Me } from "@agora/core";
 import { unregisterPushToken } from "../lib/notifications";
 import { rememberServer } from "./servers";
-import { KEY_URL, KEY_TOKEN, clearActionRegistration } from "../lib/notificationRegistration";
+import { KEY_URL, KEY_TOKEN, clearActionRegistration, readCredential, writeCredential,
+  deleteCredential, registrationEpoch } from "../lib/notificationRegistration";
 
 /* Shared with the background poller, which reads credentials without the store. */
 export { KEY_URL, KEY_TOKEN } from "../lib/notificationRegistration";
 export const KEY_INSTANCE_ADMIN = "agora_instance_admin";
-/** Pre-rename keychain slot ("owner token" era); migrated in load(). */
-const KEY_TOKEN_LEGACY = "agora_owner_token";
 
 type Status = "loading" | "signedOut" | "signedIn";
 
@@ -65,20 +64,13 @@ export const useSession = create<SessionState>((set) => ({
   savedUrl: "",
 
   async load() {
-    let [baseUrl, token, cachedAdmin] = await Promise.all([
-      SecureStore.getItemAsync(KEY_URL),
-      SecureStore.getItemAsync(KEY_TOKEN),
+    const started = registrationEpoch();
+    const [baseUrl, token, cachedAdmin] = await Promise.all([
+      readCredential(KEY_URL),
+      readCredential(KEY_TOKEN),
       SecureStore.getItemAsync(KEY_INSTANCE_ADMIN),
     ]);
-    // One-time keychain migration from the pre-rename slot.
-    if (!token) {
-      const legacy = await SecureStore.getItemAsync(KEY_TOKEN_LEGACY);
-      if (legacy) {
-        token = legacy;
-        await SecureStore.setItemAsync(KEY_TOKEN, legacy);
-        await SecureStore.deleteItemAsync(KEY_TOKEN_LEGACY);
-      }
-    }
+    if (started !== registrationEpoch()) return;
     if (!baseUrl || !token) {
       set({
         status: "signedOut",
@@ -107,15 +99,18 @@ export const useSession = create<SessionState>((set) => ({
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(async (res) => {
+        if (started !== registrationEpoch()) return;
         if (res.status === 401) {
           void useSession.getState().signOut();
           return;
         }
         if (!res.ok) return;
         const me = (await res.json()) as Me;
+        if (started !== registrationEpoch()) return;
         const canonical = originOf(res.url, baseUrl);
         if (canonical !== baseUrl) {
-          await SecureStore.setItemAsync(KEY_URL, canonical);
+          await writeCredential(KEY_URL, canonical, started);
+          if (started !== registrationEpoch()) return;
           set({ session: { baseUrl: canonical, token } });
         }
         set({
@@ -159,8 +154,8 @@ export const useSession = create<SessionState>((set) => ({
     };
     await clearActionRegistration();
     await Promise.all([
-      SecureStore.setItemAsync(KEY_URL, session.baseUrl),
-      SecureStore.setItemAsync(KEY_TOKEN, session.token),
+      writeCredential(KEY_URL, session.baseUrl),
+      writeCredential(KEY_TOKEN, session.token),
       SecureStore.setItemAsync(KEY_INSTANCE_ADMIN, String(!!me.instance_admin)),
       // The recent-servers list feeds "Change server"; it outlives
       // signOut/forgetServer on purpose.
@@ -190,7 +185,7 @@ export const useSession = create<SessionState>((set) => ({
     await unregisterPushToken(session);
     // Keep KEY_URL: the login screen should only ask for credentials again.
     await Promise.all([
-      SecureStore.deleteItemAsync(KEY_TOKEN),
+      deleteCredential(KEY_TOKEN),
       SecureStore.deleteItemAsync(KEY_INSTANCE_ADMIN),
     ]);
     set({
@@ -213,8 +208,8 @@ export const useSession = create<SessionState>((set) => ({
     useAddressed.getState().resetAll();
     await unregisterPushToken(session);
     await Promise.all([
-      SecureStore.deleteItemAsync(KEY_URL),
-      SecureStore.deleteItemAsync(KEY_TOKEN),
+      deleteCredential(KEY_URL),
+      deleteCredential(KEY_TOKEN),
       SecureStore.deleteItemAsync(KEY_INSTANCE_ADMIN),
     ]);
     set({
