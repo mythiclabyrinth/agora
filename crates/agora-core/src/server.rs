@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Multipart, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::sync::oneshot;
 use tokio_util::io::ReaderStream;
 
 use crate::config::{Config, Connection, PairingToken};
@@ -1894,6 +1895,15 @@ async fn post_voice_message(
     let stt_provider_label = stt_provider.clone();
     let stt_model = voice.stt_model.clone();
     let stt_model_label = stt_model.clone();
+    let upload_id = new_token();
+    let request_bytes = headers.get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let edge_request_id: Option<String> = headers.get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.chars().take(100).collect());
+    let ingest_started = Instant::now();
+    tracing::info!(upload_id, edge_request_id, request_bytes, "voice upload started");
     let mut audio: Vec<u8> = Vec::new();
     let mut filename = String::new();
     let mut thread_id: Option<i64> = None;
@@ -1904,7 +1914,10 @@ async fn post_voice_message(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|_| err(StatusCode::BAD_REQUEST, "Invalid upload"))?
+        .map_err(|e| {
+            tracing::warn!(upload_id, edge_request_id, error = %e, "voice upload incomplete");
+            err(StatusCode::BAD_REQUEST, "Invalid upload")
+        })?
     {
         match field.name().unwrap_or("") {
             "file" => {
@@ -1912,7 +1925,10 @@ async fn post_voice_message(
                 audio = field
                     .bytes()
                     .await
-                    .map_err(|_| err(StatusCode::BAD_REQUEST, "Upload read failed"))?
+                    .map_err(|e| {
+                        tracing::warn!(upload_id, edge_request_id, error = %e, "voice upload incomplete");
+                        err(StatusCode::BAD_REQUEST, "Upload read failed")
+                    })?
                     .to_vec();
             }
             "thread_id" => {
@@ -1939,48 +1955,94 @@ async fn post_voice_message(
     if audio.len() > MAX_VOICE_BYTES {
         return Err(err(StatusCode::BAD_REQUEST, "Voice recording too large"));
     }
+    tracing::info!(
+        upload_id, edge_request_id, audio_bytes = audio.len(), request_bytes,
+        ingest_ms = ingest_started.elapsed().as_millis(),
+        "voice upload completed"
+    );
     let thread_id = resolve_thread(&state, &channel_id, thread_id)?;
-    let text = tokio::task::spawn_blocking(move || {
+    let job = VoicePostJob {
+        state, channel_id, username: user.username, display_name: user.display_name,
+        thread_id, live, mentions, timezone, require_agent, upload_id, edge_request_id,
+        stt_provider_label, stt_model_label,
+    };
+    let message = spawn_voice_post(job, move || {
         crate::voice::transcribe(&stt_provider, &key, &audio, &filename, &stt_model)
     })
     .await
-    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed"))?
-    .map_err(|e| {
-        tracing::error!("voice transcription failed: {e}");
-        err(
-            StatusCode::BAD_GATEWAY,
-            &format!(
-                "Voice transcription failed ({stt_provider_label} / {stt_model_label}): {}",
-                truncate_err(&format!("{e:#}"), 200)
-            ),
-        )
-    })?;
-    if text.is_empty() {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "Couldn't hear anything in that recording",
-        ));
-    }
-    // The composer's "talk to" selection rides along as a `mentions` field so
-    // voice turns address agents the same way typed messages do ("@a, @b, …" —
-    // the transcript alone never contains routable @mentions).
-    let text = match mention_prefix(&mentions) {
-        Some(prefix) => format!("{prefix}, {text}"),
-        None => text,
-    };
-    let message = state.hub.post_user_message_opts(
-        &channel_id,
-        &text,
-        &user.username,
-        Some(&user.display_name),
-        thread_id,
-        vec![],
-        live,
-        timezone.as_deref(),
-        false,
-        require_agent,
-    );
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Voice processing task failed"))??;
     Ok(Json(message))
+}
+
+struct VoicePostJob {
+    state: AppState,
+    channel_id: String,
+    username: String,
+    display_name: String,
+    thread_id: Option<i64>,
+    live: bool,
+    mentions: String,
+    timezone: Option<String>,
+    require_agent: bool,
+    upload_id: String,
+    edge_request_id: Option<String>,
+    stt_provider_label: String,
+    stt_model_label: String,
+}
+
+/// Detach transcription and posting from the HTTP response future. Once the
+/// complete multipart body has arrived, a client disconnect must not discard
+/// a transcript that Agora has already paid to produce. The completion log is
+/// the reliable ingestion boundary: a start without it means the handler did
+/// not receive a complete body (the best-effort incomplete warning may not run
+/// when the transport drops the handler future). `request_bytes` is often
+/// absent behind HTTP/2 edges such as Railway, so it is supporting context,
+/// not the ingestion signal.
+fn spawn_voice_post<F>(job: VoicePostJob, transcribe: F) -> oneshot::Receiver<Result<Value, ApiError>>
+where
+    F: FnOnce() -> anyhow::Result<String> + Send + 'static,
+{
+    let (tx, rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let started = Instant::now();
+        tracing::info!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, "voice transcription started");
+        let result = match tokio::task::spawn_blocking(transcribe).await {
+            Err(e) => {
+                tracing::error!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, elapsed_ms = started.elapsed().as_millis(), error = %e, "voice transcription task failed");
+                Err(err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed"))
+            }
+            Ok(Err(e)) => {
+                tracing::error!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, elapsed_ms = started.elapsed().as_millis(), error = %e, "voice transcription failed");
+                Err(err(StatusCode::BAD_GATEWAY, &format!(
+                    "Voice transcription failed ({} / {}): {}",
+                    job.stt_provider_label, job.stt_model_label,
+                    truncate_err(&format!("{e:#}"), 200)
+                )))
+            }
+            Ok(Ok(text)) if text.is_empty() => {
+                tracing::warn!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, elapsed_ms = started.elapsed().as_millis(), "voice transcription was empty");
+                Err(err(StatusCode::BAD_REQUEST, "Couldn't hear anything in that recording"))
+            }
+            Ok(Ok(text)) => {
+                tracing::info!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, elapsed_ms = started.elapsed().as_millis(), "voice transcription completed");
+                let text = match mention_prefix(&job.mentions) {
+                    Some(prefix) => format!("{prefix}, {text}"),
+                    None => text,
+                };
+                let client_attached = !tx.is_closed();
+                let message = job.state.hub.post_user_message_opts(
+                    &job.channel_id, &text, &job.username, Some(&job.display_name),
+                    job.thread_id, vec![], job.live, job.timezone.as_deref(), false,
+                    job.require_agent,
+                );
+                tracing::info!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, client_attached, message_id = message["id"].as_i64(), total_ms = started.elapsed().as_millis(), "voice message posted");
+                Ok(message)
+            }
+        };
+        // A client abort after body ingestion cannot cancel the detached post.
+        let _ = tx.send(result);
+    });
+    rx
 }
 
 /// Normalize a client-supplied `mentions` field into a clean "@a, @b" prefix.
@@ -6086,6 +6148,90 @@ mod tests {
         assert_eq!(mention_prefix("ignore this @claude do that"), Some("@claude".into()));
         assert_eq!(mention_prefix("no mentions here"), None);
         assert_eq!(mention_prefix(""), None);
+    }
+
+    fn voice_post_fixture() -> (AppState, tempfile::TempDir, String) {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("alice", "Alice", None, "member").unwrap();
+        let group = store.create_group("Voice", "", Some("alice"));
+        let channel = store.create_channel(group["id"].as_str().unwrap(), "notes", "");
+        let channel_id = channel["id"].as_str().unwrap().to_string();
+        (state, _dir, channel_id)
+    }
+
+    fn voice_post_job(state: &AppState, channel_id: &str, mentions: &str) -> VoicePostJob {
+        VoicePostJob {
+            state: state.clone(), channel_id: channel_id.into(), username: "alice".into(),
+            display_name: "Alice".into(), thread_id: None, live: false,
+            mentions: mentions.into(), timezone: None, require_agent: false,
+            upload_id: "test-upload".into(), edge_request_id: Some("edge-test".into()),
+            stt_provider_label: "test-provider".into(), stt_model_label: "test-model".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn voice_post_returns_message_to_connected_waiter() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let message = spawn_voice_post(voice_post_job(&state, &channel_id, ""), || {
+            Ok("connected transcript".into())
+        }).await.unwrap().unwrap();
+        assert_eq!(message["text"], "connected transcript");
+        assert_eq!(state.hub.store.messages(&channel_id, None, None, 10).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn voice_post_preserves_mention_prefix_inside_detached_task() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let message = spawn_voice_post(voice_post_job(&state, &channel_id, "@bot"), || {
+            Ok("please respond".into())
+        }).await.unwrap().unwrap();
+        assert_eq!(message["text"], "@bot, please respond");
+    }
+
+    #[tokio::test]
+    async fn voice_post_rejects_empty_transcript_without_writing() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let error = spawn_voice_post(voice_post_job(&state, &channel_id, ""), || {
+            Ok(String::new())
+        }).await.unwrap().unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(state.hub.store.messages(&channel_id, None, None, 10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn voice_post_reports_transcription_failure_without_writing() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let error = spawn_voice_post(voice_post_job(&state, &channel_id, ""), || {
+            anyhow::bail!("test failure")
+        }).await.unwrap().unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_GATEWAY);
+        assert!(error.1.0["detail"].as_str().unwrap().contains("test-provider / test-model"));
+        assert!(state.hub.store.messages(&channel_id, None, None, 10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn voice_post_survives_dropped_response_waiter() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+
+        // This directly covers the production helper and real Hub/store. It
+        // does not exercise handler wiring because offline STT has no route seam.
+        let waiter = spawn_voice_post(voice_post_job(&state, &channel_id, ""), move || {
+            std::thread::sleep(Duration::from_millis(50));
+            Ok("survived disconnect".into())
+        });
+        drop(waiter);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let messages = state.hub.store.messages(&channel_id, None, None, 10);
+                if !messages.is_empty() {
+                    assert_eq!(messages[0]["text"], "survived disconnect");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("detached voice post should reach the real store");
     }
 
     #[test]
