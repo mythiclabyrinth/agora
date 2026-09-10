@@ -1957,7 +1957,7 @@ async fn post_voice_message(
     }
     tracing::info!(
         upload_id, edge_request_id, audio_bytes = audio.len(), request_bytes,
-        ingest_ms = ingest_started.elapsed().as_millis(), multipart_complete = true,
+        ingest_ms = ingest_started.elapsed().as_millis(),
         "voice upload completed"
     );
     let thread_id = resolve_thread(&state, &channel_id, thread_id)?;
@@ -1995,7 +1995,9 @@ struct VoicePostJob {
 /// a transcript that Agora has already paid to produce. The completion log is
 /// the reliable ingestion boundary: a start without it means the handler did
 /// not receive a complete body (the best-effort incomplete warning may not run
-/// when the transport drops the handler future).
+/// when the transport drops the handler future). `request_bytes` is often
+/// absent behind HTTP/2 edges such as Railway, so it is supporting context,
+/// not the ingestion signal.
 fn spawn_voice_post<F>(job: VoicePostJob, transcribe: F) -> oneshot::Receiver<Result<Value, ApiError>>
 where
     F: FnOnce() -> anyhow::Result<String> + Send + 'static,
@@ -2027,17 +2029,17 @@ where
                     Some(prefix) => format!("{prefix}, {text}"),
                     None => text,
                 };
+                let client_attached = !tx.is_closed();
                 let message = job.state.hub.post_user_message_opts(
                     &job.channel_id, &text, &job.username, Some(&job.display_name),
                     job.thread_id, vec![], job.live, job.timezone.as_deref(), false,
                     job.require_agent,
                 );
-                tracing::info!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, message_id = message["id"].as_i64(), total_ms = started.elapsed().as_millis(), "voice message posted");
+                tracing::info!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, client_attached, message_id = message["id"].as_i64(), total_ms = started.elapsed().as_millis(), "voice message posted");
                 Ok(message)
             }
         };
-        // The receiver disappears when the HTTP client disconnects; the work
-        // above remains authoritative and must still reach the store/hub.
+        // A client abort after body ingestion cannot cancel the detached post.
         let _ = tx.send(result);
     });
     rx
@@ -6148,23 +6150,73 @@ mod tests {
         assert_eq!(mention_prefix(""), None);
     }
 
-    #[tokio::test]
-    async fn voice_post_survives_dropped_response_waiter() {
+    fn voice_post_fixture() -> (AppState, tempfile::TempDir, String) {
         let (state, _dir) = test_state();
         let store = &state.hub.store;
         store.create_user("alice", "Alice", None, "member").unwrap();
         let group = store.create_group("Voice", "", Some("alice"));
         let channel = store.create_channel(group["id"].as_str().unwrap(), "notes", "");
         let channel_id = channel["id"].as_str().unwrap().to_string();
+        (state, _dir, channel_id)
+    }
 
-        let waiter = spawn_voice_post(VoicePostJob {
-            state: state.clone(), channel_id: channel_id.clone(), username: "alice".into(),
+    fn voice_post_job(state: &AppState, channel_id: &str, mentions: &str) -> VoicePostJob {
+        VoicePostJob {
+            state: state.clone(), channel_id: channel_id.into(), username: "alice".into(),
             display_name: "Alice".into(), thread_id: None, live: false,
-            mentions: String::new(), timezone: None, require_agent: false,
+            mentions: mentions.into(), timezone: None, require_agent: false,
             upload_id: "test-upload".into(), edge_request_id: Some("edge-test".into()),
-            stt_provider_label: "test".into(),
-            stt_model_label: "test".into(),
-        }, move || {
+            stt_provider_label: "test-provider".into(), stt_model_label: "test-model".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn voice_post_returns_message_to_connected_waiter() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let message = spawn_voice_post(voice_post_job(&state, &channel_id, ""), || {
+            Ok("connected transcript".into())
+        }).await.unwrap().unwrap();
+        assert_eq!(message["text"], "connected transcript");
+        assert_eq!(state.hub.store.messages(&channel_id, None, None, 10).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn voice_post_preserves_mention_prefix_inside_detached_task() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let message = spawn_voice_post(voice_post_job(&state, &channel_id, "@bot"), || {
+            Ok("please respond".into())
+        }).await.unwrap().unwrap();
+        assert_eq!(message["text"], "@bot, please respond");
+    }
+
+    #[tokio::test]
+    async fn voice_post_rejects_empty_transcript_without_writing() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let error = spawn_voice_post(voice_post_job(&state, &channel_id, ""), || {
+            Ok(String::new())
+        }).await.unwrap().unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(state.hub.store.messages(&channel_id, None, None, 10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn voice_post_reports_transcription_failure_without_writing() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let error = spawn_voice_post(voice_post_job(&state, &channel_id, ""), || {
+            anyhow::bail!("test failure")
+        }).await.unwrap().unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_GATEWAY);
+        assert!(error.1.0["detail"].as_str().unwrap().contains("test-provider / test-model"));
+        assert!(state.hub.store.messages(&channel_id, None, None, 10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn voice_post_survives_dropped_response_waiter() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+
+        // This directly covers the production helper and real Hub/store. It
+        // does not exercise handler wiring because offline STT has no route seam.
+        let waiter = spawn_voice_post(voice_post_job(&state, &channel_id, ""), move || {
             std::thread::sleep(Duration::from_millis(50));
             Ok("survived disconnect".into())
         });
