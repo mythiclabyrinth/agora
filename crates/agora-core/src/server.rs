@@ -7155,7 +7155,8 @@ mod tests {
         let deleted = rx.try_recv().expect("member agents hear about the delete");
         assert_eq!(deleted["type"], "inbound_delete");
         assert_eq!(deleted["message_id"], mid(&own));
-        assert!(strict_rx.try_recv().is_err(), "an agent that missed the inbound must miss its delete");
+        let strict_deleted = strict_rx.try_recv().expect("every member agent hears deletes");
+        assert_eq!(strict_deleted["type"], "inbound_delete");
 
         // Another plain member can't delete someone else's message…
         let root = store.add_message(&cid, "root", "user", "ana", None, None, &[]);
@@ -7172,6 +7173,15 @@ mod tests {
         // …but a group admin can, and the root's replies go with it.
         let reply =
             store.add_message(&cid, "reply", "agent", "bot", Some("Bot"), Some(mid(&root)), &[]);
+        store.add_message(
+            &cid,
+            "@strict queued reply",
+            "user",
+            "ana",
+            None,
+            Some(mid(&root)),
+            &[],
+        );
         delete_message(
             State(state.clone()),
             Path((cid.clone(), mid(&root))),
@@ -7182,6 +7192,10 @@ mod tests {
         .unwrap();
         assert!(store.message(mid(&root)).is_none());
         assert!(store.message(mid(&reply)).is_none());
+        let strict_root_delete = strict_rx
+            .try_recv()
+            .expect("an agent mentioned only in a reply hears the root delete");
+        assert_eq!(strict_root_delete["message_id"], mid(&root));
 
         // Wrong channel id: 404, nothing deleted.
         let other = store.create_channel(gid, "random", "");

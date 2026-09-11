@@ -155,6 +155,9 @@ def make_bridge(peer_agents=""):
     instance.deleted_thread_roots = {}
     instance.active_message_ids = set()
     instance.stop_requested = set()
+    instance.stopped_processes = set()
+    instance.queue_full_notified = set()
+    instance.procs = {}
     instance.bindings = {}
     instance.set_reaction = Mock()
     instance.clear_reaction = Mock()
@@ -272,6 +275,7 @@ class PeerBusyTests(unittest.TestCase):
 
     def test_stop_drops_queued_turns_and_reactions(self):
         instance = make_bridge()
+        instance.busy = {"c1"}
         proc = Mock(returncode=None)
         instance.procs = {"c1": proc}
         frame = {"channel_id": "c1", "message_id": 2}
@@ -281,6 +285,17 @@ class PeerBusyTests(unittest.TestCase):
         self.assertNotIn("c1", instance.pending_turns)
         instance.clear_reaction.assert_called_with(frame)
         self.assertIn("removed 1", reply)
+
+    def test_stop_before_child_registration_cancels_busy_run(self):
+        instance = make_bridge()
+        instance.busy = {"c1"}
+        reply = instance._cmd_stop("c1")
+        self.assertIn("Stopping", reply)
+        self.assertIn("c1", instance.stop_requested)
+        with patch.object(bridge.asyncio, "to_thread", AsyncMock(return_value=("prompt", [], None))):
+            with self.assertRaises(bridge.RunStopped):
+                asyncio.run(instance.run_codex("c1", {"channel_id": "c1"}, {}, "text"))
+        self.assertNotIn("c1", instance.stop_requested)
 
     def test_delete_thread_root_and_control_before_enqueue(self):
         instance = make_bridge()
@@ -306,8 +321,29 @@ class PeerBusyTests(unittest.TestCase):
         ]}
         frame = {"channel_id": "c1", "message_id": 99, "author": {"type": "user"}}
         self.assertFalse(asyncio.run(instance.forward_to_codex("c1", frame, "overflow")))
+        self.assertFalse(asyncio.run(instance.forward_to_codex("c1", frame, "overflow again")))
         instance.post.assert_called_once()
+        self.assertIn("not accepted", instance.post.call_args.args[1])
         instance.set_reaction.assert_not_called()
+
+    def test_coalescing_caps_attachments_and_names_omissions(self):
+        instance = make_bridge()
+        entries = [{"frame": {"message_id": i, "attachments": [{"id": f"file-{i}"}]},
+                    "text": str(i)} for i in range(bridge.MAX_ATTACHMENTS + 2)]
+        frame, prompt = instance._coalesce_turns(entries)
+        self.assertEqual(len(frame["attachments"]), bridge.MAX_ATTACHMENTS)
+        self.assertIn("file-5", prompt)
+        self.assertIn("file-6", prompt)
+
+    def test_edit_preserves_thread_context_prefix(self):
+        instance = make_bridge()
+        original = '[thread on: "root" — by Tom]\nold'
+        instance.pending_turns = {"c1:1": [{"frame": {"channel_id": "c1", "message_id": 2},
+                                               "text": original}]}
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 2, "text": "@codex-cli new"})
+        self.assertEqual(instance.pending_turns["c1:1"][0]["text"],
+                         '[thread on: "root" — by Tom]\nnew')
 
     def test_busy_peer_turn_buffers_instead_of_noise_post(self):
         instance = make_bridge(peer_agents="claude-cli")

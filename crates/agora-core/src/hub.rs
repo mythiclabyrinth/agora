@@ -887,13 +887,14 @@ impl Hub {
         let members = self.store.agents_for_channel(channel_id);
         let tokens = mention_tokens(message["text"].as_str().unwrap_or_default());
         let is_dm = self.store.channel(channel_id).is_some_and(|c| c["kind"] == "agent_dm");
+        let is_delete = event["type"] == "inbound_delete";
         let targets: Vec<AgentHandle> = {
             let st = self.state.lock().unwrap();
             members.iter().filter_map(|id| st.agents.get(id)).filter(|handle| {
                 let mentioned = is_dm
                     || tokens.contains(&handle.agent_id.to_lowercase())
                     || tokens.contains(&slugify(&handle.agent_name));
-                mentioned || !handle.requires_mention || handle.wants_context_feed
+                is_delete || mentioned || !handle.requires_mention || handle.wants_context_feed
             }).cloned().collect()
         };
         for handle in targets {
