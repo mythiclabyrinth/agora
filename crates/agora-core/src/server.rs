@@ -2848,6 +2848,16 @@ async fn delete_message(
             })?;
     }
     state.hub.store.delete_message(message_id);
+    state.hub.notify_inbound_control(
+        &channel_id,
+        &message,
+        &json!({
+            "type": "inbound_delete",
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "thread_id": message["thread_id"],
+        }),
+    );
     state.hub.post_transient(
         &channel_id,
         json!({
@@ -2860,10 +2870,9 @@ async fn delete_message(
     Ok(Json(json!({"ok": true})))
 }
 
-/// Edit a human author's own message without replaying it to agents. Edits
-/// deliberately do not recompute mentions or unfurls: mentions cannot be
-/// retracted by the current schema, and an edit must not summon agents or
-/// create a second round of replies. UI clients receive only message_update.
+/// Edit a human author's own message without replaying it as a fresh turn.
+/// Mentions are deliberately not recomputed: a small `inbound_update` control
+/// frame lets bridges amend queued work but never summons a different agent.
 async fn edit_message(
     State(state): State<AppState>,
     Path((channel_id, message_id)): Path<(String, i64)>,
@@ -2901,7 +2910,19 @@ async fn edit_message(
     if changed {
         state.hub.post_transient(
             &channel_id,
-            json!({"type": "message_update", "message": message}),
+            json!({"type": "message_update", "message": message.clone()}),
+        );
+        state.hub.notify_inbound_control(
+            &channel_id,
+            &existing,
+            &json!({
+                "type": "inbound_update",
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "thread_id": message["thread_id"],
+                "text": message["text"],
+                "edited_at": message["meta"]["edited_at"],
+            }),
         );
     }
     Ok(Json(message))
@@ -7088,6 +7109,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_message_allows_sender_and_admins_only() {
+        use crate::hub::AgentHandle;
+        use tokio::sync::mpsc::unbounded_channel;
+
         let (state, _dir) = test_state();
         let store = &state.hub.store;
         store.create_user("boss", "", None, "member").unwrap();
@@ -7098,8 +7122,22 @@ mod tests {
         store.add_member(gid, "user", "boss", "admin", None);
         store.add_member(gid, "user", "ana", "member", None);
         store.add_member(gid, "user", "mal", "member", None);
+        store.add_member(gid, "agent", "bot", "member", None);
+        store.add_member(gid, "agent", "strict", "member", None);
         let c = store.create_channel(gid, "general", "");
         let cid = c["id"].as_str().unwrap().to_string();
+        let (tx, mut rx) = unbounded_channel();
+        state.hub.register_agent(AgentHandle {
+            agent_id: "bot".into(), agent_name: "Bot".into(), requires_mention: false,
+            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            source: "test".into(), conn_id: state.hub.next_conn_id(), tx,
+        });
+        let (strict_tx, mut strict_rx) = unbounded_channel();
+        state.hub.register_agent(AgentHandle {
+            agent_id: "strict".into(), agent_name: "Strict".into(), requires_mention: true,
+            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            source: "test".into(), conn_id: state.hub.next_conn_id(), tx: strict_tx,
+        });
         let q = || Query(HashMap::new());
         let mid = |m: &Value| m["id"].as_i64().unwrap();
 
@@ -7114,6 +7152,11 @@ mod tests {
         .await
         .unwrap();
         assert!(store.message(mid(&own)).is_none());
+        let deleted = rx.try_recv().expect("member agents hear about the delete");
+        assert_eq!(deleted["type"], "inbound_delete");
+        assert_eq!(deleted["message_id"], mid(&own));
+        let strict_deleted = strict_rx.try_recv().expect("every member agent hears deletes");
+        assert_eq!(strict_deleted["type"], "inbound_delete");
 
         // Another plain member can't delete someone else's message…
         let root = store.add_message(&cid, "root", "user", "ana", None, None, &[]);
@@ -7130,6 +7173,15 @@ mod tests {
         // …but a group admin can, and the root's replies go with it.
         let reply =
             store.add_message(&cid, "reply", "agent", "bot", Some("Bot"), Some(mid(&root)), &[]);
+        store.add_message(
+            &cid,
+            "@strict queued reply",
+            "user",
+            "ana",
+            None,
+            Some(mid(&root)),
+            &[],
+        );
         delete_message(
             State(state.clone()),
             Path((cid.clone(), mid(&root))),
@@ -7140,6 +7192,10 @@ mod tests {
         .unwrap();
         assert!(store.message(mid(&root)).is_none());
         assert!(store.message(mid(&reply)).is_none());
+        let strict_root_delete = strict_rx
+            .try_recv()
+            .expect("an agent mentioned only in a reply hears the root delete");
+        assert_eq!(strict_root_delete["message_id"], mid(&root));
 
         // Wrong channel id: 404, nothing deleted.
         let other = store.create_channel(gid, "random", "");
@@ -7230,7 +7286,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_message_is_author_only_and_never_reaches_agents() {
+    async fn edit_message_is_author_only_and_sends_agent_control() {
         use crate::hub::AgentHandle;
         use tokio::sync::mpsc::unbounded_channel;
 
@@ -7245,6 +7301,7 @@ mod tests {
             store.add_member(gid, "user", id, role, None);
         }
         store.add_member(gid, "agent", "bot", "member", None);
+        store.add_member(gid, "agent", "strict", "member", None);
         let c = store.create_channel(gid, "general", "");
         let cid = c["id"].as_str().unwrap().to_string();
         let (tx, mut rx) = unbounded_channel();
@@ -7253,6 +7310,12 @@ mod tests {
             bot_loop_limit: None,
             wants_context_feed: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx,
+        });
+        let (strict_tx, mut strict_rx) = unbounded_channel();
+        state.hub.register_agent(AgentHandle {
+            agent_id: "strict".into(), agent_name: "Strict".into(), requires_mention: true,
+            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            source: "test".into(), conn_id: state.hub.next_conn_id(), tx: strict_tx,
         });
         let own = store.add_message(&cid, "old searchable phrase", "user", "ana", None, None, &[]);
         let mid = own["id"].as_i64().unwrap();
@@ -7267,14 +7330,19 @@ mod tests {
         let edited = edit_message(
             State(state.clone()), Path((cid.clone(), mid)), q(),
             session_headers(&state, "ana"),
-            Json(json!({"text": "new @mal phrase https://keep.example"})),
+            Json(json!({"text": "new @mal @strict phrase https://keep.example"})),
         ).await.unwrap().0;
-        assert_eq!(edited["text"], "new @mal phrase https://keep.example");
+        assert_eq!(edited["text"], "new @mal @strict phrase https://keep.example");
         assert!(edited["meta"]["edited_at"].as_f64().is_some());
         assert_eq!(edited["meta"]["unfurls"], json!([
             {"url": "https://keep.example", "title": "Keep"}
         ]));
-        assert!(rx.try_recv().is_err(), "an edit must not be fanned out to agents");
+        let agent_update = rx.try_recv().expect("member agents receive the edit control");
+        assert_eq!(agent_update["type"], "inbound_update");
+        assert_eq!(agent_update["message_id"], mid);
+        assert_eq!(agent_update["text"], "new @mal @strict phrase https://keep.example");
+        assert!(strict_rx.try_recv().is_err(),
+            "an @mention added by an edit must not summon a new agent");
         let update = ui_rx.try_recv().expect("changed edits must reach UI sockets");
         assert_eq!(update["type"], "message_update");
         assert_eq!(update["message"]["id"], mid);
@@ -7286,10 +7354,11 @@ mod tests {
         let same = edit_message(
             State(state.clone()), Path((cid.clone(), mid)), q(),
             session_headers(&state, "ana"),
-            Json(json!({"text": "  new @mal phrase https://keep.example  "})),
+            Json(json!({"text": "  new @mal @strict phrase https://keep.example  "})),
         ).await.unwrap().0;
         assert_eq!(same["meta"]["edited_at"], stamp);
         assert!(ui_rx.try_recv().is_err(), "no-op edits must not broadcast");
+        assert!(rx.try_recv().is_err(), "no-op edits must not notify agents");
 
         // Neither another member nor a group admin may rewrite the author.
         for username in ["mal", "boss"] {

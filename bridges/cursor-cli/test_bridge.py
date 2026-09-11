@@ -222,6 +222,15 @@ def make_bridge(peer_agents=""):
     instance.context_buffer = {}
     instance.context_buffer_limit = 50
     instance.busy = set()
+    instance.pending_turns = {}
+    instance.pending_updates = {}
+    instance.pending_deletes = {}
+    instance.deleted_thread_roots = {}
+    instance.active_message_ids = set()
+    instance.stop_requested = set()
+    instance.stopped_processes = set()
+    instance.queue_full_notified = set()
+    instance.procs = {}
     instance.bindings = {}
     instance.set_reaction = Mock()
     instance.clear_reaction = Mock()
@@ -315,6 +324,75 @@ class PeerPromptTests(unittest.TestCase):
 
 
 class PeerBusyTests(unittest.TestCase):
+    def test_slash_turn_is_claimed_as_its_own_batch(self):
+        instance = make_bridge()
+        instance.pending_turns = {"c1": [
+            {"frame": {}, "text": "one"}, {"frame": {}, "text": "/compact"},
+            {"frame": {}, "text": "two"},
+        ]}
+        self.assertEqual([e["text"] for e in instance._claim_pending_turns("c1")], ["one"])
+        self.assertEqual([e["text"] for e in instance._claim_pending_turns("c1")], ["/compact"])
+        self.assertEqual([e["text"] for e in instance._claim_pending_turns("c1")], ["two"])
+
+    def test_tombstones_evict_oldest_and_claimed_controls_are_ignored(self):
+        instance = make_bridge()
+        for message_id in range(101):
+            instance.handle_inbound_control({"type": "inbound_delete", "channel_id": "c1",
+                                             "message_id": message_id, "thread_id": 1})
+        self.assertNotIn(0, instance.pending_deletes)
+        self.assertIn(100, instance.pending_deletes)
+        instance.active_message_ids.add(200)
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 200, "text": "changed"})
+        self.assertNotIn(200, instance.pending_updates)
+
+    def test_stop_drops_queued_turns_and_reactions(self):
+        instance = make_bridge()
+        instance.busy = {"c1"}
+        proc = Mock(returncode=None)
+        instance.procs = {"c1": proc}
+        frame = {"channel_id": "c1", "message_id": 2}
+        instance.pending_turns = {"c1": [{"frame": frame, "text": "later"}]}
+        reply = instance._cmd_stop("c1")
+        proc.kill.assert_called_once()
+        self.assertNotIn("c1", instance.pending_turns)
+        instance.clear_reaction.assert_called_with(frame)
+        self.assertIn("removed 1", reply)
+
+    def test_stop_before_child_registration_cancels_busy_run(self):
+        instance = make_bridge()
+        instance.busy = {"c1"}
+        reply = instance._cmd_stop("c1")
+        self.assertIn("Stopping", reply)
+        self.assertIn("c1", instance.stop_requested)
+        instance.agent_bin = "agent"
+        with patch.object(bridge.asyncio, "to_thread", AsyncMock(return_value=("prompt", [], None))):
+            with self.assertRaises(bridge.RunStopped):
+                asyncio.run(instance.run_agent("c1", {"channel_id": "c1"}, {}, "text"))
+        self.assertNotIn("c1", instance.stop_requested)
+
+    def test_queued_turn_can_be_edited_deleted_and_coalesced(self):
+        instance = make_bridge()
+        first = {"channel_id": "c1", "message_id": 10, "author": {"name": "Tom"}, "attachments": [{"id": "a"}]}
+        second = {"channel_id": "c1", "message_id": 11, "author": {"name": "Tom"}, "attachments": [{"id": "b"}]}
+        instance.pending_turns = {"c1": [{"frame": first, "text": "old"}, {"frame": second, "text": "second"}]}
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1", "message_id": 10, "text": "@cursor-cli new"})
+        frame, prompt = instance._coalesce_turns(instance.pending_turns["c1"])
+        self.assertIn("new", prompt)
+        self.assertEqual(frame["attachments"], [{"id": "a"}, {"id": "b"}])
+        instance.handle_inbound_control({"type": "inbound_delete", "channel_id": "c1", "message_id": 10, "thread_id": None})
+        self.assertEqual([e["frame"]["message_id"] for e in instance.pending_turns["c1"]], [11])
+
+    def test_delete_thread_root_and_control_before_enqueue(self):
+        instance = make_bridge()
+        instance.pending_turns = {"c1:42": [{"frame": {"channel_id": "c1", "thread_id": 42, "message_id": 44}, "text": "reply"}]}
+        instance.active_message_ids.add(42)
+        instance.handle_inbound_control({"type": "inbound_delete", "channel_id": "c1", "message_id": 42, "thread_id": None})
+        self.assertNotIn("c1:42", instance.pending_turns)
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1", "message_id": 7, "text": "@cursor-cli latest"})
+        entry = instance._pending_entry({"channel_id": "c1", "message_id": 7}, "old")
+        self.assertEqual(entry["text"], "latest")
+
     def test_busy_peer_turn_buffers_instead_of_noise_post(self):
         instance = make_bridge(peer_agents="claude-cli")
         del instance.forward_to_agent  # exercise the real method
@@ -329,16 +407,79 @@ class PeerBusyTests(unittest.TestCase):
         self.assertIn("c1", instance.context_buffer)
         instance.clear_reaction.assert_called_once()
 
-    def test_busy_human_turn_still_gets_the_notice(self):
+    def test_busy_human_turn_is_queued(self):
         instance = make_bridge()
         del instance.forward_to_agent
         instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
         instance.busy = {"c1"}
         frame = {"channel_id": "c1", "author": {"type": "user", "id": "tom"}}
         handled = asyncio.run(instance.forward_to_agent("c1", frame, "hello"))
-        self.assertTrue(handled)
+        self.assertFalse(handled)
+        instance.post.assert_not_called()
+        self.assertEqual(instance.pending_turns["c1"][0]["text"], "hello")
+        instance.set_reaction.assert_called_with(frame, "⏳")
+
+    def test_queue_cap_posts_one_notice_and_rejects_each_message(self):
+        instance = make_bridge()
+        del instance.forward_to_agent
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": i}, "text": str(i)} for i in range(bridge.MAX_QUEUED_TURNS)
+        ]}
+        frame = {"channel_id": "c1", "message_id": 99, "author": {"type": "user"}}
+        self.assertFalse(asyncio.run(instance.forward_to_agent("c1", frame, "overflow")))
+        self.assertFalse(asyncio.run(instance.forward_to_agent("c1", frame, "overflow again")))
         instance.post.assert_called_once()
-        self.assertIn("Still working", instance.post.call_args.args[1])
+        self.assertIn("not accepted", instance.post.call_args.args[1])
+        self.assertEqual(instance.set_reaction.call_count, 2)
+        instance.set_reaction.assert_called_with(frame, "🚫", remember=False)
+
+    def test_coalescing_caps_attachments_and_names_omissions(self):
+        instance = make_bridge()
+        entries = [{"frame": {"message_id": i, "attachments": [{"id": f"file-{i}"}]},
+                    "text": str(i)} for i in range(bridge.MAX_ATTACHMENTS + 2)]
+        instance.pending_turns = {"c1": entries}
+        first = instance._claim_pending_turns("c1")
+        self.assertEqual(len(first), bridge.MAX_ATTACHMENTS)
+        self.assertEqual(len(instance.pending_turns["c1"]), 2)
+        frame, prompt = instance._coalesce_turns(first)
+        self.assertEqual(len(frame["attachments"]), bridge.MAX_ATTACHMENTS)
+        self.assertNotIn("omitted", prompt)
+        oversized = [{"frame": {"message_id": 9, "attachments": [
+            {"id": f"single-{i}"} for i in range(bridge.MAX_ATTACHMENTS + 1)]}, "text": "one"}]
+        _, prompt = instance._coalesce_turns(oversized)
+        self.assertIn("single-5", prompt)
+
+    def test_idle_fast_path_keeps_existing_backlog_fifo(self):
+        instance = make_bridge()
+        del instance.forward_to_agent
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.pending_turns = {"c1": [{"frame": {"channel_id": "c1", "message_id": 1,
+                                                       "author": {"name": "Tom"}}, "text": "older"}]}
+        instance.typing = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        prompts = []
+        async def run(_key, _frame, _binding, prompt):
+            prompts.append(prompt)
+            return "done"
+        instance.run_agent = run
+        frame = {"channel_id": "c1", "message_id": 2, "author": {"name": "Tom"}}
+        asyncio.run(instance.forward_to_agent("c1", frame, "newer"))
+        self.assertLess(prompts[0].index("older"), prompts[0].index("newer"))
+
+    def test_edit_preserves_thread_context_prefix(self):
+        instance = make_bridge()
+        original = '[thread on: "root" — by Tom]\nold'
+        instance.pending_turns = {"c1:1": [{"frame": {"channel_id": "c1", "message_id": 2},
+                                               "text": original}]}
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 2, "text": "@cursor-cli new"})
+        self.assertEqual(instance.pending_turns["c1:1"][0]["text"],
+                         '[thread on: "root" — by Tom]\nnew')
 
 
 class PromptSuffixTests(unittest.TestCase):
@@ -355,6 +496,26 @@ class PromptSuffixTests(unittest.TestCase):
 
 
 class OutboundAttachmentTests(unittest.TestCase):
+    def test_stop_flags_clear_when_run_raises(self):
+        instance = make_bridge()
+        instance.agent_bin = "agent"
+        instance.default_mode = "agent"
+        instance.default_model = None
+        instance.disable_sandbox = False
+        instance.base_agent_args = []
+        instance._stage_attachments = Mock(return_value=("prompt", [], None))
+        instance._prompt_suffixes = Mock(return_value="")
+        instance.stopped_processes = {"c1"}
+        instance.stop_requested = set()
+        with patch.object(bridge.asyncio, "create_subprocess_exec",
+                          AsyncMock(side_effect=RuntimeError("spawn failed"))):
+            with self.assertRaises(bridge.RunStopped):
+                asyncio.run(instance.run_agent("c1", {"channel_id": "c1"}, {"cwd": "/tmp"}, "x"))
+            with self.assertRaisesRegex(RuntimeError, "spawn failed"):
+                asyncio.run(instance.run_agent("c1", {"channel_id": "c1"}, {"cwd": "/tmp"}, "x"))
+        self.assertFalse(instance.stop_requested)
+        self.assertFalse(instance.stopped_processes)
+
     def test_malformed_attachment_limit_env_falls_back(self):
         with patch.dict("os.environ", {"AGORA_MAX_FILE_MB": "bad"}):
             self.assertEqual(bridge.parse_positive_int("bad", 10), 10)
@@ -371,6 +532,48 @@ class OutboundAttachmentTests(unittest.TestCase):
         instance.max_attachment_bytes = 10 * 1024 * 1024
         asyncio.run(instance.forward_to_agent("c1", {"channel_id": "c1"}, "hello"))
         self.assertEqual(instance.post.call_args.args[1], "(empty response)")
+
+    def test_provider_error_and_stop_do_not_mark_message_complete(self):
+        for reply in ["(agent error) denied", bridge.RunStopped()]:
+            instance = make_bridge()
+            del instance.forward_to_agent
+            instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+            instance.typing = Mock()
+            instance.run_agent = (AsyncMock(side_effect=reply) if isinstance(reply, Exception)
+                                  else AsyncMock(return_value=reply))
+            frame = {"channel_id": "c1", "message_id": 1}
+            asyncio.run(instance.forward_to_agent("c1", frame, "first"))
+            self.assertFalse(any(c.args[1] == "✅" for c in instance.set_reaction.call_args_list))
+            instance.clear_reaction.assert_called_with(frame)
+
+    def test_active_turn_drains_one_coalesced_followup_batch(self):
+        instance = make_bridge()
+        del instance.forward_to_agent
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.typing = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        calls = 0
+        async def run(_key, _frame, _binding, prompt):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                instance.pending_turns["c1"] = [
+                    {"frame": {"channel_id": "c1", "message_id": 2, "author": {"name": "Tom"}}, "text": "second"},
+                    {"frame": {"channel_id": "c1", "message_id": 3, "author": {"name": "Tom"}}, "text": "third"},
+                ]
+                instance.bindings["c1"] = {"cwd": "/new", "session_id": "s2"}
+            else:
+                self.assertEqual(_binding["cwd"], "/new")
+                self.assertIn("second", prompt)
+                self.assertIn("third", prompt)
+            return f"reply {calls}"
+        instance.run_agent = run
+        asyncio.run(instance.forward_to_agent("c1", {"channel_id": "c1", "message_id": 1}, "first"))
+        self.assertEqual(calls, 2)
+        self.assertEqual(instance.post.call_count, 2)
 
     def test_extracts_image_and_reports_missing_file(self):
         with tempfile.TemporaryDirectory() as tmp:

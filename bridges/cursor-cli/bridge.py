@@ -53,6 +53,7 @@ TAIL_BYTES = 256 * 1024  # how much of a rollout .jsonl to scan for the last pro
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
+MAX_QUEUED_TURNS = 20
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -62,6 +63,10 @@ ATTACH_PROMPT_SUFFIX = (
     f"with one `{ATTACH_SENTINEL} /absolute/path` line per image. The relay removes "
     "those lines and uploads the files. Only use paths for images you intentionally want to share.)"
 )
+
+
+class RunStopped(Exception):
+    """The active CLI child was cancelled by /stop."""
 
 # TL;DR support. When enabled for a run we ask Cursor to end a long reply with a
 # sentinel line the bridge lifts into the post frame's `tldr` field (a short
@@ -538,11 +543,18 @@ class Bridge:
         self.bindings: dict[str, dict] = self._load_state()
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
         self.busy: set[str] = set()
+        self.pending_turns: dict[str, list[dict]] = {}
+        self.pending_updates: dict[int, str] = {}
+        self.pending_deletes: dict[int, None] = {}
+        self.deleted_thread_roots: dict[int, None] = {}
+        self.active_message_ids: set[int] = set()
         # In-flight lifecycle reaction per inbound message id, so a new stage
         # (👀 → ✅) replaces the previous emoji instead of stacking.
         self._reactions: dict[int, str] = {}
         self.procs: dict[str, asyncio.subprocess.Process] = {}  # key -> running agent
         self.stop_requested: set[str] = set()  # keys cancelled via /stop
+        self.stopped_processes: set[str] = set()
+        self.queue_full_notified: set[str] = set()
         self.outbox: asyncio.Queue = asyncio.Queue()
         # Per-binding backlog of messages we saw but stayed silent on (someone
         # else was @mentioned). Flushed into the prompt as context the next time
@@ -721,6 +733,112 @@ class Bridge:
             + text
         )
 
+    def handle_inbound_control(self, frame: dict) -> None:
+        message_id = frame.get("message_id")
+        if not isinstance(message_id, int):
+            return
+        active = message_id in self.active_message_ids
+        kind, channel_id, found = frame.get("type"), frame.get("channel_id"), False
+        for key, entries in list(self.pending_turns.items()):
+            if not (key == channel_id or key.startswith(f"{channel_id}:")):
+                continue
+            if kind == "inbound_update":
+                for entry in entries:
+                    if entry["frame"].get("message_id") == message_id:
+                        entry["text"] = self._edited_text(entry["text"], frame.get("text"))
+                        found = True
+            elif kind == "inbound_delete":
+                found = found or any(e["frame"].get("message_id") == message_id for e in entries)
+                kept = [e for e in entries if e["frame"].get("message_id") != message_id]
+                if frame.get("thread_id") is None and key == f"{channel_id}:{message_id}":
+                    found, kept = found or bool(entries), []
+                if kept:
+                    self.pending_turns[key] = kept
+                else:
+                    self.pending_turns.pop(key, None)
+                if len(kept) < MAX_QUEUED_TURNS:
+                    self.queue_full_notified.discard(key)
+        if not found and not active and kind == "inbound_update":
+            self.pending_updates[message_id] = self._strip_mention(str(frame.get("text") or ""))
+            if len(self.pending_updates) > 100:
+                self.pending_updates.pop(next(iter(self.pending_updates)))
+        elif kind == "inbound_delete":
+            if not active:
+                self.pending_deletes[message_id] = None
+            if frame.get("thread_id") is None:
+                self.deleted_thread_roots[message_id] = None
+            while len(self.pending_deletes) > 100:
+                self.pending_deletes.pop(next(iter(self.pending_deletes)))
+            while len(self.deleted_thread_roots) > 100:
+                self.deleted_thread_roots.pop(next(iter(self.deleted_thread_roots)))
+
+    def _claim_pending_turns(self, key: str) -> list[dict]:
+        queue = self.pending_turns.pop(key, [])
+        if not queue:
+            return []
+        if queue[0]["text"].lstrip().startswith("/"):
+            batch, rest = queue[:1], queue[1:]
+        else:
+            batch = []
+            attachment_count = 0
+            for entry in queue:
+                if entry["text"].lstrip().startswith("/"):
+                    break
+                entry_attachments = len(entry["frame"].get("attachments") or [])
+                if batch and attachment_count + entry_attachments > MAX_ATTACHMENTS:
+                    break
+                batch.append(entry)
+                attachment_count += entry_attachments
+            rest = queue[len(batch):]
+        if rest:
+            self.pending_turns[key] = rest
+        if len(rest) < MAX_QUEUED_TURNS:
+            self.queue_full_notified.discard(key)
+        return batch
+
+    def _edited_text(self, original: str, edited: object) -> str:
+        text = self._strip_mention(str(edited or ""))
+        if original.startswith("[thread on:") and "\n" in original:
+            return original.split("\n", 1)[0] + "\n" + text
+        return text
+
+    def _pending_entry(self, frame: dict, text: str) -> dict | None:
+        message_id, thread_id = frame.get("message_id"), frame.get("thread_id")
+        if message_id in self.pending_deletes or thread_id in self.deleted_thread_roots:
+            self.clear_reaction(frame)
+            return None
+        if isinstance(message_id, int):
+            edited = self.pending_updates.pop(message_id, None)
+            if edited is not None:
+                text = self._edited_text(text, edited)
+        return {"frame": frame, "text": text}
+
+    @staticmethod
+    def _coalesce_turns(entries: list[dict]) -> tuple[dict, str]:
+        frame = dict(entries[-1]["frame"])
+        attachments = [a for e in entries for a in (e["frame"].get("attachments") or [])]
+        frame["attachments"] = attachments[:MAX_ATTACHMENTS]
+        dropped = attachments[MAX_ATTACHMENTS:]
+        if len(entries) == 1:
+            prompt = entries[0]["text"]
+            if dropped:
+                names = ", ".join(str(a.get("name") or a.get("filename") or a.get("id") or "unnamed file") for a in dropped)
+                prompt += f"\n\n[Attachment limit: omitted {len(dropped)} file(s): {names}]"
+            return frame, prompt
+        blocks = []
+        for entry in entries:
+            source = entry["frame"]
+            author = (source.get("author") or {}).get("name") or "user"
+            blocks.append(f"[Message {source.get('message_id') or 'unknown'} from {author}]\n{entry['text']}")
+        prompt = (
+            "[Queued follow-up messages, in arrival order. Address every message:]\n\n"
+            + "\n\n".join(blocks) + "\n\n[End queued follow-up messages.]"
+        )
+        if dropped:
+            names = ", ".join(str(a.get("name") or a.get("filename") or a.get("id") or "unnamed file") for a in dropped)
+            prompt += f"\n\n[Attachment limit: omitted {len(dropped)} file(s): {names}]"
+        return frame, prompt
+
     def _peer_prompt(self, frame: dict, text: str) -> str:
         """Wrap an allowlisted peer agent's message in a relay note.
 
@@ -785,15 +903,12 @@ class Bridge:
         if author.get("type") != "user" and not from_peer:
             self._buffer_context(key, frame)
             return
-        self.set_reaction(frame, "👀")
         if from_peer:
             text = self._strip_mention(frame.get("text") or "")
             if not text and not (frame.get("attachments") or []):
                 self.clear_reaction(frame)
                 return
-            if await self.forward_to_agent(
-                    key, frame, self._peer_prompt(frame, text), from_peer=True):
-                self.set_reaction(frame, "✅", remember=False)
+            await self.forward_to_agent(key, frame, self._peer_prompt(frame, text), from_peer=True)
             return
         # Respond only when addressed: we're @mentioned, or no agent was tagged
         # at all (open floor). Otherwise someone else was tagged — stay silent
@@ -811,6 +926,10 @@ class Bridge:
             return
         cmd, _, rest = text.partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
+        if not cmd.startswith("/"):
+            await self.forward_to_agent(key, frame, text)
+            return
+        self.set_reaction(frame, "👀")
         if cmd == "/commands":
             self.post(frame, HELP)
         elif cmd == "/sessions":
@@ -840,6 +959,7 @@ class Bridge:
             self.post(frame, self._cmd_status(key))
         else:
             await self.forward_to_agent(key, frame, text)
+            return
         self.set_reaction(frame, "✅", remember=False)
 
     # ---------------------------------------------------------- commands
@@ -1162,12 +1282,19 @@ class Bridge:
         return "Unknown option. Usage: /tldr <on | off | default>"
 
     def _cmd_stop(self, key: str) -> str:
+        queued = self.pending_turns.pop(key, [])
+        self.queue_full_notified.discard(key)
+        for entry in queued:
+            self.clear_reaction(entry["frame"])
         proc = self.procs.get(key)
-        if not proc or proc.returncode is not None:
-            return "Nothing running here."
+        if key not in self.busy:
+            return f"Removed {len(queued)} queued message(s)." if queued else "Nothing running here."
         self.stop_requested.add(key)
-        proc.kill()
-        return "Stopping the current run…"
+        if proc and proc.returncode is None:
+            self.stopped_processes.add(key)
+            proc.kill()
+        suffix = f" and removed {len(queued)} queued message(s)" if queued else ""
+        return f"Stopping the current run{suffix}…"
 
     def _cmd_status(self, key: str) -> str:
         b = self.bindings.get(key)
@@ -1191,11 +1318,12 @@ class Bridge:
     async def forward_to_agent(
         self, key: str, frame: dict, text: str, from_peer: bool = False
     ) -> bool:
-        """Run Cursor on *text*. Returns False only when the turn was silently
-        buffered (busy peer turn) so the caller skips the ✅ reaction."""
+        """Run now or enqueue behind the active turn for this conversation."""
         binding = self.bindings.get(key)
         if not binding:
+            self.set_reaction(frame, "👀")
             self.post(frame, "No session bound here yet. Run /sessions then /use <n>.")
+            self.set_reaction(frame, "✅", remember=False)
             return True
         if key in self.busy:
             if from_peer:
@@ -1204,29 +1332,77 @@ class Bridge:
                 self._buffer_context(key, frame)
                 self.clear_reaction(frame)
                 return False
-            self.post(frame, "Still working on the previous message — try again when it's done.")
-            return True
+            if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
+                self.set_reaction(frame, "🚫", remember=False)
+                if key not in self.queue_full_notified:
+                    self.queue_full_notified.add(key)
+                    self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). This message was not accepted; resend it after queued work starts.")
+                return False
+            entry = self._pending_entry(frame, text)
+            if entry is None:
+                return False
+            self.pending_turns.setdefault(key, []).append(entry)
+            self.set_reaction(frame, "⏳")
+            return False
+        entry = self._pending_entry(frame, text)
+        if entry is None:
+            return False
+        self.pending_turns.setdefault(key, []).append(entry)
         self.busy.add(key)
         self.typing(frame, True)
+        entries = self._claim_pending_turns(key)
         try:
-            # Catch Cursor up on anything we heard but stayed silent on — but
-            # never prepend context onto a bare slash-command turn, which must
-            # reach Cursor verbatim.
-            if not text.lstrip().startswith("/"):
-                text = self._flush_context(key, text)
-            reply = await self.run_agent(key, frame, binding, text)
-            reply, attachments, notices = self._split_outbound_attachments(
-                reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
-            body, tldr = self._split_tldr(
-                reply, self._tldr_enabled(binding), self.tldr_min_chars)
-            if notices:
-                body = (body + "\n\n" if body else "") + "\n".join(notices)
-            if not body and not attachments:
-                body = "(empty response)"
-            self.post(frame, body, tldr if body else None, attachments)
-        except Exception as e:  # degrade to a chat message, never crash the loop
-            log(f"agent run failed: {e!r}")
-            self.post(frame, f"Cursor run failed: {e}")
+            while entries:
+                if key in self.stop_requested:
+                    self.stop_requested.discard(key)
+                    for queued in entries:
+                        self.clear_reaction(queued["frame"])
+                    break
+                active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}
+                self.active_message_ids.update(active_ids)
+                binding = self.bindings.get(key)
+                batch_frame, batch_text = self._coalesce_turns(entries)
+                for queued in entries:
+                    self.set_reaction(queued["frame"], "👀")
+                if not binding:
+                    self.post(batch_frame, "No session bound here. Run /sessions then /use <n>.")
+                    for queued in entries:
+                        self.clear_reaction(queued["frame"])
+                    self.active_message_ids.difference_update(active_ids)
+                    entries = self._claim_pending_turns(key)
+                    continue
+                try:
+                    if not batch_text.lstrip().startswith("/"):
+                        batch_text = self._flush_context(key, batch_text)
+                    reply = await self.run_agent(key, batch_frame, binding, batch_text)
+                    if reply.startswith("(agent error)"):
+                        self.post(batch_frame, reply)
+                        for queued in entries:
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
+                    reply, attachments, notices = self._split_outbound_attachments(
+                        reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
+                    body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
+                    if notices:
+                        body = (body + "\n\n" if body else "") + "\n".join(notices)
+                    if not body and not attachments:
+                        body = "(empty response)"
+                    self.post(batch_frame, body, tldr if body else None, attachments)
+                    for queued in entries:
+                        self.set_reaction(queued["frame"], "✅", remember=False)
+                except RunStopped:
+                    self.post(batch_frame, "Stopped.")
+                    for queued in entries:
+                        self.clear_reaction(queued["frame"])
+                except Exception as e:
+                    log(f"agent run failed: {e!r}")
+                    self.post(batch_frame, f"Cursor run failed: {e}")
+                    for queued in entries:
+                        self.clear_reaction(queued["frame"])
+                self.active_message_ids.difference_update(active_ids)
+                entries = self._claim_pending_turns(key)
         finally:
             self.busy.discard(key)
             self.typing(frame, False)
@@ -1334,6 +1510,11 @@ class Bridge:
         if not self.agent_bin:
             raise RuntimeError(CURSOR_NOT_FOUND)
         prompt, extra_args, tmpdir = await asyncio.to_thread(self._stage_attachments, frame, text)
+        if key in self.stop_requested:
+            self.stop_requested.discard(key)
+            if tmpdir:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            raise RunStopped
         mode = binding.get("mode") or self.default_mode
         model = normalize_model(binding.get("model")) or self.default_model
         prompt += self._prompt_suffixes(binding)
@@ -1442,9 +1623,6 @@ class Bridge:
                     proc.kill()
                     await proc.wait()
                 self.procs.pop(key, None)
-            if key in self.stop_requested:
-                self.stop_requested.discard(key)
-                return "Stopped."
             if turn_failed or (not reply_parts and error_parts):
                 detail = "\n".join(error_parts) or "unknown error"
                 return f"(agent error) {detail[:2000]}"
@@ -1453,7 +1631,8 @@ class Bridge:
                 raise RuntimeError(stderr[-500:] or f"agent exited {proc.returncode} with no result")
             # Resume keeps the thread id, but a fresh session mints one; track
             # it (successful runs only) so follow-ups continue the conversation.
-            if new_session_id and new_session_id != binding.get("session_id"):
+            if (new_session_id and new_session_id != binding.get("session_id")
+                    and (key not in self.bindings or self.bindings.get(key) is binding)):
                 binding["session_id"] = new_session_id
                 self.bindings[key] = binding
                 self._save_state()
@@ -1461,6 +1640,11 @@ class Bridge:
         finally:
             if tmpdir:
                 shutil.rmtree(tmpdir, ignore_errors=True)
+            was_stopped = key in self.stopped_processes
+            self.stop_requested.discard(key)
+            self.stopped_processes.discard(key)
+            if was_stopped:
+                raise RunStopped
 
     @staticmethod
     def _progress_snippet(event: dict) -> str | None:
@@ -1538,6 +1722,8 @@ class Bridge:
                 kind = frame.get("type")
                 if kind == "inbound":
                     asyncio.create_task(self.handle_inbound(frame))
+                elif kind in ("inbound_update", "inbound_delete"):
+                    self.handle_inbound_control(frame)
                 elif kind == "error":
                     log(
                         f"{frame.get('frame_type', 'frame')} rejected"
