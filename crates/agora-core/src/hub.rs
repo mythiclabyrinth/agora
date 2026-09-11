@@ -883,11 +883,18 @@ impl Hub {
     /// Tell live member agents that a human-authored inbound message changed.
     /// These are control frames, not fresh inbound turns: bridges use them to
     /// amend or cancel work that is still queued without waking an idle agent.
-    pub fn notify_inbound_control(&self, channel_id: &str, event: &Value) {
+    pub fn notify_inbound_control(&self, channel_id: &str, message: &Value, event: &Value) {
         let members = self.store.agents_for_channel(channel_id);
+        let tokens = mention_tokens(message["text"].as_str().unwrap_or_default());
+        let is_dm = self.store.channel(channel_id).is_some_and(|c| c["kind"] == "agent_dm");
         let targets: Vec<AgentHandle> = {
             let st = self.state.lock().unwrap();
-            members.iter().filter_map(|id| st.agents.get(id).cloned()).collect()
+            members.iter().filter_map(|id| st.agents.get(id)).filter(|handle| {
+                let mentioned = is_dm
+                    || tokens.contains(&handle.agent_id.to_lowercase())
+                    || tokens.contains(&slugify(&handle.agent_name));
+                mentioned || !handle.requires_mention || handle.wants_context_feed
+            }).cloned().collect()
         };
         for handle in targets {
             let mut frame = event.clone();

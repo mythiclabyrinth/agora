@@ -230,6 +230,10 @@ COLLAB_SYSTEM_PROMPT = (
 )
 
 
+class RunStopped(Exception):
+    """The active CLI child was cancelled by /stop."""
+
+
 def parse_peer_agents(raw: str) -> frozenset[str]:
     """Normalize a comma-separated list of agent ids into a lowercase set."""
     return frozenset(t.strip().lower() for t in (raw or "").split(",") if t.strip())
@@ -664,8 +668,9 @@ class Bridge:
         self.busy: set[str] = set()
         self.pending_turns: dict[str, list[dict]] = {}
         self.pending_updates: dict[int, str] = {}
-        self.pending_deletes: set[int] = set()
-        self.deleted_thread_roots: set[int] = set()
+        self.pending_deletes: dict[int, None] = {}
+        self.deleted_thread_roots: dict[int, None] = {}
+        self.active_message_ids: set[int] = set()
         # In-flight lifecycle reaction per inbound message id, so a new stage
         # (👀 → ✅) replaces the previous emoji instead of stacking.
         self._reactions: dict[int, str] = {}
@@ -930,6 +935,7 @@ class Bridge:
         message_id = frame.get("message_id")
         if not isinstance(message_id, int):
             return
+        active = message_id in self.active_message_ids
         kind, channel_id, found = frame.get("type"), frame.get("channel_id"), False
         for key, entries in list(self.pending_turns.items()):
             if not (key == channel_id or key.startswith(f"{channel_id}:")):
@@ -948,18 +954,32 @@ class Bridge:
                     self.pending_turns[key] = kept
                 else:
                     self.pending_turns.pop(key, None)
-        if not found and kind == "inbound_update":
+        if not found and not active and kind == "inbound_update":
             self.pending_updates[message_id] = self._strip_mention(str(frame.get("text") or ""))
             if len(self.pending_updates) > 100:
                 self.pending_updates.pop(next(iter(self.pending_updates)))
         elif kind == "inbound_delete":
-            self.pending_deletes.add(message_id)
+            if not active:
+                self.pending_deletes[message_id] = None
             if frame.get("thread_id") is None:
-                self.deleted_thread_roots.add(message_id)
+                self.deleted_thread_roots[message_id] = None
             while len(self.pending_deletes) > 100:
-                self.pending_deletes.pop()
+                self.pending_deletes.pop(next(iter(self.pending_deletes)))
             while len(self.deleted_thread_roots) > 100:
-                self.deleted_thread_roots.pop()
+                self.deleted_thread_roots.pop(next(iter(self.deleted_thread_roots)))
+
+    def _claim_pending_turns(self, key: str) -> list[dict]:
+        queue = self.pending_turns.pop(key, [])
+        if not queue:
+            return []
+        if queue[0]["text"].lstrip().startswith("/"):
+            batch, rest = queue[:1], queue[1:]
+        else:
+            slash = next((i for i, e in enumerate(queue) if e["text"].lstrip().startswith("/")), len(queue))
+            batch, rest = queue[:slash], queue[slash:]
+        if rest:
+            self.pending_turns[key] = rest
+        return batch
 
     def _pending_entry(self, frame: dict, text: str) -> dict | None:
         message_id, thread_id = frame.get("message_id"), frame.get("thread_id")
@@ -1073,12 +1093,7 @@ class Bridge:
             return
         cmd, _, rest = text.partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
-        bridge_commands = {
-            "/commands", "/sessions", "/use", "/new", "/worktree", "/worktrees",
-            "/model", "/permissions", "/tldr", "/stop", "/status",
-        }
-        if cmd not in bridge_commands:
-            # Plain text and Claude CLI slash commands (/compact, /usage, …).
+        if not cmd.startswith("/"):
             await self.forward_to_claude(key, frame, text)
             return
         self.set_reaction(frame, "👀")
@@ -1107,6 +1122,10 @@ class Bridge:
             self.post(frame, self._cmd_stop(key))
         elif cmd == "/status":
             self.post(frame, self._cmd_status(key))
+        else:
+            # Claude CLI slash commands (/compact, /usage, …) are real turns.
+            await self.forward_to_claude(key, frame, text)
+            return
         self.set_reaction(frame, "✅", remember=False)
 
     # ---------------------------------------------------------- commands
@@ -1450,7 +1469,7 @@ class Bridge:
                 return False
             if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
                 self.clear_reaction(frame)
-                self.post(frame, "Queue is full (20 messages). Delete or wait for queued work to start.")
+                self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). Delete or wait for queued work to start.")
                 return False
             entry = self._pending_entry(frame, text)
             if entry is None:
@@ -1466,6 +1485,8 @@ class Bridge:
         entries = [entry]
         try:
             while entries:
+                active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}
+                self.active_message_ids.update(active_ids)
                 binding = self.bindings.get(key)
                 batch_frame, batch_text = self._coalesce_turns(entries)
                 for queued in entries:
@@ -1474,17 +1495,19 @@ class Bridge:
                     self.post(batch_frame, "No session bound here. Run /sessions then /use <n>.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
-                    entries = self.pending_turns.pop(key, [])
+                    self.active_message_ids.difference_update(active_ids)
+                    entries = self._claim_pending_turns(key)
                     continue
                 try:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
-                    if reply == "Stopped." or reply.startswith("(claude error)"):
+                    if reply.startswith("(claude error)"):
                         self.post(batch_frame, reply)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
-                        entries = self.pending_turns.pop(key, [])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
                         continue
                     reply, attachments, notices = self._split_outbound_attachments(
                         reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
@@ -1496,12 +1519,17 @@ class Bridge:
                     self.post(batch_frame, body, tldr if body else None, attachments)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
+                except RunStopped:
+                    self.post(batch_frame, "Stopped.")
+                    for queued in entries:
+                        self.clear_reaction(queued["frame"])
                 except Exception as e:
                     log(f"claude run failed: {e!r}")
                     self.post(batch_frame, f"Claude run failed: {e}")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
-                entries = self.pending_turns.pop(key, [])
+                self.active_message_ids.difference_update(active_ids)
+                entries = self._claim_pending_turns(key)
         finally:
             self.busy.discard(key)
             self.typing(frame, False)
@@ -1774,7 +1802,7 @@ class Bridge:
                     await asyncio.gather(*perm_tasks, return_exceptions=True)
             if key in self.stop_requested:
                 self.stop_requested.discard(key)
-                return "Stopped."
+                raise RunStopped
             if result_text is None:
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
                 raise RuntimeError(stderr[-500:] or f"claude exited {proc.returncode} with no result")

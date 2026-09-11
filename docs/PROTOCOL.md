@@ -105,7 +105,8 @@ OpenClaw wrapper, a shell script, whatever:
 // control frame once that message has started. Routing is fixed at send time,
 // so editing an @mention does not transfer work between agents. Deleting a
 // thread root also deletes its replies, so discard queued entries whose
-// thread_id equals the deleted root message_id.
+// thread_id equals the deleted root message_id. Buffered context replays are
+// not amended by edits or deletes in this version.
 {"type": "inbound_update", "agent_id": "claw-1", "channel_id": "...",
  "thread_id": null, "message_id": 123, "text": "corrected request", "edited_at": 1700000000}
 {"type": "inbound_delete", "agent_id": "claw-1", "channel_id": "...",

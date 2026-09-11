@@ -2850,6 +2850,7 @@ async fn delete_message(
     state.hub.store.delete_message(message_id);
     state.hub.notify_inbound_control(
         &channel_id,
+        &message,
         &json!({
             "type": "inbound_delete",
             "channel_id": channel_id,
@@ -2913,6 +2914,7 @@ async fn edit_message(
         );
         state.hub.notify_inbound_control(
             &channel_id,
+            &existing,
             &json!({
                 "type": "inbound_update",
                 "channel_id": channel_id,
@@ -7121,6 +7123,7 @@ mod tests {
         store.add_member(gid, "user", "ana", "member", None);
         store.add_member(gid, "user", "mal", "member", None);
         store.add_member(gid, "agent", "bot", "member", None);
+        store.add_member(gid, "agent", "strict", "member", None);
         let c = store.create_channel(gid, "general", "");
         let cid = c["id"].as_str().unwrap().to_string();
         let (tx, mut rx) = unbounded_channel();
@@ -7128,6 +7131,12 @@ mod tests {
             agent_id: "bot".into(), agent_name: "Bot".into(), requires_mention: false,
             bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx,
+        });
+        let (strict_tx, mut strict_rx) = unbounded_channel();
+        state.hub.register_agent(AgentHandle {
+            agent_id: "strict".into(), agent_name: "Strict".into(), requires_mention: true,
+            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            source: "test".into(), conn_id: state.hub.next_conn_id(), tx: strict_tx,
         });
         let q = || Query(HashMap::new());
         let mid = |m: &Value| m["id"].as_i64().unwrap();
@@ -7146,6 +7155,7 @@ mod tests {
         let deleted = rx.try_recv().expect("member agents hear about the delete");
         assert_eq!(deleted["type"], "inbound_delete");
         assert_eq!(deleted["message_id"], mid(&own));
+        assert!(strict_rx.try_recv().is_err(), "an agent that missed the inbound must miss its delete");
 
         // Another plain member can't delete someone else's message…
         let root = store.add_message(&cid, "root", "user", "ana", None, None, &[]);
@@ -7277,6 +7287,7 @@ mod tests {
             store.add_member(gid, "user", id, role, None);
         }
         store.add_member(gid, "agent", "bot", "member", None);
+        store.add_member(gid, "agent", "strict", "member", None);
         let c = store.create_channel(gid, "general", "");
         let cid = c["id"].as_str().unwrap().to_string();
         let (tx, mut rx) = unbounded_channel();
@@ -7285,6 +7296,12 @@ mod tests {
             bot_loop_limit: None,
             wants_context_feed: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx,
+        });
+        let (strict_tx, mut strict_rx) = unbounded_channel();
+        state.hub.register_agent(AgentHandle {
+            agent_id: "strict".into(), agent_name: "Strict".into(), requires_mention: true,
+            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            source: "test".into(), conn_id: state.hub.next_conn_id(), tx: strict_tx,
         });
         let own = store.add_message(&cid, "old searchable phrase", "user", "ana", None, None, &[]);
         let mid = own["id"].as_i64().unwrap();
@@ -7310,7 +7327,7 @@ mod tests {
         assert_eq!(agent_update["type"], "inbound_update");
         assert_eq!(agent_update["message_id"], mid);
         assert_eq!(agent_update["text"], "new @mal phrase https://keep.example");
-        assert_ne!(agent_update["type"], "message_update");
+        assert!(strict_rx.try_recv().is_err(), "an agent that missed the inbound must miss its edit");
         let update = ui_rx.try_recv().expect("changed edits must reach UI sockets");
         assert_eq!(update["type"], "message_update");
         assert_eq!(update["message"]["id"], mid);

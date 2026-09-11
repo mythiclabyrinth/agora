@@ -224,8 +224,9 @@ def make_bridge(peer_agents=""):
     instance.busy = set()
     instance.pending_turns = {}
     instance.pending_updates = {}
-    instance.pending_deletes = set()
-    instance.deleted_thread_roots = set()
+    instance.pending_deletes = {}
+    instance.deleted_thread_roots = {}
+    instance.active_message_ids = set()
     instance.stop_requested = set()
     instance.bindings = {}
     instance.set_reaction = Mock()
@@ -320,6 +321,28 @@ class PeerPromptTests(unittest.TestCase):
 
 
 class PeerBusyTests(unittest.TestCase):
+    def test_slash_turn_is_claimed_as_its_own_batch(self):
+        instance = make_bridge()
+        instance.pending_turns = {"c1": [
+            {"frame": {}, "text": "one"}, {"frame": {}, "text": "/compact"},
+            {"frame": {}, "text": "two"},
+        ]}
+        self.assertEqual([e["text"] for e in instance._claim_pending_turns("c1")], ["one"])
+        self.assertEqual([e["text"] for e in instance._claim_pending_turns("c1")], ["/compact"])
+        self.assertEqual([e["text"] for e in instance._claim_pending_turns("c1")], ["two"])
+
+    def test_tombstones_evict_oldest_and_claimed_controls_are_ignored(self):
+        instance = make_bridge()
+        for message_id in range(101):
+            instance.handle_inbound_control({"type": "inbound_delete", "channel_id": "c1",
+                                             "message_id": message_id, "thread_id": 1})
+        self.assertNotIn(0, instance.pending_deletes)
+        self.assertIn(100, instance.pending_deletes)
+        instance.active_message_ids.add(200)
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 200, "text": "changed"})
+        self.assertNotIn(200, instance.pending_updates)
+
     def test_stop_drops_queued_turns_and_reactions(self):
         instance = make_bridge()
         proc = Mock(returncode=None)
@@ -347,6 +370,7 @@ class PeerBusyTests(unittest.TestCase):
     def test_delete_thread_root_and_control_before_enqueue(self):
         instance = make_bridge()
         instance.pending_turns = {"c1:42": [{"frame": {"channel_id": "c1", "thread_id": 42, "message_id": 44}, "text": "reply"}]}
+        instance.active_message_ids.add(42)
         instance.handle_inbound_control({"type": "inbound_delete", "channel_id": "c1", "message_id": 42, "thread_id": None})
         self.assertNotIn("c1:42", instance.pending_turns)
         instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1", "message_id": 7, "text": "@cursor-cli latest"})
@@ -425,12 +449,13 @@ class OutboundAttachmentTests(unittest.TestCase):
         self.assertEqual(instance.post.call_args.args[1], "(empty response)")
 
     def test_provider_error_and_stop_do_not_mark_message_complete(self):
-        for reply in ["(agent error) denied", "Stopped."]:
+        for reply in ["(agent error) denied", bridge.RunStopped()]:
             instance = make_bridge()
             del instance.forward_to_agent
             instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
             instance.typing = Mock()
-            instance.run_agent = AsyncMock(return_value=reply)
+            instance.run_agent = (AsyncMock(side_effect=reply) if isinstance(reply, Exception)
+                                  else AsyncMock(return_value=reply))
             frame = {"channel_id": "c1", "message_id": 1}
             asyncio.run(instance.forward_to_agent("c1", frame, "first"))
             self.assertFalse(any(c.args[1] == "✅" for c in instance.set_reaction.call_args_list))
