@@ -100,6 +100,17 @@ OpenClaw wrapper, a shell script, whatever:
  "text": "hey @Claw", "author": {"id": "me", "name": "me", "type": "user"},
  "mentioned": true, "any_mention": true, "require_agent": false, "attachments": []}
 
+// Human edits and deletes arrive as control frames rather than fresh inbound
+// turns. A bridge may update or remove matching queued work; it must ignore a
+// control frame once that message has started. Routing is fixed at send time,
+// so editing an @mention does not transfer work between agents. Deleting a
+// thread root also deletes its replies, so discard queued entries whose
+// thread_id equals the deleted root message_id.
+{"type": "inbound_update", "agent_id": "claw-1", "channel_id": "...",
+ "thread_id": null, "message_id": 123, "text": "corrected request", "edited_at": 1700000000}
+{"type": "inbound_delete", "agent_id": "claw-1", "channel_id": "...",
+ "thread_id": null, "message_id": 123}
+
 // Untagged thread reply with the composer's require-agent toggle on: every
 // member agent still receives the frame (so they can buffer), but
 // `any_mention` is true and nobody is `mentioned`, so reply policies stay silent.

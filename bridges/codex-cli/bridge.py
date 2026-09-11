@@ -55,6 +55,7 @@ TAIL_BYTES = 256 * 1024  # how much of a rollout .jsonl to scan for the last pro
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
+MAX_QUEUED_TURNS = 20
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -618,6 +619,10 @@ class Bridge:
         self.bindings: dict[str, dict] = self._load_state()
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
         self.busy: set[str] = set()
+        self.pending_turns: dict[str, list[dict]] = {}
+        self.pending_updates: dict[int, str] = {}
+        self.pending_deletes: set[int] = set()
+        self.deleted_thread_roots: set[int] = set()
         # In-flight lifecycle reaction per inbound message id, so a new stage
         # (👀 → ✅) replaces the previous emoji instead of stacking.
         self._reactions: dict[int, str] = {}
@@ -808,6 +813,82 @@ class Bridge:
             + text
         )
 
+    def handle_inbound_control(self, frame: dict) -> None:
+        """Apply an edit/delete only to work that has not been claimed."""
+        message_id = frame.get("message_id")
+        if not isinstance(message_id, int):
+            return
+        kind = frame.get("type")
+        channel_id = frame.get("channel_id")
+        found = False
+        for key, entries in list(self.pending_turns.items()):
+            if not (key == channel_id or key.startswith(f"{channel_id}:")):
+                continue
+            if kind == "inbound_update":
+                for entry in entries:
+                    if entry["frame"].get("message_id") == message_id:
+                        entry["text"] = self._strip_mention(str(frame.get("text") or ""))
+                        found = True
+            elif kind == "inbound_delete":
+                found = found or any(
+                    e["frame"].get("message_id") == message_id for e in entries
+                )
+                kept = [e for e in entries if e["frame"].get("message_id") != message_id]
+                if frame.get("thread_id") is None and key == f"{channel_id}:{message_id}":
+                    found = found or bool(entries)
+                    kept = []
+                if kept:
+                    self.pending_turns[key] = kept
+                else:
+                    self.pending_turns.pop(key, None)
+        # The socket pump schedules inbound handlers independently. Retain a
+        # small tombstone when a control frame wins that scheduling race.
+        if not found and kind == "inbound_update":
+            self.pending_updates[message_id] = self._strip_mention(str(frame.get("text") or ""))
+            if len(self.pending_updates) > 100:
+                self.pending_updates.pop(next(iter(self.pending_updates)))
+        elif kind == "inbound_delete":
+            self.pending_deletes.add(message_id)
+            if frame.get("thread_id") is None:
+                self.deleted_thread_roots.add(message_id)
+            while len(self.pending_deletes) > 100:
+                self.pending_deletes.pop()
+            while len(self.deleted_thread_roots) > 100:
+                self.deleted_thread_roots.pop()
+
+    def _pending_entry(self, frame: dict, text: str) -> dict | None:
+        message_id = frame.get("message_id")
+        thread_id = frame.get("thread_id")
+        if message_id in self.pending_deletes or thread_id in self.deleted_thread_roots:
+            self.clear_reaction(frame)
+            return None
+        if isinstance(message_id, int):
+            text = self.pending_updates.pop(message_id, text)
+        return {"frame": frame, "text": text}
+
+    @staticmethod
+    def _coalesce_turns(entries: list[dict]) -> tuple[dict, str]:
+        """Build one ordered prompt/frame from all turns claimed together."""
+        frame = dict(entries[-1]["frame"])
+        frame["attachments"] = [
+            attachment
+            for entry in entries
+            for attachment in (entry["frame"].get("attachments") or [])
+        ]
+        if len(entries) == 1:
+            return frame, entries[0]["text"]
+        blocks = []
+        for entry in entries:
+            source = entry["frame"]
+            author = (source.get("author") or {}).get("name") or "user"
+            message_id = source.get("message_id") or "unknown"
+            blocks.append(f"[Message {message_id} from {author}]\n{entry['text']}")
+        return frame, (
+            "[Queued follow-up messages, in arrival order. Address every message:]\n\n"
+            + "\n\n".join(blocks)
+            + "\n\n[End queued follow-up messages.]"
+        )
+
     def _peer_prompt(self, frame: dict, text: str) -> str:
         """Wrap an allowlisted peer agent's message in a relay note.
 
@@ -872,15 +953,13 @@ class Bridge:
         if author.get("type") != "user" and not from_peer:
             self._buffer_context(key, frame)
             return
-        self.set_reaction(frame, "👀")
         if from_peer:
             text = self._strip_mention(frame.get("text") or "")
             if not text and not (frame.get("attachments") or []):
                 self.clear_reaction(frame)
                 return
-            if await self.forward_to_codex(
-                    key, frame, self._peer_prompt(frame, text), from_peer=True):
-                self.set_reaction(frame, "✅", remember=False)
+            await self.forward_to_codex(
+                key, frame, self._peer_prompt(frame, text), from_peer=True)
             return
         # Respond only when addressed: we're @mentioned, or no agent was tagged
         # at all (open floor). Otherwise someone else was tagged — stay silent
@@ -898,6 +977,10 @@ class Bridge:
             return
         cmd, _, rest = text.partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
+        if not cmd.startswith("/"):
+            await self.forward_to_codex(key, frame, text)
+            return
+        self.set_reaction(frame, "👀")
         if cmd == "/commands":
             self.post(frame, HELP)
         elif cmd == "/sessions":
@@ -924,7 +1007,9 @@ class Bridge:
         elif cmd == "/status":
             self.post(frame, self._cmd_status(key))
         else:
+            # Unknown slash commands are Codex turns, not bridge commands.
             await self.forward_to_codex(key, frame, text)
+            return
         self.set_reaction(frame, "✅", remember=False)
 
     # ---------------------------------------------------------- commands
@@ -1226,12 +1311,16 @@ class Bridge:
         return "Unknown option. Usage: /tldr <on | off | default>"
 
     def _cmd_stop(self, key: str) -> str:
+        queued = self.pending_turns.pop(key, [])
+        for entry in queued:
+            self.clear_reaction(entry["frame"])
         proc = self.procs.get(key)
         if not proc or proc.returncode is not None:
-            return "Nothing running here."
+            return f"Removed {len(queued)} queued message(s)." if queued else "Nothing running here."
         self.stop_requested.add(key)
         proc.kill()
-        return "Stopping the current run…"
+        suffix = f" and removed {len(queued)} queued message(s)" if queued else ""
+        return f"Stopping the current run{suffix}…"
 
     def _cmd_status(self, key: str) -> str:
         b = self.bindings.get(key)
@@ -1254,11 +1343,12 @@ class Bridge:
     async def forward_to_codex(
         self, key: str, frame: dict, text: str, from_peer: bool = False
     ) -> bool:
-        """Run Codex on *text*. Returns False only when the turn was silently
-        buffered (busy peer turn) so the caller skips the ✅ reaction."""
+        """Run now or enqueue behind the active turn for this conversation."""
         binding = self.bindings.get(key)
         if not binding:
+            self.set_reaction(frame, "👀")
             self.post(frame, "No session bound here yet. Run /sessions then /use <n>.")
+            self.set_reaction(frame, "✅", remember=False)
             return True
         if key in self.busy:
             if from_peer:
@@ -1267,29 +1357,61 @@ class Bridge:
                 self._buffer_context(key, frame)
                 self.clear_reaction(frame)
                 return False
-            self.post(frame, "Still working on the previous message — try again when it's done.")
-            return True
+            if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
+                self.clear_reaction(frame)
+                self.post(frame, "Queue is full (20 messages). Delete or wait for queued work to start.")
+                return False
+            entry = self._pending_entry(frame, text)
+            if entry is None:
+                return False
+            self.pending_turns.setdefault(key, []).append(entry)
+            self.set_reaction(frame, "⏳")
+            return False
+        entry = self._pending_entry(frame, text)
+        if entry is None:
+            return False
         self.busy.add(key)
         self.typing(frame, True)
+        entries = [entry]
         try:
-            # Catch Codex up on anything we heard but stayed silent on — but
-            # never prepend context onto a bare slash-command turn, which must
-            # reach Codex verbatim.
-            if not text.lstrip().startswith("/"):
-                text = self._flush_context(key, text)
-            reply = await self.run_codex(key, frame, binding, text)
-            reply, attachments, notices = self._split_outbound_attachments(
-                reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
-            body, tldr = self._split_tldr(
-                reply, self._tldr_enabled(binding), self.tldr_min_chars)
-            if notices:
-                body = (body + "\n\n" if body else "") + "\n".join(notices)
-            if not body and not attachments:
-                body = "(empty response)"
-            self.post(frame, body, tldr if body else None, attachments)
-        except Exception as e:  # degrade to a chat message, never crash the loop
-            log(f"codex run failed: {e!r}")
-            self.post(frame, f"Codex run failed: {e}")
+            while entries:
+                binding = self.bindings.get(key)
+                batch_frame, batch_text = self._coalesce_turns(entries)
+                for entry in entries:
+                    self.set_reaction(entry["frame"], "👀")
+                if not binding:
+                    self.post(batch_frame, "No session bound here. Run /sessions then /use <n>.")
+                    for entry in entries:
+                        self.clear_reaction(entry["frame"])
+                    entries = self.pending_turns.pop(key, [])
+                    continue
+                try:
+                    if not batch_text.lstrip().startswith("/"):
+                        batch_text = self._flush_context(key, batch_text)
+                    reply = await self.run_codex(key, batch_frame, binding, batch_text)
+                    if reply == "Stopped." or reply.startswith("(codex error)"):
+                        self.post(batch_frame, reply)
+                        for entry in entries:
+                            self.clear_reaction(entry["frame"])
+                        entries = self.pending_turns.pop(key, [])
+                        continue
+                    reply, attachments, notices = self._split_outbound_attachments(
+                        reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
+                    body, tldr = self._split_tldr(
+                        reply, self._tldr_enabled(binding), self.tldr_min_chars)
+                    if notices:
+                        body = (body + "\n\n" if body else "") + "\n".join(notices)
+                    if not body and not attachments:
+                        body = "(empty response)"
+                    self.post(batch_frame, body, tldr if body else None, attachments)
+                    for entry in entries:
+                        self.set_reaction(entry["frame"], "✅", remember=False)
+                except Exception as e:  # degrade to chat, but never claim success
+                    log(f"codex run failed: {e!r}")
+                    self.post(batch_frame, f"Codex run failed: {e}")
+                    for entry in entries:
+                        self.clear_reaction(entry["frame"])
+                entries = self.pending_turns.pop(key, [])
         finally:
             self.busy.discard(key)
             self.typing(frame, False)
@@ -1519,7 +1641,8 @@ class Bridge:
                 raise RuntimeError(stderr[-500:] or f"codex exited {proc.returncode} with no result")
             # Resume keeps the thread id, but a fresh session mints one; track
             # it (successful runs only) so follow-ups continue the conversation.
-            if new_session_id and new_session_id != binding.get("session_id"):
+            if (new_session_id and new_session_id != binding.get("session_id")
+                    and (key not in self.bindings or self.bindings.get(key) is binding)):
                 binding["session_id"] = new_session_id
                 self.bindings[key] = binding
                 self._save_state()
@@ -1621,6 +1744,8 @@ class Bridge:
                 kind = frame.get("type")
                 if kind == "inbound":
                     asyncio.create_task(self.handle_inbound(frame))
+                elif kind in ("inbound_update", "inbound_delete"):
+                    self.handle_inbound_control(frame)
                 elif kind == "usage_refresh":
                     asyncio.create_task(self.refresh_usage())
                 elif kind == "error":

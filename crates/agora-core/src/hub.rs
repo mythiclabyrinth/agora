@@ -880,6 +880,22 @@ impl Hub {
             .collect()
     }
 
+    /// Tell live member agents that a human-authored inbound message changed.
+    /// These are control frames, not fresh inbound turns: bridges use them to
+    /// amend or cancel work that is still queued without waking an idle agent.
+    pub fn notify_inbound_control(&self, channel_id: &str, event: &Value) {
+        let members = self.store.agents_for_channel(channel_id);
+        let targets: Vec<AgentHandle> = {
+            let st = self.state.lock().unwrap();
+            members.iter().filter_map(|id| st.agents.get(id).cloned()).collect()
+        };
+        for handle in targets {
+            let mut frame = event.clone();
+            frame["agent_id"] = json!(handle.agent_id);
+            let _ = handle.tx.send(frame);
+        }
+    }
+
     // ------------------------------------------------------------- sockets
 
     pub fn attach_socket(&self, username: &str, privileged: bool, tx: UnboundedSender<Value>) -> u64 {

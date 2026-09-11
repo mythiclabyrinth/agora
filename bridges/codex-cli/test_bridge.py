@@ -149,6 +149,11 @@ def make_bridge(peer_agents=""):
     instance.context_buffer = {}
     instance.context_buffer_limit = 50
     instance.busy = set()
+    instance.pending_turns = {}
+    instance.pending_updates = {}
+    instance.pending_deletes = set()
+    instance.deleted_thread_roots = set()
+    instance.stop_requested = set()
     instance.bindings = {}
     instance.set_reaction = Mock()
     instance.clear_reaction = Mock()
@@ -242,6 +247,44 @@ class PeerPromptTests(unittest.TestCase):
 
 
 class PeerBusyTests(unittest.TestCase):
+    def test_stop_drops_queued_turns_and_reactions(self):
+        instance = make_bridge()
+        proc = Mock(returncode=None)
+        instance.procs = {"c1": proc}
+        frame = {"channel_id": "c1", "message_id": 2}
+        instance.pending_turns = {"c1": [{"frame": frame, "text": "later"}]}
+        reply = instance._cmd_stop("c1")
+        proc.kill.assert_called_once()
+        self.assertNotIn("c1", instance.pending_turns)
+        instance.clear_reaction.assert_called_with(frame)
+        self.assertIn("removed 1", reply)
+
+    def test_delete_thread_root_and_control_before_enqueue(self):
+        instance = make_bridge()
+        instance.pending_turns = {"c1:42": [
+            {"frame": {"channel_id": "c1", "thread_id": 42, "message_id": 44}, "text": "reply"}
+        ]}
+        instance.handle_inbound_control({"type": "inbound_delete", "channel_id": "c1",
+                                         "message_id": 42, "thread_id": None})
+        self.assertNotIn("c1:42", instance.pending_turns)
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 7, "text": "@codex-cli latest"})
+        entry = instance._pending_entry({"channel_id": "c1", "message_id": 7}, "old")
+        self.assertEqual(entry["text"], "latest")
+
+    def test_queue_cap_posts_notice_without_reaction(self):
+        instance = make_bridge()
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": i}, "text": str(i)} for i in range(bridge.MAX_QUEUED_TURNS)
+        ]}
+        frame = {"channel_id": "c1", "message_id": 99, "author": {"type": "user"}}
+        self.assertFalse(asyncio.run(instance.forward_to_codex("c1", frame, "overflow")))
+        instance.post.assert_called_once()
+        instance.set_reaction.assert_not_called()
+
     def test_busy_peer_turn_buffers_instead_of_noise_post(self):
         instance = make_bridge(peer_agents="claude-cli")
         del instance.forward_to_codex  # exercise the real method
@@ -256,16 +299,36 @@ class PeerBusyTests(unittest.TestCase):
         self.assertIn("c1", instance.context_buffer)
         instance.clear_reaction.assert_called_once()
 
-    def test_busy_human_turn_still_gets_the_notice(self):
+    def test_busy_human_turn_is_queued(self):
         instance = make_bridge()
         del instance.forward_to_codex
         instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
         instance.busy = {"c1"}
         frame = {"channel_id": "c1", "author": {"type": "user", "id": "tom"}}
         handled = asyncio.run(instance.forward_to_codex("c1", frame, "hello"))
-        self.assertTrue(handled)
-        instance.post.assert_called_once()
-        self.assertIn("Still working", instance.post.call_args.args[1])
+        self.assertFalse(handled)
+        instance.post.assert_not_called()
+        self.assertEqual(instance.pending_turns["c1"][0]["text"], "hello")
+        instance.set_reaction.assert_called_with(frame, "⏳")
+
+    def test_queued_turn_can_be_edited_deleted_and_coalesced(self):
+        instance = make_bridge()
+        first = {"channel_id": "c1", "message_id": 10, "author": {"name": "Tom"},
+                 "attachments": [{"id": "a"}]}
+        second = {"channel_id": "c1", "message_id": 11, "author": {"name": "Tom"},
+                  "attachments": [{"id": "b"}]}
+        instance.pending_turns = {"c1": [
+            {"frame": first, "text": "old"}, {"frame": second, "text": "second"},
+        ]}
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 10, "text": "new"})
+        frame, prompt = instance._coalesce_turns(instance.pending_turns["c1"])
+        self.assertIn("new", prompt)
+        self.assertIn("second", prompt)
+        self.assertEqual(frame["attachments"], [{"id": "a"}, {"id": "b"}])
+        instance.handle_inbound_control({"type": "inbound_delete", "channel_id": "c1",
+                                         "message_id": 10, "thread_id": None})
+        self.assertEqual([e["frame"]["message_id"] for e in instance.pending_turns["c1"]], [11])
 
 
 class PromptSuffixTests(unittest.TestCase):
@@ -298,6 +361,55 @@ class OutboundAttachmentTests(unittest.TestCase):
         instance.max_attachment_bytes = 10 * 1024 * 1024
         asyncio.run(instance.forward_to_codex("c1", {"channel_id": "c1"}, "hello"))
         self.assertEqual(instance.post.call_args.args[1], "(empty response)")
+
+    def test_active_turn_drains_one_coalesced_followup_batch(self):
+        instance = make_bridge()
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.typing = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        calls = 0
+
+        async def run(_key, _frame, _binding, prompt):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                instance.pending_turns["c1"] = [
+                    {"frame": {"channel_id": "c1", "message_id": 2,
+                               "author": {"name": "Tom"}}, "text": "second"},
+                    {"frame": {"channel_id": "c1", "message_id": 3,
+                               "author": {"name": "Tom"}}, "text": "third"},
+                ]
+                instance.bindings["c1"] = {"cwd": "/new", "session_id": "s2"}
+            else:
+                self.assertEqual(_binding["cwd"], "/new")
+                self.assertIn("Message 2", prompt)
+                self.assertIn("second", prompt)
+                self.assertIn("Message 3", prompt)
+                self.assertIn("third", prompt)
+            return f"reply {calls}"
+
+        instance.run_codex = run
+        frame = {"channel_id": "c1", "message_id": 1, "author": {"name": "Tom"}}
+        asyncio.run(instance.forward_to_codex("c1", frame, "first"))
+        self.assertEqual(calls, 2)
+        self.assertEqual(instance.post.call_count, 2)
+        self.assertNotIn("c1", instance.busy)
+
+    def test_provider_error_and_stop_do_not_mark_message_complete(self):
+        for reply in ["(codex error) denied", "Stopped."]:
+            instance = make_bridge()
+            del instance.forward_to_codex
+            instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+            instance.typing = Mock()
+            instance.run_codex = AsyncMock(return_value=reply)
+            frame = {"channel_id": "c1", "message_id": 1}
+            asyncio.run(instance.forward_to_codex("c1", frame, "first"))
+            self.assertFalse(any(c.args[1] == "✅" for c in instance.set_reaction.call_args_list))
+            instance.clear_reaction.assert_called_with(frame)
 
     def test_extracts_image_and_reports_missing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
