@@ -7330,9 +7330,9 @@ mod tests {
         let edited = edit_message(
             State(state.clone()), Path((cid.clone(), mid)), q(),
             session_headers(&state, "ana"),
-            Json(json!({"text": "new @mal phrase https://keep.example"})),
+            Json(json!({"text": "new @mal @strict phrase https://keep.example"})),
         ).await.unwrap().0;
-        assert_eq!(edited["text"], "new @mal phrase https://keep.example");
+        assert_eq!(edited["text"], "new @mal @strict phrase https://keep.example");
         assert!(edited["meta"]["edited_at"].as_f64().is_some());
         assert_eq!(edited["meta"]["unfurls"], json!([
             {"url": "https://keep.example", "title": "Keep"}
@@ -7340,8 +7340,9 @@ mod tests {
         let agent_update = rx.try_recv().expect("member agents receive the edit control");
         assert_eq!(agent_update["type"], "inbound_update");
         assert_eq!(agent_update["message_id"], mid);
-        assert_eq!(agent_update["text"], "new @mal phrase https://keep.example");
-        assert!(strict_rx.try_recv().is_err(), "an agent that missed the inbound must miss its edit");
+        assert_eq!(agent_update["text"], "new @mal @strict phrase https://keep.example");
+        assert!(strict_rx.try_recv().is_err(),
+            "an @mention added by an edit must not summon a new agent");
         let update = ui_rx.try_recv().expect("changed edits must reach UI sockets");
         assert_eq!(update["type"], "message_update");
         assert_eq!(update["message"]["id"], mid);
@@ -7353,7 +7354,7 @@ mod tests {
         let same = edit_message(
             State(state.clone()), Path((cid.clone(), mid)), q(),
             session_headers(&state, "ana"),
-            Json(json!({"text": "  new @mal phrase https://keep.example  "})),
+            Json(json!({"text": "  new @mal @strict phrase https://keep.example  "})),
         ).await.unwrap().0;
         assert_eq!(same["meta"]["edited_at"], stamp);
         assert!(ui_rx.try_recv().is_err(), "no-op edits must not broadcast");

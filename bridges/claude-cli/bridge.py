@@ -979,8 +979,17 @@ class Bridge:
         if queue[0]["text"].lstrip().startswith("/"):
             batch, rest = queue[:1], queue[1:]
         else:
-            slash = next((i for i, e in enumerate(queue) if e["text"].lstrip().startswith("/")), len(queue))
-            batch, rest = queue[:slash], queue[slash:]
+            batch = []
+            attachment_count = 0
+            for entry in queue:
+                if entry["text"].lstrip().startswith("/"):
+                    break
+                entry_attachments = len(entry["frame"].get("attachments") or [])
+                if batch and attachment_count + entry_attachments > MAX_ATTACHMENTS:
+                    break
+                batch.append(entry)
+                attachment_count += entry_attachments
+            rest = queue[len(batch):]
         if rest:
             self.pending_turns[key] = rest
         if len(rest) < MAX_QUEUED_TURNS:
@@ -1495,7 +1504,7 @@ class Bridge:
                 self.clear_reaction(frame)
                 return False
             if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
-                self.clear_reaction(frame)
+                self.set_reaction(frame, "🚫", remember=False)
                 if key not in self.queue_full_notified:
                     self.queue_full_notified.add(key)
                     self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). This message was not accepted; resend it after queued work starts.")
@@ -1509,13 +1518,16 @@ class Bridge:
         entry = self._pending_entry(frame, text)
         if entry is None:
             return False
+        self.pending_turns.setdefault(key, []).append(entry)
         self.busy.add(key)
         self.typing(frame, True)
-        entries = [entry]
+        entries = self._claim_pending_turns(key)
         try:
             while entries:
                 if key in self.stop_requested:
                     self.stop_requested.discard(key)
+                    for queued in entries:
+                        self.clear_reaction(queued["frame"])
                     break
                 active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}
                 self.active_message_ids.update(active_ids)
@@ -1837,11 +1849,6 @@ class Bridge:
                     self._cancel_perm(oid, "The run ended before a decision.")
                 if perm_tasks:
                     await asyncio.gather(*perm_tasks, return_exceptions=True)
-            if key in self.stopped_processes:
-                self.stopped_processes.discard(key)
-                self.stop_requested.discard(key)
-                raise RunStopped
-            self.stop_requested.discard(key)
             if result_text is None:
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
                 raise RuntimeError(stderr[-500:] or f"claude exited {proc.returncode} with no result")
@@ -1849,6 +1856,11 @@ class Bridge:
         finally:
             if tmpdir:
                 shutil.rmtree(tmpdir, ignore_errors=True)
+            was_stopped = key in self.stopped_processes
+            self.stop_requested.discard(key)
+            self.stopped_processes.discard(key)
+            if was_stopped:
+                raise RunStopped
 
 
     @staticmethod

@@ -419,7 +419,7 @@ class PeerBusyTests(unittest.TestCase):
         self.assertEqual(instance.pending_turns["c1"][0]["text"], "hello")
         instance.set_reaction.assert_called_with(frame, "⏳")
 
-    def test_queue_cap_posts_notice_without_reaction(self):
+    def test_queue_cap_posts_one_notice_and_rejects_each_message(self):
         instance = make_bridge()
         del instance.forward_to_agent
         instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
@@ -432,16 +432,44 @@ class PeerBusyTests(unittest.TestCase):
         self.assertFalse(asyncio.run(instance.forward_to_agent("c1", frame, "overflow again")))
         instance.post.assert_called_once()
         self.assertIn("not accepted", instance.post.call_args.args[1])
-        instance.set_reaction.assert_not_called()
+        self.assertEqual(instance.set_reaction.call_count, 2)
+        instance.set_reaction.assert_called_with(frame, "🚫", remember=False)
 
     def test_coalescing_caps_attachments_and_names_omissions(self):
         instance = make_bridge()
         entries = [{"frame": {"message_id": i, "attachments": [{"id": f"file-{i}"}]},
                     "text": str(i)} for i in range(bridge.MAX_ATTACHMENTS + 2)]
-        frame, prompt = instance._coalesce_turns(entries)
+        instance.pending_turns = {"c1": entries}
+        first = instance._claim_pending_turns("c1")
+        self.assertEqual(len(first), bridge.MAX_ATTACHMENTS)
+        self.assertEqual(len(instance.pending_turns["c1"]), 2)
+        frame, prompt = instance._coalesce_turns(first)
         self.assertEqual(len(frame["attachments"]), bridge.MAX_ATTACHMENTS)
-        self.assertIn("file-5", prompt)
-        self.assertIn("file-6", prompt)
+        self.assertNotIn("omitted", prompt)
+        oversized = [{"frame": {"message_id": 9, "attachments": [
+            {"id": f"single-{i}"} for i in range(bridge.MAX_ATTACHMENTS + 1)]}, "text": "one"}]
+        _, prompt = instance._coalesce_turns(oversized)
+        self.assertIn("single-5", prompt)
+
+    def test_idle_fast_path_keeps_existing_backlog_fifo(self):
+        instance = make_bridge()
+        del instance.forward_to_agent
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.pending_turns = {"c1": [{"frame": {"channel_id": "c1", "message_id": 1,
+                                                       "author": {"name": "Tom"}}, "text": "older"}]}
+        instance.typing = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        prompts = []
+        async def run(_key, _frame, _binding, prompt):
+            prompts.append(prompt)
+            return "done"
+        instance.run_agent = run
+        frame = {"channel_id": "c1", "message_id": 2, "author": {"name": "Tom"}}
+        asyncio.run(instance.forward_to_agent("c1", frame, "newer"))
+        self.assertLess(prompts[0].index("older"), prompts[0].index("newer"))
 
     def test_edit_preserves_thread_context_prefix(self):
         instance = make_bridge()
@@ -468,6 +496,26 @@ class PromptSuffixTests(unittest.TestCase):
 
 
 class OutboundAttachmentTests(unittest.TestCase):
+    def test_stop_flags_clear_when_run_raises(self):
+        instance = make_bridge()
+        instance.agent_bin = "agent"
+        instance.default_mode = "agent"
+        instance.default_model = None
+        instance.disable_sandbox = False
+        instance.base_agent_args = []
+        instance._stage_attachments = Mock(return_value=("prompt", [], None))
+        instance._prompt_suffixes = Mock(return_value="")
+        instance.stopped_processes = {"c1"}
+        instance.stop_requested = set()
+        with patch.object(bridge.asyncio, "create_subprocess_exec",
+                          AsyncMock(side_effect=RuntimeError("spawn failed"))):
+            with self.assertRaises(bridge.RunStopped):
+                asyncio.run(instance.run_agent("c1", {"channel_id": "c1"}, {"cwd": "/tmp"}, "x"))
+            with self.assertRaisesRegex(RuntimeError, "spawn failed"):
+                asyncio.run(instance.run_agent("c1", {"channel_id": "c1"}, {"cwd": "/tmp"}, "x"))
+        self.assertFalse(instance.stop_requested)
+        self.assertFalse(instance.stopped_processes)
+
     def test_malformed_attachment_limit_env_falls_back(self):
         with patch.dict("os.environ", {"AGORA_MAX_FILE_MB": "bad"}):
             self.assertEqual(bridge.parse_positive_int("bad", 10), 10)
