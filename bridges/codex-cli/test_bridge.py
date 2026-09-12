@@ -145,6 +145,9 @@ def make_bridge(peer_agents=""):
     instance = bridge.Bridge.__new__(bridge.Bridge)
     instance.agent_id = "codex-cli"
     instance.agent_name = "Codex"
+    instance.accounts = bridge.parse_accounts("")
+    instance.account = bridge.DEFAULT_ACCOUNT
+    instance.account_epoch = 0
     instance.peer_agents = bridge.parse_peer_agents(peer_agents)
     instance.context_buffer = {}
     instance.context_buffer_limit = 50
@@ -578,6 +581,9 @@ class UsageTests(unittest.TestCase):
     def test_refresh_reads_rollouts_off_the_event_loop(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.agent_id = "codex-cli"
+        instance.accounts = {"default": Path("/home/u/.codex")}
+        instance.account = "default"
+        instance.account_epoch = 0
         instance.send = Mock()
         usage = {
             "provider": "codex", "availability": "available", "captured_at": 10,
@@ -585,8 +591,35 @@ class UsageTests(unittest.TestCase):
         }
         with patch.object(bridge.asyncio, "to_thread", new=AsyncMock(return_value=usage)) as to_thread:
             asyncio.run(instance.refresh_usage("thread-1"))
-        to_thread.assert_awaited_once_with(bridge.read_codex_usage, "thread-1")
+        to_thread.assert_awaited_once_with(
+            bridge.read_codex_usage, "thread-1", Path("/home/u/.codex/sessions")
+        )
         instance.send.assert_called_once_with(instance.last_usage_frame)
+
+    def test_usage_reads_the_active_accounts_sessions_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, percent in (("one", 91.0), ("two", 3.0)):
+                path = root / name / "sessions" / "2026" / "09" / "12" / "rollout-x-t1.jsonl"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps({"payload": {"type": "token_count", "rate_limits": {
+                    "primary": {"used_percent": percent, "window_minutes": 10080},
+                }}}) + "\n")
+            drained = bridge.read_codex_usage("t1", root / "one" / "sessions")
+            fresh = bridge.read_codex_usage("t1", root / "two" / "sessions")
+        self.assertEqual(drained["windows"][0]["used_percent"], 91.0)
+        self.assertEqual(fresh["windows"][0]["used_percent"], 3.0)
+
+    def test_clear_usage_blanks_the_panel_with_an_unavailable_snapshot(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "codex-cli"
+        instance.last_usage_frame = {"type": "usage_update", "windows": [{"used_percent": 100}]}
+        instance.send = Mock()
+        instance.clear_usage()
+        frame = instance.send.call_args[0][0]
+        self.assertIsNone(instance.last_usage_frame)
+        self.assertEqual(frame["availability"], "unavailable")
+        self.assertEqual(frame["windows"], [])
 
     def test_rollout_rate_limits_keep_percentage_units_and_duration_labels(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -609,6 +642,336 @@ class UsageTests(unittest.TestCase):
     def test_rollout_without_rate_limits_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(bridge, "CODEX_SESSIONS", Path(tmp)):
             self.assertIsNone(bridge.read_codex_usage())
+
+
+def no_api_key():
+    """Drop OPENAI_API_KEY for tests about the auth.json-based login check.
+
+    account_login_problem() treats an environment key as authentication for any
+    home, so a developer machine that exports one would otherwise mask these.
+    """
+    env = {k: v for k, v in bridge.os.environ.items() if k != "OPENAI_API_KEY"}
+    return patch.dict(bridge.os.environ, env, clear=True)
+
+
+def make_account_bridge(tmp, raw_accounts, logged_in=("a", "b"), bindings=None):
+    """A Bridge wired for account tests, with real home dirs on disk."""
+    instance = bridge.Bridge.__new__(bridge.Bridge)
+    instance.accounts = bridge.parse_accounts(raw_accounts)
+    for name, home in instance.accounts.items():
+        home.mkdir(parents=True, exist_ok=True)
+        if name in logged_in:  # others exist but hold no credentials
+            (home / "auth.json").write_text('{"auth_mode": "chatgpt"}')
+    instance.account = next(iter(instance.accounts))
+    instance.account_epoch = 0
+    instance.agent_id = "codex-cli"
+    instance.state_file = Path(tmp) / "state.json"
+    instance.bindings = bindings if bindings is not None else {}
+    instance.listings = {"c1": [{"session_id": "old"}]}
+    instance.busy = set()
+    instance.send = Mock()
+    return instance
+
+
+class AccountParsingTests(unittest.TestCase):
+    def test_empty_config_is_the_single_implicit_default_account(self):
+        accounts = bridge.parse_accounts("")
+        self.assertEqual(list(accounts), [bridge.DEFAULT_ACCOUNT])
+        self.assertEqual(accounts[bridge.DEFAULT_ACCOUNT], bridge.default_codex_home())
+
+    def test_pairs_keep_order_and_normalize_name_and_path(self):
+        accounts = bridge.parse_accounts(" Work:~/.codex-work , personal:~/.codex ")
+        self.assertEqual(list(accounts), ["work", "personal"])
+        self.assertEqual(accounts["work"], Path.home().joinpath(".codex-work").resolve())
+
+    def test_malformed_entries_are_rejected(self):
+        for raw in ("work", "work:", ":/tmp/x", "a b:/tmp/x", "w:/tmp/1,w:/tmp/2"):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                bridge.parse_accounts(raw)
+
+    def test_login_problem_detects_missing_home_and_missing_auth(self):
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
+            root = Path(tmp)
+            self.assertIn("does not exist", bridge.account_login_problem(root / "nope"))
+            (root / "empty").mkdir()
+            self.assertIn("not logged in", bridge.account_login_problem(root / "empty"))
+            (root / "empty" / "auth.json").write_text("{}")
+            self.assertIsNone(bridge.account_login_problem(root / "empty"))
+
+    def test_an_environment_api_key_authenticates_a_home_without_auth_json(self):
+        # `codex doctor` in such a home reports "auth is provided by environment"
+        # and status ok, so refusing it would block a working account.
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(bridge.os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            root = Path(tmp)
+            (root / "empty").mkdir()
+            self.assertIsNone(bridge.account_login_problem(root / "empty"))
+            self.assertIsNone(bridge.account_login_problem(root / "never-created"))
+
+    def test_switch_accepts_a_key_only_account(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(bridge.os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b", logged_in=("a",))
+            self.assertIn("Switched from a to b", instance._cmd_switch("b"))
+            self.assertEqual(instance.account, "b")
+
+
+class AccountSwitchTests(unittest.TestCase):
+    def _two(self, tmp, **kw):
+        return make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b", **kw)
+
+    def test_switch_releases_sessions_but_keeps_cwd_and_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._two(tmp, bindings={
+                "c1": {"session_id": "s1", "cwd": "/repo", "model": "gpt-6-astra"},
+                "c2": {"session_id": None, "cwd": "/other", "sandbox": "read-only"},
+            })
+            reply = instance._cmd_switch("b")
+            self.assertEqual(instance.account, "b")
+            self.assertIn("1 bound session(s) released", reply)
+            self.assertIsNone(instance.bindings["c1"]["session_id"])
+            self.assertEqual(instance.bindings["c1"]["cwd"], "/repo")
+            self.assertEqual(instance.bindings["c1"]["model"], "gpt-6-astra")
+            self.assertEqual(instance.bindings["c2"]["sandbox"], "read-only")
+            self.assertEqual(instance.listings, {})
+            saved = json.loads(instance.state_file.read_text())
+        self.assertEqual(saved["account"], "b")
+        self.assertIsNone(saved["bindings"]["c1"]["session_id"])
+
+    def test_switch_refuses_an_account_that_is_not_logged_in(self):
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
+            instance = self._two(tmp, logged_in=("a",))
+            reply = instance._cmd_switch("b")
+            self.assertEqual(instance.account, "a")
+            self.assertIn("not logged in", reply)
+            self.assertIn("codex login", reply)
+            instance.send.assert_not_called()
+
+    def test_switch_refuses_while_a_run_is_in_flight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._two(tmp, bindings={"c1": {"session_id": "s1", "cwd": "/repo"}})
+            instance.busy.add("c1")
+            reply = instance._cmd_switch("b")
+            self.assertEqual(instance.account, "a")
+            self.assertIn("in flight", reply)
+            self.assertEqual(instance.bindings["c1"]["session_id"], "s1")
+
+    def test_unknown_and_current_account_are_no_ops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._two(tmp)
+            self.assertIn("Unknown account", instance._cmd_switch("nope"))
+            self.assertIn("Already on a", instance._cmd_switch("A"))
+            self.assertEqual(instance.account, "a")
+
+    def test_bare_switch_lists_accounts_and_marks_the_active_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            listing = self._two(tmp)._cmd_switch("")
+        self.assertIn("* a", listing)
+        self.assertIn("(active)", listing)
+        self.assertIn("(ready)", listing)
+
+    def test_switch_clears_the_drained_accounts_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._two(tmp)
+            instance._cmd_switch("b")
+            self.assertEqual(instance.send.call_args[0][0]["availability"], "unavailable")
+
+    def test_child_env_pins_codex_home_to_the_active_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._two(tmp)
+            self.assertEqual(instance.child_env()["CODEX_HOME"], str(instance.accounts["a"]))
+            instance._cmd_switch("b")
+            self.assertEqual(instance.child_env()["CODEX_HOME"], str(instance.accounts["b"]))
+            # Absolute, so `cwd=<repo>` on the child cannot re-resolve it.
+            self.assertTrue(Path(instance.child_env()["CODEX_HOME"]).is_absolute())
+
+
+class AccountRaceTests(unittest.TestCase):
+    """A /switch landing mid-await must invalidate work about the old account.
+
+    Inbound frames are dispatched as independent tasks (`handle_inbound` at the
+    recv loop) and `usage_refresh` spawns its own, so these really do interleave.
+    Each test bumps the epoch from inside the patched await to stand in for that.
+    """
+
+    def test_usage_scanned_before_a_switch_is_not_sent_after_it(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "codex-cli"
+        instance.accounts = bridge.parse_accounts("")
+        instance.account, instance.account_epoch = bridge.DEFAULT_ACCOUNT, 0
+        instance.send = Mock()
+        drained = {"provider": "codex", "availability": "available", "captured_at": 10,
+                   "windows": [{"key": "primary", "label": "Weekly", "used_percent": 100.0}]}
+
+        async def scan(*_args):
+            instance.account_epoch += 1  # /switch lands while we walk the rollouts
+            return drained
+
+        with patch.object(bridge.asyncio, "to_thread", new=scan):
+            asyncio.run(instance.refresh_usage("thread-1"))
+        instance.send.assert_not_called()
+
+    def test_usage_is_still_sent_when_no_switch_intervenes(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "codex-cli"
+        instance.accounts = bridge.parse_accounts("")
+        instance.account, instance.account_epoch = bridge.DEFAULT_ACCOUNT, 0
+        instance.send = Mock()
+        usage = {"provider": "codex", "availability": "available", "captured_at": 10,
+                 "windows": [{"key": "primary", "label": "Weekly", "used_percent": 4.0}]}
+        with patch.object(bridge.asyncio, "to_thread", new=AsyncMock(return_value=usage)):
+            asyncio.run(instance.refresh_usage("thread-1"))
+        instance.send.assert_called_once()
+
+    def test_sessions_listed_before_a_switch_is_discarded(self):
+        instance = make_bridge()
+        instance.listings = {}
+        instance.sessions_limit = 10
+        stale = [{"session_id": "old-acct-session", "cwd": "/repo",
+                  "last_prompt": "x", "mtime": 0}]
+
+        async def scan(*_args):
+            instance.account_epoch += 1
+            return stale
+
+        with patch.object(bridge.asyncio, "to_thread", new=scan):
+            asyncio.run(instance.handle_inbound({
+                "channel_id": "c1", "author": {"type": "user", "id": "u1"},
+                "text": "/sessions", "mentioned": True,
+            }))
+        # Nothing cached, so a later `/use 1` cannot reach the old account.
+        self.assertEqual(instance.listings, {})
+        self.assertIn("run /sessions again", instance.post.call_args[0][1])
+
+    def test_use_will_not_bind_a_session_from_the_account_just_left(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b")
+            instance.sessions_limit = 10
+            dispatch_epoch = instance.account_epoch
+            found = {"session_id": "s-from-a", "cwd": "/repo", "last_prompt": "x", "mtime": 0}
+
+            def find(_session_id, _sessions_dir):
+                instance._cmd_switch("b")  # the switch lands during the lookup
+                return found
+
+            with patch.object(bridge, "find_session", new=find):
+                reply = instance._cmd_use("c1", "s-from-a", dispatch_epoch)
+
+            self.assertIn("belongs to the previous account", reply)
+            self.assertNotIn("c1", instance.bindings)
+
+    def test_use_still_binds_when_the_account_held_steady(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b")
+            instance.listings = {"c1": [{"session_id": "s1", "cwd": "/repo",
+                                         "last_prompt": "x", "mtime": 0}]}
+            instance.sessions_limit = 10
+            reply = instance._cmd_use("c1", "1", instance.account_epoch)
+        self.assertIn("Bound to session", reply)
+        self.assertEqual(instance.bindings["c1"]["session_id"], "s1")
+
+    def test_switch_bumps_the_epoch_once_per_successful_switch_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b")
+            instance._cmd_switch("nope")
+            instance._cmd_switch("a")  # already active
+            self.assertEqual(instance.account_epoch, 0)
+            instance._cmd_switch("b")
+            self.assertEqual(instance.account_epoch, 1)
+
+
+class AccountStateFileTests(unittest.TestCase):
+    def _load(self, tmp, payload, raw_accounts=""):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.accounts = bridge.parse_accounts(raw_accounts)
+        instance.account = next(iter(instance.accounts))
+        instance.state_file = Path(tmp) / "state.json"
+        instance.state_file.write_text(json.dumps(payload))
+        instance.bindings = instance._load_state()
+        return instance
+
+    def test_v1_flat_file_loads_as_bindings_and_upgrades_on_save(self):
+        flat = {"agora-6d86:7301": {"session_id": "s1", "cwd": "/repo"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._load(tmp, flat)
+            self.assertEqual(instance.bindings, flat)
+            self.assertEqual(instance.account, bridge.DEFAULT_ACCOUNT)
+            instance._save_state()
+            saved = json.loads(instance.state_file.read_text())
+        self.assertEqual(saved["_v"], 2)
+        self.assertEqual(saved["bindings"], flat)
+
+    def test_v1_file_with_a_channel_named_like_a_v2_key_still_loads_flat(self):
+        flat = {"bindings": {"session_id": "s1", "cwd": "/repo"},
+                "_v": {"session_id": None, "cwd": "/other"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._load(tmp, flat)
+        self.assertEqual(instance.bindings, flat)
+
+    def test_v2_file_restores_the_active_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._load(
+                tmp, {"_v": 2, "account": "b", "bindings": {"c1": {"session_id": None, "cwd": "/r"}}},
+                raw_accounts=f"a:{tmp}/a,b:{tmp}/b",
+            )
+        self.assertEqual(instance.account, "b")
+        self.assertEqual(list(instance.bindings), ["c1"])
+
+    def test_account_dropped_from_config_falls_back_to_the_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._load(
+                tmp, {"_v": 2, "account": "gone", "bindings": {}},
+                raw_accounts=f"a:{tmp}/a,b:{tmp}/b",
+            )
+        self.assertEqual(instance.account, "a")
+
+    def test_unreadable_state_file_is_an_empty_binding_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = bridge.Bridge.__new__(bridge.Bridge)
+            instance.accounts = bridge.parse_accounts("")
+            instance.account = bridge.DEFAULT_ACCOUNT
+            instance.state_file = Path(tmp) / "missing.json"
+            self.assertEqual(instance._load_state(), {})
+
+
+class SingleAccountCompatTests(unittest.TestCase):
+    def test_default_account_home_matches_what_codex_would_pick(self):
+        with patch.dict(bridge.os.environ, {}, clear=False):
+            bridge.os.environ.pop("CODEX_HOME", None)
+            self.assertEqual(bridge.default_codex_home(), Path.home().joinpath(".codex").resolve())
+
+    def test_switch_explains_itself_when_only_one_account_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = make_account_bridge(tmp, f"solo:{tmp}/solo", logged_in=("solo",))
+            reply = instance._cmd_switch("")
+        self.assertIn("One Codex account configured", reply)
+        self.assertIn("CODEX_ACCOUNTS", reply)
+
+    def test_status_omits_the_account_line_for_a_single_account(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.accounts = bridge.parse_accounts("")
+        instance.account = bridge.DEFAULT_ACCOUNT
+        instance.bindings = {"c1": {"session_id": None, "cwd": "/repo"}}
+        instance.busy = set()
+        instance.default_model = "gpt-5.6-sol"
+        instance.default_sandbox = "workspace-write"
+        instance.tldr_default = False
+        status = instance._cmd_status("c1")
+        self.assertNotIn("Account:", status)
+        self.assertIn("Sandbox: workspace-write", status)
+
+    def test_session_helpers_fall_back_to_the_default_sessions_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "2026" / "09" / "12" / "rollout-x-t1.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"payload": {"type": "token_count", "rate_limits": {
+                "primary": {"used_percent": 7.0, "window_minutes": 300},
+            }}}) + "\n")
+            with patch.object(bridge, "CODEX_SESSIONS", root):
+                self.assertEqual(bridge.read_codex_usage()["windows"][0]["used_percent"], 7.0)
+                self.assertEqual(bridge.recent_sessions(5), [])
+                self.assertIsNone(bridge.find_session("t1"))
 
 
 if __name__ == "__main__":

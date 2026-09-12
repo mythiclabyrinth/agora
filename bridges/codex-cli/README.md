@@ -65,6 +65,7 @@ one shows at a time. Messages addressed to another agent have the
 | `/model <astra\|sol\|terra\|luna\|default>` | switch this channel to the named model (`default` resets it to the bridge default, `sol` unless configured otherwise); persists in the binding and is passed as `codex -m` on every run. Astra requires Codex CLI 0.153.0 or newer. |
 | `/sandbox <read-only\|workspace-write\|workspace-git\|full\|bypass\|reset>` | set the sandbox mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CODEX_ALLOW_SANDBOX_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override) |
+| `/switch [account]` | list the configured Codex accounts, or move every channel onto one of them (see [Multiple accounts](#multiple-accounts)) |
 | `/stop` | cancel the run in flight on this channel (kills the `codex` child) |
 | `/status` | show the current binding, model, sandbox mode, TL;DR state, and whether a run is in flight |
 | `/commands` | show this bridge command list |
@@ -177,12 +178,115 @@ the script, so different channels can drive different sessions. While Codex
 works, the bridge streams typing + progress lines (commands run, files edited,
 reasoning snippets) to the channel.
 
+## Multiple accounts
+
+When one ChatGPT subscription is used up, `/switch` moves the bridge onto
+another account that is already signed in on the same machine — no logging out,
+no re-authenticating.
+
+Codex keeps **one login per `CODEX_HOME`** (`codex exec --help`: *"auth still
+uses `CODEX_HOME`"*). So two accounts are simply two home directories, each
+holding its own `auth.json`, both signed in permanently. The bridge only
+chooses which directory the next `codex exec` child sees; it never reads,
+copies or moves your credentials.
+
+### One-time setup on the machine
+
+You log each account in by hand — the bridge cannot do it for you, because
+`codex login` opens a browser and waits for you to pick an account.
+
+1. **Keep your existing login where it is.** `~/.codex` is already signed in to
+   your first account; leave it alone.
+
+2. **Make a home for the second account and log in.** The directory is created
+   for you; `CODEX_HOME` only has to be set for this one command:
+
+   ```sh
+   CODEX_HOME=~/.codex-work codex login
+   ```
+
+   That opens a browser. **Sign in as the *second* account** — if your browser
+   is already logged in as the first one, use the account menu to switch, or
+   open the printed URL in a private window. Verify it landed on the right
+   account, and that the first one is untouched:
+
+   ```sh
+   CODEX_HOME=~/.codex-work codex login status   # second account
+   codex login status                            # first, still signed in
+   ```
+
+3. **Copy over your settings (optional).** The new home starts empty, so your
+   `config.toml` — MCP servers, permission profiles such as `workspace-git`,
+   model defaults — is not there yet. Copy it:
+
+   ```sh
+   cp ~/.codex/config.toml ~/.codex-work/config.toml
+   ```
+
+   Copy rather than symlink if the accounts are on different plans and you want
+   different defaults. If you'd rather keep one file in sync for both, a symlink
+   works: `ln -s ~/.codex/config.toml ~/.codex-work/config.toml`.
+
+4. **Tell the bridge about both.** In `.env`:
+
+   ```sh
+   CODEX_ACCOUNTS=personal:~/.codex,work:~/.codex-work
+   ```
+
+   The first entry is used at startup. Names are what you type in chat, so keep
+   them short and lowercase (letters, digits, `-`, `_`). Restart the bridge; it
+   logs a warning at startup for any account that isn't signed in.
+
+Add a third account by repeating step 2 with another directory and appending it
+to `CODEX_ACCOUNTS`.
+
+### Using it
+
+```
+/switch              list the accounts, marking the active one
+/switch work         move onto "work"
+```
+
+`/switch` is **bridge-wide**, not per channel — there is one active account at a
+time, and every channel uses it. What you need to know:
+
+- **Sessions do not carry over.** Rollouts live inside each `CODEX_HOME`, so a
+  session started on one account cannot be resumed under another. Switching
+  releases every bound session id; the next message in a channel starts a fresh
+  Codex session *in the same directory*, keeping its `/model`, `/sandbox`,
+  `/tldr` and worktree settings. Conversation history does not transfer.
+- **Finish your runs first.** `/switch` refuses while any run is in flight —
+  wait, or `/stop`. A run already started keeps the account it started on.
+- **The target must be signed in.** `/switch` checks for `auth.json` and tells
+  you the exact `codex login` command if it's missing, rather than letting every
+  later run fail. The exception is `OPENAI_API_KEY`: Codex accepts a key from the
+  environment in place of a signed-in home (`codex doctor` reports *"auth is
+  provided by environment"*), and because that applies to every directory
+  equally, no account is reported as logged out while it is set. Note
+  `codex login status` says *"Not logged in"* in that case — it only reports the
+  file-based ChatGPT login, so don't use it to judge a key-only setup.
+- **Usage goes blank until the first run.** Quota counters are also per-home, so
+  the account you just moved to has none yet. The usage panel clears on switch
+  and fills in after the first reply — rather than keeping the drained account's
+  numbers on screen.
+- `/status` shows the active account when more than one is configured.
+
+Unset `CODEX_ACCOUNTS` (the default) and everything behaves exactly as before:
+one implicit account at `$CODEX_HOME` or `~/.codex`.
+
+Be aware that spreading work across several ChatGPT subscriptions to get past
+one account's limits may conflict with OpenAI's terms depending on how those
+accounts are held — a personal plan plus a separate work/business seat is not
+the same situation as two personal plans.
+
 ## Options
 
 Everything is env-overridable (flags take precedence): `AGORA_URL`,
 `AGORA_PAIRING_TOKEN`, `AGENT_ID` / `AGENT_NAME`, `AGENT_AVATAR`, `CODEX_BIN`,
 `CODEX_HOME` (Codex CLI home directory; defaults to `~/.codex` and its
 `sessions` directory supplies account usage snapshots),
+`CODEX_ACCOUNTS` (`name:path` pairs for several signed-in accounts to switch
+between with `/switch` — see [Multiple accounts](#multiple-accounts)),
 `CODEX_SANDBOX` (default sandbox mode, `workspace-write` when unset —
 overridable per channel with `/sandbox`), `CODEX_ARGS` (extra args for every
 run, e.g. `-c` config overrides or `--profile`), `CODEX_MODEL` (default model
