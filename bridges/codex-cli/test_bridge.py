@@ -147,6 +147,7 @@ def make_bridge(peer_agents=""):
     instance.agent_name = "Codex"
     instance.accounts = bridge.parse_accounts("")
     instance.account = bridge.DEFAULT_ACCOUNT
+    instance.account_epoch = 0
     instance.peer_agents = bridge.parse_peer_agents(peer_agents)
     instance.context_buffer = {}
     instance.context_buffer_limit = 50
@@ -582,6 +583,7 @@ class UsageTests(unittest.TestCase):
         instance.agent_id = "codex-cli"
         instance.accounts = {"default": Path("/home/u/.codex")}
         instance.account = "default"
+        instance.account_epoch = 0
         instance.send = Mock()
         usage = {
             "provider": "codex", "availability": "available", "captured_at": 10,
@@ -642,6 +644,16 @@ class UsageTests(unittest.TestCase):
             self.assertIsNone(bridge.read_codex_usage())
 
 
+def no_api_key():
+    """Drop OPENAI_API_KEY for tests about the auth.json-based login check.
+
+    account_login_problem() treats an environment key as authentication for any
+    home, so a developer machine that exports one would otherwise mask these.
+    """
+    env = {k: v for k, v in bridge.os.environ.items() if k != "OPENAI_API_KEY"}
+    return patch.dict(bridge.os.environ, env, clear=True)
+
+
 def make_account_bridge(tmp, raw_accounts, logged_in=("a", "b"), bindings=None):
     """A Bridge wired for account tests, with real home dirs on disk."""
     instance = bridge.Bridge.__new__(bridge.Bridge)
@@ -651,6 +663,7 @@ def make_account_bridge(tmp, raw_accounts, logged_in=("a", "b"), bindings=None):
         if name in logged_in:  # others exist but hold no credentials
             (home / "auth.json").write_text('{"auth_mode": "chatgpt"}')
     instance.account = next(iter(instance.accounts))
+    instance.account_epoch = 0
     instance.agent_id = "codex-cli"
     instance.state_file = Path(tmp) / "state.json"
     instance.bindings = bindings if bindings is not None else {}
@@ -677,13 +690,30 @@ class AccountParsingTests(unittest.TestCase):
                 bridge.parse_accounts(raw)
 
     def test_login_problem_detects_missing_home_and_missing_auth(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
             root = Path(tmp)
             self.assertIn("does not exist", bridge.account_login_problem(root / "nope"))
             (root / "empty").mkdir()
             self.assertIn("not logged in", bridge.account_login_problem(root / "empty"))
             (root / "empty" / "auth.json").write_text("{}")
             self.assertIsNone(bridge.account_login_problem(root / "empty"))
+
+    def test_an_environment_api_key_authenticates_a_home_without_auth_json(self):
+        # `codex doctor` in such a home reports "auth is provided by environment"
+        # and status ok, so refusing it would block a working account.
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(bridge.os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            root = Path(tmp)
+            (root / "empty").mkdir()
+            self.assertIsNone(bridge.account_login_problem(root / "empty"))
+            self.assertIsNone(bridge.account_login_problem(root / "never-created"))
+
+    def test_switch_accepts_a_key_only_account(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(bridge.os.environ, {"OPENAI_API_KEY": "sk-test"}):
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b", logged_in=("a",))
+            self.assertIn("Switched from a to b", instance._cmd_switch("b"))
+            self.assertEqual(instance.account, "b")
 
 
 class AccountSwitchTests(unittest.TestCase):
@@ -709,7 +739,7 @@ class AccountSwitchTests(unittest.TestCase):
         self.assertIsNone(saved["bindings"]["c1"]["session_id"])
 
     def test_switch_refuses_an_account_that_is_not_logged_in(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
             instance = self._two(tmp, logged_in=("a",))
             reply = instance._cmd_switch("b")
             self.assertEqual(instance.account, "a")
@@ -754,6 +784,100 @@ class AccountSwitchTests(unittest.TestCase):
             self.assertEqual(instance.child_env()["CODEX_HOME"], str(instance.accounts["b"]))
             # Absolute, so `cwd=<repo>` on the child cannot re-resolve it.
             self.assertTrue(Path(instance.child_env()["CODEX_HOME"]).is_absolute())
+
+
+class AccountRaceTests(unittest.TestCase):
+    """A /switch landing mid-await must invalidate work about the old account.
+
+    Inbound frames are dispatched as independent tasks (`handle_inbound` at the
+    recv loop) and `usage_refresh` spawns its own, so these really do interleave.
+    Each test bumps the epoch from inside the patched await to stand in for that.
+    """
+
+    def test_usage_scanned_before_a_switch_is_not_sent_after_it(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "codex-cli"
+        instance.accounts = bridge.parse_accounts("")
+        instance.account, instance.account_epoch = bridge.DEFAULT_ACCOUNT, 0
+        instance.send = Mock()
+        drained = {"provider": "codex", "availability": "available", "captured_at": 10,
+                   "windows": [{"key": "primary", "label": "Weekly", "used_percent": 100.0}]}
+
+        async def scan(*_args):
+            instance.account_epoch += 1  # /switch lands while we walk the rollouts
+            return drained
+
+        with patch.object(bridge.asyncio, "to_thread", new=scan):
+            asyncio.run(instance.refresh_usage("thread-1"))
+        instance.send.assert_not_called()
+
+    def test_usage_is_still_sent_when_no_switch_intervenes(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "codex-cli"
+        instance.accounts = bridge.parse_accounts("")
+        instance.account, instance.account_epoch = bridge.DEFAULT_ACCOUNT, 0
+        instance.send = Mock()
+        usage = {"provider": "codex", "availability": "available", "captured_at": 10,
+                 "windows": [{"key": "primary", "label": "Weekly", "used_percent": 4.0}]}
+        with patch.object(bridge.asyncio, "to_thread", new=AsyncMock(return_value=usage)):
+            asyncio.run(instance.refresh_usage("thread-1"))
+        instance.send.assert_called_once()
+
+    def test_sessions_listed_before_a_switch_is_discarded(self):
+        instance = make_bridge()
+        instance.listings = {}
+        instance.sessions_limit = 10
+        stale = [{"session_id": "old-acct-session", "cwd": "/repo",
+                  "last_prompt": "x", "mtime": 0}]
+
+        async def scan(*_args):
+            instance.account_epoch += 1
+            return stale
+
+        with patch.object(bridge.asyncio, "to_thread", new=scan):
+            asyncio.run(instance.handle_inbound({
+                "channel_id": "c1", "author": {"type": "user", "id": "u1"},
+                "text": "/sessions", "mentioned": True,
+            }))
+        # Nothing cached, so a later `/use 1` cannot reach the old account.
+        self.assertEqual(instance.listings, {})
+        self.assertIn("run /sessions again", instance.post.call_args[0][1])
+
+    def test_use_will_not_bind_a_session_from_the_account_just_left(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b")
+            instance.sessions_limit = 10
+            dispatch_epoch = instance.account_epoch
+            found = {"session_id": "s-from-a", "cwd": "/repo", "last_prompt": "x", "mtime": 0}
+
+            def find(_session_id, _sessions_dir):
+                instance._cmd_switch("b")  # the switch lands during the lookup
+                return found
+
+            with patch.object(bridge, "find_session", new=find):
+                reply = instance._cmd_use("c1", "s-from-a", dispatch_epoch)
+
+            self.assertIn("belongs to the previous account", reply)
+            self.assertNotIn("c1", instance.bindings)
+
+    def test_use_still_binds_when_the_account_held_steady(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b")
+            instance.listings = {"c1": [{"session_id": "s1", "cwd": "/repo",
+                                         "last_prompt": "x", "mtime": 0}]}
+            instance.sessions_limit = 10
+            reply = instance._cmd_use("c1", "1", instance.account_epoch)
+        self.assertIn("Bound to session", reply)
+        self.assertEqual(instance.bindings["c1"]["session_id"], "s1")
+
+    def test_switch_bumps_the_epoch_once_per_successful_switch_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b")
+            instance._cmd_switch("nope")
+            instance._cmd_switch("a")  # already active
+            self.assertEqual(instance.account_epoch, 0)
+            instance._cmd_switch("b")
+            self.assertEqual(instance.account_epoch, 1)
 
 
 class AccountStateFileTests(unittest.TestCase):

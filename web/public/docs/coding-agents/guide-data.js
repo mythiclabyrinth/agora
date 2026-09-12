@@ -44,6 +44,7 @@ export const guides = {
     env: [
       ["CODEX_BIN", "Optional", "codex", "Executable name or absolute path."],
       ["CODEX_HOME", "Optional", "~/.codex", "Codex CLI home directory. The bridge reads session rollout files from <CODEX_HOME>/sessions to report account usage."],
+      ["OPENAI_API_KEY", "Optional", "Empty", "Read only to judge whether an account is authenticated. Codex accepts an API key from the environment instead of a signed-in auth.json file, so while this is set the bridge will not report any account in CODEX_ACCOUNTS as logged out. The bridge never sends this anywhere; it is passed through to codex like the rest of the environment."],
       ["CODEX_ACCOUNTS", "Optional", "Empty (the single account in CODEX_HOME)", "Comma-separated name:path pairs for several Codex accounts signed in on this computer, each path its own CODEX_HOME — for example personal:~/.codex,work:~/.codex-work. Switch between them in chat with /switch when one subscription is used up. You sign each account in yourself with CODEX_HOME=<path> codex login; the bridge only selects a directory and never reads or moves credentials. Sessions and usage counters live inside each directory, so bound sessions are released on a switch."],
       ["CODEX_MODEL", "Optional", "sol", "Default model: astra, sol, terra, or luna. /model overrides it per conversation."],
       ["CODEX_SANDBOX", "Optional", "Empty (effective: workspace-write)", "Default sandbox: read-only, workspace-write, workspace-git, danger-full-access, or bypass."],

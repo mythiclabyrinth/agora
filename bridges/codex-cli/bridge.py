@@ -368,7 +368,16 @@ def account_login_problem(home: Path) -> str | None:
     Deliberately cheap and local: an auth.json is what `codex exec` needs, and
     checking for it costs a stat. We do not validate the token itself — that
     would mean a network round-trip on every /switch and on every listing.
+
+    An OPENAI_API_KEY in our own environment authenticates independently of any
+    home: `codex doctor` reports "auth is provided by environment" and runs fine
+    in a directory with no auth.json (and creates the directory if missing).
+    Since it applies to every home equally, no account can be called logged out
+    while it is set — and `codex login status`, which only reports the
+    file-based ChatGPT login, is not the signal to follow here.
     """
+    if os.environ.get("OPENAI_API_KEY"):
+        return None
     if not home.is_dir():
         return f"{home} does not exist"
     if not (home / "auth.json").is_file():
@@ -696,6 +705,13 @@ class Bridge:
         # is the same code path single- and multi-account.
         self.accounts = parse_accounts(args.accounts)
         self.account = next(iter(self.accounts))
+        # Bumped by every /switch. Work that reads the account's CODEX_HOME and
+        # then awaits (usage scans, session listings) captures this first and
+        # drops its result if it no longer matches, so a switch landing mid-flight
+        # cannot be undone by an answer about the account we just left. A counter
+        # rather than the name: switching away and back during one await must
+        # still invalidate, since the directory was re-read in between.
+        self.account_epoch = 0
         self.state_file = Path(args.state_file)
         self.bindings: dict[str, dict] = self._load_state()  # may set self.account
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
@@ -805,7 +821,13 @@ class Bridge:
         self.outbox.put_nowait(frame)
 
     async def refresh_usage(self, thread_id: str | None = None) -> None:
+        epoch = self.account_epoch
         usage = await asyncio.to_thread(read_codex_usage, thread_id, self.sessions_dir)
+        if epoch != self.account_epoch:
+            # /switch landed while we were scanning: this snapshot belongs to the
+            # account we left, and sending it would overwrite clear_usage()'s
+            # blanking frame with the drained account's numbers.
+            return
         if usage:
             self.last_usage_frame = {"type": "usage_update", "agent_id": self.agent_id, **usage}
             self.send(self.last_usage_frame)
@@ -1174,11 +1196,20 @@ class Bridge:
             self.post(frame, HELP)
         elif cmd == "/sessions":
             limit = int(rest) if rest.isdigit() else self.sessions_limit
+            epoch = self.account_epoch
             sessions = await asyncio.to_thread(recent_sessions, limit, self.sessions_dir)
+            if epoch != self.account_epoch:
+                # These rollouts belong to the account /switch just left; keeping
+                # them would re-fill the listing it deliberately cleared, and a
+                # later `/use <n>` would bind a session the new account cannot see.
+                self.post(frame, f"Switched to {self.account} while listing — run /sessions again.")
+                self.set_reaction(frame, "✅", remember=False)
+                return
             self.listings[key] = sessions
             self.post(frame, format_sessions(sessions))
         elif cmd == "/use":
-            self.post(frame, await asyncio.to_thread(self._cmd_use, key, rest))
+            self.post(frame, await asyncio.to_thread(
+                self._cmd_use, key, rest, self.account_epoch))
         elif cmd == "/new":
             self.post(frame, await asyncio.to_thread(self._cmd_new, key, rest))
         elif cmd == "/worktree":
@@ -1215,7 +1246,13 @@ class Bridge:
         self.bindings[key] = binding
         self._save_state()
 
-    def _cmd_use(self, key: str, arg: str) -> str:
+    def _cmd_use(self, key: str, arg: str, epoch: int | None = None) -> str:
+        """Bind a channel to an existing session.
+
+        Runs wholly in a worker thread, so `epoch` carries the active account as
+        of dispatch: a /switch that lands while we scan must not persist a
+        session id from the home we were reading.
+        """
         if not arg:
             return "Usage: /use <n from /sessions | session-id>"
         if arg.isdigit():
@@ -1228,6 +1265,9 @@ class Bridge:
             info = find_session(arg, self.sessions_dir)
             if not info:
                 return f"Session {arg} not found under {self.sessions_dir}."
+        if epoch is not None and epoch != self.account_epoch:
+            return (f"Switched to {self.account} while looking that session up — "
+                    "it belongs to the previous account. Run /sessions again.")
         self._set_binding(key, info["session_id"], info["cwd"])
         prompt = info["last_prompt"][:120]
         return (
@@ -1575,6 +1615,9 @@ class Bridge:
             )
         previous = self.account
         self.account = name
+        # Before dropping anything, so in-flight scans of the old home are already
+        # invalidated by the time they resume.
+        self.account_epoch += 1
         dropped = self._drop_bound_sessions()
         self.clear_usage()
         log(f"account switch: {previous} -> {name} ({home}), dropped {dropped} session(s)")

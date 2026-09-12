@@ -259,7 +259,12 @@ time, and every channel uses it. What you need to know:
   wait, or `/stop`. A run already started keeps the account it started on.
 - **The target must be signed in.** `/switch` checks for `auth.json` and tells
   you the exact `codex login` command if it's missing, rather than letting every
-  later run fail.
+  later run fail. The exception is `OPENAI_API_KEY`: Codex accepts a key from the
+  environment in place of a signed-in home (`codex doctor` reports *"auth is
+  provided by environment"*), and because that applies to every directory
+  equally, no account is reported as logged out while it is set. Note
+  `codex login status` says *"Not logged in"* in that case — it only reports the
+  file-based ChatGPT login, so don't use it to judge a key-only setup.
 - **Usage goes blank until the first run.** Quota counters are also per-home, so
   the account you just moved to has none yet. The usage panel clears on switch
   and fills in after the first reply — rather than keeping the drained account's
