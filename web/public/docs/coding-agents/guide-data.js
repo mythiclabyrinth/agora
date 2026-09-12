@@ -36,6 +36,7 @@ export const guides = {
       ["/model <astra|sol|terra|luna|default>", "Set the model for this conversation. Astra requires Codex CLI 0.153.0 or newer."],
       ["/sandbox <mode>", "Change the sandbox within locally allowed limits."],
       ["/tldr <on|off|default>", "Toggle compact summaries."],
+      ["/switch [account]", "List the configured Codex accounts, or move every conversation onto one of them. Requires CODEX_ACCOUNTS."],
       ["/stop", "Cancel the current run."],
       ["/status", "Show binding and execution settings."],
       ["/commands", "Show the available Agora commands."],
@@ -43,6 +44,7 @@ export const guides = {
     env: [
       ["CODEX_BIN", "Optional", "codex", "Executable name or absolute path."],
       ["CODEX_HOME", "Optional", "~/.codex", "Codex CLI home directory. The bridge reads session rollout files from <CODEX_HOME>/sessions to report account usage."],
+      ["CODEX_ACCOUNTS", "Optional", "Empty (the single account in CODEX_HOME)", "Comma-separated name:path pairs for several Codex accounts signed in on this computer, each path its own CODEX_HOME — for example personal:~/.codex,work:~/.codex-work. Switch between them in chat with /switch when one subscription is used up. You sign each account in yourself with CODEX_HOME=<path> codex login; the bridge only selects a directory and never reads or moves credentials. Sessions and usage counters live inside each directory, so bound sessions are released on a switch."],
       ["CODEX_MODEL", "Optional", "sol", "Default model: astra, sol, terra, or luna. /model overrides it per conversation."],
       ["CODEX_SANDBOX", "Optional", "Empty (effective: workspace-write)", "Default sandbox: read-only, workspace-write, workspace-git, danger-full-access, or bypass."],
       ["CODEX_ARGS", "Optional", "Empty", "Additional arguments appended to every codex invocation. Avoid conflicting sandbox flags."],

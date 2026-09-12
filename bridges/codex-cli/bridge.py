@@ -47,7 +47,19 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("missing dependency: pip install websockets")
 
-CODEX_SESSIONS = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
+
+def default_codex_home() -> Path:
+    """The CODEX_HOME codex itself would pick, absolute.
+
+    Resolved rather than kept verbatim because we hand this to a child process
+    running with `cwd` set to the bound repo: a relative CODEX_HOME inherited
+    from the shell would otherwise mean a different directory in the child.
+    """
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().resolve()
+
+
+DEFAULT_ACCOUNT = "default"
+CODEX_SESSIONS = default_codex_home() / "sessions"
 MAX_POST_CHARS = 8000
 MAX_TLDR_CHARS = 2000  # hub drops a longer tldr; pre-truncate so ours always lands
 PROGRESS_THROTTLE = 2.0  # seconds between progress frames
@@ -71,11 +83,16 @@ class RunStopped(Exception):
     """The active CLI child was cancelled by /stop."""
 
 
-def read_codex_usage(thread_id: str | None = None) -> dict | None:
-    """Read the newest provider quota snapshot Codex persisted locally."""
+def read_codex_usage(thread_id: str | None = None, sessions_dir: Path | None = None) -> dict | None:
+    """Read the newest provider quota snapshot Codex persisted locally.
+
+    `sessions_dir` selects the account's `$CODEX_HOME/sessions`; omitting it
+    falls back to the default home, which is what a single-account bridge uses.
+    """
+    root = sessions_dir or CODEX_SESSIONS
     pattern = f"rollout-*-{thread_id}.jsonl" if thread_id else "rollout-*.jsonl"
     try:
-        paths = sorted(CODEX_SESSIONS.rglob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        paths = sorted(root.rglob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return None
     for path in paths[:20]:
@@ -273,6 +290,7 @@ HELP = """Bridge commands (anything else is sent to the bound Codex session):
 /model <astra|sol|terra|luna|default> - set the model for this channel (codex -m)
 /sandbox <read-only|workspace-write|workspace-git|full|bypass|reset> - set the sandbox mode
 /tldr <on|off|default> - add a toggleable short summary to long replies
+/switch [account] - list Codex accounts, or move every channel onto one
 /stop - cancel the run in flight on this channel
 /status - show the current binding
 /commands - this message"""
@@ -303,6 +321,59 @@ def parse_allowed_roots(raw: str) -> list[Path]:
         except OSError:
             continue
     return roots
+
+
+# ------------------------------------------------------------------- accounts
+#
+# Codex keeps one ChatGPT login per CODEX_HOME, so several accounts coexist on
+# a machine as several home directories — each with its own auth.json, each
+# permanently logged in. Switching accounts is then just picking which home the
+# next `codex exec` child sees; the bridge never reads, copies or moves the
+# credentials themselves. `codex exec --help`: "auth still uses CODEX_HOME".
+#
+# You log each account in by hand, once (see README.md → Multiple accounts).
+# Sessions, rollouts and quota counters also live inside CODEX_HOME, so they
+# are per-account too — which is why /switch drops bound session ids.
+
+
+def parse_accounts(raw: str) -> dict[str, Path]:
+    """Parse CODEX_ACCOUNTS ("work:~/.codex-work,personal:~/.codex") in order.
+
+    Empty input yields the single implicit account every pre-accounts install
+    already had, pointing at the home codex would use on its own — so a bridge
+    that never sets CODEX_ACCOUNTS behaves exactly as it did before.
+    """
+    accounts: dict[str, Path] = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, sep, path = part.partition(":")
+        name, path = name.strip().lower(), path.strip()
+        if not sep or not path:
+            raise ValueError(f"account {part!r} is not name:path")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+            raise ValueError(
+                f"account name {name!r} must be letters/digits/-/_ (it is typed in chat)"
+            )
+        if name in accounts:
+            raise ValueError(f"duplicate account name {name!r}")
+        accounts[name] = Path(path).expanduser().resolve()
+    return accounts or {DEFAULT_ACCOUNT: default_codex_home()}
+
+
+def account_login_problem(home: Path) -> str | None:
+    """Why `home` is unusable as a Codex login, or None when it looks fine.
+
+    Deliberately cheap and local: an auth.json is what `codex exec` needs, and
+    checking for it costs a stat. We do not validate the token itself — that
+    would mean a network round-trip on every /switch and on every listing.
+    """
+    if not home.is_dir():
+        return f"{home} does not exist"
+    if not (home / "auth.json").is_file():
+        return f"not logged in (no auth.json in {home})"
+    return None
 
 
 def parse_positive_int(raw: str | None, default: int) -> int:
@@ -414,9 +485,9 @@ def _scan_session_file(path: Path) -> dict | None:
     }
 
 
-def recent_sessions(limit: int) -> list[dict]:
+def recent_sessions(limit: int, sessions_dir: Path | None = None) -> list[dict]:
     files = sorted(
-        CODEX_SESSIONS.glob("*/*/*/rollout-*.jsonl"),
+        (sessions_dir or CODEX_SESSIONS).glob("*/*/*/rollout-*.jsonl"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -430,8 +501,8 @@ def recent_sessions(limit: int) -> list[dict]:
     return out
 
 
-def find_session(session_id: str) -> dict | None:
-    for path in CODEX_SESSIONS.glob(f"*/*/*/rollout-*{session_id}.jsonl"):
+def find_session(session_id: str, sessions_dir: Path | None = None) -> dict | None:
+    for path in (sessions_dir or CODEX_SESSIONS).glob(f"*/*/*/rollout-*{session_id}.jsonl"):
         return _scan_session_file(path)
     return None
 
@@ -620,8 +691,13 @@ class Bridge:
         self.allowed_roots = parse_allowed_roots(args.allowed_roots)
         self.max_attachment_bytes = args.max_file_mb * 1024 * 1024
         self.auto_worktree = args.auto_worktree
+        # Ordered {name: CODEX_HOME}. Always non-empty: with no CODEX_ACCOUNTS
+        # it holds the single implicit "default" account, so everything below
+        # is the same code path single- and multi-account.
+        self.accounts = parse_accounts(args.accounts)
+        self.account = next(iter(self.accounts))
         self.state_file = Path(args.state_file)
-        self.bindings: dict[str, dict] = self._load_state()
+        self.bindings: dict[str, dict] = self._load_state()  # may set self.account
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
         self.busy: set[str] = set()
         self.pending_turns: dict[str, list[dict]] = {}
@@ -671,14 +747,57 @@ class Bridge:
     # ------------------------------------------------------------- state
 
     def _load_state(self) -> dict[str, dict]:
+        """Read bindings, and the active account when the file records one.
+
+        Two on-disk shapes. v2 is `{"_v": 2, "account", "bindings"}`; v1 — every
+        file written before accounts existed — is a bare map of bindings. `_v`
+        discriminates safely: in a v1 file every value is a binding dict, so
+        `raw.get("_v")` can never equal the integer 2, even for a channel that
+        happens to be named `_v`.
+        """
         try:
-            return json.loads(self.state_file.read_text())
+            raw = json.loads(self.state_file.read_text())
         except (OSError, json.JSONDecodeError):
             return {}
+        if not isinstance(raw, dict):
+            return {}
+        if raw.get("_v") == 2 and isinstance(raw.get("bindings"), dict):
+            self.account = self._resolve_account(raw.get("account"))
+            return raw["bindings"]
+        return raw  # v1: upgraded in place on the next _save_state()
+
+    def _resolve_account(self, name: object) -> str:
+        """Validate a persisted account name against the current config."""
+        fallback = next(iter(self.accounts))
+        if isinstance(name, str) and name.lower() in self.accounts:
+            return name.lower()
+        if isinstance(name, str) and name:
+            log(f"state names account {name!r}, which CODEX_ACCOUNTS no longer "
+                f"lists; falling back to {fallback!r}")
+        return fallback
 
     def _save_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self.state_file.write_text(json.dumps(self.bindings, indent=2))
+        self.state_file.write_text(json.dumps(
+            {"_v": 2, "account": self.account, "bindings": self.bindings}, indent=2))
+
+    # ---------------------------------------------------------- accounts
+
+    @property
+    def codex_home(self) -> Path:
+        return self.accounts[self.account]
+
+    @property
+    def sessions_dir(self) -> Path:
+        return self.codex_home / "sessions"
+
+    def child_env(self) -> dict[str, str]:
+        """Environment for a `codex` child: ours plus the active account's home.
+
+        A single-account bridge pins CODEX_HOME to the very directory codex
+        would have defaulted to, so the child sees no behaviour change.
+        """
+        return {**os.environ, "CODEX_HOME": str(self.codex_home)}
 
     # ------------------------------------------------------------ frames
 
@@ -686,10 +805,25 @@ class Bridge:
         self.outbox.put_nowait(frame)
 
     async def refresh_usage(self, thread_id: str | None = None) -> None:
-        usage = await asyncio.to_thread(read_codex_usage, thread_id)
+        usage = await asyncio.to_thread(read_codex_usage, thread_id, self.sessions_dir)
         if usage:
             self.last_usage_frame = {"type": "usage_update", "agent_id": self.agent_id, **usage}
             self.send(self.last_usage_frame)
+
+    def clear_usage(self) -> None:
+        """Blank the usage panel, used right after an account switch.
+
+        The account we just moved to keeps its rollouts in its own CODEX_HOME
+        and has none until its first run, so read_codex_usage() finds nothing
+        and the hub would otherwise keep showing the account we just left —
+        likely the one sitting at 100%. The hub accepts an "unavailable"
+        snapshot with no windows for exactly this.
+        """
+        self.last_usage_frame = None
+        self.send({
+            "type": "usage_update", "agent_id": self.agent_id, "provider": "codex",
+            "availability": "unavailable", "windows": [], "captured_at": time.time(),
+        })
 
     def post(self, key_frame: dict, text: str, tldr: str | None = None,
              attachments: list[dict] | None = None) -> None:
@@ -1040,7 +1174,7 @@ class Bridge:
             self.post(frame, HELP)
         elif cmd == "/sessions":
             limit = int(rest) if rest.isdigit() else self.sessions_limit
-            sessions = await asyncio.to_thread(recent_sessions, limit)
+            sessions = await asyncio.to_thread(recent_sessions, limit, self.sessions_dir)
             self.listings[key] = sessions
             self.post(frame, format_sessions(sessions))
         elif cmd == "/use":
@@ -1057,6 +1191,8 @@ class Bridge:
             self.post(frame, self._cmd_sandbox(key, rest))
         elif cmd == "/tldr":
             self.post(frame, self._cmd_tldr(key, rest))
+        elif cmd == "/switch":
+            self.post(frame, self._cmd_switch(rest))
         elif cmd == "/stop":
             self.post(frame, self._cmd_stop(key))
         elif cmd == "/status":
@@ -1083,15 +1219,15 @@ class Bridge:
         if not arg:
             return "Usage: /use <n from /sessions | session-id>"
         if arg.isdigit():
-            listing = self.listings.get(key) or recent_sessions(self.sessions_limit)
+            listing = self.listings.get(key) or recent_sessions(self.sessions_limit, self.sessions_dir)
             idx = int(arg) - 1
             if not 0 <= idx < len(listing):
                 return f"No session #{arg} — run /sessions first."
             info = listing[idx]
         else:
-            info = find_session(arg)
+            info = find_session(arg, self.sessions_dir)
             if not info:
-                return f"Session {arg} not found under {CODEX_SESSIONS}."
+                return f"Session {arg} not found under {self.sessions_dir}."
         self._set_binding(key, info["session_id"], info["cwd"])
         prompt = info["last_prompt"][:120]
         return (
@@ -1380,6 +1516,76 @@ class Bridge:
         suffix = f" and removed {len(queued)} queued message(s)" if queued else ""
         return f"Stopping the current run{suffix}…"
 
+    def _format_accounts(self) -> str:
+        if len(self.accounts) == 1:
+            name, home = next(iter(self.accounts.items()))
+            return (
+                f"One Codex account configured: {name} ({home}).\n"
+                "Add more with CODEX_ACCOUNTS in the bridge .env — see "
+                "README.md → Multiple accounts."
+            )
+        lines = []
+        for name, home in self.accounts.items():
+            active = name == self.account
+            state = account_login_problem(home) or ("active" if active else "ready")
+            lines.append(f"{'*' if active else ' '} {name} — {home} ({state})")
+        return (
+            "Codex accounts:\n" + "\n".join(lines)
+            + "\n\nSwitch with /switch <name>. Bound sessions do not carry over."
+        )
+
+    def _drop_bound_sessions(self) -> int:
+        """Forget every bound session id, keeping cwd/model/sandbox/worktree.
+
+        Sessions live inside the account's CODEX_HOME, so `codex exec resume`
+        cannot reach one from a different login. Each channel therefore starts a
+        fresh session on its next message, in the same directory as before.
+        """
+        dropped = 0
+        for binding in self.bindings.values():
+            if binding.get("session_id"):
+                binding["session_id"] = None
+                dropped += 1
+        # /sessions listings are rollouts of the account we are leaving; a
+        # later `/use <n>` against them would bind an unreachable session.
+        self.listings.clear()
+        self._save_state()
+        return dropped
+
+    def _cmd_switch(self, arg: str) -> str:
+        """Point every future codex run at a different logged-in account."""
+        if not arg:
+            return self._format_accounts()
+        name = arg.split()[0].strip().lower()
+        if name not in self.accounts:
+            return f"Unknown account {name!r}.\n\n{self._format_accounts()}"
+        if name == self.account:
+            return f"Already on {name} ({self.codex_home})."
+        if self.busy:
+            return (
+                f"{len(self.busy)} run(s) still in flight. Switching now would "
+                "leave them finishing on the old account — wait for them, or "
+                "/stop them first."
+            )
+        home = self.accounts[name]
+        if problem := account_login_problem(home):
+            return (
+                f"Cannot switch to {name}: {problem}.\n"
+                f"Log that account in once, by hand:\n\n    CODEX_HOME={home} codex login"
+            )
+        previous = self.account
+        self.account = name
+        dropped = self._drop_bound_sessions()
+        self.clear_usage()
+        log(f"account switch: {previous} -> {name} ({home}), dropped {dropped} session(s)")
+        carried = " Directory, model and sandbox settings are unchanged." if dropped else ""
+        return (
+            f"Switched from {previous} to {name} ({home}).\n"
+            f"{dropped} bound session(s) released — the next message in a channel "
+            f"starts a fresh Codex session.{carried}\n"
+            "Usage will show this account's limits after its first run."
+        )
+
     def _cmd_status(self, key: str) -> str:
         b = self.bindings.get(key)
         if not b:
@@ -1391,9 +1597,11 @@ class Bridge:
         busy = " — a run is in flight" if key in self.busy else ""
         wt = b.get("worktree")
         wt_line = f"\nWorktree: {wt['branch']} @ {wt['path']}" if wt else ""
+        # Only worth a line when there is actually a choice to report.
+        acct_line = f"\nAccount: {self.account}" if len(self.accounts) > 1 else ""
         return (
             f"Session {sid} in {b['cwd']}\nModel: {model}\n"
-            f"Sandbox: {mode}\nTL;DR: {tldr}{busy}{wt_line}"
+            f"Sandbox: {mode}\nTL;DR: {tldr}{acct_line}{busy}{wt_line}"
         )
 
     # ------------------------------------------------------------- codex
@@ -1644,6 +1852,10 @@ class Bridge:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=binding["cwd"],
+                # Pins the child to the active account's CODEX_HOME. Fixed at
+                # spawn, so a run already in flight keeps the account it started
+                # on even if /switch lands mid-run.
+                env=self.child_env(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE,
@@ -1967,6 +2179,13 @@ def main() -> None:
                     help="/new into a git repo creates an isolated git worktree + "
                          "branch per thread instead of binding the repo directly "
                          "(also available on demand via /worktree)")
+    ap.add_argument("--accounts", default=os.environ.get("CODEX_ACCOUNTS", ""),
+                    help="comma-separated name:CODEX_HOME pairs for the Codex "
+                         "accounts logged in on this machine, e.g. "
+                         "personal:~/.codex,work:~/.codex-work. The first is "
+                         "used at startup; switch in chat with /switch <name>. "
+                         "Empty (the default) means the single account in "
+                         "$CODEX_HOME or ~/.codex")
     ap.add_argument("--agent-id", default=os.environ.get("AGENT_ID", "codex-cli"))
     ap.add_argument("--agent-name", default=os.environ.get("AGENT_NAME", "Codex"))
     ap.add_argument("--agent-avatar", default=os.environ.get("AGENT_AVATAR", ""),
@@ -2020,6 +2239,16 @@ def main() -> None:
     if not normalize_model(args.model):
         ap.error(f"unknown --model {args.model!r}; use one of: "
                  f"{MODEL_CHOICES.replace(' | default', '')}")
+    try:
+        accounts = parse_accounts(args.accounts)
+    except ValueError as e:
+        ap.error(f"bad --accounts: {e}")
+    # Warn rather than exit: a second account whose token expired should not
+    # stop the bridge from starting on the account that still works.
+    for name, home in accounts.items():
+        if problem := account_login_problem(home):
+            log(f"warning: account {name!r} is {problem}; "
+                f"run `CODEX_HOME={home} codex login` before /switch {name}")
     if args.token:
         log("warning: --token on the command line is visible to other local users "
             "(ps/proc). Prefer AGORA_PAIRING_TOKEN or --token-file.")
