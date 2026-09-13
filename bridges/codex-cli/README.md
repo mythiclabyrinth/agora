@@ -255,6 +255,10 @@ time, and every channel uses it. What you need to know:
   releases every bound session id; the next message in a channel starts a fresh
   Codex session *in the same directory*, keeping its `/model`, `/sandbox`,
   `/tldr` and worktree settings. Conversation history does not transfer.
+  The same release happens on start-up when the bridge comes up on a different
+  account than it shut down on — reordering or renaming `CODEX_ACCOUNTS`, or
+  adding it for the first time — so an edit to `.env` cannot leave channels
+  pointing at sessions the new account cannot see.
 - **Finish your runs first.** `/switch` refuses while any run is in flight —
   wait, or `/stop`. A run already started keeps the account it started on.
 - **The target must be signed in.** `/switch` checks for `auth.json` and tells

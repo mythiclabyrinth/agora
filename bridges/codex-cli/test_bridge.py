@@ -934,6 +934,108 @@ class AccountStateFileTests(unittest.TestCase):
             self.assertEqual(instance._load_state(), {})
 
 
+class AccountChangedOnRestartTests(unittest.TestCase):
+    """A restart can land on a different account without anyone typing /switch.
+
+    Reordering, renaming or dropping a CODEX_ACCOUNTS entry — or setting it for
+    the first time — changes which CODEX_HOME start-up picks. Session ids in the
+    state file belong to the old home and cannot be resumed from the new one.
+    """
+
+    def _boot(self, tmp, payload, raw_accounts=""):
+        """Load state the way __init__ does, then reconcile the account."""
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.accounts = bridge.parse_accounts(raw_accounts)
+        instance.account = next(iter(instance.accounts))
+        instance.account_epoch = 0
+        instance.state_file = Path(tmp) / "state.json"
+        instance.state_file.write_text(json.dumps(payload))
+        instance.bindings = instance._load_state()
+        instance.listings = {}
+        instance._release_sessions_from_a_previous_account()
+        return instance
+
+    @staticmethod
+    def _v2(account, **bindings):
+        return {"_v": 2, "account": account, "bindings": bindings}
+
+    def test_account_no_longer_configured_releases_its_sessions(self):
+        # The real case: state written as "default", then CODEX_ACCOUNTS added.
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._boot(
+                tmp,
+                self._v2("default",
+                         c1={"session_id": "s-old", "cwd": "/repo", "model": "gpt-6-astra"},
+                         c2={"session_id": None, "cwd": "/other"}),
+                raw_accounts=f"personal:{tmp}/p,work:{tmp}/w",
+            )
+            self.assertEqual(instance.account, "personal")
+            self.assertIsNone(instance.bindings["c1"]["session_id"])
+            self.assertEqual(instance.bindings["c1"]["cwd"], "/repo")
+            self.assertEqual(instance.bindings["c1"]["model"], "gpt-6-astra")
+            saved = json.loads(instance.state_file.read_text())
+        self.assertEqual(saved["account"], "personal")
+        self.assertIsNone(saved["bindings"]["c1"]["session_id"])
+
+    def test_reordering_the_account_list_releases_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._boot(
+                tmp, self._v2("work", c1={"session_id": "s-old", "cwd": "/repo"}),
+                raw_accounts=f"personal:{tmp}/p,work:{tmp}/w",
+            )
+            # "work" is still configured, but it is no longer the first entry…
+            self.assertEqual(instance.account, "work")
+            # …and it resolved to the same home, so nothing is released.
+            self.assertEqual(instance.bindings["c1"]["session_id"], "s-old")
+
+    def test_same_account_keeps_its_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._boot(
+                tmp, self._v2("personal", c1={"session_id": "s-keep", "cwd": "/repo"}),
+                raw_accounts=f"personal:{tmp}/p,work:{tmp}/w",
+            )
+        self.assertEqual(instance.bindings["c1"]["session_id"], "s-keep")
+
+    def test_a_rename_pointing_at_the_same_home_is_not_a_change(self):
+        # Homes are compared, not names — but a renamed entry is unresolvable,
+        # so it is treated as a change. Guard the resolvable case explicitly.
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._boot(
+                tmp, self._v2("work", c1={"session_id": "s-keep", "cwd": "/repo"}),
+                raw_accounts=f"work:{tmp}/w",
+            )
+            self.assertEqual(instance.codex_home, Path(tmp).resolve() / "w")
+        self.assertEqual(instance.bindings["c1"]["session_id"], "s-keep")
+
+    def test_v1_state_with_no_accounts_configured_keeps_its_sessions(self):
+        # The single-account upgrade path: the old run used the default home and
+        # so does this one, so nothing may be released.
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._boot(tmp, {"c1": {"session_id": "s-keep", "cwd": "/repo"}})
+            self.assertEqual(instance.account, bridge.DEFAULT_ACCOUNT)
+        self.assertEqual(instance.bindings["c1"]["session_id"], "s-keep")
+
+    def test_v1_state_releases_when_accounts_move_off_the_default_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self._boot(
+                tmp, {"c1": {"session_id": "s-old", "cwd": "/repo"}},
+                raw_accounts=f"personal:{tmp}/p,work:{tmp}/w",
+            )
+        self.assertIsNone(instance.bindings["c1"]["session_id"])
+
+    def test_a_missing_state_file_is_not_an_account_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = bridge.Bridge.__new__(bridge.Bridge)
+            instance.accounts = bridge.parse_accounts(f"personal:{tmp}/p")
+            instance.account = "personal"
+            instance.state_file = Path(tmp) / "absent.json"
+            instance.bindings = instance._load_state()
+            instance.listings = {}
+            instance._release_sessions_from_a_previous_account()
+            self.assertEqual(instance.bindings, {})
+            self.assertFalse(instance.state_file.exists())  # nothing written
+
+
 class SingleAccountCompatTests(unittest.TestCase):
     def test_default_account_home_matches_what_codex_would_pick(self):
         with patch.dict(bridge.os.environ, {}, clear=False):
