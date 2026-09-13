@@ -715,6 +715,9 @@ class Bridge:
         self.state_file = Path(args.state_file)
         self.bindings: dict[str, dict] = self._load_state()  # may set self.account
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
+        # Needs bindings and listings in place; a restart onto a different
+        # account has to release sessions just as /switch does.
+        self._release_sessions_from_a_previous_account()
         self.busy: set[str] = set()
         self.pending_turns: dict[str, list[dict]] = {}
         self.pending_updates: dict[int, str] = {}
@@ -770,7 +773,13 @@ class Bridge:
         discriminates safely: in a v1 file every value is a binding dict, so
         `raw.get("_v")` can never equal the integer 2, even for a channel that
         happens to be named `_v`.
+
+        Also records the CODEX_HOME the file was written under, so start-up can
+        tell whether it came up on a different account than it shut down on.
         """
+        # Same home unless we learn otherwise, so an unreadable or absent file
+        # never looks like an account change.
+        self._previous_home: Path | None = self.codex_home
         try:
             raw = json.loads(self.state_file.read_text())
         except (OSError, json.JSONDecodeError):
@@ -778,9 +787,18 @@ class Bridge:
         if not isinstance(raw, dict):
             return {}
         if raw.get("_v") == 2 and isinstance(raw.get("bindings"), dict):
-            self.account = self._resolve_account(raw.get("account"))
+            saved = raw.get("account")
+            self.account = self._resolve_account(saved)
+            # None when the saved name is no longer configured: we cannot know
+            # which directory it meant, so treat it as a different one.
+            self._previous_home = (
+                self.accounts.get(saved.lower()) if isinstance(saved, str) else None
+            )
             return raw["bindings"]
-        return raw  # v1: upgraded in place on the next _save_state()
+        # v1 predates accounts, so the run that wrote it used the plain default
+        # home. Upgraded in place on the next _save_state().
+        self._previous_home = default_codex_home()
+        return raw
 
     def _resolve_account(self, name: object) -> str:
         """Validate a persisted account name against the current config."""
@@ -791,6 +809,26 @@ class Bridge:
             log(f"state names account {name!r}, which CODEX_ACCOUNTS no longer "
                 f"lists; falling back to {fallback!r}")
         return fallback
+
+    def _release_sessions_from_a_previous_account(self) -> None:
+        """Drop bound sessions when start-up landed on a different CODEX_HOME.
+
+        /switch releases them, but the active account can change without one:
+        reordering, renaming or dropping a CODEX_ACCOUNTS entry — or adding the
+        setting for the first time — makes start-up choose a different home than
+        the state file was written under. Those session ids live in the old home
+        and `codex exec resume` cannot reach them from the new one, so without
+        this every affected channel fails its next message instead of quietly
+        starting fresh. Compares homes rather than names: a rename that still
+        points at the same directory is not a change.
+        """
+        if self._previous_home == self.codex_home:
+            return
+        dropped = self._drop_bound_sessions()
+        previous = self._previous_home or "an account that is no longer configured"
+        log(f"state was written under {previous}; starting on {self.account!r} "
+            f"({self.codex_home}) released {dropped} session(s) that only exist "
+            "in the previous home")
 
     def _save_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
