@@ -141,12 +141,50 @@ export const NamedThreadRoot: Story = {
     // The label belongs to the affordance row, never the message body.
     await expect(label.closest(".ago-bubble-foot")).not.toBeNull();
     await expect(canvas.getByText("83 replies →")).toBeVisible();
-    // Fixed width, truncated, and flush with the bubble's right edge.
+    // Truncated (it cannot fit) and flush with the bubble's right edge.
     const box = label.getBoundingClientRect();
     const bubble = label.closest(".ago-bubble")!.getBoundingClientRect();
-    await expect(Math.round(box.width)).toBe(180);
     await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
     await expect(bubble.right - box.right).toBeLessThan(20);
+    // Width is claimed from the row, not reserved: it never pushes the bubble
+    // wider than the message, and it never collapses to nothing.
+    await expect(box.width).toBeGreaterThan(40);
+    await expect(box.width).toBeLessThanOrEqual(bubble.width);
+  },
+};
+
+/* The same alias that truncates in `NamedThreadRoot` above is fully legible
+   here: a longer message makes a wider bubble, and the label takes the room
+   that leaves rather than a width fixed up front. Needs a wider canvas than
+   the default decorator — at 760px the action-button row sets the bubble
+   width on its own, so the message length cannot move it. */
+export const NamedThreadRootWidensWithMessage: Story = {
+  decorators: [(Story) => (
+    <div className="ago-log" style={{ width: 1300 }}>
+      <Story />
+    </div>
+  )],
+  args: {
+    message: {
+      ...message,
+      author_type: "user",
+      author_id: "tom",
+      author_name: "Tom",
+      text: "/new ~/Coding/Projects/agora --resume --model opus --permission-mode acceptEdits",
+      reactions: [],
+      reply_count: 83,
+      alias: "A deliberately long thread name that has to be truncated",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const label = await canvas.findByTitle("A deliberately long thread name that has to be truncated");
+    await expect(label).toBeVisible();
+    // The same alias truncates in NamedThreadRoot; here there is room for all
+    // of it. That difference *is* the dynamic width.
+    await expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
+    const bubble = label.closest(".ago-bubble")!.getBoundingClientRect();
+    await expect(bubble.right - label.getBoundingClientRect().right).toBeLessThan(20);
   },
 };
 

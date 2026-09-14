@@ -137,8 +137,7 @@ export function MessageItem({
 
   /* A named thread tells its roots apart when the text cannot — a channel of
      identical "/new ~/project" roots is otherwise unreadable. Sits opposite the
-     reply count, in the bubble's bottom-right corner. Narrower than the web
-     label (140 vs 180) because the bubble caps at 86% of a phone's width. */
+     reply count and takes the space left by the message-sized bubble. */
   const threadName = (message.alias || "").trim();
   const threadFoot = replies ? (
     <View style={styles.threadFoot}>
@@ -297,18 +296,20 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     marginTop: 4,
   },
-  /* Reply count left, thread name right. A *fixed* width (not a max) keeps the
-     names in one tidy column down the log rather than ragging with each name's
-     length; the text right-aligns within it so short names still sit flush with
-     the bubble edge, and numberOfLines={1} tail-truncates the long ones. */
+  /* Reply count left, thread name right. The bubble is sized by its message, so
+     the room for a name varies per row: `flex: 1` gives the name whatever is
+     left beside the count and truncates only at that limit, rather than
+     reserving one width for every bubble and clipping names that had space to
+     spare. RN defaults flexShrink to 0, so the count keeps its full size and
+     the name is what yields — which also keeps this safe on a 320pt device,
+     where a fixed width could overflow instead of truncating. */
   threadFoot: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     gap: 8,
   },
   threadAlias: {
-    width: 140,
+    flex: 1,
     marginTop: 4,
     color: colors.faint,
     fontSize: 10.5,
