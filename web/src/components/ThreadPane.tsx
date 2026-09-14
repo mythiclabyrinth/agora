@@ -36,8 +36,9 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, p
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
-  // Pre-fetch scroll metrics for the older page in flight; see MessageLog.
-  const anchorRef = useRef<{ h: number; t: number; pages: number } | null>(null);
+  // Track the oldest rendered reply while an older page is in flight; see
+  // MessageLog for why this is an element anchor rather than a height delta.
+  const anchorRef = useRef<{ mid: number; top: number; pages: number } | null>(null);
 
   // Jump-to-message (search/stars landing in this thread): flash it.
   const jumpTarget = useJump(s => s.target);
@@ -49,8 +50,13 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, p
     const box = boxRef.current;
     if (!box || anchorRef.current || jumpTarget?.container === "thread") return;
     if (!hasOlder || loadingOlder) return;
+    const mid = replies[0]?.id;
+    const anchor = mid == null
+      ? null
+      : box.querySelector<HTMLElement>(`[data-mid="${mid}"]`);
+    if (!anchor) return;
     const pages = pageCount;
-    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop, pages };
+    anchorRef.current = { mid, top: anchor.offsetTop, pages };
     void onLoadOlder().then(
       nextPageCount => {
         // A growing page count is released by the layout effect after it has
@@ -77,7 +83,8 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, p
     const anchor = anchorRef.current;
     if (anchor && pageCount > anchor.pages) {
       anchorRef.current = null;
-      box.scrollTop = box.scrollHeight - anchor.h + anchor.t;
+      const row = box.querySelector<HTMLElement>(`[data-mid="${anchor.mid}"]`);
+      if (row) box.scrollTop += row.offsetTop - anchor.top;
       return;
     }
     if (stickRef.current) box.scrollTop = box.scrollHeight;
@@ -99,16 +106,13 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, p
         data-root={root.id} onScroll={onScroll}>
         <MessageItem message={root} inThread isAdmin={isAdmin} mentions={mentions}
           onOpenThread={() => {}} />
-        {/* The true total, not the loaded count — paging makes the difference
-            visible on threads past the first page. */}
+        {/* Prefer the server total while never falling behind loaded replies. */}
         <div className="ago-thread-sep">{total} repl{total === 1 ? "y" : "ies"}</div>
         <div className="ago-log-older" id="ago-thread-log-older" aria-live="polite">
           {hasOlder && (
-            loadingOlder ? (
-              <span>Loading earlier replies…</span>
-            ) : (
-              <button className="lnk" onClick={loadOlder}>Load earlier replies</button>
-            )
+            <button className="lnk" onClick={loadOlder} aria-busy={loadingOlder}>
+              {loadingOlder ? "Loading earlier replies…" : "Load earlier replies"}
+            </button>
           )}
         </div>
         {replies.map(m => (

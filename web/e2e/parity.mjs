@@ -86,22 +86,14 @@ async function seed() {
 async function seedDeepHistory(g) {
   const fresh = (await api("/api/groups")).groups.find(x => x.id === g.id);
   const existing = (fresh?.channels || []).find(x => x.name === "deep-history");
-  if (existing) {
-    SEED.deepChannel = existing.id;
-    const roots = (await api(`/api/channels/${existing.id}/messages?limit=200`)).messages;
-    SEED.namedRoot = roots.find(m => m.alias === "Agora history paging")?.id;
-    SEED.deepThreadRoot = roots.find(m => m.alias === "Deep reply thread")?.id;
-    return;
-  }
+  if (existing) return;
   const deep = await api(`/api/groups/${g.id}/channels`, { name: "deep-history" });
-  SEED.deepChannel = deep.id;
   for (let i = 1; i <= 120; i++) {
     await api(`/api/channels/${deep.id}/messages`, { text: `deep history message ${i}` });
   }
   const named = await api(`/api/channels/${deep.id}/messages`, { text: "/new ~/Coding/Projects/agora" });
   await api(`/api/channels/${deep.id}/messages`, { text: "a reply", thread_id: named.id });
   await api(`/api/threads/${named.id}`, { alias: "Agora history paging" }, "PATCH");
-  SEED.namedRoot = named.id;
   // Same text, no name — the pair is the point.
   const plain = await api(`/api/channels/${deep.id}/messages`, { text: "/new ~/Coding/Projects/agora" });
   await api(`/api/channels/${deep.id}/messages`, { text: "a reply", thread_id: plain.id });
@@ -111,7 +103,6 @@ async function seedDeepHistory(g) {
   for (let i = 1; i <= 70; i++) {
     await api(`/api/channels/${deep.id}/messages`, { text: `deep reply ${i}`, thread_id: deepThread.id });
   }
-  SEED.deepThreadRoot = deepThread.id;
   /* Keep these three out of the threads inbox. Hiding is inbox-only — the
      channel log and thread pane still show them — so the inbox checks keep
      the exact row set (and scroll geometry) they were written against. */

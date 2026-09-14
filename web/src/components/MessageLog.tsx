@@ -34,10 +34,10 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
   const stickRef = useRef(true);           // was the user at the bottom pre-render?
   const landOnDividerRef = useRef(false);
   const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Pre-fetch scroll metrics for the older page in flight, so the prepended
-  // rows can be absorbed without moving the reader. Non-null also means "a
-  // page is already on its way", which keeps scroll events from stacking.
-  const anchorRef = useRef<{ h: number; t: number; pages: number } | null>(null);
+  // Track the oldest rendered row while an older page is in flight. Its
+  // movement measures only content inserted above it, unlike scrollHeight,
+  // which also changes for live messages and late-loading media below it.
+  const anchorRef = useRef<{ mid: number; top: number; pages: number } | null>(null);
 
   const channel = groups.flatMap(g => g.channels || []).find(c => c.id === channelId);
   const unread = channel?.unread || 0;
@@ -71,8 +71,13 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     const box = boxRef.current;
     if (!box || anchorRef.current || jumpTarget?.container === "log") return;
     if (!q.hasNextPage || q.isFetchingNextPage) return;
+    const mid = messages[0]?.id;
+    const anchor = mid == null
+      ? null
+      : box.querySelector<HTMLElement>(`[data-mid="${mid}"]`);
+    if (!anchor) return;
     const pages = q.data?.pages.length || 0;
-    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop, pages };
+    anchorRef.current = { mid, top: anchor.offsetTop, pages };
     void q.fetchNextPage().then(
       result => {
         // A growing page count is released by the layout effect after it has
@@ -92,15 +97,16 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
   };
 
   // Older page absorbed, initial land, then follow new messages while stuck to
-  // the bottom. Restoring by height *delta* rather than the saved offset keeps
-  // the reader's place no matter how tall the prepended rows turned out.
+  // the bottom. Restore by the old first row's movement so unrelated growth
+  // elsewhere in the log cannot shift the reader.
   useLayoutEffect(() => {
     const box = boxRef.current;
     if (!box) return;
     const anchor = anchorRef.current;
     if (anchor && (q.data?.pages.length || 0) > anchor.pages) {
       anchorRef.current = null;
-      box.scrollTop = box.scrollHeight - anchor.h + anchor.t;
+      const row = box.querySelector<HTMLElement>(`[data-mid="${anchor.mid}"]`);
+      if (row) box.scrollTop += row.offsetTop - anchor.top;
       return;
     }
     if (landOnDividerRef.current && dividerRef.current) {
@@ -185,11 +191,9 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
               path to what scrolling does on its own. */}
           <div className="ago-log-older" id="ago-log-older" aria-live="polite">
             {q.hasNextPage && (
-              q.isFetchingNextPage ? (
-                <span>Loading earlier messages…</span>
-              ) : (
-                <button className="lnk" onClick={loadOlder}>Load earlier messages</button>
-              )
+              <button className="lnk" onClick={loadOlder} aria-busy={q.isFetchingNextPage}>
+                {q.isFetchingNextPage ? "Loading earlier messages…" : "Load earlier messages"}
+              </button>
             )}
           </div>
           {rows.length ? rows : (
