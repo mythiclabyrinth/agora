@@ -131,16 +131,22 @@ export const NamedThreadRoot: Story = {
       text: "/new ~/Coding/Projects/agora",
       reactions: [],
       reply_count: 83,
-      alias: "Agora history paging",
+      alias: "A deliberately long thread name that has to be truncated",
     },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const label = await canvas.findByTitle("Agora history paging");
+    const label = await canvas.findByTitle("A deliberately long thread name that has to be truncated");
     await expect(label).toBeVisible();
     // The label belongs to the affordance row, never the message body.
     await expect(label.closest(".ago-bubble-foot")).not.toBeNull();
     await expect(canvas.getByText("83 replies →")).toBeVisible();
+    // Fixed width, truncated, and flush with the bubble's right edge.
+    const box = label.getBoundingClientRect();
+    const bubble = label.closest(".ago-bubble")!.getBoundingClientRect();
+    await expect(Math.round(box.width)).toBe(180);
+    await expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+    await expect(bubble.right - box.right).toBeLessThan(20);
   },
 };
 
