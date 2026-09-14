@@ -135,6 +135,22 @@ export function MessageItem({
       </Pressable>
     ) : null;
 
+  /* A named thread tells its roots apart when the text cannot — a channel of
+     identical "/new ~/project" roots is otherwise unreadable. Sits opposite the
+     reply count, in the bubble's bottom-right corner. Narrower than the web
+     label (140 vs 180) because the bubble caps at 86% of a phone's width. */
+  const threadName = (message.alias || "").trim();
+  const threadFoot = replies ? (
+    <View style={styles.threadFoot}>
+      {replies}
+      {threadName ? (
+        <Text style={styles.threadAlias} numberOfLines={1}>
+          {threadName}
+        </Text>
+      ) : null}
+    </View>
+  ) : null;
+
   /* Long-press-to-star must NOT come from a Pressable wrapping the bubble:
      on the iOS new architecture a parent Pressable steals the pan gesture
      from a nested horizontal ScrollView (facebook/react-native#56879), which
@@ -172,7 +188,7 @@ export function MessageItem({
             {flags}
             <Text style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
           </View>
-          {replies}
+          {threadFoot}
         </View>
       </View>
     );
@@ -215,7 +231,7 @@ export function MessageItem({
         <MessageTable message={message} />
         <MessageOptions message={message} />
         <Reactions message={message} />
-        {replies}
+        {threadFoot}
       </View>
     </View>
   );
@@ -280,6 +296,24 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: "600",
     marginTop: 4,
+  },
+  /* Reply count left, thread name right. A *fixed* width (not a max) keeps the
+     names in one tidy column down the log rather than ragging with each name's
+     length; the text right-aligns within it so short names still sit flush with
+     the bubble edge, and numberOfLines={1} tail-truncates the long ones. */
+  threadFoot: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  threadAlias: {
+    width: 140,
+    marginTop: 4,
+    color: colors.faint,
+    fontSize: 10.5,
+    fontWeight: "600",
+    textAlign: "right",
   },
   options: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   optionBtn: {

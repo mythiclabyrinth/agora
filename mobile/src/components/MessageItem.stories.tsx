@@ -59,6 +59,44 @@ export const CurrentUser: Story = {
     onOpenThread: fn(),
   },
 };
+/* Look-alike roots: only the bottom-right thread name tells them apart, and a
+   long name truncates rather than widening the bubble. */
+export const NamedThreadRoot: Story = {
+  args: {
+    session,
+    message: {
+      ...fixtureRootMessage,
+      text: "/new ~/Coding/Projects/agora",
+      reply_count: 83,
+      alias: "Agora history paging",
+    },
+    onOpenThread: fn(),
+  },
+};
+export const NamedThreadRootTruncated: Story = {
+  args: {
+    session,
+    message: {
+      ...fixtureRootMessage,
+      text: "/new ~/Coding/Projects/agora",
+      reply_count: 83,
+      alias: "Voice notes: preserve posts after a client disconnects mid-recording",
+    },
+    onOpenThread: fn(),
+  },
+};
+export const UnnamedThreadRoot: Story = {
+  args: {
+    session,
+    message: {
+      ...fixtureRootMessage,
+      text: "/new ~/Coding/Projects/agora",
+      reply_count: 83,
+      alias: null,
+    },
+    onOpenThread: fn(),
+  },
+};
 export const ThreadReply: Story = {
   args: {
     session,
