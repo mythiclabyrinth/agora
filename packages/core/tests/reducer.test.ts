@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
+import { flattenMessages } from "../src/api/queries";
 import { keys } from "../src/api/keys";
 import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
@@ -36,10 +37,17 @@ describe("appendMessage", () => {
 });
 
 describe("moveMessage", () => {
-  it("moves a message from an older page to the newest page in seq order", () => {
+  it("updates a message in place without changing page lengths", () => {
     const next = moveMessage({ pages: [[{ ...msg(5), seq: 50 }], [{ ...msg(2), seq: 20 }, { ...msg(3), seq: 30 }]], pageParams: [undefined, undefined] }, 2, 60);
-    expect(next!.pages[0].map(m => m.id)).toEqual([5, 2]);
-    expect(next!.pages[1]).toEqual([{ ...msg(3), seq: 30 }]);
+    expect(next!.pages[0].map(m => m.id)).toEqual([5]);
+    expect(next!.pages[1].map(m => m.id)).toEqual([2, 3]);
+  });
+});
+
+describe("flattenMessages", () => {
+  it("sorts messages by seq across pages after a move", () => {
+    const result = flattenMessages({ pages: [[{ ...msg(3), seq: 30 }], [{ ...msg(1), seq: 10 }, { ...msg(2), seq: 40 }]], pageParams: [undefined, undefined] });
+    expect(result.map(m => m.id)).toEqual([1, 3, 2]);
   });
 });
 

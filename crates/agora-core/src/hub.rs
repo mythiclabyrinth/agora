@@ -2032,12 +2032,14 @@ impl Hub {
         match frame["type"].as_str() {
             Some("claim") => {
                 let Some(message_id) = frame["message_id"].as_i64() else { return };
-                if let Some(message) = self.store.bump_message_seq(&channel_id, message_id) {
+                if let Some(message) = self.store.bump_message_seq(&channel_id, message_id, &agent_id) {
                     self.post_transient(&channel_id, json!({
                         "type": "message_move", "channel_id": channel_id,
                         "thread_id": message["thread_id"], "message_id": message_id,
                         "seq": message["seq"],
                     }));
+                } else {
+                    tracing::debug!(agent_id, channel_id, message_id, "dropping claim for an unclaimable message");
                 }
             }
             Some("post") => {
@@ -4066,8 +4068,17 @@ mod tests {
         let agent_id = agent["id"].as_i64().unwrap();
         let member_conn = h.agent_handle("bot-a").unwrap().conn_id;
         h.handle_agent_frame_from(member_conn, &json!({"type":"claim", "agent_id":"bot-a", "channel_id":cid, "message_id":human_id}));
+        assert!(last_frame(&mut rx_ui, "message_move").is_none());
+        h.store.add_agent_reaction("bot-a", "Bot A", &cid, human_id, "⏳");
+        h.handle_agent_frame_from(member_conn, &json!({"type":"claim", "agent_id":"bot-a", "channel_id":cid, "message_id":human_id}));
         let moved = last_frame(&mut rx_ui, "message_move").unwrap();
         assert_eq!(moved["message_id"], human_id);
+        let other_human = h.store.add_message(&cid, "other queued", "user", "tom", None, None, &[]);
+        let other_id = other_human["id"].as_i64().unwrap();
+        h.store.add_agent_reaction("bot-b", "Bot B", &cid, other_id, "⏳");
+        h.handle_agent_frame_from(member_conn, &json!({"type":"claim", "agent_id":"bot-a", "channel_id":cid, "message_id":other_id}));
+        assert!(last_frame(&mut rx_ui, "message_move").is_none());
+        h.store.add_agent_reaction("bot-a", "Bot A", &cid, agent_id, "⏳");
         h.handle_agent_frame_from(member_conn, &json!({"type":"claim", "agent_id":"bot-a", "channel_id":cid, "message_id":agent_id}));
         assert!(last_frame(&mut rx_ui, "message_move").is_none());
         let outsider_conn = h.agent_handle("bot-b").unwrap().conn_id;

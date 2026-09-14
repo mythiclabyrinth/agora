@@ -43,14 +43,13 @@ export function appendMessage(
 
 export function moveMessage(data: MessagePages | undefined, messageId: number, seq: number): MessagePages | undefined {
   if (!data) return undefined;
-  let moved: Message | undefined;
-  const pages = data.pages.map((page) => page.filter((message) => {
-    if (message.id !== messageId) return true;
-    moved = { ...message, seq };
-    return false;
+  let found = false;
+  const pages = data.pages.map((page) => page.map((message) => {
+    if (message.id !== messageId) return message;
+    found = true;
+    return { ...message, seq };
   }));
-  if (!moved) return data;
-  pages[0] = [...(pages[0] ?? []), moved].sort((a, b) => (a.seq ?? a.id) - (b.seq ?? b.id));
+  if (!found) return data;
   return { ...data, pages };
 }
 

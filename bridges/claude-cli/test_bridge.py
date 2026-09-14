@@ -644,7 +644,7 @@ class QueueLifecycleTests(unittest.TestCase):
         asyncio.run(instance.forward_to_claude("c1", frame, "newer"))
         self.assertLess(prompts[0].index("older"), prompts[0].index("newer"))
         self.assertEqual([e[1]["message_id"] for e in events if e[0] == "send" and e[1]["type"] == "claim"], [1])
-        self.assertLess(next(i for i, e in enumerate(events) if e == ("send", events[i][1]) and e[1]["type"] == "claim"), next(i for i, e in enumerate(events) if e == ("reaction", "👀")))
+        self.assertLess(next(i for i, e in enumerate(events) if e[0] == "send" and e[1]["type"] == "claim"), next(i for i, e in enumerate(events) if e == ("reaction", "👀")))
 
     def test_edit_preserves_thread_context_prefix(self):
         instance = make_bridge()

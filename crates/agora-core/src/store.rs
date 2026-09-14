@@ -359,11 +359,12 @@ fn migrate(conn: &Connection) {
         conn.execute("ALTER TABLE messages ADD COLUMN meta TEXT", []).unwrap();
     }
     if !has_column("messages", "seq") {
-        conn.execute("ALTER TABLE messages ADD COLUMN seq INTEGER", []).unwrap();
-        conn.execute("UPDATE messages SET seq = id WHERE seq IS NULL", []).unwrap();
+        conn.execute("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0", []).unwrap();
+        conn.execute("UPDATE messages SET seq = id WHERE seq = 0", []).unwrap();
     }
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq)", []).unwrap();
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq)", []).unwrap();
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq)", []).unwrap();
     // Push tokens gained an owner when accounts landed; pre-account rows
     // start unowned ('') and are claimed by the boot migration.
     if !has_column("push_tokens", "username") {
@@ -410,9 +411,6 @@ fn migrate(conn: &Connection) {
         conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')", [])
             .unwrap();
         conn.execute("PRAGMA user_version = 1", []).unwrap();
-    }
-    if version < 2 {
-        conn.execute("PRAGMA user_version = 2", []).unwrap();
     }
 }
 
@@ -1985,12 +1983,13 @@ impl Store {
     }
 
     /// Move a human message to the newest position without changing its id.
-    pub fn bump_message_seq(&self, channel_id: &str, message_id: i64) -> Option<Value> {
+    pub fn bump_message_seq(&self, channel_id: &str, message_id: i64, agent_id: &str) -> Option<Value> {
         let conn = self.conn.lock().unwrap();
         let seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM messages", [], |r| r.get(0)).ok()?;
         let changed = conn.execute(
-            "UPDATE messages SET seq = ?1 WHERE id = ?2 AND channel_id = ?3 AND author_type = 'user'",
-            params![seq, message_id, channel_id],
+            "UPDATE messages SET seq = ?1 WHERE id = ?2 AND channel_id = ?3 AND author_type = 'user' \
+             AND EXISTS (SELECT 1 FROM reactions WHERE message_id = ?2 AND reactor_type = 'agent' AND reactor_id = ?4)",
+            params![seq, message_id, channel_id, agent_id],
         ).ok()?;
         drop(conn);
         if changed == 0 { None } else { self.message(message_id) }
@@ -2523,7 +2522,7 @@ impl Store {
             }
             if let Some(b) = before_id {
                 let cursor_seq: Option<i64> = conn.query_row("SELECT seq FROM messages WHERE id = ?1", params![b], |r| r.get(0)).ok();
-                let Some(cursor_seq) = cursor_seq else { return Vec::new() };
+                let cursor_seq = cursor_seq.unwrap_or(b);
                 sql.push_str(&format!(" AND seq < ?{}", p.len() + 1));
                 p.push(Box::new(cursor_seq));
             }
@@ -4414,11 +4413,13 @@ mod tests {
                  INSERT INTO groups VALUES ('g1', 'Home', '', NULL, 0, 0, 0);
                  INSERT INTO channels VALUES ('c1', 'g1', 'pets', '', 0, 0, 0);
                  INSERT INTO messages (channel_id, author_type, author_id, text, ts) \
-                   VALUES ('c1', 'user', 'me', 'my pet turtle escaped', 0);",
+                   VALUES ('c1', 'user', 'me', 'my pet turtle escaped', 0), \
+                          ('c1', 'user', 'me', 'a second note', 1);",
             )
             .unwrap();
         }
         let s = Store::open(&path).unwrap();
+        assert_eq!(s.messages("c1", None, None, 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2]);
         let hits = s.search_messages("pet", false, None, None, None, None, None, false, 10, 0);
         assert_eq!(hits.len(), 1, "pre-index history must be backfilled");
         assert_eq!(hits[0]["text"], "my pet turtle escaped");
@@ -4427,6 +4428,7 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap();
         s.add_message("c1", "the pet is back", "user", "me", None, None, &[]);
+        assert_eq!(s.messages("c1", None, None, 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(s.search_messages("pet", false, None, None, None, None, None, false, 10, 0).len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4586,12 +4588,16 @@ mod tests {
         let cid = c["id"].as_str().unwrap();
         let first = s.add_message(cid, "first", "user", "tom", None, None, &[]);
         let second = s.add_message(cid, "second", "user", "tom", None, None, &[]);
+        let cursor = s.add_message(cid, "cursor", "user", "tom", None, None, &[]);
         let moved_id = first["id"].as_i64().unwrap();
-        let moved = s.bump_message_seq(cid, moved_id).unwrap();
-        assert_eq!(s.messages(cid, None, None, 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap(), moved_id]);
+        s.add_agent_reaction("agent", "Agent", cid, moved_id, "⏳");
+        let moved = s.bump_message_seq(cid, moved_id, "agent").unwrap();
+        assert_eq!(s.messages(cid, None, None, 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap(), cursor["id"].as_i64().unwrap(), moved_id]);
         let later = s.add_message(cid, "later", "user", "tom", None, None, &[]);
         let page = s.messages(cid, None, Some(moved_id), 10);
-        assert_eq!(page.iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap()]);
+        assert_eq!(page.iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap(), cursor["id"].as_i64().unwrap()]);
+        s.delete_message(cursor["id"].as_i64().unwrap());
+        assert_eq!(s.messages(cid, None, Some(cursor["id"].as_i64().unwrap()), 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap()]);
         assert!(later["seq"].as_i64().unwrap() > moved["seq"].as_i64().unwrap());
         assert_eq!(s.my_threads("tom", 10), Vec::<Value>::new());
     }
