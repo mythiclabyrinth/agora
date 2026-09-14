@@ -109,10 +109,12 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, p
         {/* Prefer the server total while never falling behind loaded replies. */}
         <div className="ago-thread-sep">{total} repl{total === 1 ? "y" : "ies"}</div>
         <div className="ago-log-older" id="ago-thread-log-older" aria-live="polite">
-          {hasOlder && (
+          {hasOlder ? (
             <button className="lnk" onClick={loadOlder} aria-busy={loadingOlder}>
               {loadingOlder ? "Loading earlier replies…" : "Load earlier replies"}
             </button>
+          ) : (
+            <span>Start of thread</span>
           )}
         </div>
         {replies.map(m => (
@@ -153,11 +155,15 @@ export function ThreadPane() {
 
   const jumpTarget = useJump(s => s.target);
   const clearJump = useJump(s => s.clear);
+  const jumpBaseRef = useRef(0);
+  useEffect(() => {
+    jumpBaseRef.current = q.data?.pages.length || 0;
+  }, [jumpTarget?.mid]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!jumpTarget || jumpTarget.container !== "thread") return;
     if (jumpTarget.mid === rootId || replies.some(m => m.id === jumpTarget.mid)) return;
     if (replies.length && replies[0].id <= jumpTarget.mid) clearJump();
-    else if ((q.data?.pages.length || 0) >= MAX_JUMP_PAGES) clearJump();
+    else if ((q.data?.pages.length || 0) - jumpBaseRef.current >= MAX_JUMP_PAGES) clearJump();
     else if (q.hasNextPage && !q.isFetchingNextPage) void q.fetchNextPage();
     else if (!q.hasNextPage && !q.isLoading) clearJump();
   }, [

@@ -28,6 +28,10 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
   const messages = useMemo(() => flattenMessages(q.data), [q.data]);
   const jumpTarget = useJump(s => s.target);
   const jumpClear = useJump(s => s.clear);
+  const jumpBaseRef = useRef(0);
+  useEffect(() => {
+    jumpBaseRef.current = q.data?.pages.length || 0;
+  }, [jumpTarget?.mid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const boxRef = useRef<HTMLDivElement>(null);
   const dividerRef = useRef<HTMLDivElement>(null);
@@ -131,7 +135,7 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
       // IDs are globally monotonic. Once the oldest loaded row is below the
       // target, another older page cannot contain an absent target.
       jumpClear();
-    } else if ((q.data?.pages.length || 0) >= MAX_JUMP_PAGES) {
+    } else if ((q.data?.pages.length || 0) - jumpBaseRef.current >= MAX_JUMP_PAGES) {
       jumpClear();
     } else if (q.hasNextPage && !q.isFetchingNextPage) {
       void q.fetchNextPage();
@@ -190,10 +194,12 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
               up, which reads as a jump. The button is the keyboard-reachable
               path to what scrolling does on its own. */}
           <div className="ago-log-older" id="ago-log-older" aria-live="polite">
-            {q.hasNextPage && (
+            {q.hasNextPage ? (
               <button className="lnk" onClick={loadOlder} aria-busy={q.isFetchingNextPage}>
                 {q.isFetchingNextPage ? "Loading earlier messages…" : "Load earlier messages"}
               </button>
+            ) : (
+              <span>Beginning of conversation</span>
             )}
           </div>
           {rows.length ? rows : (

@@ -809,7 +809,7 @@ select {
 .ago-hint-banner b { color: var(--text); font-weight: 600; }
 .ago-off { color: var(--amber); }
 
-.ago-log { flex: 1; overflow-y: auto; padding: 22px; display: flex; flex-direction: column; gap: 12px; position: relative; }
+.ago-log { flex: 1; overflow-y: auto; overflow-anchor: none; padding: 22px; display: flex; flex-direction: column; gap: 12px; position: relative; }
 
 /* Wrapper that lets the section-nav rail float over the log's right gutter
    without scrolling away with the content. */
