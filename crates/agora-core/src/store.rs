@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS memberships (
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seq INTEGER NOT NULL DEFAULT 0,
     channel_id TEXT NOT NULL,
     thread_id INTEGER,
     author_type TEXT NOT NULL,
@@ -357,6 +358,13 @@ fn migrate(conn: &Connection) {
     if !has_column("messages", "meta") {
         conn.execute("ALTER TABLE messages ADD COLUMN meta TEXT", []).unwrap();
     }
+    if !has_column("messages", "seq") {
+        conn.execute("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0", []).unwrap();
+    }
+    conn.execute("UPDATE messages SET seq = id WHERE seq = 0", []).unwrap();
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq)", []).unwrap();
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq)", []).unwrap();
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq)", []).unwrap();
     // Push tokens gained an owner when accounts landed; pre-account rows
     // start unowned ('') and are claimed by the boot migration.
     if !has_column("push_tokens", "username") {
@@ -530,26 +538,27 @@ fn like_pattern(raw: &str) -> String {
 }
 
 fn message_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<Value> {
-    let meta_raw: Option<String> = row.get(offset + 8)?;
+    let meta_raw: Option<String> = row.get(offset + 9)?;
     let meta = meta_raw
         .as_deref()
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .unwrap_or(Value::Null);
     Ok(json!({
         "id": row.get::<_, i64>(offset)?,
-        "channel_id": row.get::<_, String>(offset + 1)?,
-        "thread_id": row.get::<_, Option<i64>>(offset + 2)?,
-        "author_type": row.get::<_, String>(offset + 3)?,
-        "author_id": row.get::<_, String>(offset + 4)?,
-        "author_name": row.get::<_, Option<String>>(offset + 5)?,
-        "text": row.get::<_, String>(offset + 6)?,
-        "ts": row.get::<_, f64>(offset + 7)?,
+        "seq": row.get::<_, i64>(offset + 1)?,
+        "channel_id": row.get::<_, String>(offset + 2)?,
+        "thread_id": row.get::<_, Option<i64>>(offset + 3)?,
+        "author_type": row.get::<_, String>(offset + 4)?,
+        "author_id": row.get::<_, String>(offset + 5)?,
+        "author_name": row.get::<_, Option<String>>(offset + 6)?,
+        "text": row.get::<_, String>(offset + 7)?,
+        "ts": row.get::<_, f64>(offset + 8)?,
         "meta": meta,
     }))
 }
 
 const MSG_COLS: &str =
-    "id, channel_id, thread_id, author_type, author_id, author_name, text, ts, meta";
+    "id, seq, channel_id, thread_id, author_type, author_id, author_name, text, ts, meta";
 
 const USER_COLS: &str =
     "username, display_name, email, instance_role, created_at, disabled, session_version";
@@ -1920,12 +1929,16 @@ impl Store {
             .map(|m| m.to_string());
         let mut stored_files = Vec::new();
         let message_id;
+        let message_seq;
         {
             let conn = self.conn.lock().unwrap();
+            let seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM messages", [], |r| r.get(0)).unwrap();
+            message_seq = seq;
             conn.execute(
-                "INSERT INTO messages (channel_id, thread_id, author_type, author_id, author_name, text, ts, meta) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO messages (seq, channel_id, thread_id, author_type, author_id, author_name, text, ts, meta) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
+                    seq,
                     channel_id,
                     thread_id,
                     author_type,
@@ -1956,6 +1969,7 @@ impl Store {
         }
         json!({
             "id": message_id,
+            "seq": message_seq,
             "channel_id": channel_id,
             "thread_id": thread_id,
             "author_type": author_type,
@@ -1966,6 +1980,19 @@ impl Store {
             "meta": meta.cloned().unwrap_or(Value::Null),
             "attachments": stored_files,
         })
+    }
+
+    /// Move a human message to the newest position without changing its id.
+    pub fn bump_message_seq(&self, channel_id: &str, message_id: i64, agent_id: &str) -> Option<Value> {
+        let conn = self.conn.lock().unwrap();
+        let seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM messages", [], |r| r.get(0)).ok()?;
+        let changed = conn.execute(
+            "UPDATE messages SET seq = ?1 WHERE id = ?2 AND channel_id = ?3 AND author_type = 'user' \
+             AND EXISTS (SELECT 1 FROM reactions WHERE message_id = ?2 AND reactor_type = 'agent' AND reactor_id = ?4 AND emoji IN ('⏳', '👀'))",
+            params![seq, message_id, channel_id, agent_id],
+        ).ok()?;
+        drop(conn);
+        if changed == 0 { None } else { self.message(message_id) }
     }
 
     /// Merge ``patch`` into a message's ``meta`` JSON and return the updated
@@ -2415,7 +2442,7 @@ impl Store {
             "SELECT id FROM messages WHERE meta IS NOT NULL \
              AND channel_id = ?1 AND author_type = 'agent' AND author_id = ?2 \
              AND json_extract(meta, '$.options_id') = ?3 \
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY seq DESC LIMIT 1",
             params![channel_id, agent_id, options_id],
             |r| r.get(0),
         )
@@ -2465,7 +2492,7 @@ impl Store {
                 params![message_id],
                 |r| {
                     let mut m = message_row(r, 0)?;
-                    m["alias"] = json!(r.get::<_, Option<String>>(9)?);
+                    m["alias"] = json!(r.get::<_, Option<String>>(10)?);
                     Ok(m)
                 },
             )
@@ -2494,15 +2521,17 @@ impl Store {
                 p.push(Box::new(t));
             }
             if let Some(b) = before_id {
-                sql.push_str(&format!(" AND id < ?{}", p.len() + 1));
-                p.push(Box::new(b));
+                let cursor_seq: Option<i64> = conn.query_row("SELECT seq FROM messages WHERE id = ?1", params![b], |r| r.get(0)).ok();
+                let cursor_seq = cursor_seq.unwrap_or(b);
+                sql.push_str(&format!(" AND seq < ?{}", p.len() + 1));
+                p.push(Box::new(cursor_seq));
             }
-            sql.push_str(&format!(" ORDER BY id DESC LIMIT ?{}", p.len() + 1));
+            sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", p.len() + 1));
             p.push(Box::new(limit as i64));
             let mut stmt = conn.prepare(&sql).unwrap();
             stmt.query_map(params_from_iter(p.iter().map(|b| b.as_ref())), |r| {
                 let mut m = message_row(r, 0)?;
-                m["alias"] = json!(r.get::<_, Option<String>>(9)?);
+                m["alias"] = json!(r.get::<_, Option<String>>(10)?);
                 Ok(m)
             })
                 .unwrap()
@@ -2637,7 +2666,7 @@ impl Store {
                 p.push(Box::new(fts)); // ?1, used by both the union and `th`
                 p.push(Box::new(like_pattern(query))); // ?2
                 sql = String::from(
-                    "SELECT m.id, m.channel_id, m.thread_id, m.author_type, m.author_id, \
+                    "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
                        m.author_name, m.text, m.ts, m.meta, \
                        c.name, c.group_id, COALESCE(g.name, ''), COALESCE(th.snip, ''), c.kind \
                      FROM (SELECT rowid AS mid FROM messages_fts WHERE messages_fts MATCH ?1 \
@@ -2654,7 +2683,7 @@ impl Store {
             } else {
                 // Browse mode: no query, just messages carrying attachments.
                 sql = String::from(
-                    "SELECT m.id, m.channel_id, m.thread_id, m.author_type, m.author_id, \
+                    "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
                        m.author_name, m.text, m.ts, m.meta, \
                        c.name, c.group_id, COALESCE(g.name, ''), '', c.kind \
                      FROM messages m \
@@ -2711,9 +2740,9 @@ impl Store {
             // Text hits first (best bm25), then filename-only hits; newest_first
             // and browse mode both just order by recency.
             if newest_first || query.trim().is_empty() {
-                sql.push_str(" ORDER BY m.id DESC");
+                sql.push_str(" ORDER BY m.seq DESC");
             } else {
-                sql.push_str(" ORDER BY (th.mid IS NOT NULL) DESC, th.score ASC, m.id DESC");
+                sql.push_str(" ORDER BY (th.mid IS NOT NULL) DESC, th.score ASC, m.seq DESC");
             }
             sql.push_str(&format!(" LIMIT ?{} OFFSET ?{}", p.len() + 1, p.len() + 2));
             p.push(Box::new(limit as i64));
@@ -2721,11 +2750,11 @@ impl Store {
             let mut stmt = conn.prepare(&sql).unwrap();
             stmt.query_map(params_from_iter(p.iter().map(|b| b.as_ref())), |r| {
                 let mut msg = message_row(r, 0)?;
-                msg["channel_name"] = json!(r.get::<_, String>(9)?);
-                let is_dm = r.get::<_, String>(13)? == "agent_dm";
-                msg["group_id"] = json!(if is_dm { DM_GROUP_ID.into() } else { r.get::<_, String>(10)? });
-                msg["group_name"] = json!(if is_dm { DM_GROUP_NAME.into() } else { r.get::<_, String>(11)? });
-                msg["snippet"] = json!(r.get::<_, String>(12)?);
+                msg["channel_name"] = json!(r.get::<_, String>(10)?);
+                let is_dm = r.get::<_, String>(14)? == "agent_dm";
+                msg["group_id"] = json!(if is_dm { DM_GROUP_ID.into() } else { r.get::<_, String>(11)? });
+                msg["group_name"] = json!(if is_dm { DM_GROUP_NAME.into() } else { r.get::<_, String>(12)? });
+                msg["snippet"] = json!(r.get::<_, String>(13)?);
                 Ok(msg)
             })
             .unwrap()
@@ -2874,7 +2903,7 @@ impl Store {
              FROM files f JOIN messages m ON m.id = f.message_id \
              LEFT JOIN messages r ON r.id = m.thread_id \
              WHERE f.channel_id = ?1{thread}{kind} \
-             ORDER BY m.id DESC, f.rowid DESC LIMIT ?{limit_i} OFFSET ?{offset_i}"
+             ORDER BY m.seq DESC, f.rowid DESC LIMIT ?{limit_i} OFFSET ?{offset_i}"
         );
         let conn = self.conn.lock().unwrap();
         let map = |r: &rusqlite::Row<'_>| Ok(json!({
@@ -3091,9 +3120,9 @@ impl Store {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn
                 .prepare(
-                    "SELECT m.id, m.channel_id, m.thread_id, m.author_type, m.author_id, \
+                    "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
                      m.author_name, m.text, m.ts, m.meta, s.starred_at, \
-                     r.id, r.channel_id, r.thread_id, r.author_type, r.author_id, \
+                     r.id, r.seq, r.channel_id, r.thread_id, r.author_type, r.author_id, \
                      r.author_name, r.text, r.ts, r.meta \
                      FROM stars s JOIN messages m ON m.id = s.message_id \
                      LEFT JOIN messages r ON r.id = m.thread_id \
@@ -3102,9 +3131,9 @@ impl Store {
                 .unwrap();
             stmt.query_map(params![username, channel_id], |r| {
                 let mut star = message_row(r, 0)?;
-                star["starred_at"] = json!(r.get::<_, f64>(9)?);
-                star["root"] = match r.get::<_, Option<i64>>(10)? {
-                    Some(_) => message_row(r, 10)?,
+                star["starred_at"] = json!(r.get::<_, f64>(10)?);
+                star["root"] = match r.get::<_, Option<i64>>(11)? {
+                    Some(_) => message_row(r, 11)?,
                     None => Value::Null,
                 };
                 Ok(star)
@@ -3284,10 +3313,10 @@ impl Store {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn
                 .prepare(
-                    "SELECT r.id, r.channel_id, r.thread_id, r.author_type, r.author_id, \
+                    "SELECT r.id, r.seq, r.channel_id, r.thread_id, r.author_type, r.author_id, \
                        r.author_name, r.text, r.ts, r.meta, \
                        c.name, c.group_id, COALESCE(g.name, ''), \
-                       COUNT(m.id), MAX(m.id), MAX(m.ts), \
+                       COUNT(m.id), MAX(m.id), MAX(m.seq), MAX(m.ts), \
                        COALESCE(tr.last_read_id, 0), \
                        SUM(CASE WHEN m.id > COALESCE(tr.last_read_id, 0) \
                              AND NOT (m.author_type = 'user' AND m.author_id = ?1) \
@@ -3304,25 +3333,25 @@ impl Store {
                             AND p.author_type = 'user' AND p.author_id = ?1)) \
                      AND NOT EXISTS (SELECT 1 FROM thread_hides h \
                             WHERE h.username = ?1 AND h.thread_id = r.id) \
-                     GROUP BY r.id ORDER BY MAX(m.id) DESC LIMIT ?2",
+                     GROUP BY r.id ORDER BY MAX(m.seq) DESC LIMIT ?2",
                 )
                 .unwrap();
             stmt.query_map(params![username, limit as i64], |r| {
                 let mut root = message_row(r, 0)?;
-                root["reply_count"] = json!(r.get::<_, i64>(12)?);
-                root["alias"] = json!(r.get::<_, Option<String>>(17)?);
-                let is_dm = r.get::<_, String>(18)? == "agent_dm";
+                root["reply_count"] = json!(r.get::<_, i64>(13)?);
+                root["alias"] = json!(r.get::<_, Option<String>>(19)?);
+                let is_dm = r.get::<_, String>(20)? == "agent_dm";
                 Ok(json!({
                     "root": root,
-                    "channel_id": r.get::<_, String>(1)?,
-                    "channel_name": r.get::<_, String>(9)?,
-                    "group_id": if is_dm { DM_GROUP_ID.into() } else { r.get::<_, String>(10)? },
-                    "group_name": if is_dm { DM_GROUP_NAME.into() } else { r.get::<_, String>(11)? },
-                    "reply_count": r.get::<_, i64>(12)?,
-                    "last_reply_id": r.get::<_, i64>(13)?,
-                    "last_reply_ts": r.get::<_, f64>(14)?,
-                    "last_read_id": r.get::<_, i64>(15)?,
-                    "unread": r.get::<_, i64>(16)?,
+                    "channel_id": r.get::<_, String>(2)?,
+                    "channel_name": r.get::<_, String>(10)?,
+                    "group_id": if is_dm { DM_GROUP_ID.into() } else { r.get::<_, String>(11)? },
+                    "group_name": if is_dm { DM_GROUP_NAME.into() } else { r.get::<_, String>(12)? },
+                    "reply_count": r.get::<_, i64>(13)?,
+                    "last_reply_id": r.get::<_, i64>(14)?,
+                    "last_reply_ts": r.get::<_, f64>(16)?,
+                    "last_read_id": r.get::<_, i64>(17)?,
+                    "unread": r.get::<_, i64>(18)?,
                 }))
             })
             .unwrap()
@@ -3370,7 +3399,7 @@ impl Store {
             let conn = self.conn.lock().unwrap();
             let mut stmt = conn
                 .prepare(
-                    "SELECT m.id, m.channel_id, m.thread_id, m.author_type, m.author_id, \
+                    "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
                      m.author_name, m.text, m.ts, m.meta, p.pinned_by, p.pinned_at, \
                      (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) \
                      FROM pins p JOIN messages m ON m.id = p.message_id \
@@ -3379,9 +3408,9 @@ impl Store {
                 .unwrap();
             stmt.query_map(params![channel_id], |r| {
                 let mut msg = message_row(r, 0)?;
-                msg["pinned_by"] = json!(r.get::<_, Option<String>>(9)?);
-                msg["pinned_at"] = json!(r.get::<_, f64>(10)?);
-                msg["reply_count"] = json!(r.get::<_, i64>(11)?);
+                msg["pinned_by"] = json!(r.get::<_, Option<String>>(10)?);
+                msg["pinned_at"] = json!(r.get::<_, f64>(11)?);
+                msg["reply_count"] = json!(r.get::<_, i64>(12)?);
                 Ok(msg)
             })
             .unwrap()
@@ -4384,11 +4413,13 @@ mod tests {
                  INSERT INTO groups VALUES ('g1', 'Home', '', NULL, 0, 0, 0);
                  INSERT INTO channels VALUES ('c1', 'g1', 'pets', '', 0, 0, 0);
                  INSERT INTO messages (channel_id, author_type, author_id, text, ts) \
-                   VALUES ('c1', 'user', 'me', 'my pet turtle escaped', 0);",
+                   VALUES ('c1', 'user', 'me', 'my pet turtle escaped', 0), \
+                          ('c1', 'user', 'me', 'a second note', 1);",
             )
             .unwrap();
         }
         let s = Store::open(&path).unwrap();
+        assert_eq!(s.messages("c1", None, None, 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2]);
         let hits = s.search_messages("pet", false, None, None, None, None, None, false, 10, 0);
         assert_eq!(hits.len(), 1, "pre-index history must be backfilled");
         assert_eq!(hits[0]["text"], "my pet turtle escaped");
@@ -4397,6 +4428,7 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap();
         s.add_message("c1", "the pet is back", "user", "me", None, None, &[]);
+        assert_eq!(s.messages("c1", None, None, 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(s.search_messages("pet", false, None, None, None, None, None, false, 10, 0).len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4546,6 +4578,50 @@ mod tests {
         s.reorder_channels(aid, &[c2id.to_string(), c1id.to_string()]);
         let names: Vec<String> = s.group_channels(aid).iter().map(|c| c["name"].as_str().unwrap().into()).collect();
         assert_eq!(names, vec!["acme", "zeta"]);
+    }
+
+    #[test]
+    fn moved_messages_use_seq_order_and_id_cursors() {
+        let s = store();
+        let g = s.create_group("G", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        let first = s.add_message(cid, "first", "user", "tom", None, None, &[]);
+        let second = s.add_message(cid, "second", "user", "tom", None, None, &[]);
+        let cursor = s.add_message(cid, "cursor", "user", "tom", None, None, &[]);
+        let moved_id = first["id"].as_i64().unwrap();
+        s.add_agent_reaction("agent", "Agent", cid, moved_id, "⏳");
+        let moved = s.bump_message_seq(cid, moved_id, "agent").unwrap();
+        assert_eq!(s.messages(cid, None, None, 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap(), cursor["id"].as_i64().unwrap(), moved_id]);
+        let later = s.add_message(cid, "later", "user", "tom", None, None, &[]);
+        let page = s.messages(cid, None, Some(moved_id), 10);
+        assert_eq!(page.iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap(), cursor["id"].as_i64().unwrap()]);
+        s.delete_message(cursor["id"].as_i64().unwrap());
+        assert_eq!(s.messages(cid, None, Some(cursor["id"].as_i64().unwrap()), 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap()]);
+        assert!(later["seq"].as_i64().unwrap() > moved["seq"].as_i64().unwrap());
+        let root = s.add_message(cid, "thread root", "user", "tom", None, None, &[]);
+        let reply = s.add_message(cid, "thread reply", "user", "tom", None, Some(root["id"].as_i64().unwrap()), &[]);
+        s.add_agent_reaction("agent", "Agent", cid, reply["id"].as_i64().unwrap(), "👀");
+        s.bump_message_seq(cid, reply["id"].as_i64().unwrap(), "agent");
+        assert_eq!(s.my_threads("tom", 10)[0]["root"]["id"], root["id"]);
+    }
+
+    #[test]
+    fn seq_backfill_repairs_zero_rows_on_every_open() {
+        let dir = std::env::temp_dir().join(format!("agora_seq_repair_{}", new_token()));
+        let path = dir.join("agora.db");
+        let s = Store::open(&path).unwrap();
+        let g = s.create_group("G", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        s.add_message(cid, "one", "user", "tom", None, None, &[]);
+        s.add_message(cid, "two", "user", "tom", None, None, &[]);
+        s.conn.lock().unwrap().execute("UPDATE messages SET seq = 0", []).unwrap();
+        drop(s);
+        let reopened = Store::open(&path).unwrap();
+        let rows = reopened.messages(cid, None, None, 10);
+        assert_eq!(rows.iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

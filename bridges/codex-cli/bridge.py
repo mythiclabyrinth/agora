@@ -940,6 +940,14 @@ class Bridge:
             "action": action,
         })
 
+    def claim(self, frame: dict) -> None:
+        message_id = frame.get("message_id")
+        channel_id = frame.get("channel_id")
+        if message_id and channel_id:
+            self.send({"type": "claim", "agent_id": self.agent_id,
+                       "channel_id": channel_id, "message_id": message_id,
+                       "request_id": f"claim-{time.time_ns()}"})
+
     def set_reaction(self, frame: dict, emoji: str, *, remember: bool = True) -> None:
         """Move our reaction on the inbound message to `emoji`, first removing
         whatever stage we last placed so only the latest one shows (👀 → ✅).
@@ -1714,6 +1722,7 @@ class Bridge:
             if entry is None:
                 return False
             self.pending_turns.setdefault(key, []).append(entry)
+            entry["queued"] = True
             self.set_reaction(frame, "⏳")
             return False
         entry = self._pending_entry(frame, text)
@@ -1735,6 +1744,8 @@ class Bridge:
                 binding = self.bindings.get(key)
                 batch_frame, batch_text = self._coalesce_turns(entries)
                 for entry in entries:
+                    if entry.get("queued"):
+                        self.claim(entry["frame"])
                     self.set_reaction(entry["frame"], "👀")
                 if not binding:
                     self.post(batch_frame, "No session bound here. Run /sessions then /use <n>.")

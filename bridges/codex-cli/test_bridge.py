@@ -351,7 +351,10 @@ class PeerBusyTests(unittest.TestCase):
         del instance.forward_to_codex
         instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
         instance.pending_turns = {"c1": [{"frame": {"channel_id": "c1", "message_id": 1,
-                                                       "author": {"name": "Tom"}}, "text": "older"}]}
+                                                       "author": {"name": "Tom"}}, "text": "older", "queued": True}]}
+        events = []
+        instance.send = Mock(side_effect=lambda f: events.append(("send", f)))
+        instance.set_reaction = Mock(side_effect=lambda f, emoji, **kw: events.append(("reaction", emoji)))
         instance.typing = Mock()
         instance.tldr_default = False
         instance.tldr_min_chars = 1500
@@ -365,6 +368,8 @@ class PeerBusyTests(unittest.TestCase):
         frame = {"channel_id": "c1", "message_id": 2, "author": {"name": "Tom"}}
         asyncio.run(instance.forward_to_codex("c1", frame, "newer"))
         self.assertLess(prompts[0].index("older"), prompts[0].index("newer"))
+        self.assertEqual([e[1]["message_id"] for e in events if e[0] == "send" and e[1]["type"] == "claim"], [1])
+        self.assertLess(next(i for i, e in enumerate(events) if e[0] == "send" and e[1]["type"] == "claim"), next(i for i, e in enumerate(events) if e == ("reaction", "👀")))
 
     def test_edit_preserves_thread_context_prefix(self):
         instance = make_bridge()
@@ -400,7 +405,15 @@ class PeerBusyTests(unittest.TestCase):
         self.assertFalse(handled)
         instance.post.assert_not_called()
         self.assertEqual(instance.pending_turns["c1"][0]["text"], "hello")
+        self.assertTrue(instance.pending_turns["c1"][0]["queued"])
         instance.set_reaction.assert_called_with(frame, "⏳")
+
+    def test_claim_emits_message_id(self):
+        instance = make_bridge()
+        instance.send = Mock()
+        instance.claim({"channel_id": "c1", "message_id": 42})
+        self.assertEqual(instance.send.call_args.args[0]["type"], "claim")
+        self.assertEqual(instance.send.call_args.args[0]["message_id"], 42)
 
     def test_queued_turn_can_be_edited_deleted_and_coalesced(self):
         instance = make_bridge()

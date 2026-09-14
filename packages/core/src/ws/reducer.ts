@@ -35,7 +35,21 @@ export function appendMessage(
   if (!data) return undefined;
   if (data.pages.some((p) => p.some((m) => m.id === message.id))) return data;
   const pages = data.pages.slice();
-  pages[0] = [...(pages[0] ?? []), message];
+  const withMessage = [...(pages[0] ?? []), message];
+  withMessage.sort((a, b) => (a.seq ?? a.id) - (b.seq ?? b.id));
+  pages[0] = withMessage;
+  return { ...data, pages };
+}
+
+export function moveMessage(data: MessagePages | undefined, messageId: number, seq: number): MessagePages | undefined {
+  if (!data) return undefined;
+  let found = false;
+  const pages = data.pages.map((page) => page.map((message) => {
+    if (message.id !== messageId) return message;
+    found = true;
+    return { ...message, seq };
+  }));
+  if (!found) return data;
   return { ...data, pages };
 }
 
@@ -377,6 +391,16 @@ export function applyWsEvent(
       // message presentation is patched. Refresh any open file browsers too;
       // ordinary edits make this a cheap no-op while their queries are idle.
       void qc.invalidateQueries({ queryKey: ["attachments", message.channel_id] });
+      break;
+    }
+    case "message_move": {
+      const queryKey = keys.messages(ev.channel_id, ev.thread_id);
+      const data = qc.getQueryData<MessagePages>(queryKey);
+      const next = moveMessage(data, ev.message_id, ev.seq);
+      qc.setQueryData<MessagePages>(queryKey, next);
+      if (data && next === data) {
+        void qc.invalidateQueries({ queryKey });
+      }
       break;
     }
     case "message_delete": {

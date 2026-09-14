@@ -330,7 +330,9 @@ export function useMessages(channelId: string, threadId: number | null) {
     // Older page cursor: the oldest id we have. A short page means we hit
     // the start of history.
     getNextPageParam: (lastPage) =>
-      lastPage.length < PAGE_SIZE ? undefined : lastPage[0]?.id,
+      lastPage.length < PAGE_SIZE ? undefined : lastPage.reduce((oldest, message) =>
+        (message.seq ?? message.id) < (oldest?.seq ?? oldest?.id ?? Infinity) ? message : oldest,
+      undefined as Message | undefined)?.id,
     enabled: !!channelId,
   });
 }
@@ -338,7 +340,8 @@ export function useMessages(channelId: string, threadId: number | null) {
 /** Flatten pages into chronological (oldest-first) order. */
 export function flattenMessages(data: MessagePages | undefined): Message[] {
   if (!data) return [];
-  return [...data.pages].reverse().flat();
+  return [...data.pages].reverse().flat().sort((a, b) =>
+    (a.seq ?? a.id) - (b.seq ?? b.id));
 }
 
 /** Platform-neutral multipart part. On web, `part` is a browser File (its

@@ -2,7 +2,8 @@
 
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
+import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
+import { flattenMessages } from "../src/api/queries";
 import { keys } from "../src/api/keys";
 import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
@@ -21,6 +22,10 @@ describe("appendMessage", () => {
     expect(next!.pages[0].map(m => m.id)).toEqual([3, 4, 5]);
     expect(next!.pages[1].map(m => m.id)).toEqual([1, 2]);
   });
+  it("inserts by seq even when ids arrived in a different order", () => {
+    const next = appendMessage({ pages: [[{ ...msg(9), seq: 30 }, { ...msg(8), seq: 40 }]], pageParams: [undefined] }, { ...msg(7), seq: 35 });
+    expect(next!.pages[0].map(m => m.id)).toEqual([9, 7, 8]);
+  });
   it("dedupes an id that already landed (own POST + WS echo)", () => {
     const next = appendMessage(pages([3, 4]), msg(4));
     expect(next!.pages[0].map(m => m.id)).toEqual([3, 4]);
@@ -28,6 +33,21 @@ describe("appendMessage", () => {
   it("starts a page set when the cache is empty", () => {
     const next = appendMessage(undefined, msg(1));
     expect(next === undefined || next.pages.flat().some(m => m.id === 1)).toBe(true);
+  });
+});
+
+describe("moveMessage", () => {
+  it("updates a message in place without changing page lengths", () => {
+    const next = moveMessage({ pages: [[{ ...msg(5), seq: 50 }], [{ ...msg(2), seq: 20 }, { ...msg(3), seq: 30 }]], pageParams: [undefined, undefined] }, 2, 60);
+    expect(next!.pages[0].map(m => m.id)).toEqual([5]);
+    expect(next!.pages[1].map(m => m.id)).toEqual([2, 3]);
+  });
+});
+
+describe("flattenMessages", () => {
+  it("sorts messages by seq across pages after a move", () => {
+    const result = flattenMessages({ pages: [[{ ...msg(3), seq: 30 }], [{ ...msg(1), seq: 10 }, { ...msg(2), seq: 40 }]], pageParams: [undefined, undefined] });
+    expect(result.map(m => m.id)).toEqual([1, 3, 2]);
   });
 });
 
@@ -260,5 +280,21 @@ describe("applyWsEvent message dedupe", () => {
     });
     applyMessageDelete(qc, ev);
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
+});
+
+describe("message_move events", () => {
+  it("relocates the cached message", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), { pages: [[{ ...msg(3), seq: 30 }], [{ ...msg(1), seq: 10 }]], pageParams: [undefined, undefined] });
+    applyWsEvent(qc, { type: "message_move", channel_id: "c1", thread_id: null, message_id: 1, seq: 40 }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages.flat().map(m => m.id)).toEqual([3, 1]);
+  });
+  it("invalidates the page when the moved message is not cached", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), { pages: [[]], pageParams: [undefined] });
+    applyWsEvent(qc, { type: "message_move", channel_id: "c1", thread_id: null, message_id: 99, seq: 40 }, { username: "me" });
+    await Promise.resolve();
+    expect(qc.getQueryState(keys.messages("c1", null))?.isInvalidated).toBe(true);
   });
 });
