@@ -339,6 +339,8 @@ export interface ReactionReactor {
 
 export interface Message {
   id: number;
+  /** Monotonic display order; older servers omit it and clients use id. */
+  seq?: number;
   channel_id: string;
   thread_id: number | null;
   author_type: "user" | "agent";
@@ -576,6 +578,14 @@ export interface MessageUpdateEvent {
   message: Message;
 }
 
+export interface MessageMoveEvent {
+  type: "message_move";
+  channel_id: string;
+  thread_id: number | null;
+  message_id: number;
+  seq: number;
+}
+
 /** A message was deleted (sender or an admin). A null thread_id means a
     top-level message went — roots take their whole thread with them. */
 export interface MessageDeleteEvent {
@@ -590,6 +600,7 @@ export type WsEvent =
   | ProgressEvent
   | MessageEvent
   | MessageUpdateEvent
+  | MessageMoveEvent
   | MessageDeleteEvent
   | ReadEvent
   | ThreadReadEvent

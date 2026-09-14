@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
+import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
 import { keys } from "../src/api/keys";
 import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
@@ -21,6 +21,10 @@ describe("appendMessage", () => {
     expect(next!.pages[0].map(m => m.id)).toEqual([3, 4, 5]);
     expect(next!.pages[1].map(m => m.id)).toEqual([1, 2]);
   });
+  it("inserts by seq even when ids arrived in a different order", () => {
+    const next = appendMessage({ pages: [[{ ...msg(9), seq: 30 }, { ...msg(8), seq: 40 }]], pageParams: [undefined] }, { ...msg(7), seq: 35 });
+    expect(next!.pages[0].map(m => m.id)).toEqual([9, 7, 8]);
+  });
   it("dedupes an id that already landed (own POST + WS echo)", () => {
     const next = appendMessage(pages([3, 4]), msg(4));
     expect(next!.pages[0].map(m => m.id)).toEqual([3, 4]);
@@ -28,6 +32,14 @@ describe("appendMessage", () => {
   it("starts a page set when the cache is empty", () => {
     const next = appendMessage(undefined, msg(1));
     expect(next === undefined || next.pages.flat().some(m => m.id === 1)).toBe(true);
+  });
+});
+
+describe("moveMessage", () => {
+  it("moves a message from an older page to the newest page in seq order", () => {
+    const next = moveMessage({ pages: [[{ ...msg(5), seq: 50 }], [{ ...msg(2), seq: 20 }, { ...msg(3), seq: 30 }]], pageParams: [undefined, undefined] }, 2, 60);
+    expect(next!.pages[0].map(m => m.id)).toEqual([5, 2]);
+    expect(next!.pages[1]).toEqual([{ ...msg(3), seq: 30 }]);
   });
 });
 
@@ -260,5 +272,14 @@ describe("applyWsEvent message dedupe", () => {
     });
     applyMessageDelete(qc, ev);
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+  });
+});
+
+describe("message_move events", () => {
+  it("relocates the cached message", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), { pages: [[{ ...msg(3), seq: 30 }], [{ ...msg(1), seq: 10 }]], pageParams: [undefined, undefined] });
+    applyWsEvent(qc, { type: "message_move", channel_id: "c1", thread_id: null, message_id: 1, seq: 40 }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages.flat().map(m => m.id)).toEqual([3, 1]);
   });
 });
