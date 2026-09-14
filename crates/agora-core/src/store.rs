@@ -360,8 +360,8 @@ fn migrate(conn: &Connection) {
     }
     if !has_column("messages", "seq") {
         conn.execute("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0", []).unwrap();
-        conn.execute("UPDATE messages SET seq = id WHERE seq = 0", []).unwrap();
     }
+    conn.execute("UPDATE messages SET seq = id WHERE seq = 0", []).unwrap();
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq)", []).unwrap();
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq)", []).unwrap();
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq)", []).unwrap();
@@ -1988,7 +1988,7 @@ impl Store {
         let seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM messages", [], |r| r.get(0)).ok()?;
         let changed = conn.execute(
             "UPDATE messages SET seq = ?1 WHERE id = ?2 AND channel_id = ?3 AND author_type = 'user' \
-             AND EXISTS (SELECT 1 FROM reactions WHERE message_id = ?2 AND reactor_type = 'agent' AND reactor_id = ?4)",
+             AND EXISTS (SELECT 1 FROM reactions WHERE message_id = ?2 AND reactor_type = 'agent' AND reactor_id = ?4 AND emoji IN ('⏳', '👀'))",
             params![seq, message_id, channel_id, agent_id],
         ).ok()?;
         drop(conn);
@@ -4599,7 +4599,29 @@ mod tests {
         s.delete_message(cursor["id"].as_i64().unwrap());
         assert_eq!(s.messages(cid, None, Some(cursor["id"].as_i64().unwrap()), 10).iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![second["id"].as_i64().unwrap()]);
         assert!(later["seq"].as_i64().unwrap() > moved["seq"].as_i64().unwrap());
-        assert_eq!(s.my_threads("tom", 10), Vec::<Value>::new());
+        let root = s.add_message(cid, "thread root", "user", "tom", None, None, &[]);
+        let reply = s.add_message(cid, "thread reply", "user", "tom", None, Some(root["id"].as_i64().unwrap()), &[]);
+        s.add_agent_reaction("agent", "Agent", cid, reply["id"].as_i64().unwrap(), "👀");
+        s.bump_message_seq(cid, reply["id"].as_i64().unwrap(), "agent");
+        assert_eq!(s.my_threads("tom", 10)[0]["root"]["id"], root["id"]);
+    }
+
+    #[test]
+    fn seq_backfill_repairs_zero_rows_on_every_open() {
+        let dir = std::env::temp_dir().join(format!("agora_seq_repair_{}", new_token()));
+        let path = dir.join("agora.db");
+        let s = Store::open(&path).unwrap();
+        let g = s.create_group("G", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        s.add_message(cid, "one", "user", "tom", None, None, &[]);
+        s.add_message(cid, "two", "user", "tom", None, None, &[]);
+        s.conn.lock().unwrap().execute("UPDATE messages SET seq = 0", []).unwrap();
+        drop(s);
+        let reopened = Store::open(&path).unwrap();
+        let rows = reopened.messages(cid, None, None, 10);
+        assert_eq!(rows.iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

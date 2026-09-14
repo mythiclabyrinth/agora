@@ -4073,6 +4073,11 @@ mod tests {
         h.handle_agent_frame_from(member_conn, &json!({"type":"claim", "agent_id":"bot-a", "channel_id":cid, "message_id":human_id}));
         let moved = last_frame(&mut rx_ui, "message_move").unwrap();
         assert_eq!(moved["message_id"], human_id);
+        let thumbs = h.store.add_message(&cid, "thumbs only", "user", "tom", None, None, &[]);
+        let thumbs_id = thumbs["id"].as_i64().unwrap();
+        h.store.add_agent_reaction("bot-a", "Bot A", &cid, thumbs_id, "👍");
+        h.handle_agent_frame_from(member_conn, &json!({"type":"claim", "agent_id":"bot-a", "channel_id":cid, "message_id":thumbs_id}));
+        assert!(last_frame(&mut rx_ui, "message_move").is_none());
         let other_human = h.store.add_message(&cid, "other queued", "user", "tom", None, None, &[]);
         let other_id = other_human["id"].as_i64().unwrap();
         h.store.add_agent_reaction("bot-b", "Bot B", &cid, other_id, "⏳");

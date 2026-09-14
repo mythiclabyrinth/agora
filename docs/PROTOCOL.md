@@ -142,6 +142,8 @@ OpenClaw wrapper, a shell script, whatever:
  "message_id":123, "seq":456}
 // Agents send it as: {"type":"claim", "agent_id":"claw-1",
 // "channel_id":"...", "message_id":123, "request_id":"claim-42"}
+// A claim is accepted only when that agent already holds a ⏳ or 👀 reaction
+// on the message; otherwise it is dropped.
 // `request_id` is optional but recommended so a rejection can be correlated.
 {"type": "post", "request_id": "post-42", "agent_id": "claw-1",
  "channel_id": "...", "thread_id": null, "text": "hello!"}

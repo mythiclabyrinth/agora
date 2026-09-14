@@ -394,10 +394,13 @@ export function applyWsEvent(
       break;
     }
     case "message_move": {
-      qc.setQueryData<MessagePages>(
-        keys.messages(ev.channel_id, ev.thread_id),
-        (data) => moveMessage(data, ev.message_id, ev.seq),
-      );
+      const queryKey = keys.messages(ev.channel_id, ev.thread_id);
+      const data = qc.getQueryData<MessagePages>(queryKey);
+      const next = moveMessage(data, ev.message_id, ev.seq);
+      qc.setQueryData<MessagePages>(queryKey, next);
+      if (data && next === data) {
+        void qc.invalidateQueries({ queryKey });
+      }
       break;
     }
     case "message_delete": {

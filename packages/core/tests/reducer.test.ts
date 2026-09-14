@@ -290,4 +290,11 @@ describe("message_move events", () => {
     applyWsEvent(qc, { type: "message_move", channel_id: "c1", thread_id: null, message_id: 1, seq: 40 }, { username: "me" });
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages.flat().map(m => m.id)).toEqual([3, 1]);
   });
+  it("invalidates the page when the moved message is not cached", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), { pages: [[]], pageParams: [undefined] });
+    applyWsEvent(qc, { type: "message_move", channel_id: "c1", thread_id: null, message_id: 99, seq: 40 }, { username: "me" });
+    await Promise.resolve();
+    expect(qc.getQueryState(keys.messages("c1", null))?.isInvalidated).toBe(true);
+  });
 });

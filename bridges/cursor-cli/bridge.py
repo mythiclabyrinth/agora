@@ -660,9 +660,10 @@ class Bridge:
 
     def claim(self, frame: dict) -> None:
         message_id = frame.get("message_id")
-        if message_id:
+        channel_id = frame.get("channel_id")
+        if message_id and channel_id:
             self.send({"type": "claim", "agent_id": self.agent_id,
-                       "channel_id": frame["channel_id"], "message_id": message_id,
+                       "channel_id": channel_id, "message_id": message_id,
                        "request_id": f"claim-{time.time_ns()}"})
 
     def set_reaction(self, frame: dict, emoji: str, *, remember: bool = True) -> None:
