@@ -135,6 +135,21 @@ export function MessageItem({
       </Pressable>
     ) : null;
 
+  /* A named thread tells its roots apart when the text cannot — a channel of
+     identical "/new ~/project" roots is otherwise unreadable. Sits opposite the
+     reply count and takes the space left by the message-sized bubble. */
+  const threadName = (message.alias || "").trim();
+  const threadFoot = replies ? (
+    <View style={styles.threadFoot}>
+      {replies}
+      {threadName ? (
+        <Text style={styles.threadAlias} numberOfLines={1}>
+          {threadName}
+        </Text>
+      ) : null}
+    </View>
+  ) : null;
+
   /* Long-press-to-star must NOT come from a Pressable wrapping the bubble:
      on the iOS new architecture a parent Pressable steals the pan gesture
      from a nested horizontal ScrollView (facebook/react-native#56879), which
@@ -172,7 +187,7 @@ export function MessageItem({
             {flags}
             <Text style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
           </View>
-          {replies}
+          {threadFoot}
         </View>
       </View>
     );
@@ -215,7 +230,7 @@ export function MessageItem({
         <MessageTable message={message} />
         <MessageOptions message={message} />
         <Reactions message={message} />
-        {replies}
+        {threadFoot}
       </View>
     </View>
   );
@@ -280,6 +295,26 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     fontWeight: "600",
     marginTop: 4,
+  },
+  /* Reply count left, thread name right. The bubble is sized by its message, so
+     the room for a name varies per row: `flex: 1` gives the name whatever is
+     left beside the count and truncates only at that limit, rather than
+     reserving one width for every bubble and clipping names that had space to
+     spare. RN defaults flexShrink to 0, so the count keeps its full size and
+     the name is what yields — which also keeps this safe on a 320pt device,
+     where a fixed width could overflow instead of truncating. */
+  threadFoot: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  threadAlias: {
+    flex: 1,
+    marginTop: 4,
+    color: colors.faint,
+    fontSize: 10.5,
+    fontWeight: "600",
+    textAlign: "right",
   },
   options: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   optionBtn: {

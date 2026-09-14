@@ -13,6 +13,7 @@ import { MessageItem } from "./MessageItem";
 import { SectionRail } from "./SectionRail";
 
 const AT_BOTTOM_PX = 48;
+const NEAR_TOP_PX = 400;
 const MAX_JUMP_PAGES = 10;
 
 export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
@@ -25,12 +26,18 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
   const q = useMessages(channelId, null);
   const markRead = useMarkRead(channelId);
   const messages = useMemo(() => flattenMessages(q.data), [q.data]);
+  const jumpTarget = useJump(s => s.target);
+  const jumpClear = useJump(s => s.clear);
 
   const boxRef = useRef<HTMLDivElement>(null);
   const dividerRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);           // was the user at the bottom pre-render?
   const landOnDividerRef = useRef(false);
   const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track the oldest rendered row while an older page is in flight. Its
+  // movement measures only content inserted above it, unlike scrollHeight,
+  // which also changes for live messages and late-loading media below it.
+  const anchorRef = useRef<{ mid: number; top: number; pages: number } | null>(null);
 
   const channel = groups.flatMap(g => g.channels || []).find(c => c.id === channelId);
   const unread = channel?.unread || 0;
@@ -44,6 +51,7 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     dividerAfterRef.current = unread > 0 ? (channel?.last_read_id || 0) : null;
     landOnDividerRef.current = dividerAfterRef.current != null;
     stickRef.current = true;
+    anchorRef.current = null;  // never restore one channel's offset into another
   }
 
   const maybeMarkRead = () => {
@@ -57,17 +65,50 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     }, 400);
   };
 
+  /* Page one screen further back. The jump effect below drives its own paging
+     and scrolls the target into view, so the two must not run at once. */
+  const loadOlder = () => {
+    const box = boxRef.current;
+    if (!box || anchorRef.current || jumpTarget?.container === "log") return;
+    if (!q.hasNextPage || q.isFetchingNextPage) return;
+    const mid = messages[0]?.id;
+    const anchor = mid == null
+      ? null
+      : box.querySelector<HTMLElement>(`[data-mid="${mid}"]`);
+    if (!anchor) return;
+    const pages = q.data?.pages.length || 0;
+    anchorRef.current = { mid, top: anchor.offsetTop, pages };
+    void q.fetchNextPage().then(
+      result => {
+        // A growing page count is released by the layout effect after it has
+        // restored the reader. Empty/deduped results have no render to do it.
+        if ((result.data?.pages.length || 0) <= pages) anchorRef.current = null;
+      },
+      () => { anchorRef.current = null; },
+    );
+  };
+
   const onScroll = () => {
     const box = boxRef.current;
     if (!box) return;
     stickRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < AT_BOTTOM_PX;
     if (stickRef.current) maybeMarkRead();
+    if (box.scrollTop < NEAR_TOP_PX) loadOlder();
   };
 
-  // Initial land + follow new messages while stuck to the bottom.
+  // Older page absorbed, initial land, then follow new messages while stuck to
+  // the bottom. Restore by the old first row's movement so unrelated growth
+  // elsewhere in the log cannot shift the reader.
   useLayoutEffect(() => {
     const box = boxRef.current;
     if (!box) return;
+    const anchor = anchorRef.current;
+    if (anchor && (q.data?.pages.length || 0) > anchor.pages) {
+      anchorRef.current = null;
+      const row = box.querySelector<HTMLElement>(`[data-mid="${anchor.mid}"]`);
+      if (row) box.scrollTop += row.offsetTop - anchor.top;
+      return;
+    }
     if (landOnDividerRef.current && dividerRef.current) {
       landOnDividerRef.current = false;
       stickRef.current = false;
@@ -75,14 +116,12 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     } else if (stickRef.current) {
       box.scrollTop = box.scrollHeight;
     }
-  }, [messages.length, channelId]);
+  }, [messages.length, channelId, q.data?.pages.length]);
 
   useEffect(() => { maybeMarkRead(); });
 
   /* Jump-to-message (search/stars): flash it when rendered; page older
      history in until it appears (newest-first pages, so "next" = older). */
-  const jumpTarget = useJump(s => s.target);
-  const jumpClear = useJump(s => s.clear);
   useEffect(() => {
     if (!jumpTarget || jumpTarget.container !== "log" || !boxRef.current) return;
     if (flashMessage(boxRef.current, jumpTarget.mid)) {
@@ -146,6 +185,17 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
       )}
       <div className="ago-log-wrap">
         <div className="ago-log" id="ago-log" ref={boxRef} onScroll={onScroll}>
+          {/* Mounted whenever older history exists, not just mid-fetch: toggling
+              it per fetch changes the content height right as the reader scrolls
+              up, which reads as a jump. The button is the keyboard-reachable
+              path to what scrolling does on its own. */}
+          <div className="ago-log-older" id="ago-log-older" aria-live="polite">
+            {q.hasNextPage && (
+              <button className="lnk" onClick={loadOlder} aria-busy={q.isFetchingNextPage}>
+                {q.isFetchingNextPage ? "Loading earlier messages…" : "Load earlier messages"}
+              </button>
+            )}
+          </div>
           {rows.length ? rows : (
             <div className="empty">
               <div className="glyph"><Icon name="message-circle" /></div>

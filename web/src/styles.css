@@ -858,6 +858,34 @@ select {
 .ago-thread-btn { color: var(--faint); opacity: 0; transition: opacity .15s ease; }
 .ago-bubble:hover .ago-thread-btn { opacity: 1; }
 .ago-thread-btn:hover, .ago-replies:hover { color: var(--a1); }
+/* A named thread's title, in the bubble's bottom-right corner. The bubble is
+   sized by its message, so the room available for a name varies per row:
+   `flex: 1 1 0` claims whatever is left on the line and truncates only at that
+   limit, rather than reserving one width for every bubble and clipping names
+   that had space to spare. The zero basis matters: `.bubble` is `max-width:
+   78%` and otherwise content-sized, so an `auto` basis would let a long name
+   *widen* the bubble past its message — the label must consume leftover space,
+   never create it. The `min-width` floor is what stops the hover buttons from
+   crushing the name to an ellipsis on a mid-width bubble (measured: 59px
+   without it); below that the whole foot wraps and the name takes the next
+   line at full width instead, so it needs no breakpoint of its own. No
+   `margin-left: auto` — an auto margin swallows free space *before* flex-grow
+   sees it, which would pin the box back to its content width; `text-align:
+   right` keeps a short name flush with the bubble edge instead. Plain dim
+   text, not a chip: a framed box reads as mostly-empty whenever the name is
+   short. */
+.ago-thread-alias {
+  flex: 1 1 0; min-width: 90px; margin-top: 6px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .01em; color: var(--faint);
+  text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* "Load earlier messages", at the top of a log that has more history. Both
+   states are one line tall so the row never changes height mid-scroll. */
+.ago-log-older {
+  display: flex; justify-content: center; align-items: center;
+  padding: 8px 0; font-size: 11.5px; line-height: 1.4; color: var(--faint);
+}
+.ago-log-older:empty { padding: 0; }
 .ago-del-btn:hover { color: #f87171; }
 .ago-del-btn.armed { opacity: 1; color: #f87171; font-weight: 700; }
 .ago-message-edit { display: grid; gap: 8px; margin-top: 4px; }

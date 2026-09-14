@@ -77,6 +77,38 @@ async function seed() {
     }
   }
   SEED.group = g.id;
+  await seedDeepHistory(g);
+}
+
+/* A channel deeper than one 50-message page, plus a long thread, for the
+   scroll-up paging checks. Two thread roots share identical text so only the
+   thread name can tell them apart. Idempotent by channel name. */
+async function seedDeepHistory(g) {
+  const fresh = (await api("/api/groups")).groups.find(x => x.id === g.id);
+  const existing = (fresh?.channels || []).find(x => x.name === "deep-history");
+  if (existing) return;
+  const deep = await api(`/api/groups/${g.id}/channels`, { name: "deep-history" });
+  for (let i = 1; i <= 120; i++) {
+    await api(`/api/channels/${deep.id}/messages`, { text: `deep history message ${i}` });
+  }
+  const named = await api(`/api/channels/${deep.id}/messages`, { text: "/new ~/Coding/Projects/agora" });
+  await api(`/api/channels/${deep.id}/messages`, { text: "a reply", thread_id: named.id });
+  await api(`/api/threads/${named.id}`, { alias: "Agora history paging" }, "PATCH");
+  // Same text, no name — the pair is the point.
+  const plain = await api(`/api/channels/${deep.id}/messages`, { text: "/new ~/Coding/Projects/agora" });
+  await api(`/api/channels/${deep.id}/messages`, { text: "a reply", thread_id: plain.id });
+  // A thread past one page, for the thread-pane paging check.
+  const deepThread = await api(`/api/channels/${deep.id}/messages`, { text: "deep thread root" });
+  await api(`/api/threads/${deepThread.id}`, { alias: "Deep reply thread" }, "PATCH");
+  for (let i = 1; i <= 70; i++) {
+    await api(`/api/channels/${deep.id}/messages`, { text: `deep reply ${i}`, thread_id: deepThread.id });
+  }
+  /* Keep these three out of the threads inbox. Hiding is inbox-only — the
+     channel log and thread pane still show them — so the inbox checks keep
+     the exact row set (and scroll geometry) they were written against. */
+  for (const id of [named.id, plain.id, deepThread.id]) {
+    await api(`/api/threads/${id}/hide`, {}, "PUT");
+  }
 }
 
 /* ---------- check runner ---------- */
@@ -224,6 +256,71 @@ async function main() {
     const link = log.locator('a[href="https://example.com/x"]');
     if (!(await link.count())) throw new Error("md link not rendered");
     if ((await link.first().getAttribute("target")) !== "_blank") throw new Error("link target");
+  });
+
+  /* The channel log loads one 50-message page; everything older is reachable
+     only by scrolling up, and the reader must not be thrown to the top when
+     the older rows prepend. */
+  await check("history: channel log pages older messages in on scroll-up", async () => {
+    await page.locator(".ago-chan", { hasText: "deep-history" }).first().click();
+    await page.waitForSelector('.ago-chan.active:has-text("deep-history")');
+    await page.locator("#ago-log .bubble").first().waitFor({ timeout: 8000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll("#ago-log .bubble").length >= 50, { timeout: 8000 });
+    const firstPage = await page.locator("#ago-log .bubble").count();
+    if (firstPage > 60) throw new Error(`first page loaded ${firstPage} bubbles, expected one 50-message page`);
+    if (!(await page.locator("#ago-log-older").count())) throw new Error("no load-earlier row on a channel with more history");
+
+    await page.$eval("#ago-log", el => { el.scrollTop = 0; });
+    await page.waitForFunction(
+      n => document.querySelectorAll("#ago-log .bubble").length > n,
+      firstPage, { timeout: 8000 });
+    const scrolled = await page.$eval("#ago-log", el => el.scrollTop);
+    if (scrolled <= 0) throw new Error("older page pinned the reader to the top instead of holding their place");
+    // The oldest message only exists below the first page.
+    await page.$eval("#ago-log", el => { el.scrollTop = 0; });
+    await page.locator("#ago-log .bubble", { hasText: "deep history message 1" }).first()
+      .waitFor({ timeout: 10000 });
+  });
+
+  /* A wall of identical "/new ~/project" roots is unreadable without the
+     thread name, and the name must not crowd the message body. */
+  await check("history: a named thread root shows its name beside the reply count", async () => {
+    const named = page.locator("#ago-log .bubble", { has: page.locator(".ago-thread-alias") }).first();
+    await named.waitFor({ timeout: 8000 });
+    const label = named.locator(".ago-thread-alias");
+    if ((await label.innerText()).trim() !== "Agora history paging") {
+      throw new Error(`unexpected thread name: ${await label.innerText()}`);
+    }
+    if (!(await named.locator(".ago-bubble-foot .ago-thread-alias").count())) {
+      throw new Error("thread name is not in the affordance row");
+    }
+    // Identical text, no name: the label is the only difference.
+    const roots = page.locator("#ago-log .bubble", { hasText: "/new ~/Coding/Projects/agora" });
+    if (await roots.count() < 2) throw new Error("expected both look-alike roots on screen");
+    const labelled = await roots.evaluateAll(
+      els => els.filter(e => e.querySelector(".ago-thread-alias")).length);
+    if (labelled !== 1) throw new Error(`expected exactly one labelled root, got ${labelled}`);
+  });
+
+  await check("history: thread pane pages older replies in on scroll-up", async () => {
+    await page.locator("#ago-log .bubble", { hasText: "deep thread root" }).first()
+      .locator(".ago-replies").click();
+    await page.waitForSelector("#ago-thread-log .bubble", { timeout: 8000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll("#ago-thread-log .bubble").length >= 50, { timeout: 8000 });
+    const sep = await page.$eval(".ago-thread-sep", el => el.textContent.trim());
+    if (sep !== "70 replies") throw new Error(`divider shows the loaded count, not the total: ${sep}`);
+    const firstPage = await page.locator("#ago-thread-log .bubble").count();
+    await page.$eval("#ago-thread-log", el => { el.scrollTop = 0; });
+    await page.waitForFunction(
+      n => document.querySelectorAll("#ago-thread-log .bubble").length > n,
+      firstPage, { timeout: 8000 });
+    await page.locator("#ago-thread-log .bubble", { hasText: "deep reply 1" }).first()
+      .waitFor({ timeout: 10000 });
+    await page.locator(".agora-thread .ago-head-actions button").last().click();
+    await page.locator(".ago-chan", { hasText: "general" }).first().click();
+    await page.waitForSelector("#ago-log .bubble");
   });
 
   await check("composer: Enter posts; log sticks to bottom", async () => {
