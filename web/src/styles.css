@@ -858,6 +858,21 @@ select {
 .ago-thread-btn { color: var(--faint); opacity: 0; transition: opacity .15s ease; }
 .ago-bubble:hover .ago-thread-btn { opacity: 1; }
 .ago-thread-btn:hover, .ago-replies:hover { color: var(--a1); }
+/* A named thread's title, beside its reply count. Deliberately not the accent
+   colour: it is a label, not another control. Truncates rather than stretching
+   the bubble. */
+.ago-thread-alias {
+  margin-top: 6px; max-width: 44ch; padding: 1px 6px; border-radius: 4px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .01em; color: var(--faint);
+  background: var(--panel-strong); border: 1px solid var(--border);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* "Load earlier messages", at the top of a log that has more history. Both
+   states are one line tall so the row never changes height mid-scroll. */
+.ago-log-older {
+  display: flex; justify-content: center; align-items: center;
+  padding: 8px 0; font-size: 11.5px; line-height: 1.4; color: var(--faint);
+}
 .ago-del-btn:hover { color: #f87171; }
 .ago-del-btn.armed { opacity: 1; color: #f87171; font-weight: 700; }
 .ago-message-edit { display: grid; gap: 8px; margin-top: 4px; }

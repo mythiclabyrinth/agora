@@ -120,6 +120,50 @@ export const CurrentUser: Story = {
   },
 };
 
+/* Two roots whose text is identical: only the thread name tells them apart. */
+export const NamedThreadRoot: Story = {
+  args: {
+    message: {
+      ...message,
+      author_type: "user",
+      author_id: "tom",
+      author_name: "Tom",
+      text: "/new ~/Coding/Projects/agora",
+      reactions: [],
+      reply_count: 83,
+      alias: "Agora history paging",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const label = await canvas.findByTitle("Agora history paging");
+    await expect(label).toBeVisible();
+    // The label belongs to the affordance row, never the message body.
+    await expect(label.closest(".ago-bubble-foot")).not.toBeNull();
+    await expect(canvas.getByText("83 replies →")).toBeVisible();
+  },
+};
+
+export const UnnamedThreadRoot: Story = {
+  args: {
+    message: {
+      ...message,
+      author_type: "user",
+      author_id: "tom",
+      author_name: "Tom",
+      text: "/new ~/Coding/Projects/agora",
+      reactions: [],
+      reply_count: 83,
+      alias: null,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("83 replies →")).resolves.toBeVisible();
+    expect(canvasElement.querySelector(".ago-thread-alias")).toBeNull();
+  },
+};
+
 export const EditedMessage: Story = {
   args: {
     message: {

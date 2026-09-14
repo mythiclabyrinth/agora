@@ -13,6 +13,7 @@ import { MessageItem } from "./MessageItem";
 import { SectionRail } from "./SectionRail";
 
 const AT_BOTTOM_PX = 48;
+const NEAR_TOP_PX = 400;
 const MAX_JUMP_PAGES = 10;
 
 export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
@@ -25,12 +26,18 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
   const q = useMessages(channelId, null);
   const markRead = useMarkRead(channelId);
   const messages = useMemo(() => flattenMessages(q.data), [q.data]);
+  const jumpTarget = useJump(s => s.target);
+  const jumpClear = useJump(s => s.clear);
 
   const boxRef = useRef<HTMLDivElement>(null);
   const dividerRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);           // was the user at the bottom pre-render?
   const landOnDividerRef = useRef(false);
   const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Pre-fetch scroll metrics for the older page in flight, so the prepended
+  // rows can be absorbed without moving the reader. Non-null also means "a
+  // page is already on its way", which keeps scroll events from stacking.
+  const anchorRef = useRef<{ h: number; t: number } | null>(null);
 
   const channel = groups.flatMap(g => g.channels || []).find(c => c.id === channelId);
   const unread = channel?.unread || 0;
@@ -44,6 +51,7 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     dividerAfterRef.current = unread > 0 ? (channel?.last_read_id || 0) : null;
     landOnDividerRef.current = dividerAfterRef.current != null;
     stickRef.current = true;
+    anchorRef.current = null;  // never restore one channel's offset into another
   }
 
   const maybeMarkRead = () => {
@@ -57,17 +65,37 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     }, 400);
   };
 
+  /* Page one screen further back. The jump effect below drives its own paging
+     and scrolls the target into view, so the two must not run at once. */
+  const loadOlder = () => {
+    const box = boxRef.current;
+    if (!box || anchorRef.current || jumpTarget) return;
+    if (!q.hasNextPage || q.isFetchingNextPage) return;
+    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop };
+    void q.fetchNextPage();
+  };
+
   const onScroll = () => {
     const box = boxRef.current;
     if (!box) return;
     stickRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < AT_BOTTOM_PX;
     if (stickRef.current) maybeMarkRead();
+    if (box.scrollTop < NEAR_TOP_PX) loadOlder();
   };
 
-  // Initial land + follow new messages while stuck to the bottom.
+  // Older page absorbed, initial land, then follow new messages while stuck to
+  // the bottom. Restoring by height *delta* rather than the saved offset keeps
+  // the reader's place no matter how tall the prepended rows turned out, and
+  // absorbs the "load earlier" row unmounting on the last page for free.
   useLayoutEffect(() => {
     const box = boxRef.current;
     if (!box) return;
+    const anchor = anchorRef.current;
+    if (anchor) {
+      anchorRef.current = null;
+      box.scrollTop = box.scrollHeight - anchor.h + anchor.t;
+      return;
+    }
     if (landOnDividerRef.current && dividerRef.current) {
       landOnDividerRef.current = false;
       stickRef.current = false;
@@ -79,10 +107,16 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
 
   useEffect(() => { maybeMarkRead(); });
 
+  /* Release the anchor once a fetch settles. The layout effect above claims it
+     first (useLayoutEffect runs before useEffect in a commit); this only sweeps
+     the case where the page changed nothing — a dedupe or an empty result — so
+     a settled fetch can never leave paging wedged. */
+  useEffect(() => {
+    if (!q.isFetchingNextPage) anchorRef.current = null;
+  }, [q.isFetchingNextPage]);
+
   /* Jump-to-message (search/stars): flash it when rendered; page older
      history in until it appears (newest-first pages, so "next" = older). */
-  const jumpTarget = useJump(s => s.target);
-  const jumpClear = useJump(s => s.clear);
   useEffect(() => {
     if (!jumpTarget || jumpTarget.container !== "log" || !boxRef.current) return;
     if (flashMessage(boxRef.current, jumpTarget.mid)) {
@@ -146,6 +180,19 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
       )}
       <div className="ago-log-wrap">
         <div className="ago-log" id="ago-log" ref={boxRef} onScroll={onScroll}>
+          {/* Mounted whenever older history exists, not just mid-fetch: toggling
+              it per fetch changes the content height right as the reader scrolls
+              up, which reads as a jump. The button is the keyboard-reachable
+              path to what scrolling does on its own. */}
+          {q.hasNextPage && (
+            <div className="ago-log-older" id="ago-log-older">
+              {q.isFetchingNextPage ? (
+                <span aria-live="polite">Loading earlier messages…</span>
+              ) : (
+                <button className="lnk" onClick={loadOlder}>Load earlier messages</button>
+              )}
+            </div>
+          )}
           {rows.length ? rows : (
             <div className="empty">
               <div className="glyph"><Icon name="message-circle" /></div>

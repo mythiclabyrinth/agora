@@ -193,6 +193,12 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
             {m.reply_count} repl{m.reply_count === 1 ? "y" : "ies"} →
           </button>
         )}
+        {/* A named thread tells its roots apart when the text cannot — a channel
+            of identical "/new ~/project" roots is otherwise unreadable. Lives in
+            the foot (already flex-wrap) so it can never crowd the message body. */}
+        {!inThread && !!m.reply_count && !!m.alias?.trim() && (
+          <span className="ago-thread-alias" title={m.alias.trim()}>{m.alias.trim()}</span>
+        )}
         {!inThread && (
           <button className="ago-thread-btn" title="Reply in thread" onClick={() => onOpenThread(m.id)}>
             <Icon name="corner-down-right" /> thread

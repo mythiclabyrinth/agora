@@ -21,32 +21,64 @@ import { LiveRows } from "./ChannelPane";
 import { LiveButton, LiveStrip, SpeakButton } from "./VoiceControls";
 
 const AT_BOTTOM_PX = 40;
+const NEAR_TOP_PX = 400;
 const MAX_JUMP_PAGES = 10;
 
-function ThreadLog({ root, replies, isAdmin, mentions }: {
+function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, onLoadOlder }: {
   root: Message;
   replies: Message[];
   isAdmin: boolean;
   mentions?: MentionIndex;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  onLoadOlder: () => void;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
-
-  const onScroll = () => {
-    const box = boxRef.current;
-    if (box) stickRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < AT_BOTTOM_PX;
-  };
-
-  // Fresh mount (new thread) starts at the bottom; afterwards only follow
-  // new replies while the reader is already at the bottom.
-  useLayoutEffect(() => {
-    const box = boxRef.current;
-    if (box && stickRef.current) box.scrollTop = box.scrollHeight;
-  }, [replies.length]);
+  // Pre-fetch scroll metrics for the older page in flight; see MessageLog.
+  const anchorRef = useRef<{ h: number; t: number } | null>(null);
 
   // Jump-to-message (search/stars landing in this thread): flash it.
   const jumpTarget = useJump(s => s.target);
   const jumpClear = useJump(s => s.clear);
+
+  /* The pane's jump effect drives its own paging and scrolls the target into
+     view, so scroll-paging must stand down while a jump is in flight. */
+  const loadOlder = () => {
+    const box = boxRef.current;
+    if (!box || anchorRef.current || jumpTarget) return;
+    if (!hasOlder || loadingOlder) return;
+    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop };
+    onLoadOlder();
+  };
+
+  const onScroll = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    stickRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < AT_BOTTOM_PX;
+    if (box.scrollTop < NEAR_TOP_PX) loadOlder();
+  };
+
+  // Absorb an older page without moving the reader; otherwise a fresh mount
+  // (new thread) starts at the bottom and afterwards we only follow new
+  // replies while the reader is already at the bottom.
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const anchor = anchorRef.current;
+    if (anchor) {
+      anchorRef.current = null;
+      box.scrollTop = box.scrollHeight - anchor.h + anchor.t;
+      return;
+    }
+    if (stickRef.current) box.scrollTop = box.scrollHeight;
+  }, [replies.length]);
+
+  // Sweep a settled fetch that changed nothing, so paging can't wedge.
+  useEffect(() => { if (!loadingOlder) anchorRef.current = null; }, [loadingOlder]);
+
+  const total = root.reply_count ?? replies.length;
+
   useEffect(() => {
     if (!jumpTarget || jumpTarget.container !== "thread" || !boxRef.current) return;
     if (flashMessage(boxRef.current, jumpTarget.mid)) {
@@ -61,7 +93,18 @@ function ThreadLog({ root, replies, isAdmin, mentions }: {
         data-root={root.id} onScroll={onScroll}>
         <MessageItem message={root} inThread isAdmin={isAdmin} mentions={mentions}
           onOpenThread={() => {}} />
-        <div className="ago-thread-sep">{replies.length} repl{replies.length === 1 ? "y" : "ies"}</div>
+        {/* The true total, not the loaded count — paging makes the difference
+            visible on threads past the first page. */}
+        <div className="ago-thread-sep">{total} repl{total === 1 ? "y" : "ies"}</div>
+        {hasOlder && (
+          <div className="ago-log-older" id="ago-thread-log-older">
+            {loadingOlder ? (
+              <span aria-live="polite">Loading earlier replies…</span>
+            ) : (
+              <button className="lnk" onClick={loadOlder}>Load earlier replies</button>
+            )}
+          </div>
+        )}
         {replies.map(m => (
           <MessageItem key={m.id} message={m} inThread isAdmin={isAdmin} mentions={mentions}
             onOpenThread={() => {}} />
@@ -195,7 +238,9 @@ export function ThreadPane() {
           </button>
         </div>
       </div>
-      <ThreadLog key={rootId} root={root} replies={replies} isAdmin={isAdmin} mentions={mentions} />
+      <ThreadLog key={rootId} root={root} replies={replies} isAdmin={isAdmin} mentions={mentions}
+        hasOlder={!!q.hasNextPage} loadingOlder={q.isFetchingNextPage}
+        onLoadOlder={() => void q.fetchNextPage()} />
       <LiveRows channelId={channel.id} threadId={rootId} />
       <LiveStrip channelId={channel.id} threadId={rootId} />
       <Composer channelId={channel.id} channelName={channel.name} groupId={channel.group_id} threadId={rootId}
