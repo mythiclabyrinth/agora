@@ -37,7 +37,7 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
   // Pre-fetch scroll metrics for the older page in flight, so the prepended
   // rows can be absorbed without moving the reader. Non-null also means "a
   // page is already on its way", which keeps scroll events from stacking.
-  const anchorRef = useRef<{ h: number; t: number } | null>(null);
+  const anchorRef = useRef<{ h: number; t: number; pages: number } | null>(null);
 
   const channel = groups.flatMap(g => g.channels || []).find(c => c.id === channelId);
   const unread = channel?.unread || 0;
@@ -69,10 +69,18 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
      and scrolls the target into view, so the two must not run at once. */
   const loadOlder = () => {
     const box = boxRef.current;
-    if (!box || anchorRef.current || jumpTarget) return;
+    if (!box || anchorRef.current || jumpTarget?.container === "log") return;
     if (!q.hasNextPage || q.isFetchingNextPage) return;
-    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop };
-    void q.fetchNextPage();
+    const pages = q.data?.pages.length || 0;
+    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop, pages };
+    void q.fetchNextPage().then(
+      result => {
+        // A growing page count is released by the layout effect after it has
+        // restored the reader. Empty/deduped results have no render to do it.
+        if ((result.data?.pages.length || 0) <= pages) anchorRef.current = null;
+      },
+      () => { anchorRef.current = null; },
+    );
   };
 
   const onScroll = () => {
@@ -85,13 +93,12 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
 
   // Older page absorbed, initial land, then follow new messages while stuck to
   // the bottom. Restoring by height *delta* rather than the saved offset keeps
-  // the reader's place no matter how tall the prepended rows turned out, and
-  // absorbs the "load earlier" row unmounting on the last page for free.
+  // the reader's place no matter how tall the prepended rows turned out.
   useLayoutEffect(() => {
     const box = boxRef.current;
     if (!box) return;
     const anchor = anchorRef.current;
-    if (anchor) {
+    if (anchor && (q.data?.pages.length || 0) > anchor.pages) {
       anchorRef.current = null;
       box.scrollTop = box.scrollHeight - anchor.h + anchor.t;
       return;
@@ -103,17 +110,9 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     } else if (stickRef.current) {
       box.scrollTop = box.scrollHeight;
     }
-  }, [messages.length, channelId]);
+  }, [messages.length, channelId, q.data?.pages.length]);
 
   useEffect(() => { maybeMarkRead(); });
-
-  /* Release the anchor once a fetch settles. The layout effect above claims it
-     first (useLayoutEffect runs before useEffect in a commit); this only sweeps
-     the case where the page changed nothing — a dedupe or an empty result — so
-     a settled fetch can never leave paging wedged. */
-  useEffect(() => {
-    if (!q.isFetchingNextPage) anchorRef.current = null;
-  }, [q.isFetchingNextPage]);
 
   /* Jump-to-message (search/stars): flash it when rendered; page older
      history in until it appears (newest-first pages, so "next" = older). */
@@ -184,15 +183,15 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
               it per fetch changes the content height right as the reader scrolls
               up, which reads as a jump. The button is the keyboard-reachable
               path to what scrolling does on its own. */}
-          {q.hasNextPage && (
-            <div className="ago-log-older" id="ago-log-older">
-              {q.isFetchingNextPage ? (
-                <span aria-live="polite">Loading earlier messages…</span>
+          <div className="ago-log-older" id="ago-log-older" aria-live="polite">
+            {q.hasNextPage && (
+              q.isFetchingNextPage ? (
+                <span>Loading earlier messages…</span>
               ) : (
                 <button className="lnk" onClick={loadOlder}>Load earlier messages</button>
-              )}
-            </div>
-          )}
+              )
+            )}
+          </div>
           {rows.length ? rows : (
             <div className="empty">
               <div className="glyph"><Icon name="message-circle" /></div>

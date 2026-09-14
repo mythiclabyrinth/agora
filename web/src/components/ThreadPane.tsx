@@ -24,19 +24,20 @@ const AT_BOTTOM_PX = 40;
 const NEAR_TOP_PX = 400;
 const MAX_JUMP_PAGES = 10;
 
-function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, onLoadOlder }: {
+function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, pageCount, onLoadOlder }: {
   root: Message;
   replies: Message[];
   isAdmin: boolean;
   mentions?: MentionIndex;
   hasOlder: boolean;
   loadingOlder: boolean;
-  onLoadOlder: () => void;
+  pageCount: number;
+  onLoadOlder: () => Promise<number>;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   // Pre-fetch scroll metrics for the older page in flight; see MessageLog.
-  const anchorRef = useRef<{ h: number; t: number } | null>(null);
+  const anchorRef = useRef<{ h: number; t: number; pages: number } | null>(null);
 
   // Jump-to-message (search/stars landing in this thread): flash it.
   const jumpTarget = useJump(s => s.target);
@@ -46,10 +47,18 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, o
      view, so scroll-paging must stand down while a jump is in flight. */
   const loadOlder = () => {
     const box = boxRef.current;
-    if (!box || anchorRef.current || jumpTarget) return;
+    if (!box || anchorRef.current || jumpTarget?.container === "thread") return;
     if (!hasOlder || loadingOlder) return;
-    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop };
-    onLoadOlder();
+    const pages = pageCount;
+    anchorRef.current = { h: box.scrollHeight, t: box.scrollTop, pages };
+    void onLoadOlder().then(
+      nextPageCount => {
+        // A growing page count is released by the layout effect after it has
+        // restored the reader. Empty/deduped results have no render to do it.
+        if (nextPageCount <= pages) anchorRef.current = null;
+      },
+      () => { anchorRef.current = null; },
+    );
   };
 
   const onScroll = () => {
@@ -66,18 +75,15 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, o
     const box = boxRef.current;
     if (!box) return;
     const anchor = anchorRef.current;
-    if (anchor) {
+    if (anchor && pageCount > anchor.pages) {
       anchorRef.current = null;
       box.scrollTop = box.scrollHeight - anchor.h + anchor.t;
       return;
     }
     if (stickRef.current) box.scrollTop = box.scrollHeight;
-  }, [replies.length]);
+  }, [replies.length, pageCount]);
 
-  // Sweep a settled fetch that changed nothing, so paging can't wedge.
-  useEffect(() => { if (!loadingOlder) anchorRef.current = null; }, [loadingOlder]);
-
-  const total = root.reply_count ?? replies.length;
+  const total = Math.max(root.reply_count ?? 0, replies.length);
 
   useEffect(() => {
     if (!jumpTarget || jumpTarget.container !== "thread" || !boxRef.current) return;
@@ -96,15 +102,15 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, o
         {/* The true total, not the loaded count — paging makes the difference
             visible on threads past the first page. */}
         <div className="ago-thread-sep">{total} repl{total === 1 ? "y" : "ies"}</div>
-        {hasOlder && (
-          <div className="ago-log-older" id="ago-thread-log-older">
-            {loadingOlder ? (
-              <span aria-live="polite">Loading earlier replies…</span>
+        <div className="ago-log-older" id="ago-thread-log-older" aria-live="polite">
+          {hasOlder && (
+            loadingOlder ? (
+              <span>Loading earlier replies…</span>
             ) : (
               <button className="lnk" onClick={loadOlder}>Load earlier replies</button>
-            )}
-          </div>
-        )}
+            )
+          )}
+        </div>
         {replies.map(m => (
           <MessageItem key={m.id} message={m} inThread isAdmin={isAdmin} mentions={mentions}
             onOpenThread={() => {}} />
@@ -240,7 +246,8 @@ export function ThreadPane() {
       </div>
       <ThreadLog key={rootId} root={root} replies={replies} isAdmin={isAdmin} mentions={mentions}
         hasOlder={!!q.hasNextPage} loadingOlder={q.isFetchingNextPage}
-        onLoadOlder={() => void q.fetchNextPage()} />
+        pageCount={q.data?.pages.length || 0}
+        onLoadOlder={() => q.fetchNextPage().then(result => result.data?.pages.length || 0)} />
       <LiveRows channelId={channel.id} threadId={rootId} />
       <LiveStrip channelId={channel.id} threadId={rootId} />
       <Composer channelId={channel.id} channelName={channel.name} groupId={channel.group_id} threadId={rootId}
