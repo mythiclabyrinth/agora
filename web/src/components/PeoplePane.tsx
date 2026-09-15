@@ -36,7 +36,7 @@ export function PeoplePane() {
       <div className="conn-panel" id="users-panel">
         <div className="conn-head">
           <b>People</b>
-          <button className="btn sm" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
+          <button className="btn sm" aria-label="Close people" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
         </div>
         <div className="conn-body">
           <h4>Users <span className="dim">— everyone with an account on this Agora</span></h4>

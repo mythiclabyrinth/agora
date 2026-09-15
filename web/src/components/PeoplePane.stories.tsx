@@ -47,3 +47,13 @@ export const UsersAndInvite: Story = {
     });
   },
 };
+
+export const PopulatedWorkspace: Story = {
+  parameters: { apiRoutes: {
+    ...meta.parameters.apiRoutes,
+    "GET /api/users": { users: [...fixtureUsers, ...["Maya Patel", "Lucas Chen", "Sofia Garcia", "Noah Wilson", "Amara Okafor", "Leo Martin", "Isla Thompson", "Arjun Mehta"].map((name, i) => ({
+      username: `demo-member-${i}`, display_name: name, email: `member-${i}@example.test`,
+      instance_role: i === 0 ? "admin" : "member", created_at: 1_750_000_000, disabled: i === 7,
+    }))] },
+  } },
+};

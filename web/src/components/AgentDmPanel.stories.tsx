@@ -43,3 +43,11 @@ export const NoNewAgents: Story = {
     await expect(within(canvasElement.ownerDocument.body).findByText("No new agents are available to message.")).resolves.toBeVisible();
   },
 };
+
+export const PopulatedAgents: Story = {
+  parameters: { apiRoutes: {
+    "GET /api/dms": { conversations: [], agents: ["Research assistant", "Code reviewer", "Design partner", "Project planner", "Writing assistant", "Data analyst", "Support assistant", "Release coordinator"].map((name, i) => ({
+      id: `demo-agent-${i}`, name, live: i % 3 !== 0, can_dm: true, is_public: i % 2 === 0,
+    })) },
+  } },
+};

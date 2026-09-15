@@ -385,3 +385,16 @@ export const RequireAgentDisabled: Story = {
     ).resolves.toHaveAttribute("aria-pressed", "false");
   },
 };
+
+export const ThreadToolbar: Story = {
+  args: { threadId: 42, onSetReplyInThread: undefined, voiceOK: true },
+  decorators: [(Story) => <div className="agora-thread" style={{ width: "min(720px, 100%)" }}><Story /></div>],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const bot = canvas.getByTitle("Choose which agents you're talking to").getBoundingClientRect();
+    const files = canvas.getByTitle("Attach files").getBoundingClientRect();
+    const input = canvas.getByPlaceholderText("Reply in thread…").getBoundingClientRect();
+    await expect(Math.abs(bot.top - files.top)).toBeLessThan(2);
+    await expect(bot.top).toBeGreaterThanOrEqual(input.bottom);
+  },
+};

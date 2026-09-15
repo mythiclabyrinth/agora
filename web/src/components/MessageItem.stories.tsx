@@ -341,3 +341,22 @@ export const GroupedChartControls: Story = {
   ...ChartControls,
   args: { ...ChartControls.args, grouped: true },
 };
+
+export const ConversationCards: Story = {
+  render: args => <>
+    <MessageItem {...args} message={{ ...message, id: 801, author_type: "agent", author_id: "codex", author_name: "Codex", text: "The release checklist is ready. I’ve checked the desktop and phone layouts.", reactions: [], meta: {} }} />
+    <MessageItem {...args} message={{ ...message, id: 802, author_type: "user", author_id: "tom", author_name: "Tom", text: "Thanks. Please include the settings and member lists in the review too.", reactions: [], meta: {} }} />
+    <MessageItem {...args} message={{ ...message, id: 803, author_type: "user", author_id: "alice", author_name: "Alice", text: "I’ll check the populated roster and long names on my phone.", reactions: [], meta: {} }} />
+  </>,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector(".ago-msg-row.is-mine")).not.toBeNull());
+    const own = canvasElement.querySelector(".ago-msg-row.is-mine")!;
+    const peer = canvasElement.querySelector(".ago-msg-row.is-peer")!;
+    expect(own.getBoundingClientRect().left).toBeGreaterThan(peer.getBoundingClientRect().left);
+    for (const bubble of canvasElement.querySelectorAll(".bubble")) {
+      expect(parseFloat(getComputedStyle(bubble).borderTopWidth)).toBeGreaterThan(0);
+      const prose = bubble.querySelector(".md-text-segment")!;
+      expect(prose.scrollWidth).toBeLessThanOrEqual(prose.clientWidth + 1);
+    }
+  },
+};

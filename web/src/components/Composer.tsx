@@ -474,13 +474,6 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
           e.preventDefault();
           if (e.dataTransfer?.files?.length) addDroppedFiles(e.dataTransfer.files);
         }}>
-        {agents.length > 0 && (
-          <button className={`btn ago-addr-btn ${addrSel.length ? "active" : ""}`}
-            title="Choose which agents you're talking to"
-            onClick={() => setAddrOpen(!addrOpen)}>
-            <Icon name="bot" />{addrSel.length ? <span className="ago-addr-count">{addrSel.length}</span> : null}
-          </button>
-        )}
         <textarea id={inputId} ref={taRef} rows={1}
           placeholder={inThread ? "Reply in thread…" : `Message #${channelName}`}
           title="@mention an agent to address it directly"
@@ -515,6 +508,13 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         )}
         <input ref={fileRef} type="file" multiple style={{ display: "none" }}
           onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+        {agents.length > 0 && (
+          <button className={`btn ago-addr-btn ${addrSel.length ? "active" : ""}`}
+            title="Choose which agents you're talking to"
+            onClick={() => setAddrOpen(!addrOpen)}>
+            <Icon name="bot" />{addrSel.length ? <span className="ago-addr-count">{addrSel.length}</span> : null}
+          </button>
+        )}
         <button className="btn ago-attach-btn" title="Attach files"
           onClick={() => fileRef.current?.click()}>
           <Icon name="paperclip" />

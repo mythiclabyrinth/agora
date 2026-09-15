@@ -195,3 +195,13 @@ export const LongChannelNames: Story = {
     }),
   },
 };
+
+export const PopulatedRoster: Story = {
+  parameters: { apiRoutes: {
+    ...routes,
+    "GET /api/groups/product/members": { members: [...fixtureMembers, ...["Maya Patel", "Lucas Chen", "Sofia Garcia", "Noah Wilson", "Amara Okafor", "Leo Martin", "Isla Thompson", "Arjun Mehta"].map((name, i) => ({
+      channel_id: null, member_type: "user", member_id: `demo-member-${i}`, name,
+      role: i === 0 ? "admin" : "member", added_at: 1_750_000_000,
+    }))] },
+  } },
+};

@@ -2375,11 +2375,11 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .ago-hint-banner .ago-x { opacity: 1; }
 .ago-log { gap: 4px; }
 .ago-msg-row { width: 100%; padding: 10px 8px 4px; gap: var(--space-3); border-radius: var(--radius-sm); }
-.ago-msg-row:hover { background: var(--panel); }
+.ago-msg-row:hover { background: transparent; }
 .ago-msg-row > .ago-av { width: 32px; height: 32px; border-radius: 10px; margin-top: 2px; }
 .ago-person-avatar { font-size: 11px; font-weight: 700; color: var(--a2); background: rgba(56,225,200,.09); }
 .ago-person-avatar.mine { color: #c3baff; background: rgba(139,124,255,.15); }
-.ago-msg-row .bubble.ago-bubble { width: 100%; max-width: 100%; padding: 0; background: transparent; border: 0; border-radius: 0; font-size: 14px; line-height: 1.65; }
+.ago-msg-row .bubble.ago-bubble { width: 100%; max-width: 100%; padding: 12px 16px; background: #121620; border: 1px solid var(--border-strong); border-radius: 12px; font-size: 14px; line-height: 1.65; }
 .ago-msg-row .who { text-transform: none; letter-spacing: 0; font-size: 13px; margin-bottom: 3px; color: var(--text); }
 .ago-msg-row .who .bubble-ts { margin-left: 4px; font-weight: 400; font-size: 11px; color: var(--faint); }
 .ago-msg-row.grouped { padding-top: 0; }
@@ -2395,8 +2395,8 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .ago-inbox-search { display: flex; align-items: center; gap: var(--space-3); margin: 16px 20px 8px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); color: var(--dim); }
 .ago-inbox-search input { width: 100%; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 14px; }
 .ago-inbox-search > span { font-size: 12px; white-space: nowrap; flex-shrink: 0; }
-.ago-inbox-list { gap: 0; }
-.ago-inbox-row { border-radius: 0; border: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 14px 12px; gap: 7px; }
+.ago-inbox-list { gap: 10px; }
+.ago-inbox-row { border-radius: 12px; border: 1px solid var(--border-strong); background: #121620; padding: 14px 12px; gap: 7px; }
 .ago-inbox-row.unread { background: rgba(139,124,255,.06); box-shadow: inset 3px 0 var(--a1); }
 .ago-inbox-main { border: 0; background: transparent; padding: 0; text-align: left; font: inherit; color: var(--text); cursor: pointer; }
 .ago-inbox-main .snippet { color: var(--text); font-size: 14px; }
@@ -2483,4 +2483,59 @@ input[type="checkbox"] { accent-color: var(--a1); }
   .ago-inbox-list .ago-inbox-actions { gap: 0; }
   .ago-inbox-list .ago-inbox-meta { gap: 2px; }
   .ago-inbox-list .ago-inbox-top .ts { font-size: 10px; }
+}
+
+/* Visible conversation boundaries, with the signed-in user's messages on the right. */
+.ago-msg-row.is-mine { width: 85%; align-self: flex-end; }
+.ago-msg-row.is-mine .bubble.ago-bubble { background: #211e36; border-color: rgba(163,148,255,.3); }
+.ago-msg-row.grouped .bubble.ago-bubble { border-radius: 10px; }
+.ago-msg-row .ago-message-menu { top: 2px; }
+.ago-inbox-search:focus-within { border-color: var(--a1); }
+.ago-inbox-search input:focus-visible { outline: none; }
+@media (max-width: 820px) {
+  .ago-msg-row.is-mine { width: 94%; }
+  .ago-msg-row .bubble.ago-bubble { padding: 10px 12px; }
+}
+
+/* Management surfaces share a framed header, inset cards, and scrollable body. */
+.conn-panel { width: min(780px, 100%); border-radius: 18px; background: #10141e; }
+.conn-head { flex-shrink: 0; min-height: 68px; padding: 16px 24px; font-size: 18px; font-weight: 650; }
+.conn-head > .btn { width: 36px; height: 36px; justify-content: center; }
+.conn-tabs { flex-shrink: 0; padding-left: 24px; padding-right: 24px; }
+.conn-body { min-height: 0; padding: 20px 24px 24px; overscroll-behavior: contain; }
+.conn-row { padding: 14px; border-radius: 12px; background: #151a26; border-color: var(--border-strong); gap: 12px; }
+.conn-row .conn-detail { margin-top: 5px; line-height: 1.5; }
+.conn-name { font-size: 14px; }
+.conn-hint { color: var(--dim); line-height: 1.6; }
+.conn-body h4 { font-size: 12px; letter-spacing: .04em; }
+.ai-section, .ai-section:first-of-type { padding: 16px; margin-top: 14px; border: 1px solid var(--border-strong); border-radius: 12px; background: #151a26; }
+.ai-section:first-of-type { margin-top: 0; }
+.ai-section-head h4 { font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--text); }
+.ai-row { grid-template-columns: 100px minmax(0, 1fr); margin-top: 12px; }
+.ai-row input, .ai-row select, .ai-key-row input { min-height: 38px; }
+.ai-toggle { min-height: 32px; }
+.ai-toggle input { width: 17px; height: 17px; }
+.ago-members-body { padding: 12px; overscroll-behavior: contain; }
+.ago-dm-agent { border: 1px solid var(--border-strong); border-radius: 12px; background: #151a26; }
+@media (max-width: 620px) {
+  .conn-overlay { padding: 10px; }
+  .conn-panel { max-height: calc(100dvh - 20px); }
+  #settings-panel.conn-panel { height: calc(100dvh - 20px); }
+  .conn-head { padding: 12px 16px; min-height: 60px; }
+  .conn-tabs { padding-left: 16px; padding-right: 16px; }
+  .conn-body { padding: 16px; }
+  .conn-row { padding: 12px; }
+  .conn-panel .btn, .conn-tab { min-height: 44px; }
+  .conn-panel input:not([type="checkbox"]), .conn-panel select, .conn-panel textarea { font-size: 16px; }
+  .ai-row { grid-template-columns: 1fr; gap: 4px; }
+  .ai-row > label { padding-top: 0; }
+  .ai-section, .ai-section:first-of-type { padding: 12px; }
+}
+
+.conn-panel[tabindex="-1"]:focus { outline: none; }
+.ago-member-card { background: #151a26; border-color: var(--border-strong); border-radius: 12px; }
+
+@media (max-width: 820px) {
+  .agora-main .chat-input, .agora-thread .chat-input { gap: 6px; }
+  .chat-input .btn { padding-left: 10px; padding-right: 10px; }
 }

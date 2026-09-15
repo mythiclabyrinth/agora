@@ -268,7 +268,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
     </div>
   );
 
-  return <div className={`ago-msg-row ${grouped && !pinned && !starred && !onTldr && !m.meta?.edited_at ? "grouped" : ""}`}>
+  return <div className={`ago-msg-row ${mine ? "is-mine" : "is-peer"} ${grouped && !pinned && !starred && !onTldr && !m.meta?.edited_at ? "grouped" : ""}`}>
     {m.author_type === "agent" ? <AgentAvatar agentId={m.author_id} /> : (
       <span className={`ago-av ago-person-avatar ${mine ? "mine" : ""}`} aria-hidden="true">
         {(m.author_name || m.author_id).slice(0, 2).toUpperCase()}
