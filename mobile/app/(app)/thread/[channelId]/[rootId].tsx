@@ -233,6 +233,10 @@ export default function ThreadScreen() {
   } = useSectionJump({ listRef, rows, atBottom, latestId });
   const [highlightedId, setHighlightedId] = useState<number | null>(null);
   const landedOnMessage = useRef<number | null>(null);
+  const deepLinkBaseRef = useRef(0);
+  useEffect(() => {
+    deepLinkBaseRef.current = replies.data?.pages.length || 0;
+  }, [targetMessageId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!targetMessageId || landedOnMessage.current === targetMessageId) return;
     const idx = rows.findIndex((row) => row.m.id === targetMessageId);
@@ -250,7 +254,9 @@ export default function ThreadScreen() {
       }, 300);
     } else if (thread.length && thread[0].id <= targetMessageId) {
       landedOnMessage.current = targetMessageId;
-    } else if ((replies.data?.pages.length || 0) >= MAX_DEEP_LINK_PAGES) {
+    } else if (
+      (replies.data?.pages.length || 0) - deepLinkBaseRef.current >= MAX_DEEP_LINK_PAGES
+    ) {
       landedOnMessage.current = targetMessageId;
     } else if (replies.hasNextPage && !replies.isFetchingNextPage) {
       void replies.fetchNextPage();

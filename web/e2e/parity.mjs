@@ -272,12 +272,20 @@ async function main() {
     if (firstPage > 60) throw new Error(`first page loaded ${firstPage} bubbles, expected one 50-message page`);
     if (!(await page.locator("#ago-log-older").count())) throw new Error("no load-earlier row on a channel with more history");
 
-    await page.$eval("#ago-log", el => { el.scrollTop = 0; });
+    const anchor = await page.$eval("#ago-log", el => {
+      el.scrollTop = 150;
+      const row = [...el.querySelectorAll(".bubble")].find(node =>
+        node.getBoundingClientRect().bottom > el.getBoundingClientRect().top);
+      return { mid: row?.getAttribute("data-mid"), top: row?.getBoundingClientRect().top };
+    });
+    if (!anchor.mid || anchor.top == null) throw new Error("no visible row to anchor before paging");
     await page.waitForFunction(
       n => document.querySelectorAll("#ago-log .bubble").length > n,
       firstPage, { timeout: 8000 });
-    const scrolled = await page.$eval("#ago-log", el => el.scrollTop);
-    if (scrolled <= 0) throw new Error("older page pinned the reader to the top instead of holding their place");
+    const anchoredTop = await page.locator(`#ago-log .bubble[data-mid="${anchor.mid}"]`)
+      .evaluate(el => el.getBoundingClientRect().top);
+    const drift = Math.abs(anchoredTop - anchor.top);
+    if (drift >= 3) throw new Error(`older page moved the anchor row by ${drift}px`);
     // The oldest message only exists below the first page.
     await page.$eval("#ago-log", el => { el.scrollTop = 0; });
     await page.locator("#ago-log .bubble", { hasText: "deep history message 1" }).first()
@@ -314,7 +322,10 @@ async function main() {
     if (!(await dialog.getByText("Agora history paging", { exact: true }).count())) {
       throw new Error("message info omitted the thread name");
     }
-    if (!(await dialog.getByText("1", { exact: true }).count())) {
+    const repliesRow = dialog.locator(".ago-message-info-row", {
+      has: page.locator("dt", { hasText: /^Replies$/ }),
+    });
+    if ((await repliesRow.locator("dd").innerText()).trim() !== "1") {
       throw new Error("message info omitted the reply count");
     }
     const latest = dialog.locator(".ago-message-info-row", { has: page.getByText("Latest reply", { exact: true }) });

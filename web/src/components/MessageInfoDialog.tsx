@@ -16,8 +16,8 @@ export function MessageInfoDialog({ message, groupId, onClose }: {
   groupId?: string;
   onClose: () => void;
 }) {
-  const panelRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
   const id = useId();
   const titleId = `${id}-title`;
@@ -34,12 +34,22 @@ export function MessageInfoDialog({ message, groupId, onClose }: {
     const previous = document.activeElement as HTMLElement | null;
     closeButtonRef.current?.focus();
     const keydown = (event: KeyboardEvent) => {
+      // Opened from the ⋯ popover: let Escape close only this dialog.
       if (event.key === "Escape") { event.stopPropagation(); closeRef.current(); }
-      if (event.key === "Tab") {
-        const controls = Array.from(panelRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") || []);
-        const first = controls[0], last = controls[controls.length - 1];
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      if (event.key !== "Tab" || !panelRef.current) return;
+      const focusable = [...panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !panelRef.current.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !panelRef.current.contains(active))) {
+        event.preventDefault();
+        first.focus();
       }
     };
     document.addEventListener("keydown", keydown);
