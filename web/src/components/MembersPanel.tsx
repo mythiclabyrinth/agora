@@ -320,7 +320,7 @@ export function MembersPanel() {
             const off = liveById[agent.id] === false;
             const agentInfo = agents.find(a => a.id === agent.id);
             return (
-              <div key={`a-${agent.id}`} className="ago-member ago-member-card ago-agent">
+              <div key={`a-${agent.id}`} className={`ago-member ago-member-card ago-agent ${channelFocused && agent.scopes.length === 1 && agent.scopes[0].channel_id && canManage(agent.scopes[0]) ? "compact-scope" : ""}`}>
                 <div className="ago-member-identity">
                   <AgentAvatar avatar={agentInfo?.avatar} small />
                   <span className="mname">{agent.name}</span>
@@ -381,7 +381,7 @@ export function MembersPanel() {
                       <button key={u.username} type="button" className="ago-add-option"
                         onClick={() => setAddPerson({ kind: "scope", user: u })}>
                         <span>{u.display_name || u.username}</span>
-                        <span className="dim">{u.username}</span>
+                        {u.display_name && u.display_name !== u.username ? <span className="dim">{u.username}</span> : null}
                       </button>
                     ))}
                   <button type="button" className="ago-add-cancel" onClick={() => setAddPerson(null)}>Cancel</button>
