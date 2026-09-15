@@ -338,6 +338,7 @@ async function main() {
     const label = "Parity template";
     const body = "reusable parity template body";
     const openPicker = async () => {
+      await page.locator(".chat-input textarea:visible").first().click();
       await page.click(".ago-template-btn");
       await page.waitForSelector(".ago-template-pop", { timeout: 5000 });
     };
@@ -404,7 +405,6 @@ async function main() {
   await check("reactions: pick emoji, chip appears, toggle off", async () => {
     const bubble = page.locator("#ago-log .bubble", { hasText: "seed plain message one" }).first();
     await bubble.hover();
-    await bubble.getByRole("button", { name: "More message actions" }).click();
     await bubble.locator(".ago-react-btn").click();
     await page.waitForSelector("#ago-emoji-pop", { timeout: 5000 });
     await page.locator("#ago-emoji-pop button").filter({ hasText: "👍" }).first().click();

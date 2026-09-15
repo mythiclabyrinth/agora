@@ -3,6 +3,7 @@
    the web UI's icons. */
 
 export const ICONS: Record<string, string> = {
+  ellipsis: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   "chevron-left": '<path d="m15 18-6-6 6-6"/>',

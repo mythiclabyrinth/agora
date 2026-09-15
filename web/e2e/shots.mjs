@@ -102,8 +102,7 @@ const FLOWS = [
     async run(page) {
       await settle(page);
       const bubble = page.locator(".bubble").first();
-      const menu = bubble.locator(".ago-message-menu");
-      if (await menu.isVisible()) { await bubble.hover(); await menu.click(); }
+      await bubble.hover();
       const opener = bubble.getByTitle("Reply in thread");
       if (await opener.count()) { await opener.click(); await sleep(600); }
     },

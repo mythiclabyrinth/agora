@@ -1,11 +1,12 @@
 /* Conversation row shared by channel history and thread replies. */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { create } from "zustand";
 import {
   fmtTs, tldrOf, useAgents, useDeleteMessage, useEditMessage, useMe, usePinMessage, usePins,
   FEATURES, useStarMessage, useStars, useTldrView, type LinkPreview, type Message,
 } from "@agora/core";
+import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
@@ -112,6 +113,13 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   const openPicker = useEmojiPicker(s => s.open);
   const groupId = useUiState(s => s.sel.g);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const menuId = useId();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!actionsOpen || !menuRef.current || !menuButtonRef.current) return;
+    return watchAnchoredOverlay(menuButtonRef.current, menuRef.current, "center");
+  }, [actionsOpen]);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(m.text);
   const editRef = useRef<HTMLTextAreaElement>(null);
@@ -137,6 +145,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   const openEdit = () => {
     setEditText(m.text);
     if (onTldr) toggleTldr(m.id);
+    menuRef.current?.hidePopover();
     setEditing(true);
   };
 
@@ -149,9 +158,14 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   };
 
   const bubble = (
-    <div className={`bubble ${cls} ago-bubble`} data-mid={m.id} title={fmtTs(m.ts)}>
-      <button className="ago-message-menu" aria-label="More message actions" aria-expanded={actionsOpen}
-        onClick={() => setActionsOpen(!actionsOpen)}><Icon name={actionsOpen ? "x" : "chevron-down"} /></button>
+    <div className={`bubble ${cls} ago-bubble`} data-mid={m.id} title={fmtTs(m.ts)}
+      onKeyDown={e => {
+        if (e.key === "Escape" && actionsOpen) {
+          e.stopPropagation();
+          menuRef.current?.hidePopover();
+          menuButtonRef.current?.focus();
+        }
+      }}>
       <div className="who">
         <span className="who-name">
           {(m.author_name || m.author_id)}{m.author_type === "agent" ? " · agent" : ""}
@@ -191,27 +205,16 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
       <MessageTableView message={m} />
       <MessageOptions message={m} />
       <Reactions message={m} onPick={(anchor) => openPicker(m.id, anchor)} />
-      <div className="ago-bubble-foot">
-        {!inThread && !!m.reply_count && (
-          <button className="ago-replies" onClick={() => onOpenThread(m.id)}>
-            {m.reply_count} repl{m.reply_count === 1 ? "y" : "ies"} →
-          </button>
-        )}
         <div className={`ago-message-actions ${actionsOpen ? "open" : ""}`}>
         {!inThread && (
           <button className="ago-thread-btn" title="Reply in thread" onClick={() => onOpenThread(m.id)}>
-            <Icon name="corner-down-right" /> thread
+            <Icon name="corner-down-right" />
           </button>
         )}
         <button className="ago-thread-btn ago-react-btn" title="Add reaction"
           onClick={e => openPicker(m.id, e.currentTarget)}>
-          <Icon name="smile" /> react
+          <Icon name="smile" />
         </button>
-        <button className="ago-thread-btn ago-message-more" aria-expanded={actionsOpen}
-          aria-label="More message actions" onClick={() => setActionsOpen(!actionsOpen)}>
-          {actionsOpen ? "Less" : "More"} <Icon name="chevron-down" />
-        </button>
-        <div className={`ago-message-secondary ${actionsOpen ? "open" : ""}`}>
         {groupId && (
           <button className="ago-thread-btn" title="Copy link to this message"
             onClick={() => void copyDeepLink({
@@ -221,9 +224,16 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
               threadId: m.thread_id,
               messageId: m.id,
             }, "Message")}>
-            <Icon name="link" /> link
+            <Icon name="link" />
           </button>
         )}
+        <button ref={menuButtonRef} className="ago-thread-btn ago-message-menu" aria-expanded={actionsOpen}
+          aria-label="More message actions" popoverTarget={menuId}>
+          <Icon name="ellipsis" />
+        </button>
+        <div id={menuId} ref={menuRef} popover="auto" className="ago-message-secondary"
+          aria-label="Additional message actions"
+          onToggle={e => setActionsOpen(e.newState === "open")}>
         {pinnable && (
           <button className={`ago-thread-btn ago-pin-btn ${pinned ? "pinned" : ""}`}
             title={pinned ? "Unpin this thread" : "Pin this thread for quick access"}
@@ -257,6 +267,12 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
         )}
         </div>
         </div>
+      <div className="ago-bubble-foot">
+        {!inThread && !!m.reply_count && (
+          <button className="ago-replies" onClick={() => onOpenThread(m.id)}>
+            {m.reply_count} repl{m.reply_count === 1 ? "y" : "ies"} →
+          </button>
+        )}
         {/* A named thread tells its roots apart when the text cannot — a channel
             of identical "/new ~/project" roots is otherwise unreadable. Last in
             the foot and pushed right by margin-left:auto, so it lands in the

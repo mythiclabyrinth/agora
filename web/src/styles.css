@@ -1433,7 +1433,7 @@ select {
 .agora-layout.thread-expanded .agora-main { display: none; }
 .agora-layout.thread-expanded .agora-thread { width: auto; flex: 1; min-width: 0; }
 .agora-layout.thread-expanded .ago-thread-log { padding: 22px; }
-.agora-layout.thread-expanded .agora-thread .bubble { max-width: 78%; }
+
 
 /* Docked to the side the thread header is 340px wide and the labelled actions
    push the thread name out, so they go icon-only and lean on their titles.
@@ -2452,24 +2452,6 @@ input[type="checkbox"] { accent-color: var(--a1); }
 /* Shared inline actions also appear outside the unread strip. */
 .lnk { border: 0; border-radius: 6px; background: transparent; padding: 4px 6px; color: var(--a1); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .lnk:hover { background: rgba(139,124,255,.08); text-decoration: underline; }
-.ago-message-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 10px; }
-.ago-message-menu { display: none; }
-@media (min-width: 821px) {
-  /* Reserve a separate gutter for disclosure. Neither the trigger nor its
-     expanded actions may cover links or artifact controls in the message. */
-  .ago-msg-row { padding-right: 40px; }
-  /* Keep offsetTop relative to the log for paging and section navigation. */
-  .ago-msg-row .bubble { position: relative; }
-  .ago-message-menu { display: flex; align-items: center; justify-content: center; position: absolute; right: -32px; top: 0; width: 28px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--dim); cursor: pointer; opacity: 0; }
-  .ago-msg-row:hover .ago-message-menu, .ago-msg-row:focus-within .ago-message-menu, .ago-message-menu[aria-expanded="true"] { opacity: 1; }
-  .ago-message-actions { display: none; }
-  .ago-message-actions.open { display: flex; flex-basis: 100%; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
-  .ago-message-actions .ago-thread-btn { opacity: 1; margin-top: 0; }
-}
-@media (min-width: 821px) and (hover: none) {
-  .ago-message-menu { opacity: 1; width: 44px; height: 44px; right: -48px; }
-  .ago-msg-row { padding-right: 56px; min-height: 48px; }
-}
 .ago-inbox-list .ago-inbox-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 2px; padding: 10px 12px; }
 .ago-inbox-list .ago-inbox-top { grid-column: 2; grid-row: 1; }
 .ago-inbox-list .ago-inbox-main { grid-column: 1; grid-row: 1; display: flex; align-items: center; min-height: 32px; min-width: 0; }
@@ -2538,4 +2520,39 @@ input[type="checkbox"] { accent-color: var(--a1); }
 @media (max-width: 820px) {
   .agora-main .chat-input, .agora-thread .chat-input { gap: 6px; }
   .chat-input .btn { padding-left: 10px; padding-right: 10px; }
+}
+
+/* Compact cards: one width constraint, no reserved action gutter. Keep rows
+   static so history paging and section navigation retain log-relative offsets. */
+.ago-log, .agora-layout.thread-expanded .ago-thread-log { padding: 12px; }
+.ago-msg-row { padding: 4px 0; gap: 8px; }
+.ago-msg-row.is-mine { width: 92%; }
+.ago-msg-row .bubble.ago-bubble { position: relative; padding: 8px 12px; line-height: 1.5; }
+.ago-msg-row .who, .ago-msg-row.grouped .who { position: static; width: auto; height: 28px; min-height: 28px; margin: 0 0 4px; padding: 0 126px 0 0; overflow: hidden; clip-path: none; white-space: nowrap; }
+.ago-msg-row .who-name { overflow: hidden; text-overflow: ellipsis; }
+.ago-message-actions { display: flex; position: absolute; right: 8px; top: 6px; gap: 2px; align-items: center; padding: 1px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-raised); opacity: 0; }
+.ago-msg-row:hover .ago-message-actions, .ago-msg-row:focus-within .ago-message-actions, .ago-message-actions.open { opacity: 1; pointer-events: auto; }
+.ago-message-actions > .ago-thread-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; min-height: 28px; margin: 0; padding: 0; opacity: 1; border-radius: 6px; }
+.ago-message-actions > .ago-thread-btn:hover { background: rgba(139,124,255,.14); }
+.ago-message-secondary { margin: 0; position: fixed; inset: auto; width: 188px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--elevation-panel); overflow-y: auto; }
+.ago-message-secondary:not(:popover-open) { display: none; }
+.ago-message-secondary:popover-open { display: flex; flex-direction: column; }
+.ago-message-secondary .ago-thread-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; margin: 0; padding: 8px; opacity: 1; text-align: left; border-radius: 6px; }
+.ago-message-secondary .ago-thread-btn:hover { background: rgba(139,124,255,.14); }
+.ago-message-secondary .ago-del-btn { color: #f18a91; }
+.ago-inbox-list { gap: 6px; }
+.ago-inbox-list .ago-inbox-row { padding: 6px 10px; }
+.ago-members-body { padding: 8px; }
+.conn-row { padding: 10px; gap: 8px; }
+.chat-input { flex-wrap: wrap; }
+.chat-input textarea { flex: 1 0 100%; width: 100%; }
+.chat-input .ago-composer-tools { display: flex; align-items: center; gap: 6px; width: 100%; }
+.chat-input:not(:focus-within):not(.has-draft):not(.tools-active):not(:has(.ago-mic.recording, .ago-template-pop, .ago-template-dialog)) .ago-composer-tools { display: none; }
+@media (max-width: 820px), (hover: none) {
+  .ago-msg-row.is-mine { width: 96%; }
+  .ago-msg-row .bubble.ago-bubble { padding: 6px 8px; }
+  .ago-msg-row .who, .ago-msg-row.grouped .who { height: auto; min-height: 22px; padding-right: 0; }
+  .ago-message-actions { position: static; justify-content: flex-end; opacity: 1; pointer-events: auto; margin-top: 2px; padding: 0; border: 0; background: transparent; }
+  .ago-message-actions > .ago-thread-btn { width: 44px; height: 44px; }
+  .ago-message-secondary .ago-thread-btn { min-height: 44px; }
 }

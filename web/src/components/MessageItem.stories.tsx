@@ -109,6 +109,7 @@ export const CurrentUser: Story = {
       .closest(".bubble");
     await expect(bubble).toHaveClass("user");
     expect(canvas.queryByText(/· agent/)).not.toBeInTheDocument();
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
     await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
     await userEvent.click(canvas.getByTitle("Edit this message"));
     const editor = canvas.getByRole("textbox", { name: "Edit message" });
@@ -302,8 +303,10 @@ export const PhoneMessageActions: Story = {
     const toggle = canvas.getByRole("button", { name: "More message actions" });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(canvas.getByTitle("Delete this message")).not.toBeVisible();
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
     await userEvent.click(toggle);
     await expect(canvas.getByTitle("Delete this message")).toBeVisible();
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
     await userEvent.click(toggle);
     await expect(canvas.getByTitle("Delete this message")).not.toBeVisible();
   },
@@ -324,7 +327,7 @@ export const ChartControls: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvasElement.querySelector(".ago-chart-block canvas")).not.toBeNull(), { timeout: 10000 });
-    await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
     const expand = canvas.getByRole("button", { name: "Expand chart: Activity" });
     expand.scrollIntoView({ block: "center" });
     const rect = expand.getBoundingClientRect();
@@ -358,5 +361,21 @@ export const ConversationCards: Story = {
       const prose = bubble.querySelector(".md-text-segment")!;
       expect(prose.scrollWidth).toBeLessThanOrEqual(prose.clientWidth + 1);
     }
+  },
+};
+
+export const ExpandedThreadWidth: Story = {
+  args: { inThread: true, message: { ...message, author_type: "user", author_id: "tom", text: "My reply uses the available thread width.", reactions: [], meta: {} } },
+  decorators: [Story => <div className="agora-layout thread-expanded"><div className="agora-thread" style={{ width: "100%" }}><Story /></div></div>],
+  play: async ({ canvasElement }) => {
+    const row = canvasElement.querySelector(".ago-msg-row")!;
+    const bubble = row.querySelector(".bubble")!;
+    expect(Math.abs(row.getBoundingClientRect().right - bubble.getBoundingClientRect().right)).toBeLessThan(2);
+    const height = row.getBoundingClientRect().height;
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "More message actions" }));
+    await expect(within(canvasElement).getByTitle("Delete this message")).toBeVisible();
+    expect(row.getBoundingClientRect().height).toBe(height);
+    await userEvent.keyboard("{Escape}");
+    await expect(within(canvasElement).getByTitle("Delete this message")).not.toBeVisible();
   },
 };
