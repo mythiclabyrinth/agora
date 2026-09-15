@@ -795,6 +795,22 @@ export function useMessage(messageId: number, enabled: boolean) {
   });
 }
 
+/** Newest reply for message details. Kept separate from the threads inbox,
+    which intentionally excludes threads the current user has hidden. */
+export function useLatestReply(channelId: string, rootId: number, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["latestReply", channelId, rootId] as const,
+    queryFn: async () => {
+      const result = await api.get<{ messages: Message[] }>(
+        `/api/channels/${channelId}/messages?thread_id=${rootId}&limit=1`,
+      );
+      return result.messages[0] ?? null;
+    },
+    enabled: enabled && !!channelId && rootId > 0,
+  });
+}
+
 /** Dismiss a thread from the inbox — the channel keeps its messages. */
 export function useHideThread() {
   const api = useApi();

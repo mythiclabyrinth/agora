@@ -311,6 +311,21 @@ async function main() {
     if (labelled !== 1) throw new Error(`expected exactly one labelled root, got ${labelled}`);
   });
 
+  await check("messages: info shows a thread name and reply count", async () => {
+    const named = page.locator("#ago-log .bubble", { has: page.locator(".ago-thread-alias") }).first();
+    await named.hover();
+    await named.locator(".ago-info-btn").click();
+    const dialog = page.getByRole("dialog", { name: "Message info" });
+    await dialog.waitFor();
+    if (!(await dialog.getByText("Agora history paging", { exact: true }).count())) {
+      throw new Error("message info omitted the thread name");
+    }
+    if (!(await dialog.getByText("1", { exact: true }).count())) {
+      throw new Error("message info omitted the reply count");
+    }
+    await dialog.getByTitle("Close message info").click();
+  });
+
   await check("history: thread pane pages older replies in on scroll-up", async () => {
     await page.locator("#ago-log .bubble", { hasText: "deep thread root" }).first()
       .locator(".ago-replies").click();
