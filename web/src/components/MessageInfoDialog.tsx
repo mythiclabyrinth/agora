@@ -17,6 +17,7 @@ export function MessageInfoDialog({ message, groupId, onClose }: {
   onClose: () => void;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
   const id = useId();
   const titleId = `${id}-title`;
@@ -34,6 +35,21 @@ export function MessageInfoDialog({ message, groupId, onClose }: {
     closeButtonRef.current?.focus();
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeRef.current();
+      if (event.key !== "Tab" || !panelRef.current) return;
+      const focusable = [...panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !panelRef.current.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !panelRef.current.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", keydown);
     return () => {
@@ -56,7 +72,7 @@ export function MessageInfoDialog({ message, groupId, onClose }: {
   return createPortal(
     <div className="conn-overlay" onClick={event => event.stopPropagation()}
       onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="conn-panel ago-message-info" role="dialog" aria-modal="true"
+      <section ref={panelRef} className="conn-panel ago-message-info" role="dialog" aria-modal="true"
         aria-labelledby={titleId}>
         <header className="ago-message-info-head">
           <h2 id={titleId}>Message info</h2>

@@ -2,7 +2,7 @@
    the "New" divider landed on when entering a channel with unreads, the
    jump-to-latest bar, and visible+focused+at-bottom mark-read. */
 
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import {
   flattenMessages, useGroups, useMarkRead, useMessages, type Message,
 } from "@agora/core";
@@ -38,6 +38,13 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
   const stickRef = useRef(true);           // was the user at the bottom pre-render?
   const landOnDividerRef = useRef(false);
   const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const olderButtonRef = useRef<HTMLButtonElement | null>(null);
+  const terminalRef = useRef<HTMLSpanElement>(null);
+  const focusTerminalRef = useRef(false);
+  const setOlderButtonRef = useCallback((node: HTMLButtonElement | null) => {
+    if (!node && olderButtonRef.current === document.activeElement) focusTerminalRef.current = true;
+    olderButtonRef.current = node;
+  }, []);
   // Track the oldest rendered row while an older page is in flight. Its
   // movement measures only content inserted above it, unlike scrollHeight,
   // which also changes for live messages and late-loading media below it.
@@ -122,6 +129,13 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     }
   }, [messages.length, channelId, q.data?.pages.length]);
 
+  useLayoutEffect(() => {
+    if (focusTerminalRef.current && terminalRef.current) {
+      focusTerminalRef.current = false;
+      terminalRef.current.focus();
+    }
+  });
+
   useEffect(() => { maybeMarkRead(); });
 
   /* Jump-to-message (search/stars): flash it when rendered; page older
@@ -195,12 +209,12 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
               path to what scrolling does on its own. */}
           <div className="ago-log-older" id="ago-log-older" aria-live="polite">
             {q.hasNextPage ? (
-              <button className="lnk" onClick={loadOlder} aria-busy={q.isFetchingNextPage}>
+              <button ref={setOlderButtonRef} className="lnk" onClick={loadOlder} aria-busy={q.isFetchingNextPage}>
                 {q.isFetchingNextPage ? "Loading earlier messages…" : "Load earlier messages"}
               </button>
-            ) : (
-              <span>Beginning of conversation</span>
-            )}
+            ) : q.isSuccess ? (
+              <span ref={terminalRef} tabIndex={-1}>Beginning of conversation</span>
+            ) : null}
           </div>
           {rows.length ? rows : (
             <div className="empty">

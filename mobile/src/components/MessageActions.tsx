@@ -50,8 +50,11 @@ export function MessageActions({
   const hasReplies = isRoot && (message.reply_count ?? 0) > 0;
   const latestReply = useLatestReply(message.channel_id, message.id, showingInfo && hasReplies);
   const groups = useGroups().data || [];
+  // Keyed off the message, not the screen, to match the web dialog: the two
+  // are the same on the channel and thread screens, but the message is the
+  // thing the sheet describes.
   const channelName = groups.flatMap(group => group.channels || [])
-    .find(channel => channel.id === message.channel_id)?.name || channelId;
+    .find(channel => channel.id === message.channel_id)?.name || message.channel_id;
   const hasText = !!message.text.trim();
   const act = (fn: () => void) => { fn(); onClose(); };
   useEffect(() => {

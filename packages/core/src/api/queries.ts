@@ -65,7 +65,9 @@ function fetchedLengthsFor(api: object): Map<string, number> {
   return lengths;
 }
 
-function rememberFetchedLength(lengths: Map<string, number>, key: string, length: number): void {
+export function rememberFetchedMessagePageLength(
+  lengths: Map<string, number>, key: string, length: number,
+): void {
   // Map preserves insertion order. Refresh the key so the cap behaves like a
   // small LRU and long-lived clients cannot accumulate pagination metadata.
   lengths.delete(key);
@@ -73,6 +75,15 @@ function rememberFetchedLength(lengths: Map<string, number>, key: string, length
   if (lengths.size > MAX_FETCHED_PAGE_LENGTHS) {
     lengths.delete(lengths.keys().next().value!);
   }
+}
+
+export function fetchedMessagePageLength(
+  lengths: Map<string, number>, key: string, cachedLength: number,
+): number {
+  // Missing metadata can happen after bounded-cache eviction. Falling back to
+  // the cached length is the old behaviour: at worst it offers one empty fetch,
+  // which records the authoritative short length and self-corrects.
+  return lengths.has(key) ? lengths.get(key)! : cachedLength;
 }
 
 /* ------------------------------------------------------- message templates */
@@ -351,7 +362,7 @@ export function useMessages(channelId: string, threadId: number | null) {
       const r = await api.get<{ messages: Message[] }>(
         `/api/channels/${channelId}/messages?${params}`,
       );
-      rememberFetchedLength(fetchedLengths, pageKey(pageParam), r.messages.length);
+      rememberFetchedMessagePageLength(fetchedLengths, pageKey(pageParam), r.messages.length);
       return r.messages;
     },
     initialPageParam: undefined as number | undefined,
@@ -359,9 +370,7 @@ export function useMessages(channelId: string, threadId: number | null) {
     // the start of history.
     getNextPageParam: (lastPage, _pages, lastPageParam) => {
       const key = pageKey(lastPageParam);
-      const fetchedLength = fetchedLengths.has(key)
-        ? fetchedLengths.get(key)!
-        : lastPage.length;
+      const fetchedLength = fetchedMessagePageLength(fetchedLengths, key, lastPage.length);
       return fetchedLength < PAGE_SIZE ? undefined : lastPage.reduce((oldest, message) =>
         (message.seq ?? message.id) < (oldest?.seq ?? oldest?.id ?? Infinity) ? message : oldest,
       undefined as Message | undefined)?.id;

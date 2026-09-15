@@ -320,7 +320,10 @@ async function main() {
     if (!(await dialog.getByText("Agora history paging", { exact: true }).count())) {
       throw new Error("message info omitted the thread name");
     }
-    if (!(await dialog.getByText("1", { exact: true }).count())) {
+    const repliesRow = dialog.locator(".ago-message-info-row", {
+      has: page.locator("dt", { hasText: /^Replies$/ }),
+    });
+    if ((await repliesRow.locator("dd").innerText()).trim() !== "1") {
       throw new Error("message info omitted the reply count");
     }
     await dialog.getByTitle("Close message info").click();
