@@ -23,7 +23,9 @@ export default mergeConfig(
           name: "storybook",
           browser: {
             enabled: true,
-            provider: playwright({}),
+            provider: playwright(process.env.PW_WS
+              ? { connectOptions: { wsEndpoint: process.env.PW_WS } }
+              : {}),
             headless: true,
             instances: [{ browser: "chromium" }],
           },

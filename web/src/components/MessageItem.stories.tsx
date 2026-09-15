@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import type { Message } from "@agora/core";
 import { fixtureAgents } from "@agora/core/testing/fixtures";
 import { MessageItem } from "./MessageItem";
@@ -109,6 +109,7 @@ export const CurrentUser: Story = {
       .closest(".bubble");
     await expect(bubble).toHaveClass("user");
     expect(canvas.queryByText(/· agent/)).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
     await userEvent.click(canvas.getByTitle("Edit this message"));
     const editor = canvas.getByRole("textbox", { name: "Edit message" });
     await expect(editor).toHaveValue("This is how a message from the signed-in user is presented.");
@@ -122,6 +123,8 @@ export const CurrentUser: Story = {
 
 /* Two roots whose text is identical: only the thread name tells them apart. */
 export const NamedThreadRoot: Story = {
+  name: "Named thread root in narrow pane",
+  decorators: [(Story) => <div style={{ width: "min(520px, 100%)" }}><Story /></div>],
   args: {
     message: {
       ...message,
@@ -153,12 +156,9 @@ export const NamedThreadRoot: Story = {
   },
 };
 
-/* The same alias that truncates in `NamedThreadRoot` above is fully legible
-   here: a longer message makes a wider bubble, and the label takes the room
-   that leaves rather than a width fixed up front. Needs a wider canvas than
-   the default decorator — at 760px the action-button row sets the bubble
-   width on its own, so the message length cannot move it. */
+/* Row width follows the pane, so the same alias fits on a wide canvas. */
 export const NamedThreadRootWidensWithMessage: Story = {
+  name: "Named thread root in wide pane",
   decorators: [(Story) => (
     <div className="ago-log" style={{ width: 1300 }}>
       <Story />
@@ -181,7 +181,7 @@ export const NamedThreadRootWidensWithMessage: Story = {
     const label = await canvas.findByTitle("A deliberately long thread name that has to be truncated");
     await expect(label).toBeVisible();
     // The same alias truncates in NamedThreadRoot; here there is room for all
-    // of it. That difference *is* the dynamic width.
+    // of it. Both cases stay anchored to the row’s right edge.
     await expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
     const bubble = label.closest(".ago-bubble")!.getBoundingClientRect();
     await expect(bubble.right - label.getBoundingClientRect().right).toBeLessThan(20);
@@ -282,4 +282,62 @@ export const LongContent: Story = {
   },
   globals: { viewport: { value: "phone", isRotated: false } },
   parameters: { viewport: { defaultViewport: "phone" } },
+};
+
+export const GroupedMessage: Story = {
+  args: {
+    grouped: true,
+    message: { ...message, text: "A follow-up keeps the same author gutter.", reactions: [], meta: {} },
+  },
+};
+
+export const PhoneMessageActions: Story = {
+  globals: { viewport: { value: "phone", isRotated: false } },
+  parameters: { viewport: { defaultViewport: "phone" } },
+  args: {
+    message: { ...message, author_type: "user", author_id: "tom", text: "A message with secondary actions.", reactions: [], meta: {} },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: "More message actions" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(canvas.getByTitle("Delete this message")).not.toBeVisible();
+    await userEvent.click(toggle);
+    await expect(canvas.getByTitle("Delete this message")).toBeVisible();
+    await userEvent.click(toggle);
+    await expect(canvas.getByTitle("Delete this message")).not.toBeVisible();
+  },
+};
+
+
+export const ChartControls: Story = {
+  args: {
+    message: {
+      ...message,
+      text: "```echarts\n" + JSON.stringify({
+        title: { text: "Activity" }, xAxis: { data: ["Mon", "Tue"] },
+        yAxis: {}, series: [{ type: "bar", data: [3, 7] }],
+      }) + "\n```",
+      reactions: [], meta: {},
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector(".ago-chart-block canvas")).not.toBeNull(), { timeout: 10000 });
+    await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
+    const expand = canvas.getByRole("button", { name: "Expand chart: Activity" });
+    expand.scrollIntoView({ block: "center" });
+    const rect = expand.getBoundingClientRect();
+    const hit = canvasElement.ownerDocument.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    expect(expand.contains(hit)).toBe(true);
+    await userEvent.click(expand);
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByRole("dialog", { name: "Activity" })).resolves.toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Close chart" }));
+  },
+};
+
+export const GroupedChartControls: Story = {
+  ...ChartControls,
+  args: { ...ChartControls.args, grouped: true },
 };

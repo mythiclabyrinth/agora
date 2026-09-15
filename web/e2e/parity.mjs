@@ -6,6 +6,7 @@
    Env:
      AGORA_BASE   server origin      (default http://127.0.0.1:4470)
      AGORA_TOKEN  admin key          (required)
+     PW_WS        optional Playwright server WebSocket endpoint
      PW_DIR       dir containing node_modules/playwright (default: resolve normally)
    The server must be fresh-ish; seeding is idempotent by group name. */
 
@@ -128,7 +129,7 @@ const appUrl = q => BASE + APP_PATH + (q || "");
 
 async function main() {
   await seed();
-  const browser = await chromium.launch();
+  const browser = process.env.PW_WS ? await chromium.connect(process.env.PW_WS) : await chromium.launch();
 
   /* -- 1. auth gate + manual key submit (fresh context, no token) -- */
   await check("auth: gate shows without token and accepts the admin key", async () => {
@@ -403,6 +404,7 @@ async function main() {
   await check("reactions: pick emoji, chip appears, toggle off", async () => {
     const bubble = page.locator("#ago-log .bubble", { hasText: "seed plain message one" }).first();
     await bubble.hover();
+    await bubble.getByRole("button", { name: "More message actions" }).click();
     await bubble.locator(".ago-react-btn").click();
     await page.waitForSelector("#ago-emoji-pop", { timeout: 5000 });
     await page.locator("#ago-emoji-pop button").filter({ hasText: "👍" }).first().click();
@@ -488,7 +490,7 @@ async function main() {
     await page.locator(".ago-inbox-item", { hasText: "Threads" }).click();
     await page.locator(".ago-inbox-row", { hasText: "seed thread root alpha" }).first().click();
     await page.waitForSelector("#ago-thread-log .bubble", { timeout: 5000 });
-    await page.locator('button[title="Pin this thread for quick access"]').first().click();
+    await page.locator('.agora-thread .ago-head-actions button[title="Pin this thread for quick access"]').click();
     await page.locator('.ago-pinbar .ago-pin-count', { hasText: "pinned" }).waitFor({ timeout: 8000 })
       .catch(async () => {
         // pin bar lives in the channel pane — navigate back to the channel

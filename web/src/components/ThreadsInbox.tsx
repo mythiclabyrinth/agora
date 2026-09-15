@@ -19,6 +19,15 @@ function snippet(m: { alias?: string | null; text?: string }): string {
   return (m.text || "").split("\n")[0].slice(0, 140);
 }
 
+function relativeTime(ts: number): string {
+  const seconds = Math.max(0, Date.now() / 1000 - ts);
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`;
+  return new Date(ts * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 function InboxRow({ t }: { t: ThreadRow }) {
   const ui = useUiState();
   const me = useMe().data;
@@ -40,9 +49,8 @@ function InboxRow({ t }: { t: ThreadRow }) {
         ui.openThread(root.id, "replace");
       }}>
       <div className="ago-inbox-top">
-        <span className="chan"><span className="hash">#</span>{t.channel_name}<span className="grp"> · {t.group_name}</span></span>
         <div className="ago-inbox-meta">
-          <span className="ts">{fmtTs(t.last_reply_ts || root.ts)}</span>
+          <time className="ts" title={fmtTs(t.last_reply_ts || root.ts)} dateTime={new Date((t.last_reply_ts || root.ts) * 1000).toISOString()}>{relativeTime(t.last_reply_ts || root.ts)}</time>
           <span className="ago-inbox-actions">
             <button className="ago-x" title="Rename this thread"
               onClick={e => {
@@ -76,11 +84,16 @@ function InboxRow({ t }: { t: ThreadRow }) {
           </span>
         </div>
       </div>
-      <div className="ago-inbox-main">
-        <span className="author">{root.author_name || root.author_id}</span>
+      <button className="ago-inbox-main" onClick={event => {
+        event.stopPropagation();
+        ui.selectChannel(t.group_id, t.channel_id);
+        ui.openThread(root.id, "replace");
+      }}>
         <span className="snippet">{snippet(root)}</span>
-      </div>
+      </button>
       <div className="ago-inbox-foot">
+        <span className="chan" title={`${t.group_name} / #${t.channel_name}`}>#{t.channel_name}</span>
+        <span className="author">{root.author_name || root.author_id}</span>
         <span className="replies">{t.reply_count} repl{t.reply_count === 1 ? "y" : "ies"}</span>
         {(t.unread || 0) > 0 && <span className="ago-unread-badge">{t.unread > 99 ? "99+" : t.unread}</span>}
       </div>
@@ -96,9 +109,11 @@ export function ThreadsInbox() {
   const filter = useUiState(state => state.threadsFilter);
   const setSort = useUiState(state => state.setThreadsSort);
   const setFilter = useUiState(state => state.setThreadsFilter);
+  const [search, setSearch] = useState("");
   const displayedThreads = useMemo(
-    () => filterAndSortThreads(threads, sort, filter),
-    [threads, sort, filter],
+    () => filterAndSortThreads(threads, sort, filter).filter(t =>
+      `${snippet(t.root)} ${t.channel_name} ${t.group_name} ${t.root.author_name || t.root.author_id}`.toLowerCase().includes(search.trim().toLowerCase())),
+    [threads, sort, filter, search],
   );
 
   return (
@@ -136,6 +151,11 @@ export function ThreadsInbox() {
             <Icon name="refresh-cw" />
           </button>
         </div>
+      </div>
+      <div className="ago-inbox-search"><Icon name="search" />
+        <input type="search" aria-label="Search threads" placeholder="Find a conversation…"
+          value={search} onChange={event => setSearch(event.target.value)} />
+        <span>{displayedThreads.length} found</span>
       </div>
       <div className="ago-log ago-inbox-list">
         {displayedThreads.length

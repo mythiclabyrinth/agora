@@ -12,6 +12,8 @@ import { flashMessage, useJump } from "../state/jump";
 import { MessageItem } from "./MessageItem";
 import { SectionRail } from "./SectionRail";
 
+const dayLabel = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+
 const AT_BOTTOM_PX = 48;
 const NEAR_TOP_PX = 400;
 const MAX_JUMP_PAGES = 10;
@@ -159,7 +161,16 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
 
   let dividerPlaced = false;
   const rows: React.ReactNode[] = [];
+  let previous: Message | undefined;
   for (const m of messages as Message[]) {
+    const day = new Date(m.ts * 1000).toDateString();
+    const newDay = !previous || day !== new Date(previous.ts * 1000).toDateString();
+    const newUnread = !dividerPlaced && dividerAfterRef.current != null && m.id > dividerAfterRef.current;
+    const grouped = !newDay && !newUnread && previous?.author_id === m.author_id
+      && previous?.author_type === m.author_type && m.ts - previous.ts < 300;
+    if (newDay) rows.push(<div className="ago-day-divider" key={`day-${m.id}`}>
+      <span>{dayLabel.format(m.ts * 1000)}</span>
+    </div>);
     if (!dividerPlaced && dividerAfterRef.current != null && m.id > dividerAfterRef.current) {
       rows.push(
         <div key="divider" className="ago-new-divider" id="ago-new-divider" ref={dividerRef}>
@@ -170,8 +181,9 @@ export function MessageLog({ channelId, isAdmin, mentions, onOpenThread }: {
     }
     rows.push(
       <MessageItem key={m.id} message={m} inThread={false} isAdmin={isAdmin}
-        mentions={mentions} onOpenThread={onOpenThread} />,
+        mentions={mentions} onOpenThread={onOpenThread} grouped={grouped} />,
     );
+    previous = m;
   }
 
   return (

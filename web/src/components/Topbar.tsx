@@ -33,6 +33,7 @@ export function Topbar() {
   const me = useMe().data;
   const openPanel = useUiState(s => s.openPanel);
   const isAdmin = !!me?.instance_admin;
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renamePending, setRenamePending] = useState(false);
 
@@ -63,6 +64,9 @@ export function Topbar() {
         label="Display name" value={me?.display_name || me?.username || ""}
         pending={renamePending} onClose={() => setRenaming(false)}
         onSave={value => void rename(value)} />}
+      {isAdmin && <button className="btn sm ago-mobile-tools" aria-expanded={toolsOpen}
+        onClick={() => setToolsOpen(!toolsOpen)}>Manage</button>}
+      <div className={`ago-topbar-tools ${toolsOpen ? "open" : ""}`}>
       {isAdmin && (
         <button className="btn sm" id="btn-people" onClick={() => openPanel("people")}>People</button>
       )}
@@ -72,6 +76,7 @@ export function Topbar() {
       {isAdmin && (
         <button className="btn sm" id="btn-settings" onClick={() => openPanel("settings")}>Settings</button>
       )}
+      </div>
     </div>
   );
 }
