@@ -24,6 +24,7 @@ import { ArtifactList } from "./artifacts/ArtifactList";
 import { useUiState } from "../state/ui";
 import { copyDeepLink } from "../lib/deepLinks";
 import { AgentAvatar as SharedAgentAvatar } from "./AgentAvatar";
+import { MessageInfoDialog } from "./MessageInfoDialog";
 
 /* Source viewer state (the overlay itself mounts app-level). */
 interface SourcesView {
@@ -111,6 +112,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   const openPicker = useEmojiPicker(s => s.open);
   const groupId = useUiState(s => s.sel.g);
   const [editing, setEditing] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
   const [editText, setEditText] = useState(m.text);
   const editRef = useRef<HTMLTextAreaElement>(null);
 
@@ -202,6 +204,10 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
           onClick={e => openPicker(m.id, e.currentTarget)}>
           <Icon name="smile" /> react
         </button>
+        <button className="ago-thread-btn ago-info-btn" title="Message info"
+          onClick={() => setShowInfo(true)}>
+          <Icon name="info" /> info
+        </button>
         {groupId && (
           <button className="ago-thread-btn" title="Copy link to this message"
             onClick={() => void copyDeepLink({
@@ -256,6 +262,8 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
     </div>
   );
 
-  if (m.author_type !== "agent") return bubble;
-  return <div className="ago-msg-row"><AgentAvatar agentId={m.author_id} />{bubble}</div>;
+  const info = showInfo && <MessageInfoDialog message={m} groupId={groupId || undefined}
+    onClose={() => setShowInfo(false)} />;
+  if (m.author_type !== "agent") return <>{bubble}{info}</>;
+  return <><div className="ago-msg-row"><AgentAvatar agentId={m.author_id} />{bubble}</div>{info}</>;
 }

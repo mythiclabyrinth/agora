@@ -3,7 +3,7 @@
    the bottom (fresh open), while same-thread updates preserve the reader's
    place unless they're already at the bottom. */
 
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { flashMessage, useJump } from "../state/jump";
 import {
   flattenMessages, useAgents, useChannelAgents, useGroups, useMarkThreadRead, useMe,
@@ -24,18 +24,26 @@ const AT_BOTTOM_PX = 40;
 const NEAR_TOP_PX = 400;
 const MAX_JUMP_PAGES = 10;
 
-function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, pageCount, onLoadOlder }: {
+function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, settled, pageCount, onLoadOlder }: {
   root: Message;
   replies: Message[];
   isAdmin: boolean;
   mentions?: MentionIndex;
   hasOlder: boolean;
   loadingOlder: boolean;
+  settled: boolean;
   pageCount: number;
   onLoadOlder: () => Promise<number>;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const olderButtonRef = useRef<HTMLButtonElement | null>(null);
+  const terminalRef = useRef<HTMLSpanElement>(null);
+  const focusTerminalRef = useRef(false);
+  const setOlderButtonRef = useCallback((node: HTMLButtonElement | null) => {
+    if (!node && olderButtonRef.current === document.activeElement) focusTerminalRef.current = true;
+    olderButtonRef.current = node;
+  }, []);
   // Track the oldest rendered reply while an older page is in flight; see
   // MessageLog for why this is an element anchor rather than a height delta.
   const anchorRef = useRef<{ mid: number; top: number; pages: number } | null>(null);
@@ -90,6 +98,13 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, p
     if (stickRef.current) box.scrollTop = box.scrollHeight;
   }, [replies.length, pageCount]);
 
+  useLayoutEffect(() => {
+    if (focusTerminalRef.current && terminalRef.current) {
+      focusTerminalRef.current = false;
+      terminalRef.current.focus();
+    }
+  });
+
   const total = Math.max(root.reply_count ?? 0, replies.length);
 
   useEffect(() => {
@@ -109,11 +124,13 @@ function ThreadLog({ root, replies, isAdmin, mentions, hasOlder, loadingOlder, p
         {/* Prefer the server total while never falling behind loaded replies. */}
         <div className="ago-thread-sep">{total} repl{total === 1 ? "y" : "ies"}</div>
         <div className="ago-log-older" id="ago-thread-log-older" aria-live="polite">
-          {hasOlder && (
-            <button className="lnk" onClick={loadOlder} aria-busy={loadingOlder}>
+          {hasOlder ? (
+            <button ref={setOlderButtonRef} className="lnk" onClick={loadOlder} aria-busy={loadingOlder}>
               {loadingOlder ? "Loading earlier replies…" : "Load earlier replies"}
             </button>
-          )}
+          ) : settled ? (
+            <span ref={terminalRef} tabIndex={-1}>Start of thread</span>
+          ) : null}
         </div>
         {replies.map(m => (
           <MessageItem key={m.id} message={m} inThread isAdmin={isAdmin} mentions={mentions}
@@ -153,11 +170,15 @@ export function ThreadPane() {
 
   const jumpTarget = useJump(s => s.target);
   const clearJump = useJump(s => s.clear);
+  const jumpBaseRef = useRef(0);
+  useEffect(() => {
+    jumpBaseRef.current = q.data?.pages.length || 0;
+  }, [jumpTarget?.mid]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!jumpTarget || jumpTarget.container !== "thread") return;
     if (jumpTarget.mid === rootId || replies.some(m => m.id === jumpTarget.mid)) return;
     if (replies.length && replies[0].id <= jumpTarget.mid) clearJump();
-    else if ((q.data?.pages.length || 0) >= MAX_JUMP_PAGES) clearJump();
+    else if ((q.data?.pages.length || 0) - jumpBaseRef.current >= MAX_JUMP_PAGES) clearJump();
     else if (q.hasNextPage && !q.isFetchingNextPage) void q.fetchNextPage();
     else if (!q.hasNextPage && !q.isLoading) clearJump();
   }, [
@@ -250,6 +271,7 @@ export function ThreadPane() {
       </div>
       <ThreadLog key={rootId} root={root} replies={replies} isAdmin={isAdmin} mentions={mentions}
         hasOlder={!!q.hasNextPage} loadingOlder={q.isFetchingNextPage}
+        settled={q.isSuccess}
         pageCount={q.data?.pages.length || 0}
         onLoadOlder={() => q.fetchNextPage().then(result => result.data?.pages.length || 0)} />
       <LiveRows channelId={channel.id} threadId={rootId} />

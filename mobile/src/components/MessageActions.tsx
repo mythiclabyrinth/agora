@@ -1,14 +1,15 @@
 import React, { useEffect, useState } from "react";
 import {
-  Alert, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View,
+  Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import {
-  Copy, Link, Maximize2, MessageCircle, Minimize2, Pencil, Pin, Star, Trash2, Volume2,
+  Copy, Info, Link, Maximize2, MessageCircle, Minimize2, Pencil, Pin, Star, Trash2, Volume2,
   type LucideIcon,
 } from "lucide-react-native";
 import {
-  FEATURES, tldrOf, useDeleteMessage, useEditMessage, usePinMessage, useStarMessage, useTldrView,
+  FEATURES, tldrOf, useDeleteMessage, useEditMessage, useGroups, useLatestReply, usePinMessage,
+  useStarMessage, useTldrView,
   type Message,
 } from "@agora/core";
 import { beginReviewUiBlock, endReviewUiBlock } from "../lib/storeReview";
@@ -43,8 +44,17 @@ export function MessageActions({
   const toggleTldr = useTldrView((s) => s.toggle);
   const showingTldr = useTldrView((s) => !!s.showing[message.id]);
   const [editing, setEditing] = useState(false);
+  const [showingInfo, setShowingInfo] = useState(false);
   const [text, setText] = useState(message.text);
   const isRoot = message.thread_id == null;
+  const hasReplies = isRoot && (message.reply_count ?? 0) > 0;
+  const latestReply = useLatestReply(message.channel_id, message.id, showingInfo && hasReplies);
+  const groups = useGroups().data || [];
+  // Keyed off the message, not the screen, to match the web dialog: the two
+  // are the same on the channel and thread screens, but the message is the
+  // thing the sheet describes.
+  const channelName = groups.flatMap(group => group.channels || [])
+    .find(channel => channel.id === message.channel_id)?.name || message.channel_id;
   const hasText = !!message.text.trim();
   const act = (fn: () => void) => { fn(); onClose(); };
   useEffect(() => {
@@ -70,6 +80,53 @@ export function MessageActions({
       } },
     ],
   );
+
+  if (showingInfo) {
+    const reactions = (message.reactions || []).reduce((sum, reaction) => sum + reaction.users.length, 0);
+    const details: Array<[string, string]> = [
+      ["Sent", absoluteTime(message.ts)],
+      ["Author", `${message.author_name || message.author_id} · ${message.author_type === "agent" ? "agent" : "person"}`],
+      ["Channel", `#${channelName}`],
+    ];
+    if (message.meta?.edited_at) details.push(["Edited", absoluteTime(message.meta.edited_at)]);
+    if (isRoot && message.alias?.trim()) details.push(["Thread name", message.alias.trim()]);
+    if (hasReplies) details.push(["Replies", String(message.reply_count)]);
+    if (message.attachments.length) details.push(["Attachments", String(message.attachments.length)]);
+    if (reactions) details.push(["Reactions", String(reactions)]);
+    return (
+      <Modal transparent animationType="fade" onRequestClose={() => setShowingInfo(false)}>
+        <Pressable style={styles.infoBackdrop} onPress={() => setShowingInfo(false)}>
+          <Pressable style={styles.infoPanel} onPress={(event) => event.stopPropagation()}>
+            <View style={styles.infoHead}>
+              <Text accessibilityRole="header" style={styles.title}>Message info</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close message info"
+                style={styles.close} onPress={() => setShowingInfo(false)}>
+                <Text style={styles.closeText}>Close</Text>
+              </Pressable>
+            </View>
+            <ScrollView>
+              {details.map(([label, value]) => <InfoRow key={label} label={label} value={value} />)}
+              {hasReplies ? <InfoRow label="Latest reply" value={latestReply.isLoading
+                ? "Loading…"
+                : latestReply.data
+                  ? `${absoluteTime(latestReply.data.ts)} · ${latestReply.data.author_name || latestReply.data.author_id}`
+                  : "Unavailable"} /> : null}
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Message ID</Text>
+                <View style={styles.infoId}>
+                  <Text selectable style={styles.infoValue}>{message.id}</Text>
+                  {groupId ? <Pressable onPress={() => void copyDeepLink({
+                    kind: "message", groupId, channelId: message.channel_id,
+                    threadId: message.thread_id, messageId: message.id,
+                  }, "Message")}><Text style={styles.infoLink}>Copy link</Text></Pressable> : null}
+                </View>
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    );
+  }
 
   if (editing) {
     return (
@@ -118,6 +175,7 @@ export function MessageActions({
             label={showingTldr ? "Show full message" : "Show TL;DR"}
             onPress={() => act(() => toggleTldr(message.id))} /> : null}
           {onThread ? <Row icon={MessageCircle} label="Reply in thread" onPress={() => act(onThread)} /> : null}
+          <Row icon={Info} label="Info" onPress={() => setShowingInfo(true)} />
           {hasText ? <Row icon={Copy} label="Copy" onPress={() => act(() => {
             void Clipboard.setStringAsync(message.text).catch((e) => toastErr("Copy failed", e));
           })} /> : null}
@@ -147,6 +205,20 @@ export function MessageActions({
   );
 }
 
+function absoluteTime(ts: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "long",
+    timeStyle: "medium",
+  }).format(new Date(ts * 1000));
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return <View style={styles.infoRow}>
+    <Text style={styles.infoLabel}>{label}</Text>
+    <Text selectable style={styles.infoValue}>{value}</Text>
+  </View>;
+}
+
 function Row({ icon, label, onPress, color = colors.text, fill, danger = false }: {
   icon: LucideIcon; label: string; onPress: () => void; color?: string; fill?: string; danger?: boolean;
 }) {
@@ -168,4 +240,13 @@ const styles = StyleSheet.create({
   editorActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10 },
   editorBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 9 },
   save: { backgroundColor: colors.accent }, saveText: { color: colors.onAccent, fontWeight: "800" },
+  infoBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.65)", justifyContent: "center", padding: 20 },
+  infoPanel: { maxHeight: "82%", backgroundColor: colors.sheet, borderRadius: 16, overflow: "hidden" },
+  infoHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  close: { paddingHorizontal: 8, paddingVertical: 5 }, closeText: { color: colors.a1, fontSize: 14, fontWeight: "700" },
+  infoRow: { paddingHorizontal: 16, paddingVertical: 12, gap: 5, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  infoLabel: { color: colors.faint, fontSize: 11.5, fontWeight: "700" },
+  infoValue: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  infoId: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  infoLink: { color: colors.a1, fontSize: 14, fontWeight: "700" },
 });

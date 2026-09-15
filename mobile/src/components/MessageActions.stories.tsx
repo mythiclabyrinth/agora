@@ -32,6 +32,11 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const OwnMessage: Story = {};
+export const InfoAction: Story = {
+  args: {
+    message: { ...edited, alias: "Release readiness", reply_count: 3 },
+  },
+};
 export const OtherUsersMessage: Story = { args: { canEdit: false, canDelete: false } };
 export const ThreadReply: Story = {
   args: {

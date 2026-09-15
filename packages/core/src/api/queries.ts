@@ -53,6 +53,38 @@ import type {
 } from "./types";
 
 const PAGE_SIZE = 50;
+const MAX_FETCHED_PAGE_LENGTHS = 1000;
+const fetchedMessagePageLengths = new WeakMap<object, Map<string, number>>();
+
+function fetchedLengthsFor(api: object): Map<string, number> {
+  let lengths = fetchedMessagePageLengths.get(api);
+  if (!lengths) {
+    lengths = new Map();
+    fetchedMessagePageLengths.set(api, lengths);
+  }
+  return lengths;
+}
+
+export function rememberFetchedMessagePageLength(
+  lengths: Map<string, number>, key: string, length: number,
+): void {
+  // Map preserves insertion order. Refresh the key so the cap behaves like a
+  // small LRU and long-lived clients cannot accumulate pagination metadata.
+  lengths.delete(key);
+  lengths.set(key, length);
+  if (lengths.size > MAX_FETCHED_PAGE_LENGTHS) {
+    lengths.delete(lengths.keys().next().value!);
+  }
+}
+
+export function fetchedMessagePageLength(
+  lengths: Map<string, number>, key: string, cachedLength: number,
+): number {
+  // Missing metadata can happen after bounded-cache eviction. Falling back to
+  // the cached length is the old behaviour: at worst it offers one empty fetch,
+  // which records the authoritative short length and self-corrects.
+  return lengths.has(key) ? lengths.get(key)! : cachedLength;
+}
 
 /* ------------------------------------------------------- message templates */
 
@@ -315,6 +347,12 @@ export function useRemoveMember(groupId?: string) {
     pages[0] is the newest page; each page is newest-last (server order). */
 export function useMessages(channelId: string, threadId: number | null) {
   const api = useApi();
+  // Cache updates may append live messages to pages[0]. Remember how many
+  // rows each page actually received from the server so that cannot turn a
+  // short page into an apparent full page and invent an older-page cursor.
+  const fetchedLengths = fetchedLengthsFor(api);
+  const pageKey = (pageParam: number | undefined) =>
+    `${channelId}:${threadId ?? "root"}:${pageParam ?? "initial"}`;
   return useInfiniteQuery({
     queryKey: keys.messages(channelId, threadId),
     queryFn: async ({ pageParam }) => {
@@ -324,15 +362,19 @@ export function useMessages(channelId: string, threadId: number | null) {
       const r = await api.get<{ messages: Message[] }>(
         `/api/channels/${channelId}/messages?${params}`,
       );
+      rememberFetchedMessagePageLength(fetchedLengths, pageKey(pageParam), r.messages.length);
       return r.messages;
     },
     initialPageParam: undefined as number | undefined,
     // Older page cursor: the oldest id we have. A short page means we hit
     // the start of history.
-    getNextPageParam: (lastPage) =>
-      lastPage.length < PAGE_SIZE ? undefined : lastPage.reduce((oldest, message) =>
+    getNextPageParam: (lastPage, _pages, lastPageParam) => {
+      const key = pageKey(lastPageParam);
+      const fetchedLength = fetchedMessagePageLength(fetchedLengths, key, lastPage.length);
+      return fetchedLength < PAGE_SIZE ? undefined : lastPage.reduce((oldest, message) =>
         (message.seq ?? message.id) < (oldest?.seq ?? oldest?.id ?? Infinity) ? message : oldest,
-      undefined as Message | undefined)?.id,
+      undefined as Message | undefined)?.id;
+    },
     enabled: !!channelId,
   });
 }
@@ -759,6 +801,22 @@ export function useMessage(messageId: number, enabled: boolean) {
     queryKey: keys.message(messageId),
     queryFn: () => api.get<Message>(`/api/messages/${messageId}`),
     enabled,
+  });
+}
+
+/** Newest reply for message details. Kept separate from the threads inbox,
+    which intentionally excludes threads the current user has hidden. */
+export function useLatestReply(channelId: string, rootId: number, enabled: boolean) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["latestReply", channelId, rootId] as const,
+    queryFn: async () => {
+      const result = await api.get<{ messages: Message[] }>(
+        `/api/channels/${channelId}/messages?thread_id=${rootId}&limit=1`,
+      );
+      return result.messages[0] ?? null;
+    },
+    enabled: enabled && !!channelId && rootId > 0,
   });
 }
 

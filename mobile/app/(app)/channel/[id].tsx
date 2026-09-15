@@ -205,6 +205,10 @@ export default function ChannelScreen() {
 
   /* A shared deep link may point well beyond the newest page. Page older
      history until the row exists, then center it. */
+  const deepLinkBaseRef = useRef(0);
+  useEffect(() => {
+    deepLinkBaseRef.current = messages.data?.pages.length || 0;
+  }, [targetMessageId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!targetMessageId || landedOnMessage.current === targetMessageId) return;
     const idx = rows.findIndex((r) => r.kind === "msg" && r.m.id === targetMessageId);
@@ -227,7 +231,9 @@ export default function ChannelScreen() {
       chronological[0].id <= targetMessageId
     ) {
       landedOnMessage.current = targetMessageId;
-    } else if ((messages.data?.pages.length || 0) >= MAX_DEEP_LINK_PAGES) {
+    } else if (
+      (messages.data?.pages.length || 0) - deepLinkBaseRef.current >= MAX_DEEP_LINK_PAGES
+    ) {
       landedOnMessage.current = targetMessageId;
     } else if (messages.hasNextPage && !messages.isFetchingNextPage) {
       void messages.fetchNextPage();
