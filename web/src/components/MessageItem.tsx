@@ -14,6 +14,7 @@ import { type MentionIndex } from "../lib/mentions";
 import { MdText } from "./MdText";
 import { Attachments } from "./Attachments";
 import { Unfurls, urlHost } from "./Unfurls";
+import { MessageInfoDialog } from "./MessageInfoDialog";
 import { MessageOptions } from "./MessageOptions";
 import { MessageFormView } from "./MessageFormView";
 import { MessageTableView } from "./MessageTableView";
@@ -112,6 +113,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   const disarm = useConfirm(s => s.disarm);
   const openPicker = useEmojiPicker(s => s.open);
   const groupId = useUiState(s => s.sel.g);
+  const [showInfo, setShowInfo] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const menuId = useId();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -234,6 +236,11 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
         <div id={menuId} ref={menuRef} popover="auto" className="ago-message-secondary"
           aria-label="Additional message actions"
           onToggle={e => setActionsOpen(e.newState === "open")}>
+        <button className="ago-thread-btn ago-info-btn" title="Message info" onClick={() => {
+          menuRef.current?.hidePopover();
+          menuButtonRef.current?.focus();
+          setShowInfo(true);
+        }}><Icon name="info" /> Details</button>
         {pinnable && (
           <button className={`ago-thread-btn ago-pin-btn ${pinned ? "pinned" : ""}`}
             title={pinned ? "Unpin this thread" : "Pin this thread for quick access"}
@@ -284,12 +291,14 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
     </div>
   );
 
-  return <div className={`ago-msg-row ${mine ? "is-mine" : "is-peer"} ${grouped && !pinned && !starred && !onTldr && !m.meta?.edited_at ? "grouped" : ""}`}>
+  return <><div className={`ago-msg-row ${mine ? "is-mine" : "is-peer"} ${grouped && !pinned && !starred && !onTldr && !m.meta?.edited_at ? "grouped" : ""}`}>
     {m.author_type === "agent" ? <AgentAvatar agentId={m.author_id} /> : (
       <span className={`ago-av ago-person-avatar ${mine ? "mine" : ""}`} aria-hidden="true">
         {(m.author_name || m.author_id).slice(0, 2).toUpperCase()}
       </span>
     )}
     {bubble}
-  </div>;
+  </div>
+    {showInfo && <MessageInfoDialog message={m} groupId={groupId || undefined} onClose={() => setShowInfo(false)} />}
+  </>;
 }

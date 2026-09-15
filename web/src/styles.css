@@ -2598,3 +2598,18 @@ input[type="checkbox"] { accent-color: var(--a1); }
   .ago-scope-row > .mmeta.short { white-space: normal; overflow-wrap: anywhere; }
 }
 .ago-member-add-flow:not(:has(.ago-add-box)) { display: inline-flex; margin-right: 16px; }
+
+/* Message metadata shares the management dialog chrome and compact phone insets. */
+.conn-panel.ago-message-info { width: min(520px, 100%); max-height: calc(100dvh - 20px); overflow: hidden; }
+.ago-message-info-head h2 { margin: 0; font-size: 17px; }
+.ago-message-info-list { margin: 0; padding: 0 20px 12px; min-height: 0; overflow-y: auto; }
+.ago-message-info-row { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.ago-message-info-row:last-child { border-bottom: 0; }
+.ago-message-info-row dt { color: var(--dim); font-size: 12px; }
+.ago-message-info-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.ago-message-info-id { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+@media (max-width: 620px) {
+  .ago-message-info-list { padding: 0 12px 8px; }
+  .ago-message-info-row { grid-template-columns: 90px minmax(0, 1fr); gap: 8px; padding: 8px 0; }
+  .ago-message-info-id .lnk { min-height: 44px; }
+}

@@ -379,3 +379,20 @@ export const ExpandedThreadWidth: Story = {
     await expect(within(canvasElement).getByTitle("Delete this message")).not.toBeVisible();
   },
 };
+
+export const DetailsFromMore: Story = {
+  parameters: { apiRoutes: { "GET /api/groups": { groups: [] } } },
+  args: { message: { ...message, reply_count: 0, reactions: [], meta: {} } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Details", exact: true }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "Message info" });
+    await expect(within(dialog).getByText("Sent", { exact: true })).toBeVisible();
+    await expect(within(dialog).getByText("Author", { exact: true })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(page.queryByRole("dialog", { name: "Message info" })).not.toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByRole("button", { name: "More message actions" })).toHaveFocus());
+  },
+};
