@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import type { Message } from "@agora/core";
 import { fixtureAgents } from "@agora/core/testing/fixtures";
 import { MessageItem } from "./MessageItem";
@@ -109,6 +109,8 @@ export const CurrentUser: Story = {
       .closest(".bubble");
     await expect(bubble).toHaveClass("user");
     expect(canvas.queryByText(/· agent/)).not.toBeInTheDocument();
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
+    await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
     await userEvent.click(canvas.getByTitle("Edit this message"));
     const editor = canvas.getByRole("textbox", { name: "Edit message" });
     await expect(editor).toHaveValue("This is how a message from the signed-in user is presented.");
@@ -122,6 +124,8 @@ export const CurrentUser: Story = {
 
 /* Two roots whose text is identical: only the thread name tells them apart. */
 export const NamedThreadRoot: Story = {
+  name: "Named thread root in narrow pane",
+  decorators: [(Story) => <div style={{ width: "min(520px, 100%)" }}><Story /></div>],
   args: {
     message: {
       ...message,
@@ -153,12 +157,9 @@ export const NamedThreadRoot: Story = {
   },
 };
 
-/* The same alias that truncates in `NamedThreadRoot` above is fully legible
-   here: a longer message makes a wider bubble, and the label takes the room
-   that leaves rather than a width fixed up front. Needs a wider canvas than
-   the default decorator — at 760px the action-button row sets the bubble
-   width on its own, so the message length cannot move it. */
+/* Row width follows the pane, so the same alias fits on a wide canvas. */
 export const NamedThreadRootWidensWithMessage: Story = {
+  name: "Named thread root in wide pane",
   decorators: [(Story) => (
     <div className="ago-log" style={{ width: 1300 }}>
       <Story />
@@ -181,7 +182,7 @@ export const NamedThreadRootWidensWithMessage: Story = {
     const label = await canvas.findByTitle("A deliberately long thread name that has to be truncated");
     await expect(label).toBeVisible();
     // The same alias truncates in NamedThreadRoot; here there is room for all
-    // of it. That difference *is* the dynamic width.
+    // of it. Both cases stay anchored to the row’s right edge.
     await expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
     const bubble = label.closest(".ago-bubble")!.getBoundingClientRect();
     await expect(bubble.right - label.getBoundingClientRect().right).toBeLessThan(20);
@@ -282,4 +283,116 @@ export const LongContent: Story = {
   },
   globals: { viewport: { value: "phone", isRotated: false } },
   parameters: { viewport: { defaultViewport: "phone" } },
+};
+
+export const GroupedMessage: Story = {
+  args: {
+    grouped: true,
+    message: { ...message, text: "A follow-up keeps the same author gutter.", reactions: [], meta: {} },
+  },
+};
+
+export const PhoneMessageActions: Story = {
+  globals: { viewport: { value: "phone", isRotated: false } },
+  parameters: { viewport: { defaultViewport: "phone" } },
+  args: {
+    message: { ...message, author_type: "user", author_id: "tom", text: "A message with secondary actions.", reactions: [], meta: {} },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: "More message actions" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(canvas.getByTitle("Delete this message")).not.toBeVisible();
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
+    await userEvent.click(toggle);
+    await expect(canvas.getByTitle("Delete this message")).toBeVisible();
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
+    await userEvent.click(toggle);
+    await expect(canvas.getByTitle("Delete this message")).not.toBeVisible();
+  },
+};
+
+
+export const ChartControls: Story = {
+  args: {
+    message: {
+      ...message,
+      text: "```echarts\n" + JSON.stringify({
+        title: { text: "Activity" }, xAxis: { data: ["Mon", "Tue"] },
+        yAxis: {}, series: [{ type: "bar", data: [3, 7] }],
+      }) + "\n```",
+      reactions: [], meta: {},
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector(".ago-chart-block canvas")).not.toBeNull(), { timeout: 10000 });
+    await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
+    const expand = canvas.getByRole("button", { name: "Expand chart: Activity" });
+    expand.scrollIntoView({ block: "center" });
+    const rect = expand.getBoundingClientRect();
+    const hit = canvasElement.ownerDocument.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    expect(expand.contains(hit)).toBe(true);
+    await userEvent.click(expand);
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByRole("dialog", { name: "Activity" })).resolves.toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Close chart" }));
+  },
+};
+
+export const GroupedChartControls: Story = {
+  ...ChartControls,
+  args: { ...ChartControls.args, grouped: true },
+};
+
+export const ConversationCards: Story = {
+  render: args => <>
+    <MessageItem {...args} message={{ ...message, id: 801, author_type: "agent", author_id: "codex", author_name: "Codex", text: "The release checklist is ready. I’ve checked the desktop and phone layouts.", reactions: [], meta: {} }} />
+    <MessageItem {...args} message={{ ...message, id: 802, author_type: "user", author_id: "tom", author_name: "Tom", text: "Thanks. Please include the settings and member lists in the review too.", reactions: [], meta: {} }} />
+    <MessageItem {...args} message={{ ...message, id: 803, author_type: "user", author_id: "alice", author_name: "Alice", text: "I’ll check the populated roster and long names on my phone.", reactions: [], meta: {} }} />
+  </>,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector(".ago-msg-row.is-mine")).not.toBeNull());
+    const own = canvasElement.querySelector(".ago-msg-row.is-mine")!;
+    const peer = canvasElement.querySelector(".ago-msg-row.is-peer")!;
+    expect(own.getBoundingClientRect().left).toBeGreaterThan(peer.getBoundingClientRect().left);
+    for (const bubble of canvasElement.querySelectorAll(".bubble")) {
+      expect(parseFloat(getComputedStyle(bubble).borderTopWidth)).toBeGreaterThan(0);
+      const prose = bubble.querySelector(".md-text-segment")!;
+      expect(prose.scrollWidth).toBeLessThanOrEqual(prose.clientWidth + 1);
+    }
+  },
+};
+
+export const ExpandedThreadWidth: Story = {
+  args: { inThread: true, message: { ...message, author_type: "user", author_id: "tom", text: "My reply uses the available thread width.", reactions: [], meta: {} } },
+  decorators: [Story => <div className="agora-layout thread-expanded"><div className="agora-thread" style={{ width: "100%" }}><Story /></div></div>],
+  play: async ({ canvasElement }) => {
+    const row = canvasElement.querySelector(".ago-msg-row")!;
+    const bubble = row.querySelector(".bubble")!;
+    expect(Math.abs(row.getBoundingClientRect().right - bubble.getBoundingClientRect().right)).toBeLessThan(2);
+    const height = row.getBoundingClientRect().height;
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "More message actions" }));
+    await expect(within(canvasElement).getByTitle("Delete this message")).toBeVisible();
+    expect(row.getBoundingClientRect().height).toBe(height);
+    await userEvent.keyboard("{Escape}");
+    await expect(within(canvasElement).getByTitle("Delete this message")).not.toBeVisible();
+  },
+};
+
+export const DetailsFromMore: Story = {
+  parameters: { apiRoutes: { "GET /api/groups": { groups: [] } } },
+  args: { message: { ...message, reply_count: 0, reactions: [], meta: {} } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Details" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "Message info" });
+    await expect(within(dialog).getByText("Sent", { exact: true })).toBeVisible();
+    await expect(within(dialog).getByText("Author", { exact: true })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(page.queryByRole("dialog", { name: "Message info" })).not.toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByRole("button", { name: "More message actions" })).toHaveFocus());
+  },
 };

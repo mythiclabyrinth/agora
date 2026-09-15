@@ -817,6 +817,7 @@ export function useLatestReply(channelId: string, rootId: number, enabled: boole
       return result.messages[0] ?? null;
     },
     enabled: enabled && !!channelId && rootId > 0,
+    staleTime: 0,
   });
 }
 

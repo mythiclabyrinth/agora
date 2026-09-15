@@ -2,7 +2,7 @@
    admin add-person / add-agent pickers. Channel view defaults when a channel is selected, with a
    #channel / Whole group switch so the full roster stays reachable. */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   canManageMembershipScope,
   hasChannelScope,
@@ -18,8 +18,75 @@ import { useUiState } from "../state/ui";
 import { AgentAvatar } from "./AgentAvatar";
 
 type RosterMode = "channel" | "group";
-type AddPersonStep = { kind: "pick" } | { kind: "scope"; user: UserInfo } | { kind: "role"; user: UserInfo; channelId: string | null; scopeName: string };
+type AddPersonStep = { kind: "pick" } | { kind: "scope"; user: UserInfo };
 type AddAgentStep = { kind: "pick" } | { kind: "scope"; agent: AgentInfo };
+
+function MembershipForm({ name, channels, wholeGroup, initialChannel, agent = false, onAdd, onDone, onCancel }: {
+  name: string;
+  channels: Array<{ id: string; name: string }>;
+  wholeGroup: boolean;
+  initialChannel?: string;
+  agent?: boolean;
+  onAdd: (channelId: string | null, role: "admin" | "member") => Promise<unknown>;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const accessRef = useRef<HTMLElement>(null);
+  useEffect(() => { accessRef.current?.focus(); }, []);
+  // Empty string denotes whole-group access; it is exclusive with channels.
+  const [selected, setSelected] = useState<string[]>(initialChannel ? [initialChannel] : wholeGroup ? [""] : []);
+  const [role, setRole] = useState<"admin" | "member">("member");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const summary = selected.includes("") ? "Whole group" : selected.length === 1
+    ? `#${channels.find(c => c.id === selected[0])?.name || selected[0]}`
+    : selected.length ? `${selected.length} channels` : "Select channels";
+  const toggle = (id: string) => setSelected(current => id === ""
+    ? current.includes("") ? [] : [""]
+    : current.includes(id) ? current.filter(value => value !== id) : [...current.filter(Boolean), id]);
+  const submit = async () => {
+    if (busy || !selected.length) return;
+    setBusy(true); setError("");
+    const remaining = [...selected];
+    try {
+      // Each existing API call grants one scope. Keep only failed/unattempted
+      // scopes selected so retries never resubmit the successful grants.
+      for (const id of selected) { await onAdd(id || null, role); remaining.shift(); }
+      onDone();
+    } catch (e) {
+      const completed = selected.length - remaining.length;
+      setSelected(remaining);
+      setError(`${completed ? `Added to ${completed} channel${completed === 1 ? "" : "s"}. ` : ""}Couldn't add the remaining access: ${(e as Error).message || e}`);
+    } finally { setBusy(false); }
+  };
+  return <form className="ago-add-box ago-membership-form" onSubmit={e => { e.preventDefault(); void submit(); }}>
+    <div className="ago-add-title">Add {name}</div>
+    <fieldset disabled={busy}>
+      <div className="ago-access-field">
+        <span className="ago-field-label">Access</span>
+        <details className="ago-access-select" onKeyDown={e => {
+          if (e.key === "Escape") { e.stopPropagation(); e.currentTarget.open = false; accessRef.current?.focus(); }
+        }}>
+          <summary ref={accessRef} aria-label="Choose access">{summary}<Icon name="chevron-down" /></summary>
+          <div className="ago-access-options" role="group" aria-label="Access scopes">
+            {wholeGroup && <label><input type="checkbox" checked={selected.includes("")} onChange={() => toggle("")} />Whole group</label>}
+            {channels.map(c => <label key={c.id}><input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} /><span>#{c.name}</span></label>)}
+          </div>
+        </details>
+      </div>
+      {!agent && <label className="ago-membership-role"><span className="ago-field-label">Role</span>
+        <span className="ago-membership-role-control"><select value={role} onChange={e => setRole(e.target.value as "admin" | "member")}>
+          <option value="member">Member</option><option value="admin">Admin</option>
+        </select><Icon name="chevron-down" /></span>
+      </label>}
+      {error && <p className="ago-membership-error" role="alert">{error}</p>}
+      <div className="ago-membership-actions">
+        <button type="button" className="btn sm" onClick={onCancel}>Back</button>
+        <button type="submit" className="btn sm primary" disabled={!selected.length}>{busy ? "Adding…" : "Add"}</button>
+      </div>
+    </fieldset>
+  </form>;
+}
 
 function ArmedRemove({
   armKey,
@@ -181,36 +248,6 @@ export function MembersPanel() {
     );
   };
 
-  const submitPerson = (user: UserInfo, role: "admin" | "member", channelId: string | null) => {
-    add.mutate(
-      { member_type: "user", member_id: user.username, role, channel_id: channelId || (groupAdmin ? undefined : ui.sel.c || undefined) },
-      {
-        onSuccess: () => {
-          toast(`${user.display_name || user.username} added to ${g.name}`, { variant: "ok" });
-          setAddPerson(null);
-        },
-        onError: err("Couldn't add person"),
-      },
-    );
-  };
-
-  const submitAgent = (agent: AgentInfo, channelId: string | null) => {
-    add.mutate(
-      { member_type: "agent", member_id: agent.id, channel_id: channelId || (groupAdmin ? undefined : ui.sel.c || undefined) },
-      {
-        onSuccess: () => {
-          if (!agent.live) {
-            toast(`${agent.name} joined, but it's offline right now — it will answer once its connection is live.`, { variant: "warn" });
-          } else {
-            toast(`${agent.name} added — it will answer messages here.`, { variant: "ok" });
-          }
-          setAddAgent(null);
-        },
-        onError: err("Couldn't add agent"),
-      },
-    );
-  };
-
   return (
     <div className="agora-members-pane" id="agora-members-pane">
       <div className="ago-head">
@@ -320,7 +357,7 @@ export function MembersPanel() {
             const off = liveById[agent.id] === false;
             const agentInfo = agents.find(a => a.id === agent.id);
             return (
-              <div key={`a-${agent.id}`} className="ago-member ago-member-card ago-agent">
+              <div key={`a-${agent.id}`} className={`ago-member ago-member-card ago-agent ${channelFocused && agent.scopes.length === 1 && agent.scopes[0].channel_id && canManage(agent.scopes[0]) ? "compact-scope" : ""}`}>
                 <div className="ago-member-identity">
                   <AgentAvatar avatar={agentInfo?.avatar} small />
                   <span className="mname">{agent.name}</span>
@@ -369,7 +406,7 @@ export function MembersPanel() {
           <>
             <div className="ago-member-add-flow">
               {!addPerson ? (
-                <button type="button" className="ago-add-link" onClick={() => setAddPerson({ kind: "pick" })}>
+                <button type="button" className="ago-add-link" onClick={() => { setAddAgent(null); setAddPerson({ kind: "pick" }); }}>
                   ＋ Add person
                 </button>
               ) : addPerson.kind === "pick" ? (
@@ -381,47 +418,23 @@ export function MembersPanel() {
                       <button key={u.username} type="button" className="ago-add-option"
                         onClick={() => setAddPerson({ kind: "scope", user: u })}>
                         <span>{u.display_name || u.username}</span>
-                        <span className="dim">{u.username}</span>
+                        {u.display_name && u.display_name !== u.username ? <span className="dim">{u.username}</span> : null}
                       </button>
                     ))}
                   <button type="button" className="ago-add-cancel" onClick={() => setAddPerson(null)}>Cancel</button>
                 </div>
-              ) : addPerson.kind === "scope" ? (
-                <div className="ago-add-box">
-                  <div className="ago-add-title">Where should {addPerson.user.display_name || addPerson.user.username} have access?</div>
-                  {groupAdmin ? (
-                    <button type="button" className="ago-add-option"
-                      onClick={() => setAddPerson({ kind: "role", user: addPerson.user, channelId: null, scopeName: "Whole group" })}>
-                      Whole group
-                    </button>
-                  ) : null}
-                  {scopeChannels.map(c => (
-                    <button key={c.id} type="button" className="ago-add-option"
-                      onClick={() => setAddPerson({ kind: "role", user: addPerson.user, channelId: c.id, scopeName: `#${c.name}` })}>
-                      #{c.name}
-                    </button>
-                  ))}
-                  <button type="button" className="ago-add-cancel" onClick={() => setAddPerson({ kind: "pick" })}>‹ Back</button>
-                </div>
               ) : (
-                <div className="ago-add-box">
-                  <div className="ago-add-title">Choose a role for {addPerson.scopeName}</div>
-                  <button type="button" className="ago-add-option" disabled={add.isPending}
-                    onClick={() => submitPerson(addPerson.user, "member", addPerson.channelId)}>
-                    <span>Member</span><span className="dim">Can read and participate</span>
-                  </button>
-                  <button type="button" className="ago-add-option" disabled={add.isPending}
-                    onClick={() => submitPerson(addPerson.user, "admin", addPerson.channelId)}>
-                    <span>Admin</span><span className="dim">Can also manage this access</span>
-                  </button>
-                  <button type="button" className="ago-add-cancel"
-                    onClick={() => setAddPerson({ kind: "scope", user: addPerson.user })}>‹ Back</button>
-                </div>
+                <MembershipForm key={addPerson.user.username}
+                  name={addPerson.user.display_name || addPerson.user.username}
+                  channels={scopeChannels} wholeGroup={groupAdmin} initialChannel={focusChannelId}
+                  onAdd={(channelId, role) => add.mutateAsync({ member_type: "user", member_id: addPerson.user.username, role, channel_id: channelId || undefined })}
+                  onDone={() => { toast(`${addPerson.user.display_name || addPerson.user.username} added`, { variant: "ok" }); setAddPerson(null); }}
+                  onCancel={() => setAddPerson({ kind: "pick" })} />
               )}
             </div>
             <div className="ago-member-add-flow">
               {!addAgent ? (
-                <button type="button" className="ago-add-link" onClick={() => setAddAgent({ kind: "pick" })}>
+                <button type="button" className="ago-add-link" onClick={() => { setAddPerson(null); setAddAgent({ kind: "pick" }); }}>
                   ＋ Add agent
                 </button>
               ) : addAgent.kind === "pick" ? (
@@ -438,22 +451,14 @@ export function MembersPanel() {
                   <button type="button" className="ago-add-cancel" onClick={() => setAddAgent(null)}>Cancel</button>
                 </div>
               ) : (
-                <div className="ago-add-box">
-                  <div className="ago-add-title">Where should {addAgent.agent.name} listen?</div>
-                  {groupAdmin ? (
-                    <button type="button" className="ago-add-option" disabled={add.isPending}
-                      onClick={() => submitAgent(addAgent.agent, null)}>
-                      Whole group
-                    </button>
-                  ) : null}
-                  {scopeChannels.map(c => (
-                    <button key={c.id} type="button" className="ago-add-option" disabled={add.isPending}
-                      onClick={() => submitAgent(addAgent.agent, c.id)}>
-                      #{c.name}
-                    </button>
-                  ))}
-                  <button type="button" className="ago-add-cancel" onClick={() => setAddAgent({ kind: "pick" })}>‹ Back</button>
-                </div>
+                <MembershipForm key={addAgent.agent.id} name={addAgent.agent.name} agent
+                  channels={scopeChannels} wholeGroup={groupAdmin} initialChannel={focusChannelId}
+                  onAdd={channelId => add.mutateAsync({ member_type: "agent", member_id: addAgent.agent.id, channel_id: channelId || undefined })}
+                  onDone={() => {
+                    toast(addAgent.agent.live ? `${addAgent.agent.name} added` : `${addAgent.agent.name} added — it will reply when its connection is live.`, { variant: addAgent.agent.live ? "ok" : "warn" });
+                    setAddAgent(null);
+                  }}
+                  onCancel={() => setAddAgent({ kind: "pick" })} />
               )}
             </div>
             <p className="ago-member-hint">

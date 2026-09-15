@@ -264,3 +264,11 @@ export const Configured: Story = {
     await expect(canvas.getByRole("button", { name: "Clear" })).toBeVisible();
   },
 };
+
+export const ConfiguredFeatures: Story = { parameters: Configured.parameters };
+export const ConfiguredCredentials: Story = {
+  parameters: Configured.parameters,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("tab", { name: "Credentials" }));
+  },
+};

@@ -88,3 +88,14 @@ export const HermesSetupGuide: Story = {
     await expect(canvas.queryByText("Runs on your computer")).not.toBeInTheDocument();
   },
 };
+
+export const PopulatedConnections: Story = {
+  parameters: { apiRoutes: {
+    ...meta.parameters.apiRoutes,
+    "GET /api/pairing": { tokens: ["Codex workstation", "Claude research", "Hermes assistant", "Cursor laptop", "Release helper", "Weekend researcher"].map((name, i) => ({
+      id: `demo-pair-${i}`, token: `demo-only-token-${i}`, name, kind: ["codex", "claude", "hermes", "cursor"][i % 4],
+      created_at: 1_750_000_000, connected: i < 4,
+      agents: [{ id: `demo-agent-${i}`, name }],
+    })) },
+  } },
+};

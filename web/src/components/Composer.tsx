@@ -108,6 +108,38 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const setText = useDrafts(s => s.set);
   const attachments = useAttachmentDrafts(s => s.byDraft[draftKey] ?? NO_ATTACHMENTS);
   const [mention, setMention] = useState<{ items: MentionCandidate[]; active: number; start: number } | null>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const [toolsActive, setToolsActive] = useState(false);
+  const [extraOpen, setExtraOpen] = useState(() => window.matchMedia("(min-width: 821px)").matches);
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 821px)");
+    const change = () => setExtraOpen(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  useEffect(() => {
+    if (!toolsActive) return;
+    let pointerDown = false;
+    const outside = (target: EventTarget | null) => target instanceof Node && !composerRef.current?.contains(target);
+    const down = () => { pointerDown = true; };
+    const up = () => { pointerDown = false; };
+    // Collapsing on blur moves the log between pointer-down and click, causing
+    // the user to miss the control they pressed. Finish that click first.
+    const click = (e: MouseEvent) => { if (outside(e.target)) setToolsActive(false); };
+    const focus = (e: FocusEvent) => { if (!pointerDown && outside(e.target)) setToolsActive(false); };
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("pointercancel", up, true);
+    document.addEventListener("click", click, true);
+    document.addEventListener("focusin", focus, true);
+    return () => {
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("pointercancel", up, true);
+      document.removeEventListener("click", click, true);
+      document.removeEventListener("focusin", focus, true);
+    };
+  }, [toolsActive]);
   const [addrOpen, setAddrOpen] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const addrSel = useAddressing(s => s.addr[draftKey] ?? NO_ADDR);
@@ -468,19 +500,13 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         <ImageLightbox url={previewUrl} filename={previewEntry.name}
           onClose={() => setPreviewId(null)} />
       )}
-      <div className="chat-input"
+      <div ref={composerRef} onFocusCapture={() => setToolsActive(true)}
+        className={`chat-input ${text || attachments.length ? "has-draft" : ""} ${toolsActive || addrOpen ? "tools-active" : ""}`}
         onDragOver={e => e.preventDefault()}
         onDrop={e => {
           e.preventDefault();
           if (e.dataTransfer?.files?.length) addDroppedFiles(e.dataTransfer.files);
         }}>
-        {agents.length > 0 && (
-          <button className={`btn ago-addr-btn ${addrSel.length ? "active" : ""}`}
-            title="Choose which agents you're talking to"
-            onClick={() => setAddrOpen(!addrOpen)}>
-            <Icon name="bot" />{addrSel.length ? <span className="ago-addr-count">{addrSel.length}</span> : null}
-          </button>
-        )}
         <textarea id={inputId} ref={taRef} rows={1}
           placeholder={inThread ? "Reply in thread…" : `Message #${channelName}`}
           title="@mention an agent to address it directly"
@@ -515,11 +541,19 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         )}
         <input ref={fileRef} type="file" multiple style={{ display: "none" }}
           onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+        <div className="ago-composer-tools">
+        {agents.length > 0 && (
+          <button className={`btn ago-addr-btn ${addrSel.length ? "active" : ""}`}
+            title="Choose which agents you're talking to"
+            onClick={() => setAddrOpen(!addrOpen)}>
+            <Icon name="bot" />{addrSel.length ? <span className="ago-addr-count">{addrSel.length}</span> : null}
+          </button>
+        )}
         <button className="btn ago-attach-btn" title="Attach files"
           onClick={() => fileRef.current?.click()}>
           <Icon name="paperclip" />
         </button>
-        <TemplateControls groupId={groupId} draft={text} onChoose={insertTemplate} />
+        <div className="ago-composer-right">
         {voiceOK && (
           <MicButton
             channelId={channelId}
@@ -527,6 +561,11 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
             mentions={addr || undefined}
           />
         )}
+        <details className="ago-composer-extra" open={extraOpen} onToggle={e => setExtraOpen(e.currentTarget.open)}
+          onKeyDown={e => { if (e.key === "Escape" && window.matchMedia("(max-width: 820px)").matches) { e.stopPropagation(); setExtraOpen(false); e.currentTarget.querySelector("summary")?.focus(); } }}>
+          <summary aria-label="More composer tools"><Icon name="ellipsis" /></summary>
+          <div className="ago-composer-extra-options">
+        <TemplateControls groupId={groupId} draft={text} onChoose={insertTemplate} />
         {showRequireAgent && requireAgentKey && (
           <button
             className={`btn ago-require-agent ${requireAgentOn ? "active" : ""}`}
@@ -546,9 +585,13 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
             <Icon name="messages-square" />
           </button>
         )}
+          </div>
+        </details>
         <button className="btn primary"
           disabled={preparingAttachments.length > 0 || sendingAttachments.length > 0}
           onClick={doSend}>Send</button>
+        </div>
+        </div>
         {addrOpen && (
           <div className="ago-addr-pop" id="ago-addr-pop">
             <div className="ago-addr-pop-head">

@@ -6,6 +6,7 @@
    Env:
      AGORA_BASE   server origin      (default http://127.0.0.1:4470)
      AGORA_TOKEN  admin key          (required)
+     PW_WS        optional Playwright server WebSocket endpoint
      PW_DIR       dir containing node_modules/playwright (default: resolve normally)
    The server must be fresh-ish; seeding is idempotent by group name. */
 
@@ -128,7 +129,7 @@ const appUrl = q => BASE + APP_PATH + (q || "");
 
 async function main() {
   await seed();
-  const browser = await chromium.launch();
+  const browser = process.env.PW_WS ? await chromium.connect(process.env.PW_WS) : await chromium.launch();
 
   /* -- 1. auth gate + manual key submit (fresh context, no token) -- */
   await check("auth: gate shows without token and accepts the admin key", async () => {
@@ -314,7 +315,8 @@ async function main() {
   await check("messages: info shows a thread name and reply count", async () => {
     const named = page.locator("#ago-log .bubble", { has: page.locator(".ago-thread-alias") }).first();
     await named.hover();
-    await named.locator(".ago-info-btn").click();
+    await named.getByRole("button", { name: "More message actions" }).click();
+    await named.getByRole("button", { name: "Details", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Message info" });
     await dialog.waitFor();
     if (!(await dialog.getByText("Agora history paging", { exact: true }).count())) {
@@ -326,7 +328,13 @@ async function main() {
     if ((await repliesRow.locator("dd").innerText()).trim() !== "1") {
       throw new Error("message info omitted the reply count");
     }
+    const latest = dialog.locator(".ago-message-info-row", { has: page.getByText("Latest reply", { exact: true }) });
+    await latest.locator("dd").filter({ hasNotText: /Loading|Unavailable/ }).waitFor();
     await dialog.getByTitle("Close message info").click();
+    await dialog.waitFor({ state: "detached" });
+    if (!(await named.getByRole("button", { name: "More message actions" }).evaluate(el => el === document.activeElement))) {
+      throw new Error("message info did not restore focus to More");
+    }
   });
 
   await check("history: thread pane pages older replies in on scroll-up", async () => {
@@ -363,6 +371,7 @@ async function main() {
     const label = "Parity template";
     const body = "reusable parity template body";
     const openPicker = async () => {
+      await page.locator(".chat-input textarea:visible").first().click();
       await page.click(".ago-template-btn");
       await page.waitForSelector(".ago-template-pop", { timeout: 5000 });
     };
@@ -429,7 +438,7 @@ async function main() {
   await check("reactions: pick emoji, chip appears, toggle off", async () => {
     const bubble = page.locator("#ago-log .bubble", { hasText: "seed plain message one" }).first();
     await bubble.hover();
-    await bubble.locator(".ago-react-btn").click();
+    await bubble.locator(".ago-react-btn:visible").click();
     await page.waitForSelector("#ago-emoji-pop", { timeout: 5000 });
     await page.locator("#ago-emoji-pop button").filter({ hasText: "👍" }).first().click();
     await bubble.locator(".ago-reacts .ago-react", { hasText: "👍" }).waitFor({ timeout: 8000 });
@@ -514,7 +523,7 @@ async function main() {
     await page.locator(".ago-inbox-item", { hasText: "Threads" }).click();
     await page.locator(".ago-inbox-row", { hasText: "seed thread root alpha" }).first().click();
     await page.waitForSelector("#ago-thread-log .bubble", { timeout: 5000 });
-    await page.locator('button[title="Pin this thread for quick access"]').first().click();
+    await page.locator('.agora-thread .ago-head-actions button[title="Pin this thread for quick access"]').click();
     await page.locator('.ago-pinbar .ago-pin-count', { hasText: "pinned" }).waitFor({ timeout: 8000 })
       .catch(async () => {
         // pin bar lives in the channel pane — navigate back to the channel
@@ -530,6 +539,7 @@ async function main() {
     const before = await page.$eval(".ago-inbox-list", el => el.scrollTop);
     const row = page.locator(".ago-inbox-row", { hasText: "seed thread root 6" }).first();
     await row.hover();
+    await row.getByRole("button", { name: "Thread options" }).click();
     await row.locator('button.ago-x[title^="Remove"]').click();
     await page.waitForSelector(".ago-inbox-list button.ago-x.armed", { timeout: 5000 });
     const mid = await page.$eval(".ago-inbox-list", el => el.scrollTop);

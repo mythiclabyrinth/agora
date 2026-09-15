@@ -140,3 +140,22 @@ export const SortFilterAndPersistence: Story = {
     expect(rowNames(canvasElement)).toEqual(["Charlie follow-up", "Alpha launch notes"]);
   },
 };
+
+export const SearchConversations: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": { threads: inboxThreads },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const search = canvas.getByRole("searchbox", { name: "Search threads" });
+    await userEvent.type(search, "Alpha");
+    await expect(canvas.findByText("Alpha launch notes")).resolves.toBeVisible();
+    await expect(canvas.queryByText("Zulu planning")).not.toBeInTheDocument();
+    await userEvent.clear(search);
+    await expect(canvas.findByText("Zulu planning")).resolves.toBeVisible();
+  },
+};

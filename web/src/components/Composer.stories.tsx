@@ -171,6 +171,7 @@ export const ManageTemplates: Story = {
   parameters: { apiRoutes: withTemplateRoutes },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("textbox"));
     await userEvent.click(canvas.getByTitle("Message templates"));
     await userEvent.click(await canvas.findByText("Manage"));
     const dialog = within(await canvas.findByRole("dialog"));
@@ -287,6 +288,7 @@ export const SendAddressedMessage: Story = {
   play: async ({ canvasElement }) => {
     sendMessage.mockClear();
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("textbox"));
     await userEvent.click(await canvas.findByTitle("Choose which agents you're talking to"));
     await userEvent.click(await canvas.findByText("Codex"));
     const input = await canvas.findByPlaceholderText("Message #general");
@@ -306,6 +308,7 @@ export const AddressingPicker: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("textbox"));
     await userEvent.click(await canvas.findByTitle("Choose which agents you're talking to"));
     await expect(canvas.findByText("Talk to")).resolves.toBeVisible();
     await expect(canvas.findByText("Claude")).resolves.toBeVisible();
@@ -355,6 +358,7 @@ export const ThreadReply: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByPlaceholderText("Reply in thread…")).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("textbox"));
     const toggle = await canvas.findByTitle(
       "My replies here don't wake agents unless I tag one",
     );
@@ -376,6 +380,7 @@ export const RequireAgentDisabled: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("textbox"));
     const toggle = await canvas.findByTitle(
       "My replies here don't wake agents unless I tag one",
     );
@@ -383,5 +388,37 @@ export const RequireAgentDisabled: Story = {
     await expect(
       canvas.findByTitle("Agents may reply to my messages without an @mention"),
     ).resolves.toHaveAttribute("aria-pressed", "false");
+  },
+};
+
+export const ThreadToolbar: Story = {
+  args: { threadId: 42, onSetReplyInThread: undefined, voiceOK: true },
+  decorators: [(Story) => <div className="agora-thread" style={{ width: "min(720px, 100%)" }}><Story /></div>],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTitle("Attach files")).not.toBeVisible();
+    await userEvent.click(canvas.getByRole("textbox"));
+    const bot = canvas.getByTitle("Choose which agents you're talking to").getBoundingClientRect();
+    const files = canvas.getByTitle("Attach files").getBoundingClientRect();
+    const input = canvas.getByPlaceholderText("Reply in thread…").getBoundingClientRect();
+    await expect(Math.abs(bot.top - files.top)).toBeLessThan(2);
+    await expect(bot.top).toBeGreaterThanOrEqual(input.bottom);
+  },
+};
+
+export const FocusRevealsTools: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox");
+    const tools = canvas.getByTitle("Attach files");
+    await expect(tools).not.toBeVisible();
+    await userEvent.click(input);
+    await expect(tools).toBeVisible();
+    await userEvent.type(input, "Keep this draft");
+    await userEvent.click(canvasElement.ownerDocument.body);
+    await expect(tools).toBeVisible();
+    await userEvent.clear(input);
+    await userEvent.click(canvasElement.ownerDocument.body);
+    await expect(tools).not.toBeVisible();
   },
 };

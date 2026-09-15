@@ -554,7 +554,7 @@ export function AiSettingsPane() {
       <div className="conn-panel" id="settings-panel">
         <div className="conn-head">
           <b>Settings</b>
-          <button className="btn sm" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
+          <button className="btn sm" aria-label="Close settings" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
         </div>
         <div className="conn-tabs" role="tablist">
           <button type="button" role="tab" className={`conn-tab${tab === "features" ? " active" : ""}`}

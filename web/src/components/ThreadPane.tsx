@@ -3,7 +3,7 @@
    the bottom (fresh open), while same-thread updates preserve the reader's
    place unless they're already at the bottom. */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flashMessage, useJump } from "../state/jump";
 import {
   flattenMessages, useAgents, useChannelAgents, useGroups, useMarkThreadRead, useMe,
@@ -147,6 +147,8 @@ export function ThreadPane() {
   const me = useMe().data;
   const groups = useGroups().data || [];
   const rootId = ui.threadRoot as number;
+  const [toolsOpen, setToolsOpen] = useState(false);
+  useEffect(() => setToolsOpen(false), [rootId]);
   const group = groups.find(g => g.id === ui.sel.g) || null;
   const channel = group?.channels?.find(c => c.id === ui.sel.c) || null;
 
@@ -245,7 +247,9 @@ export function ThreadPane() {
         {/* Docked to the side the header only has ~340px, so `.ago-btn-label`
             is hidden there and the titles carry the meaning; expanded (or
             full-width on a phone) the labels come back. */}
-        <div className="ago-head-actions">
+        <button className="btn sm ago-pane-tools-toggle" aria-label="Thread actions" aria-expanded={toolsOpen}
+          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="ellipsis" /></button>
+        <div className={`ago-head-actions ago-thread-tools ${toolsOpen ? "open" : ""}`}>
           <button className={`btn sm ${ui.filesOpen && ui.filesThread === rootId ? "active" : ""}`}
             title="Files: attachments in this thread"
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread === rootId), rootId)}>

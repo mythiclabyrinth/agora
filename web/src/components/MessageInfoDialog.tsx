@@ -34,7 +34,8 @@ export function MessageInfoDialog({ message, groupId, onClose }: {
     const previous = document.activeElement as HTMLElement | null;
     closeButtonRef.current?.focus();
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeRef.current();
+      // Opened from the ⋯ popover: let Escape close only this dialog.
+      if (event.key === "Escape") { event.stopPropagation(); closeRef.current(); }
       if (event.key !== "Tab" || !panelRef.current) return;
       const focusable = [...panelRef.current.querySelectorAll<HTMLElement>(
         'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
@@ -74,7 +75,7 @@ export function MessageInfoDialog({ message, groupId, onClose }: {
       onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
       <section ref={panelRef} className="conn-panel ago-message-info" role="dialog" aria-modal="true"
         aria-labelledby={titleId}>
-        <header className="ago-message-info-head">
+        <header className="conn-head ago-message-info-head">
           <h2 id={titleId}>Message info</h2>
           <button ref={closeButtonRef} className="btn sm" title="Close message info" onClick={onClose}>
             <Icon name="x" />

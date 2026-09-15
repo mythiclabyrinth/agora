@@ -30,6 +30,28 @@ function AuthedApp({ onAuthFailed }: { onAuthFailed: () => void }) {
 }
 
 export function App() {
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const compact = window.matchMedia("(max-width: 820px)");
+    const update = () => {
+      // Mobile keyboards shrink the visual viewport, not necessarily 100dvh.
+      // Do not reflow the chat when the user is pinch-zooming.
+      if (compact.matches && Math.abs(viewport.scale - 1) < .01) {
+        document.documentElement.style.setProperty("--ago-visible-height", `${viewport.height}px`);
+      } else if (!compact.matches) {
+        document.documentElement.style.removeProperty("--ago-visible-height");
+      }
+    };
+    update();
+    viewport.addEventListener("resize", update);
+    compact.addEventListener("change", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      compact.removeEventListener("change", update);
+      document.documentElement.style.removeProperty("--ago-visible-height");
+    };
+  }, []);
   const [token, setToken] = useState(sessionToken());
   const [gateVisible, setGateVisible] = useState(!token);
   const qc = useQueryClient();

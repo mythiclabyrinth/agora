@@ -110,6 +110,7 @@ function StarPop({ channelId, onClose }: { channelId: string; onClose: () => voi
 
 export function LiveRows({ channelId, threadId }: { channelId: string; threadId: number | null }) {
   const { typing, progress } = useChannelLive(channelId, threadId);
+  const activeTyping = typing.filter(t => !progress.some(p => p.agent_name === t.agent_name));
   if (!typing.length && !progress.length) {
     return <div className="ago-status" id={threadId != null ? "ago-thread-status" : "ago-status"}></div>;
   }
@@ -117,16 +118,32 @@ export function LiveRows({ channelId, threadId }: { channelId: string; threadId:
     <div className="ago-status" id={threadId != null ? "ago-thread-status" : "ago-status"}>
       {progress.map(p => (
         <div key={p.handle} className="ago-progress">
-          <Icon name="loader" cls="spin" /> <b>{p.agent_name}</b> {p.text}
+          <Icon name="loader" cls="spin" /> <b>{p.agent_name}</b> <span className="ago-progress-detail">{p.text}</span>
         </div>
       ))}
-      {typing.length > 0 && (
+      {activeTyping.length > 0 && (
         <div className="ago-typing">
-          {typing.map(t => t.agent_name).join(", ")} typing<span className="dots">…</span>
+          {activeTyping.map(t => t.agent_name).join(", ")} typing<span className="dots">…</span>
         </div>
       )}
     </div>
   );
+}
+
+function AgentHint({ username, channelId, onOpen }: { username: string; channelId: string; onOpen: () => void }) {
+  const storageKey = `agora_agent_hint:${JSON.stringify([username, channelId])}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem(storageKey) === "dismissed"; } catch { return false; }
+  });
+  if (dismissed) return null;
+  return <div className="ago-hint-banner">
+    <span>Bring an agent into the conversation.</span>
+    <button className="lnk" onClick={onOpen}>Add members</button>
+    <button className="ago-x" aria-label="Dismiss agent suggestion" onClick={() => {
+      setDismissed(true);
+      try { localStorage.setItem(storageKey, "dismissed"); } catch { /* Still dismiss for this visit when storage is unavailable. */ }
+    }}><Icon name="x" /></button>
+  </div>;
 }
 
 export function ChannelPane() {
@@ -146,6 +163,7 @@ export function ChannelPane() {
   const [editName, setEditName] = useState("");
   const [editTopic, setEditTopic] = useState("");
   const [replyInThread, setReplyInThread] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [starsOpen, setStarsOpen] = useState(false);
   const stars = useStars(channel?.id || "").data || [];
 
@@ -244,7 +262,9 @@ export function ChannelPane() {
             </span>
           </div>
         )}
-        <div className="ago-head-actions">
+        <button className="btn sm ago-mobile-tools" aria-label="Channel actions" aria-expanded={toolsOpen}
+          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="chevron-down" /></button>
+        <div className={`ago-head-actions ago-channel-tools ${toolsOpen ? "open" : ""}`}>
           <button className={`btn sm ${ui.filesOpen && ui.filesThread == null ? "active" : ""}`}
             title={`Attachments in #${channel.name}`}
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread == null), null)}>
@@ -269,12 +289,8 @@ export function ChannelPane() {
       </div>
       <PinBar channelId={channel.id} />
       {FEATURES.stars && starsOpen && <StarPop channelId={channel.id} onClose={() => setStarsOpen(false)} />}
-      {!agents.length && !isDm && (
-        <div className="ago-hint-banner">
-          No agents are listening in this channel yet.
-          Open <b>Members</b> and add one — connect agents first via <b>Connections</b> (top right).
-        </div>
-      )}
+      {!agents.length && !isDm && me && <AgentHint key={JSON.stringify([me.username, channel.id])}
+        username={me.username} channelId={channel.id} onOpen={() => ui.setMembersOpen(true)} />}
       {isDm && channel.dm_can_post === false && <div className="ago-hint-banner">
         Your access to this agent has been removed. This conversation is a read-only archive.
       </div>}

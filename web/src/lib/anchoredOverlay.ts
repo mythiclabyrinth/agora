@@ -19,7 +19,14 @@ export function watchAnchoredOverlay(
       wroteSize = true;
     }
     const rect = anchor.getBoundingClientRect();
-    const offscreen = rect.bottom < 0 || rect.top > window.innerHeight;
+    const viewport = window.visualViewport;
+    const compact = window.innerWidth <= 820 && viewport && Math.abs(viewport.scale - 1) < .01;
+    const viewTop = compact ? viewport.offsetTop : 0;
+    const viewLeft = compact ? viewport.offsetLeft : 0;
+    const viewHeight = compact ? viewport.height : window.innerHeight;
+    const viewWidth = compact ? viewport.width : window.innerWidth;
+    const viewBottom = viewTop + viewHeight;
+    const offscreen = rect.bottom < viewTop || rect.top > viewBottom;
     overlay.style.visibility = offscreen ? "hidden" : "";
     if (offscreen) {
       if (wroteSize) {
@@ -31,16 +38,16 @@ export function watchAnchoredOverlay(
     const gutter = 8;
     const gap = 6;
     const naturalHeight = overlay.offsetHeight;
-    const aboveSpace = rect.top - gap - gutter;
-    const belowSpace = window.innerHeight - rect.bottom - gap - gutter;
+    const aboveSpace = rect.top - viewTop - gap - gutter;
+    const belowSpace = viewBottom - rect.bottom - gap - gutter;
     const above = naturalHeight <= aboveSpace || aboveSpace >= belowSpace;
     const available = Math.max(80, above ? aboveSpace : belowSpace);
     const width = overlay.offsetWidth;
     const wantedLeft = alignment === "center"
       ? rect.left + rect.width / 2 - width / 2
       : rect.left;
-    const left = Math.max(gutter, Math.min(wantedLeft, window.innerWidth - width - gutter));
-    const height = Math.min(naturalHeight, available, window.innerHeight - gutter * 2);
+    const left = Math.max(viewLeft + gutter, Math.min(wantedLeft, viewLeft + viewWidth - width - gutter));
+    const height = Math.min(naturalHeight, available, viewHeight - gutter * 2);
     const nextMaxHeight = naturalHeight > height ? `${height}px` : "";
     if (overlay.style.maxHeight !== nextMaxHeight) {
       ignoreOverlayResize = true;
@@ -49,8 +56,8 @@ export function watchAnchoredOverlay(
     }
     const wanted = above ? rect.top - height - gap : rect.bottom + gap;
     const top = Math.min(
-      Math.max(gutter, wanted),
-      Math.max(gutter, window.innerHeight - height - gutter),
+      Math.max(viewTop + gutter, wanted),
+      Math.max(viewTop + gutter, viewBottom - height - gutter),
     );
     overlay.style.left = `${left}px`;
     overlay.style.top = `${top}px`;
@@ -74,12 +81,16 @@ export function watchAnchoredOverlay(
   observer.observe(document.documentElement);
   place();
   window.addEventListener("resize", schedule);
+  window.visualViewport?.addEventListener("resize", schedule);
+  window.visualViewport?.addEventListener("scroll", schedule);
   document.addEventListener("scroll", schedule, { capture: true, passive: true });
   return () => {
     if (frame) cancelAnimationFrame(frame);
     if (releaseResizeGuard) cancelAnimationFrame(releaseResizeGuard);
     observer.disconnect();
     window.removeEventListener("resize", schedule);
+    window.visualViewport?.removeEventListener("resize", schedule);
+    window.visualViewport?.removeEventListener("scroll", schedule);
     document.removeEventListener("scroll", schedule, true);
   };
 }
