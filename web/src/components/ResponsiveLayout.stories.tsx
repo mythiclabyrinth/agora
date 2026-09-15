@@ -144,6 +144,10 @@ export const PhoneChannelEditor: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(element(canvasElement, "#agora-main")).toBeVisible());
     await waitFor(() => expect(element(canvasElement, "#agora-side")).not.toBeVisible());
+    const actions = canvas.getByRole("button", { name: "Channel actions" });
+    expect(actions).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(actions);
+    expect(actions).toHaveAttribute("aria-expanded", "true");
     await userEvent.click(canvas.getByRole("button", { name: /Rename #storybook/i }));
     await expect(canvas.findByLabelText("Channel name")).resolves.toBeVisible();
     await expect(canvas.findByLabelText("Channel description")).resolves.toBeVisible();
@@ -209,8 +213,8 @@ export const DesktopThreadExpanded: Story = {
   },
 };
 
-/* A phone shows the thread full-screen rather than docked, so the labels stay
-   even though `.thread-expanded` is off. */
+/* A phone keeps secondary controls behind Thread actions; labels become
+   visible when that disclosure opens, and disappear when it closes. */
 export const PhoneThreadPane: Story = {
   globals: { viewport: { value: "phone", isRotated: false } },
   args: { mode: "thread" },
@@ -220,10 +224,18 @@ export const PhoneThreadPane: Story = {
   },
   play: async ({ canvasElement }) => {
     await waitFor(() => expect(element(canvasElement, "#agora-thread")).toBeVisible());
-    for (const label of threadActionLabels(canvasElement)) {
-      await waitFor(() => expect(label).toBeVisible());
-    }
+    const canvas = within(canvasElement);
+    const actions = canvas.getByRole("button", { name: "Thread actions" });
+    const labels = threadActionLabels(canvasElement);
+    expect(labels.length).toBeGreaterThan(0);
+    expect(actions).toHaveAttribute("aria-expanded", "false");
+    for (const label of labels) expect(label).not.toBeVisible();
+    await userEvent.click(actions);
+    expect(actions).toHaveAttribute("aria-expanded", "true");
+    for (const label of labels) await waitFor(() => expect(label).toBeVisible());
     await expectNoHorizontalOverflow(canvasElement);
+    await userEvent.click(actions);
+    for (const label of labels) await waitFor(() => expect(label).not.toBeVisible());
   },
 };
 
