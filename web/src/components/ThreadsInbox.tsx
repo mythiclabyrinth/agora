@@ -1,12 +1,13 @@
 /* Threads inbox (.ago-inbox-list): every thread the user participates in,
    newest first, with rename and two-step remove on each row. */
 
-import { useMemo, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   filterAndSortThreads, fmtTs, keys, useGroups, useHideThread, useMe, useRenameThread, useThreads,
   type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
+import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
@@ -41,6 +42,14 @@ function InboxRow({ t }: { t: ThreadRow }) {
   const canRemove = (g && g.role === "admin") || !!me?.instance_admin;
   const root = t.root || ({} as ThreadRow["root"]);
   const [renaming, setRenaming] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuId = useId();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (!menuOpen || !menuRef.current || !triggerRef.current) return;
+    return watchAnchoredOverlay(triggerRef.current, menuRef.current, "center");
+  }, [menuOpen]);
 
   return (
     <div className={`ago-inbox-row ${t.unread ? "unread" : ""}`}
@@ -51,13 +60,19 @@ function InboxRow({ t }: { t: ThreadRow }) {
       <div className="ago-inbox-top">
         <div className="ago-inbox-meta">
           <time className="ts" title={fmtTs(t.last_reply_ts || root.ts)} dateTime={new Date((t.last_reply_ts || root.ts) * 1000).toISOString()}>{relativeTime(t.last_reply_ts || root.ts)}</time>
-          <span className="ago-inbox-actions">
+          <button ref={triggerRef} className="ago-inbox-more" aria-label="Thread options" aria-expanded={menuOpen}
+            popoverTarget={menuId} onClick={e => e.stopPropagation()}><Icon name="ellipsis" /></button>
+          <div id={menuId} ref={menuRef} popover="auto" className="ago-inbox-actions ago-inbox-menu"
+            onToggle={e => setMenuOpen(e.newState === "open")} onClick={e => e.stopPropagation()}
+            onKeyDown={e => { if (e.key === "Escape") { menuRef.current?.hidePopover(); triggerRef.current?.focus(); } }}>
             <button className="ago-x" title="Rename this thread"
               onClick={e => {
                 e.stopPropagation();
+                menuRef.current?.hidePopover();
+                triggerRef.current?.focus();
                 setRenaming(true);
               }}>
-              <Icon name="pencil" />
+              <Icon name="pencil" /> Rename
             </button>
             {renaming && <PromptDialog title="Rename thread"
               description="Leave the name blank to use the first line of the thread."
@@ -78,10 +93,10 @@ function InboxRow({ t }: { t: ThreadRow }) {
                   disarm();
                   hide.mutate(root.id);
                 }}>
-                {armed ? "Sure?" : <Icon name="x" />}
+                {armed ? "Confirm hide" : <><Icon name="x" /> Hide thread</>}
               </button>
             )}
-          </span>
+          </div>
         </div>
       </div>
       <button className="ago-inbox-main" onClick={event => {
@@ -110,6 +125,7 @@ export function ThreadsInbox() {
   const setSort = useUiState(state => state.setThreadsSort);
   const setFilter = useUiState(state => state.setThreadsFilter);
   const [search, setSearch] = useState("");
+  const [toolsOpen, setToolsOpen] = useState(false);
   const displayedThreads = useMemo(
     () => filterAndSortThreads(threads, sort, filter).filter(t =>
       `${snippet(t.root)} ${t.channel_name} ${t.group_name} ${t.root.author_name || t.root.author_id}`.toLowerCase().includes(search.trim().toLowerCase())),
@@ -126,7 +142,9 @@ export function ThreadsInbox() {
           <span className="ago-chan-name"><Icon name="messages-square" /> Threads</span>
           <span className="dim">conversations you're part of</span>
         </div>
-        <div className="ago-head-actions">
+        <button className="btn sm ago-pane-tools-toggle" aria-label="Thread filters" aria-expanded={toolsOpen}
+          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>
+        <div className={`ago-head-actions ago-inbox-tools ${toolsOpen ? "open" : ""}`}>
           <label className="ago-inbox-control">
             <span>Sort by</span>
             <select className="ago-search-scope" aria-label="Sort threads"

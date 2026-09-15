@@ -110,6 +110,7 @@ function StarPop({ channelId, onClose }: { channelId: string; onClose: () => voi
 
 export function LiveRows({ channelId, threadId }: { channelId: string; threadId: number | null }) {
   const { typing, progress } = useChannelLive(channelId, threadId);
+  const activeTyping = typing.filter(t => !progress.some(p => p.agent_name === t.agent_name));
   if (!typing.length && !progress.length) {
     return <div className="ago-status" id={threadId != null ? "ago-thread-status" : "ago-status"}></div>;
   }
@@ -117,12 +118,12 @@ export function LiveRows({ channelId, threadId }: { channelId: string; threadId:
     <div className="ago-status" id={threadId != null ? "ago-thread-status" : "ago-status"}>
       {progress.map(p => (
         <div key={p.handle} className="ago-progress">
-          <Icon name="loader" cls="spin" /> <b>{p.agent_name}</b> {p.text}
+          <Icon name="loader" cls="spin" /> <b>{p.agent_name}</b> <span className="ago-progress-detail">{p.text}</span>
         </div>
       ))}
-      {typing.length > 0 && (
+      {activeTyping.length > 0 && (
         <div className="ago-typing">
-          {typing.map(t => t.agent_name).join(", ")} typing<span className="dots">…</span>
+          {activeTyping.map(t => t.agent_name).join(", ")} typing<span className="dots">…</span>
         </div>
       )}
     </div>

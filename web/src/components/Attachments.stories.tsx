@@ -168,3 +168,20 @@ export const LongAndZeroByteFiles: Story = {
     docs: { description: { story: "Exercises the edge cases for a zero-byte file (`0 B`) and truncation of a very long filename on a 320px-wide phone." } },
   },
 };
+
+export const ImageFailureAndRetry: Story = {
+  args: ImageLightbox.args,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const image = canvas.getByAltText("responsive-layout-preview.svg");
+    image.dispatchEvent(new Event("error"));
+    await expect(canvas.findByText("Image preview unavailable")).resolves.toBeVisible();
+    expect(canvas.getByRole("link", { name: "Open" })).toHaveAttribute("target", "_blank");
+    await userEvent.click(canvas.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      const retried = canvas.getByAltText("responsive-layout-preview.svg") as HTMLImageElement;
+      expect(retried.complete && retried.naturalWidth > 0).toBe(true);
+    });
+    expect(canvas.queryByText("Image preview unavailable")).not.toBeInTheDocument();
+  },
+};

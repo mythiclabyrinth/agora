@@ -52,7 +52,7 @@ export function Topbar() {
   };
 
   return (
-    <div className="topbar">
+    <div className={`topbar ${toolsOpen ? "tools-open" : ""}`}>
       <div className="brand"><span className="brand-mark"><img src="/icon.png" alt="" /></span> Agora</div>
       <ServerBadge />
       <button className="topbar-me" id="topbar-me" title="Change how your name appears"

@@ -41,6 +41,9 @@ const OUT = process.env.SHOTS_TAG ? join(OUT_ROOT, process.env.SHOTS_TAG) : OUT_
 /* Playwright context options — the viewport must be nested, and `isMobile`
    is what makes the narrow CSS behave like a real phone (touch, no hover). */
 const VIEWPORTS = {
+  narrow: { viewport: { width: 320, height: 640 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
+  short: { viewport: { width: 390, height: 430 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
+  landscape: { viewport: { width: 740, height: 390 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
   phone: {
     viewport: { width: 390, height: 844 },
     deviceScaleFactor: 2, isMobile: true, hasTouch: true,
@@ -88,7 +91,7 @@ const FLOWS = [
   },
   {
     id: "message-actions",
-    what: "message actions explicitly opened below the content",
+    what: "message More menu, with primary actions included on touch screens",
     async run(page) {
       await settle(page);
       const bubble = page.locator(".bubble").first();
@@ -103,7 +106,8 @@ const FLOWS = [
       await settle(page);
       const bubble = page.locator(".bubble").first();
       await bubble.hover();
-      const opener = bubble.getByTitle("Reply in thread");
+      if ((page.viewportSize()?.width || 1440) <= 820) await bubble.getByRole("button", { name: "More message actions" }).click();
+      const opener = bubble.getByRole("button", { name: "Reply in thread", exact: true });
       if (await opener.count()) { await opener.click(); await sleep(600); }
     },
   },
@@ -172,10 +176,11 @@ const FLOWS = [
     what: "emoji picker anchored to a message",
     async run(page) {
       await settle(page);
-      const row = page.locator(".ago-msg, .bubble").first();
-      if (await row.count()) await row.hover();
-      const add = page.locator(".ago-react-add").first();
-      if (await add.count()) { await add.click(); await sleep(400); }
+      const row = page.locator(".bubble").first();
+      await row.hover();
+      if ((page.viewportSize()?.width || 1440) <= 820) await row.getByRole("button", { name: "More message actions" }).click();
+      await row.getByRole("button", { name: "Add reaction", exact: true }).click();
+      await page.locator("#ago-emoji-search").waitFor({ state: "visible" });
     },
   },
   {

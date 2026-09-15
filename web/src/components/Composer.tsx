@@ -110,6 +110,13 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const [mention, setMention] = useState<{ items: MentionCandidate[]; active: number; start: number } | null>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const [toolsActive, setToolsActive] = useState(false);
+  const [extraOpen, setExtraOpen] = useState(() => window.matchMedia("(min-width: 821px)").matches);
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 821px)");
+    const change = () => setExtraOpen(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
   useEffect(() => {
     if (!toolsActive) return;
     let pointerDown = false;
@@ -546,7 +553,6 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
           onClick={() => fileRef.current?.click()}>
           <Icon name="paperclip" />
         </button>
-        <TemplateControls groupId={groupId} draft={text} onChoose={insertTemplate} />
         {voiceOK && (
           <MicButton
             channelId={channelId}
@@ -554,6 +560,11 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
             mentions={addr || undefined}
           />
         )}
+        <details className="ago-composer-extra" open={extraOpen} onToggle={e => setExtraOpen(e.currentTarget.open)}
+          onKeyDown={e => { if (e.key === "Escape" && window.matchMedia("(max-width: 820px)").matches) { e.stopPropagation(); setExtraOpen(false); e.currentTarget.querySelector("summary")?.focus(); } }}>
+          <summary aria-label="More composer tools"><Icon name="ellipsis" /></summary>
+          <div className="ago-composer-extra-options">
+        <TemplateControls groupId={groupId} draft={text} onChoose={insertTemplate} />
         {showRequireAgent && requireAgentKey && (
           <button
             className={`btn ago-require-agent ${requireAgentOn ? "active" : ""}`}
@@ -573,6 +584,8 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
             <Icon name="messages-square" />
           </button>
         )}
+          </div>
+        </details>
         <button className="btn primary"
           disabled={preparingAttachments.length > 0 || sendingAttachments.length > 0}
           onClick={doSend}>Send</button>

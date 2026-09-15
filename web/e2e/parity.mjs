@@ -427,7 +427,7 @@ async function main() {
   await check("reactions: pick emoji, chip appears, toggle off", async () => {
     const bubble = page.locator("#ago-log .bubble", { hasText: "seed plain message one" }).first();
     await bubble.hover();
-    await bubble.locator(".ago-react-btn").click();
+    await bubble.locator(".ago-react-btn:visible").click();
     await page.waitForSelector("#ago-emoji-pop", { timeout: 5000 });
     await page.locator("#ago-emoji-pop button").filter({ hasText: "👍" }).first().click();
     await bubble.locator(".ago-reacts .ago-react", { hasText: "👍" }).waitFor({ timeout: 8000 });
@@ -528,6 +528,7 @@ async function main() {
     const before = await page.$eval(".ago-inbox-list", el => el.scrollTop);
     const row = page.locator(".ago-inbox-row", { hasText: "seed thread root 6" }).first();
     await row.hover();
+    await row.getByRole("button", { name: "Thread options" }).click();
     await row.locator('button.ago-x[title^="Remove"]').click();
     await page.waitForSelector(".ago-inbox-list button.ago-x.armed", { timeout: 5000 });
     const mid = await page.$eval(".ago-inbox-list", el => el.scrollTop);

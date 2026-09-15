@@ -8,6 +8,7 @@ import { ImageLightbox } from "./ImageLightbox";
 
 export function Attachments({ message }: { message: Message }) {
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
   const [failedVideos, setFailedVideos] = useState<Set<string>>(new Set());
   const files = message.attachments || [];
   const images = useMemo(() => files.filter(f => BROWSER_IMAGE.test(f.mime || "")), [files]);
@@ -20,12 +21,19 @@ export function Attachments({ message }: { message: Message }) {
     <div className="ago-atts">
       {files.map(f => {
         const url = fileUrl(f.id);
+        if (BROWSER_IMAGE.test(f.mime || "") && failedImages.has(f.id)) {
+          return <div key={f.id} className="ago-att-unavailable">
+            <Icon name="image" /><span><strong>{f.filename}</strong><small>Image preview unavailable</small></span>
+            <button className="lnk" onClick={() => setFailedImages(current => { const next = new Set(current); next.delete(f.id); return next; })}>Retry</button>
+            <a className="lnk" href={url} target="_blank" rel="noreferrer">Open</a>
+          </div>;
+        }
         if (BROWSER_IMAGE.test(f.mime || "")) {
           return (
             <button key={f.id} type="button" className="ago-att-img"
               aria-label={`Preview ${f.filename}`}
               onClick={() => setPreviewId(f.id)}>
-              <img src={url} alt={f.filename} loading="lazy" />
+              <img src={url} alt={f.filename} loading="lazy" onError={() => setFailedImages(current => new Set(current).add(f.id))} />
             </button>
           );
         }

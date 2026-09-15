@@ -159,6 +159,37 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
     });
   };
 
+  const primaryActions = (touch: boolean) => <>
+        {!inThread && (
+          <button className={`ago-thread-btn ${touch ? "ago-touch-action" : "ago-desktop-action"}`} title="Reply in thread" onClick={() => { if (touch) menuRef.current?.hidePopover(); onOpenThread(m.id); }}>
+            <Icon name="corner-down-right" />{touch && "Reply in thread"}
+          </button>
+        )}
+        <button className={`ago-thread-btn ago-react-btn ${touch ? "ago-touch-action" : "ago-desktop-action"}`} title="Add reaction"
+          onClick={e => {
+            const anchor = touch ? menuButtonRef.current : e.currentTarget;
+            if (touch) menuRef.current?.hidePopover();
+            if (anchor) openPicker(m.id, anchor);
+          }}>
+          <Icon name="smile" />{touch && "Add reaction"}
+        </button>
+        {groupId && (
+          <button className={`ago-thread-btn ${touch ? "ago-touch-action" : "ago-desktop-action"}`} title="Copy link to this message"
+            onClick={() => {
+              if (touch) menuRef.current?.hidePopover();
+              void copyDeepLink({
+              kind: "message",
+              groupId,
+              channelId: m.channel_id,
+              threadId: m.thread_id,
+              messageId: m.id,
+              }, "Message");
+            }}>
+            <Icon name="link" />{touch && "Copy link"}
+          </button>
+        )}
+  </>;
+
   const bubble = (
     <div className={`bubble ${cls} ago-bubble`} data-mid={m.id} title={fmtTs(m.ts)}
       onKeyDown={e => {
@@ -208,27 +239,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
       <MessageOptions message={m} />
       <Reactions message={m} onPick={(anchor) => openPicker(m.id, anchor)} />
         <div className={`ago-message-actions ${actionsOpen ? "open" : ""}`}>
-        {!inThread && (
-          <button className="ago-thread-btn" title="Reply in thread" onClick={() => onOpenThread(m.id)}>
-            <Icon name="corner-down-right" />
-          </button>
-        )}
-        <button className="ago-thread-btn ago-react-btn" title="Add reaction"
-          onClick={e => openPicker(m.id, e.currentTarget)}>
-          <Icon name="smile" />
-        </button>
-        {groupId && (
-          <button className="ago-thread-btn" title="Copy link to this message"
-            onClick={() => void copyDeepLink({
-              kind: "message",
-              groupId,
-              channelId: m.channel_id,
-              threadId: m.thread_id,
-              messageId: m.id,
-            }, "Message")}>
-            <Icon name="link" />
-          </button>
-        )}
+        {primaryActions(false)}
         <button ref={menuButtonRef} className="ago-thread-btn ago-message-menu" aria-expanded={actionsOpen}
           aria-label="More message actions" popoverTarget={menuId}>
           <Icon name="ellipsis" />
@@ -236,6 +247,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
         <div id={menuId} ref={menuRef} popover="auto" className="ago-message-secondary"
           aria-label="Additional message actions"
           onToggle={e => setActionsOpen(e.newState === "open")}>
+        {primaryActions(true)}
         <button className="ago-thread-btn ago-info-btn" title="Message info" onClick={() => {
           menuRef.current?.hidePopover();
           menuButtonRef.current?.focus();
