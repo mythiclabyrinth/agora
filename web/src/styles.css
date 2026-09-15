@@ -2613,3 +2613,30 @@ input[type="checkbox"] { accent-color: var(--a1); }
   .ago-message-info-row { grid-template-columns: 90px minmax(0, 1fr); gap: 8px; padding: 8px 0; }
   .ago-message-info-id .lnk { min-height: 44px; }
 }
+
+/* Scope chips flow across available width while each person's role stays
+   attached to its scope. Separate metadata from identity without tall cards. */
+.ago-member-card { gap: 7px; }
+.ago-member-card.compact-scope { row-gap: 7px; }
+.ago-member-card:not(.compact-scope) .ago-scope-list { flex-direction: row; flex-wrap: wrap; gap: 6px 8px; }
+.ago-member-card:not(.compact-scope) .ago-scope-row { flex: 0 1 auto; max-width: 100%; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 5px; }
+.ago-scope-row > .ago-scope-main { width: auto; }
+.ago-membership-form fieldset { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 10px; }
+.ago-field-label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+.ago-access-select { min-width: 0; }
+.ago-access-select summary, .ago-membership-role select { width: 100%; min-height: 40px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); color: var(--text); padding: 8px 10px; font: inherit; font-size: 13px; }
+.ago-access-select summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; list-style: none; overflow-wrap: anywhere; }
+.ago-access-select summary::-webkit-details-marker { display: none; }
+.ago-access-select summary .icon { flex-shrink: 0; }
+.ago-access-select summary:focus-visible { outline: 2px solid var(--a1); outline-offset: 2px; }
+.ago-access-options { max-height: 220px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 8px; padding: 4px; margin-top: 4px; overscroll-behavior: contain; }
+.ago-access-options label { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px; font-size: 13px; cursor: pointer; overflow-wrap: anywhere; }
+.ago-access-options input { flex-shrink: 0; }
+.ago-membership-actions { display: flex; justify-content: space-between; gap: 8px; }
+.ago-membership-error { margin: 0; color: #f18a91; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 820px) {
+  .ago-access-select summary, .ago-membership-role select, .ago-access-options label, .ago-membership-actions .btn { min-height: 44px; }
+  .ago-membership-role select { font-size: 16px; }
+}
+
+.ago-membership-role select { appearance: auto; }

@@ -386,7 +386,7 @@ export const DetailsFromMore: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Details", exact: true }));
+    await userEvent.click(canvas.getByRole("button", { name: "Details" }));
     const page = within(canvasElement.ownerDocument.body);
     const dialog = await page.findByRole("dialog", { name: "Message info" });
     await expect(within(dialog).getByText("Sent", { exact: true })).toBeVisible();
