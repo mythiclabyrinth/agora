@@ -2743,3 +2743,15 @@ input[type="checkbox"] { accent-color: var(--a1); }
   .ago-form, .ago-table { padding: 8px; gap: 6px; }
   .ago-table th, .ago-table td { padding: 4px; }
 }
+
+/* Keep a little separation around membership cards without enlarging them. */
+.ago-member-list { gap: 9px; }
+.ago-member-add-flow:has(.ago-add-box) { margin-top: 10px; }
+.ago-membership-role-control { position: relative; display: block; }
+.ago-membership-role-control select { appearance: none; padding-right: 36px; }
+.ago-membership-role-control > .ico { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.chat-input .ago-composer-right { display: flex; align-items: center; gap: 6px; margin-left: auto; max-width: 100%; }
+.chat-input .ago-composer-right > .btn.primary { margin-left: 0; }
+@media (max-width: 820px) {
+  .chat-input .ago-composer-right { flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+}

@@ -553,6 +553,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
           onClick={() => fileRef.current?.click()}>
           <Icon name="paperclip" />
         </button>
+        <div className="ago-composer-right">
         {voiceOK && (
           <MicButton
             channelId={channelId}
@@ -589,6 +590,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         <button className="btn primary"
           disabled={preparingAttachments.length > 0 || sendingAttachments.length > 0}
           onClick={doSend}>Send</button>
+        </div>
         </div>
         {addrOpen && (
           <div className="ago-addr-pop" id="ago-addr-pop">

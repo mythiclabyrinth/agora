@@ -75,9 +75,9 @@ function MembershipForm({ name, channels, wholeGroup, initialChannel, agent = fa
         </details>
       </div>
       {!agent && <label className="ago-membership-role"><span className="ago-field-label">Role</span>
-        <select value={role} onChange={e => setRole(e.target.value as "admin" | "member")}>
+        <span className="ago-membership-role-control"><select value={role} onChange={e => setRole(e.target.value as "admin" | "member")}>
           <option value="member">Member</option><option value="admin">Admin</option>
-        </select>
+        </select><Icon name="chevron-down" /></span>
       </label>}
       {error && <p className="ago-membership-error" role="alert">{error}</p>}
       <div className="ago-membership-actions">
