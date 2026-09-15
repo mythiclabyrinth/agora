@@ -2755,3 +2755,25 @@ input[type="checkbox"] { accent-color: var(--a1); }
 @media (max-width: 820px) {
   .chat-input .ago-composer-right { flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 }
+
+/* Mobile toolbar icons use quiet, compact chrome inside full tap targets. */
+@media (max-width: 820px) {
+  .ago-head { min-height: 44px; padding: 0 6px; gap: 4px; row-gap: 0; }
+  .agora-members-pane .ago-head { min-height: 44px; padding: 0 6px; }
+  .topbar .ago-mobile-tools, .ago-head .btn,
+  .chat-input .ago-composer-tools .btn:not(.primary):not(.recording),
+  .ago-composer-extra > summary {
+    border-color: transparent; background: transparent; box-shadow: none;
+    border-radius: 7px; font-size: 12px; padding: 4px 7px;
+  }
+  .ago-head .btn .ico, .chat-input .ago-composer-tools .ico { width: 14px; height: 14px; }
+  .ago-head .ago-back, .ago-head .ago-mobile-tools, .ago-head .ago-pane-tools-toggle { width: 44px; flex-shrink: 0; padding: 0; }
+  .ago-head .ago-head-actions { gap: 2px; }
+  .ago-head .ago-channel-tools.open, .ago-head .ago-thread-tools.open { gap: 2px; }
+  .ago-head .btn.active, .chat-input .ago-composer-tools .btn.active { color: var(--a1); background: rgba(139,124,255,.09); }
+  .ago-composer-extra[open] > summary { color: var(--a1); background: rgba(139,124,255,.09); }
+  .conn-head .btn, .ago-template-head .btn, .ago-image-lightbox-close { border-color: transparent; background: transparent; }
+  .conn-head .btn .ico, .ago-template-head .btn .ico { width: 14px; height: 14px; }
+  .ago-inline-remove { border-color: transparent; background: transparent; font-size: 12px; }
+  .ago-addr-count { font-size: 10px; min-width: 14px; height: 14px; }
+}

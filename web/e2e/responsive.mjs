@@ -1,16 +1,18 @@
 /* Responsive interaction gate against the local seeded preview (never production).
-   AGORA_BASE + AGORA_TOKEN select the server; PW_WS optionally reuses Chromium.
+   AGORA_BASE + AGORA_TOKEN select the server; PW_WS optionally reuses a browser.
+   Set PW_ENGINE=webkit with its matching PW_WS endpoint for WebKit checks.
    Run after building web/dist and seeding the preview with parity.mjs.
    No messages are sent and no membership/settings changes are made. */
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
+import { chromium, webkit } from "playwright";
+const browserType = process.env.PW_ENGINE === "webkit" ? webkit : chromium;
 
 const base = process.env.AGORA_BASE;
 const token = process.env.AGORA_TOKEN;
 if (!base || !token) throw new Error("Set AGORA_BASE and AGORA_TOKEN to the seeded local preview");
 const browser = process.env.PW_WS
-  ? await chromium.connect(process.env.PW_WS)
-  : await chromium.launch({ headless: true });
+  ? await browserType.connect(process.env.PW_WS)
+  : await browserType.launch({ headless: true });
 
 try {
   for (const width of [320, 390, 768, 1440]) {

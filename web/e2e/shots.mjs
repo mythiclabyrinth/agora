@@ -19,7 +19,8 @@
      AGORA_SB     Storybook origin  (default http://127.0.0.1:6006)
      SHOTS_DIR    output directory  (default /tmp/agora-ui-shots)
      SHOTS_TAG    subdirectory under SHOTS_DIR, e.g. `before` / `after`
-     PW_WS        optional Playwright server WebSocket endpoint
+     PW_ENGINE    chromium (default) or webkit
+     PW_WS        optional matching Playwright server WebSocket endpoint
      PW_DIR       dir containing node_modules/playwright (default: resolve normally)
 */
 
@@ -29,7 +30,8 @@ import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const pwPath = process.env.PW_DIR ? `${process.env.PW_DIR}/node_modules/playwright` : "playwright";
-const { chromium } = require(pwPath);
+const { chromium, webkit } = require(pwPath);
+const browserType = process.env.PW_ENGINE === "webkit" ? webkit : chromium;
 
 const BASE = process.env.AGORA_BASE || "http://127.0.0.1:4470";
 const SB = process.env.AGORA_SB || "http://127.0.0.1:6006";
@@ -74,6 +76,11 @@ const slug = s => s.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCa
    Each flow gets a fresh page already signed in at `/`. `wide` flows are
    skipped on phone-sized viewports where the UI has no such surface. */
 const FLOWS = [
+  {
+    id: "channel-tools",
+    what: "expanded channel toolbar on compact screens",
+    async run(page) { await settle(page); await revealChannelTools(page); },
+  },
   {
     id: "channel",
     what: "channel view: sidebar, message log, composer",
@@ -281,7 +288,7 @@ async function main() {
   // A sandbox that forbids spawning Chromium can still drive a browser that
   // someone else started: point PW_WS at a `playwright run-server` endpoint
   // and the browser runs there while the screenshots are written here.
-  const browser = PW_WS ? await chromium.connect(PW_WS) : await chromium.launch();
+  const browser = PW_WS ? await browserType.connect(PW_WS) : await browserType.launch();
   const taken = [];
 
   try {
