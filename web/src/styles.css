@@ -2794,3 +2794,11 @@ input[type="checkbox"] { accent-color: var(--a1); }
   .ago-inline-remove { border-color: transparent; background: transparent; font-size: 12px; }
   .ago-addr-count { font-size: 10px; min-width: 14px; height: 14px; }
 }
+
+/* Align desktop pane dividers and give the conversation the recovered space.
+   A minimum allows long titles and channel editing to grow without clipping. */
+@media (min-width: 821px) {
+  main { padding-top: 8px; gap: 8px; }
+  .topbar { min-height: 36px; padding-top: 0; }
+  .agora-side .side-title, .ago-head { min-height: 44px; padding: 6px 14px; }
+}
