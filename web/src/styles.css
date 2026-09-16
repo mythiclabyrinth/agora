@@ -2551,12 +2551,17 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .ago-msg-row:hover .ago-message-actions, .ago-msg-row:focus-within .ago-message-actions, .ago-message-actions.open { opacity: 1; pointer-events: auto; }
 .ago-message-actions > .ago-thread-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; min-height: 28px; margin: 0; padding: 0; opacity: 1; border-radius: 6px; }
 .ago-message-actions > .ago-thread-btn:hover { background: rgba(139,124,255,.14); }
-.ago-message-secondary { margin: 0; position: fixed; inset: auto; width: 188px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--elevation-panel); overflow-y: auto; }
-.ago-message-secondary:not(:popover-open) { display: none; }
-.ago-message-secondary:popover-open { display: flex; flex-direction: column; }
-.ago-message-secondary .ago-thread-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; margin: 0; padding: 8px; opacity: 1; text-align: left; border-radius: 6px; }
-.ago-message-secondary .ago-thread-btn:hover { background: rgba(139,124,255,.14); }
-.ago-message-secondary .ago-del-btn { color: #f18a91; }
+/* Row overflow menus. A message's ⋯ and a thread row's ⋯ are the same control
+   in two places, so they share one popover shell and one item treatment; the
+   items reset whatever their trigger class (.ago-thread-btn, .ago-x) styles
+   them as elsewhere. Only the destructive entry differs. */
+.ago-message-secondary, .ago-inbox-menu { margin: 0; position: fixed; inset: auto; width: 188px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--elevation-panel); overflow-y: auto; }
+.ago-message-secondary:not(:popover-open), .ago-inbox-menu:not(:popover-open) { display: none; }
+.ago-message-secondary:popover-open, .ago-inbox-menu:popover-open { display: flex; flex-direction: column; }
+.ago-message-secondary .ago-thread-btn, .ago-inbox-menu .ago-x { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-width: 0; height: auto; min-height: 36px; margin: 0; padding: 8px; opacity: 1; color: var(--dim); font: inherit; font-size: 11.5px; text-align: left; border-radius: 6px; }
+.ago-message-secondary .ago-thread-btn:hover, .ago-inbox-menu .ago-x:hover { color: var(--dim); background: rgba(139,124,255,.14); }
+.ago-message-secondary .ago-del-btn, .ago-inbox-menu .ago-hide-btn { color: #f18a91; }
+.ago-inbox-menu .ago-hide-btn:hover { color: #f18a91; }
 .ago-inbox-list { gap: 6px; }
 .ago-inbox-list .ago-inbox-row { padding: 6px 10px; }
 .ago-members-body { padding: 8px; }
@@ -2669,10 +2674,8 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .ago-att-unavailable small { color: var(--dim); }
 .ago-inbox-more { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 6px; color: var(--dim); background: transparent; cursor: pointer; }
 .ago-inbox-more:hover { background: rgba(139,124,255,.12); }
-.ago-inbox-menu { margin: 0; position: fixed; inset: auto; width: 180px; padding: 4px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--elevation-panel); overflow-y: auto; }
-.ago-inbox-menu:not(:popover-open) { display: none; }
-.ago-inbox-menu:popover-open { display: flex; flex-direction: column; }
-.ago-inbox-menu .ago-x { opacity: 1; display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 8px; height: auto; font: inherit; font-size: 12px; white-space: nowrap; }
+/* Shell and item treatment come from the shared row-menu rules above. */
+.ago-inbox-menu .ago-x { white-space: nowrap; }
 .ago-inbox-list .ago-inbox-row { border-radius: 8px; background: rgba(20,24,36,.5); padding: 6px 10px; }
 .ago-inbox-list .ago-inbox-main { min-height: 24px; }
 .ago-inbox-main .snippet { font-weight: 550; line-height: 1.4; }
