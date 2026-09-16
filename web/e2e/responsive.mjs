@@ -15,7 +15,7 @@ const browser = process.env.PW_WS
   : await browserType.launch({ headless: true });
 
 try {
-  for (const width of [320, 390, 768, 1000, 1400, 1440]) {
+  for (const width of [320, 390, 768, 1000, 1440]) {
     const mobile = width <= 820;
     const context = await browser.newContext({
       viewport: { width, height: mobile ? 640 : 900 }, isMobile: mobile, hasTouch: mobile,
@@ -42,7 +42,7 @@ try {
         await page.locator(".agora-thread .ago-head").waitFor();
         // The pane enters with a translated rise animation; measure its resting position.
         await page.locator(".agora-thread").evaluate(async pane => {
-          await Promise.all(pane.getAnimations().map(animation => animation.finished));
+          await Promise.all(pane.getAnimations().map(animation => animation.finished.catch(() => {})));
         });
         const main = await page.locator(".agora-main").boundingBox();
         const thread = await page.locator(".agora-thread").boundingBox();

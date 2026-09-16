@@ -93,7 +93,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
                   disarm();
                   hide.mutate(root.id);
                 }}>
-                {armed ? "Confirm hide" : <><Icon name="x" /> Hide thread</>}
+                <Icon name="x" /> {armed ? "Sure?" : "Hide thread"}
               </button>
             )}
           </div>

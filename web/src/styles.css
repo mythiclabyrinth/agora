@@ -2555,7 +2555,7 @@ input[type="checkbox"] { accent-color: var(--a1); }
    in two places, so they share one popover shell and one item treatment; the
    items reset whatever their trigger class (.ago-thread-btn, .ago-x) styles
    them as elsewhere. Only the destructive entry differs. */
-.ago-message-secondary, .ago-inbox-menu { margin: 0; position: fixed; inset: auto; width: 188px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--elevation-panel); overflow-y: auto; }
+.ago-message-secondary, .ago-inbox-menu { margin: 0; position: fixed; inset: auto; width: 188px; padding: 5px; gap: 0; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); box-shadow: var(--elevation-panel); overflow-y: auto; }
 .ago-message-secondary:not(:popover-open), .ago-inbox-menu:not(:popover-open) { display: none; }
 .ago-message-secondary:popover-open, .ago-inbox-menu:popover-open { display: flex; flex-direction: column; }
 .ago-message-secondary .ago-thread-btn, .ago-inbox-menu .ago-x { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-width: 0; height: auto; min-height: 36px; margin: 0; padding: 8px; opacity: 1; color: var(--dim); font: inherit; font-size: 11.5px; text-align: left; border-radius: 6px; }
@@ -2583,7 +2583,7 @@ input[type="checkbox"] { accent-color: var(--a1); }
   .ago-msg-row .who, .ago-msg-row.grouped .who { height: auto; min-height: 22px; padding-right: 0; }
   .ago-message-actions { position: static; justify-content: flex-end; opacity: 1; pointer-events: auto; margin-top: 2px; padding: 0; border: 0; background: transparent; }
   .ago-message-actions > .ago-thread-btn { width: 44px; height: 44px; }
-  .ago-message-secondary .ago-thread-btn { min-height: 44px; }
+  .ago-message-secondary .ago-thread-btn, .ago-inbox-menu .ago-x { min-height: 44px; }
 }
 
 /* Roster padding belongs to the pane, not every nested list and picker. */

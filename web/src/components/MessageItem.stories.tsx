@@ -382,10 +382,23 @@ export const ExpandedThreadWidth: Story = {
 
 export const DetailsFromMore: Story = {
   parameters: { apiRoutes: { "GET /api/groups": { groups: [] } } },
-  args: { message: { ...message, reply_count: 0, reactions: [], meta: {} } },
+  args: {
+    message: {
+      ...message,
+      author_type: "user",
+      author_id: me.username,
+      author_name: me.display_name ?? me.username,
+      reply_count: 0,
+      reactions: [],
+      meta: {},
+    },
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
+    await expect(canvas.getByRole("button", { name: /^Pin$/ })).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /^Edit$/ })).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /^Delete$/ })).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "Details" }));
     const page = within(canvasElement.ownerDocument.body);
     const dialog = await page.findByRole("dialog", { name: "Message info" });
