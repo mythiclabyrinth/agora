@@ -15,7 +15,7 @@ const browser = process.env.PW_WS
   : await browserType.launch({ headless: true });
 
 try {
-  for (const width of [320, 390, 768, 1440]) {
+  for (const width of [320, 390, 768, 1000, 1400, 1440]) {
     const mobile = width <= 820;
     const context = await browser.newContext({
       viewport: { width, height: mobile ? 640 : 900 }, isMobile: mobile, hasTouch: mobile,
@@ -31,6 +31,25 @@ try {
       const back = page.locator(".agora-main .ago-back").first();
       if (await back.isVisible()) await back.click();
       await page.locator('.ago-chan:has-text("general")').first().click();
+      if (!mobile) {
+        const sidebar = await page.locator(".agora-side .side-title").boundingBox();
+        const header = await page.locator(".agora-main .ago-head").boundingBox();
+        assert(sidebar && header && Math.abs(sidebar.y - header.y) <= 1 &&
+          Math.abs(sidebar.height - header.height) <= 1, `Pane headers misaligned at ${width}px`);
+        const root = page.locator(".agora-main .bubble").first();
+        await root.hover();
+        await root.getByRole("button", { name: "Reply in thread", exact: true }).click();
+        await page.locator(".agora-thread .ago-head").waitFor();
+        // The pane enters with a translated rise animation; measure its resting position.
+        await page.locator(".agora-thread").evaluate(async pane => {
+          await Promise.all(pane.getAnimations().map(animation => animation.finished));
+        });
+        const main = await page.locator(".agora-main").boundingBox();
+        const thread = await page.locator(".agora-thread").boundingBox();
+        assert(main && thread && Math.abs(main.y - thread.y) <= 1,
+          `Docked thread misaligned at ${width}px: main=${main?.y}, thread=${thread?.y}`);
+        await page.locator('.agora-thread .ago-thread-close').click();
+      }
       const message = page.locator(".bubble").first();
       await message.hover();
       if (mobile) await message.getByRole("button", { name: "More message actions" }).click();

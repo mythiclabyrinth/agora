@@ -1911,7 +1911,7 @@ select {
 /* ---------- responsive (tablet + phone), from the original ---------- */
 @media (max-width: 1100px) and (min-width: 821px) {
   .agora-thread, .agora-members-pane, .agora-files-pane {
-    position: fixed; right: 12px; top: 60px; bottom: 12px; height: auto;
+    position: fixed; right: 12px; top: var(--desktop-pane-top); bottom: 12px; height: auto;
     z-index: 30; background: #0d1018; box-shadow: 0 12px 40px rgba(0,0,0,.5);
   }
   .agora-layout.thread-expanded .agora-main { display: flex; }
@@ -2561,7 +2561,14 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .ago-message-secondary .ago-thread-btn, .ago-inbox-menu .ago-x { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-width: 0; height: auto; min-height: 36px; margin: 0; padding: 8px; opacity: 1; color: var(--dim); font: inherit; font-size: 11.5px; text-align: left; border-radius: 6px; }
 .ago-message-secondary .ago-thread-btn:hover, .ago-inbox-menu .ago-x:hover { color: var(--dim); background: rgba(139,124,255,.14); }
 .ago-message-secondary .ago-del-btn, .ago-inbox-menu .ago-hide-btn { color: #f18a91; }
-.ago-inbox-menu .ago-hide-btn:hover { color: #f18a91; }
+/* State cues must survive both the shared reset and its hover treatment. */
+.ago-message-secondary .ago-pin-btn.pinned,
+.ago-message-secondary .ago-tldr-btn.on { color: var(--a1); }
+.ago-message-secondary .ago-star-btn.starred { color: var(--amber); }
+.ago-message-secondary .ago-del-btn:hover,
+.ago-inbox-menu .ago-hide-btn:hover { color: #f18a91; background: rgba(248,113,113,.14); }
+.ago-message-secondary .ago-del-btn.armed,
+.ago-inbox-menu .ago-x.armed { color: #f87171; background: rgba(248,113,113,.14); font-weight: 700; }
 .ago-inbox-list { gap: 6px; }
 .ago-inbox-list .ago-inbox-row { padding: 6px 10px; }
 .ago-members-body { padding: 8px; }
@@ -2801,7 +2808,13 @@ input[type="checkbox"] { accent-color: var(--a1); }
 /* Align desktop pane dividers and give the conversation the recovered space.
    A minimum allows long titles and channel editing to grow without clipping. */
 @media (min-width: 821px) {
-  main { padding-top: 8px; gap: 8px; }
-  .topbar { min-height: 36px; padding-top: 0; }
+  main {
+    --desktop-top-padding: 8px;
+    --desktop-topbar-height: 36px;
+    --desktop-pane-gap: 8px;
+    --desktop-pane-top: calc(var(--desktop-top-padding) + var(--desktop-topbar-height) + var(--desktop-pane-gap));
+    padding-top: var(--desktop-top-padding); gap: var(--desktop-pane-gap);
+  }
+  .topbar { min-height: var(--desktop-topbar-height); padding-top: 0; }
   .agora-side .side-title, .ago-head { min-height: 44px; padding: 6px 14px; }
 }
