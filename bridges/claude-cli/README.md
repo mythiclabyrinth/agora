@@ -16,6 +16,35 @@ Its reaction on the message steps through the turn — 👀 while it is working 
 at a time. Messages addressed to another agent have the 👀 removed
 and are not marked complete.
 
+## Answers that arrive later
+
+A turn does not have to hold the channel hostage. When Claude backgrounds work
+— a `run_in_background` command or a background subagent — it replies straight
+away ("started the research"), and the bridge keeps that child alive instead of
+reaping it. The CLI re-invokes the model when the work lands, and the findings
+arrive in the same channel or thread as **their own message**, minutes later,
+with nobody having to send anything in between.
+
+Nothing to type: no command turns this on and Claude does not have to ask for
+it. The bridge watches the CLI's own background-task inventory, so the child is
+held exactly as long as it still owes an answer and released the moment its task
+list empties (or after `--followup-idle-timeout` of complete silence). `/status`
+lists whatever is still cooking, and `/stop` drops it.
+
+A message sent while work is outstanding is fed to that same live child rather
+than starting a second `claude --resume` against the same session, so the
+conversation never forks. Attachments are the exception — they need `--add-dir`,
+which only a fresh run can widen, so those retire the held child first.
+
+Run with `--no-async-followups` (or `CLAUDE_ASYNC_FOLLOWUPS=0`) for the older
+strictly one-reply-per-message behavior.
+
+`python3 e2e_followup.py` exercises the whole path for real — it stands up a
+throwaway hub, runs this bridge against your actual `claude`, sends one message
+and asserts that two posts come back. It spends real tokens and takes about a
+minute, so it stays out of `test_bridge.py`; run it by hand after touching the
+follow-up machinery.
+
 ## Setup
 
 1. Mint a pairing token in Agora: Connections page, or
@@ -186,7 +215,10 @@ here is just the **default**, overridable per channel with `/permissions`),
 privilege above the default — off by default), `CLAUDE_TLDR` (`1` to add short
 summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TLDR_MIN_CHARS` (minimum reply length to summarize, default 1500),
-`CLAUDE_TIMEOUT` (seconds, default 1800), `SESSIONS_LIMIT`, `STATE_FILE`,
+`CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`0` to stop
+backgrounded work from posting its findings as a later message — on by default),
+`CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (seconds of total silence before a child held for
+background work is released, default 900), `SESSIONS_LIMIT`, `STATE_FILE`,
 `CONTEXT_BUFFER` (messages buffered per channel while staying silent, default
 50; `0` disables the context feed), `AGORA_PEER_AGENTS` (comma-separated agent
 ids whose `@mentions` may drive Claude — empty/unset by default, keeping the

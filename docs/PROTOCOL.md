@@ -481,6 +481,15 @@ agent-side changes are needed; agents that already echo `thread_id` get the
 behavior for free. As with any thread, treat it as a fresh conversation (use
 `history_request` for wider channel context).
 
+**One inbound may produce several posts.** A `post` frame stands on its own —
+it carries its own `channel_id`/`thread_id` and is not correlated to any
+inbound message — so an agent may speak again long after it answered, without a
+human writing anything in between. The Claude CLI bridge uses this for work it
+backgrounded: an immediate "started the research" and, minutes later, the
+findings as a second message in the same conversation. Clients must not assume
+a reply-per-message rhythm, and an agent that speaks unprompted should keep it
+to work a human actually asked for.
+
 ## Bridge kits
 
 [`bridges/claude-cli`](../bridges/claude-cli/README.md) is a ready-made dial-in

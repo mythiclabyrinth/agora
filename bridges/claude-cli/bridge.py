@@ -43,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -183,6 +184,22 @@ PROGRESS_THROTTLE = 2.0  # seconds between progress frames
 # 57s later), so an absolute deadline would cut it off just as surely. We only
 # fall back to the blank once the stream has genuinely gone quiet this long.
 BLANK_RESULT_IDLE_GRACE = 45.0
+# Asynchronous follow-ups. The CLI re-invokes the model when a backgrounded
+# task (a `run_in_background` Bash command or subagent) finishes, and with stdin
+# held open the child keeps running long enough to say so — it emits a fresh
+# `result` minutes after the one that answered the channel. We keep that child
+# alive while it still owns background work and post each later result as its
+# own message, so "started the research" and "here is the research" are two
+# messages instead of one long block. The child is released once its task
+# inventory empties, or it goes quiet with nothing left to wait for.
+#
+# Two limits, because silence means different things. With no task outstanding
+# the child is just idling and IDLE releases it. With one outstanding, silence
+# is expected — a backgrounded `sleep 20m` emits nothing at all until it lands —
+# so only the absolute MAX_WAIT applies, and an idle window would cut off
+# exactly the long work this feature exists to deliver.
+FOLLOWUP_IDLE_TIMEOUT = 900.0
+FOLLOWUP_MAX_WAIT = 6 * 60 * 60.0
 TAIL_BYTES = 256 * 1024  # how much of a session .jsonl to scan for the last prompt
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
@@ -230,8 +247,46 @@ COLLAB_SYSTEM_PROMPT = (
 )
 
 
+BACKGROUND_SYSTEM_PROMPT = (
+    "This chat can hear you more than once per turn. When a request needs work "
+    "that would keep the channel waiting — deep research, a long test run, a "
+    "wide search — start it in the background (a background Bash command or a "
+    "background subagent), reply straight away saying what you kicked off, and "
+    "end your turn. You will be prompted again when that work lands; report the "
+    "findings then and they arrive as a new message in this same conversation. "
+    "Keep work in the foreground when it is quick enough to just answer."
+)
+
+
 class RunStopped(Exception):
     """The active CLI child was cancelled by /stop."""
+
+
+class LiveRun:
+    """A `claude -p` child kept alive past the reply, because it still owns
+    background work that will re-invoke the model.
+
+    The child's stdout has exactly one reader — `Bridge._followup_loop` — so a
+    turn injected into a live child gets its answer through `waiters` rather
+    than by racing that loop. `results` that arrive with no waiter are
+    spontaneous: background work reporting in, which we post to the channel.
+    """
+
+    def __init__(self, proc, key: str, frame: dict, binding: dict,
+                 perm_ids: list[str]) -> None:
+        self.proc = proc
+        self.key = key
+        self.frame = frame  # where spontaneous follow-ups get posted
+        self.binding = binding  # fallback if the key is unbound by then
+        self.perm_ids = perm_ids
+        self.tasks: list[dict] = []  # latest background_tasks_changed inventory
+        self.waiters: deque = deque()  # (future, frame) per injected turn, FIFO
+        self.closing = False
+        self.reader: asyncio.Task | None = None
+
+    @property
+    def alive(self) -> bool:
+        return not self.closing and self.proc.returncode is None
 
 
 def parse_peer_agents(raw: str) -> frozenset[str]:
@@ -675,6 +730,12 @@ class Bridge:
         # (👀 → ✅) replaces the previous emoji instead of stacking.
         self._reactions: dict[int, str] = {}
         self.procs: dict[str, asyncio.subprocess.Process] = {}  # key -> running claude
+        # Children kept alive past their reply because background work is still
+        # theirs to report (see LiveRun). At most one per binding key.
+        self.live: dict[str, LiveRun] = {}
+        self.async_followups = args.async_followups
+        self.followup_idle_timeout = args.followup_idle_timeout
+        self.followup_max_wait = args.followup_max_wait
         self.stop_requested: set[str] = set()  # keys cancelled via /stop
         self.stopped_processes: set[str] = set()
         self.queue_full_notified: set[str] = set()
@@ -1463,6 +1524,13 @@ class Bridge:
             self.clear_reaction(entry["frame"])
         proc = self.procs.get(key)
         if key not in self.busy:
+            live = self.live.get(key)
+            if live is not None and live.alive:
+                pending = len(live.tasks)
+                asyncio.create_task(self._end_live_run(key, "/stop"))
+                extra = f" and removed {len(queued)} queued message(s)" if queued else ""
+                return (f"Dropped {pending} background task(s) still reporting "
+                        f"here{extra}.")
             return f"Removed {len(queued)} queued message(s)." if queued else "Nothing running here."
         self.stop_requested.add(key)
         if proc and proc.returncode is None:
@@ -1480,6 +1548,11 @@ class Bridge:
         mode = b.get("permission_mode") or self.default_permission_mode
         tldr = "on" if self._tldr_enabled(b) else "off"
         busy = " — a run is in flight" if key in self.busy else ""
+        live = self.live.get(key)
+        if live is not None and live.alive and live.tasks:
+            names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
+                              for t in live.tasks)
+            busy += f"\nBackground: {len(live.tasks)} task(s) still to report ({names})"
         wt = b.get("worktree")
         wt_line = f"\nWorktree: {wt['branch']} @ {wt['path']}" if wt else ""
         return (
@@ -1564,14 +1637,7 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    reply, attachments, notices = self._split_outbound_attachments(
-                        reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
-                    body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
-                    if notices:
-                        body = (body + "\n\n" if body else "") + "\n".join(notices)
-                    if not body and not attachments:
-                        body = "(no reply — the run ended without any text)"
-                    self.post(batch_frame, body, tldr if body else None, attachments)
+                    self._post_reply(batch_frame, binding, reply)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped:
@@ -1696,6 +1762,8 @@ class Bridge:
             blocks.append(COLLAB_SYSTEM_PROMPT)
         if self._tldr_enabled(binding):
             blocks.append(TLDR_SYSTEM_PROMPT)
+        if self.async_followups:
+            blocks.append(BACKGROUND_SYSTEM_PROMPT)
         blocks.append(ATTACH_SYSTEM_PROMPT)
         if not blocks:
             return []
@@ -1708,6 +1776,20 @@ class Bridge:
             if tmpdir:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             raise RunStopped
+        # A child still working through background tasks already holds this
+        # conversation; feed the new turn to it rather than resuming the same
+        # session id in a second process. Attachments are the exception: they
+        # arrive via --add-dir, which only a fresh spawn can widen.
+        live = self.live.get(key)
+        if live is not None and live.alive:
+            if extra_args:
+                await self._end_live_run(key, "a new message brought attachments")
+            else:
+                try:
+                    return await self._inject_into_live(live, frame, prompt)
+                finally:
+                    if tmpdir:
+                        shutil.rmtree(tmpdir, ignore_errors=True)
         perm_tasks: list[asyncio.Task] = []
         perm_ids: list[str] = []
         mode = binding.get("permission_mode") or self.default_permission_mode
@@ -1760,6 +1842,10 @@ class Bridge:
             # Headless-capable slash commands from the CLI's system/init frame
             # (interactive-only ones like /help are omitted — see _annotate_slash_failure).
             slash_commands: list[str] = []
+            # Live inventory of backgrounded work, from system/background_tasks_changed.
+            # Non-empty when the reply lands means the model owes us a follow-up.
+            bg_tasks: list[dict] = []
+            handed_off = False
             try:
                 async with asyncio.timeout(self.timeout):
                     assert proc.stdout is not None
@@ -1800,6 +1886,9 @@ class Bridge:
                             raw_cmds = event.get("slash_commands") or []
                             if isinstance(raw_cmds, list):
                                 slash_commands = [c for c in raw_cmds if isinstance(c, str)]
+                        elif kind == "system" and event.get("subtype") == "background_tasks_changed":
+                            listed = event.get("tasks")
+                            bg_tasks = listed if isinstance(listed, list) else []
                         elif kind == "assistant":
                             snippet = self._progress_snippet(event)
                             if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
@@ -1840,26 +1929,38 @@ class Bridge:
                                 continue
                             result_text = text
                             break  # stdin stays open, so EOF never comes — stop here
-                    if proc.stdin is not None:
-                        proc.stdin.close()
-                    await proc.wait()
+                    # This answer is ours, but backgrounded work is still the
+                    # child's to report: keep it alive and let _followup_loop
+                    # take over its stdout, so the report reaches the channel as
+                    # its own message.
+                    if (self.async_followups and bg_tasks and result_text
+                            and not result_text.startswith("(claude error)")
+                            and key not in self.stop_requested):
+                        handed_off = True
+                        self._start_live_run(key, frame, binding, proc, bg_tasks,
+                                             perm_ids, perm_tasks)
+                    else:
+                        if proc.stdin is not None:
+                            proc.stdin.close()
+                        await proc.wait()
             except TimeoutError:
                 raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
-                # Never leave an orphaned claude running: any exit path (timeout,
-                # stream parse error, disconnect, cancellation) must kill the
-                # child, otherwise it keeps auto-applying edits after a reported
-                # failure.
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
-                self.procs.pop(key, None)
-                # Unstick any approval still waiting on a button: cancel it and
-                # lock the buttons so a later tap can't answer a dead run.
-                for oid in perm_ids:
-                    self._cancel_perm(oid, "The run ended before a decision.")
-                if perm_tasks:
-                    await asyncio.gather(*perm_tasks, return_exceptions=True)
+                if not handed_off:
+                    # Never leave an orphaned claude running: any exit path (timeout,
+                    # stream parse error, disconnect, cancellation) must kill the
+                    # child, otherwise it keeps auto-applying edits after a reported
+                    # failure.
+                    if proc.returncode is None:
+                        proc.kill()
+                        await proc.wait()
+                    self.procs.pop(key, None)
+                    # Unstick any approval still waiting on a button: cancel it and
+                    # lock the buttons so a later tap can't answer a dead run.
+                    for oid in perm_ids:
+                        self._cancel_perm(oid, "The run ended before a decision.")
+                    if perm_tasks:
+                        await asyncio.gather(*perm_tasks, return_exceptions=True)
             if result_text is None:
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
                 raise RuntimeError(stderr[-500:] or f"claude exited {proc.returncode} with no result")
@@ -1873,6 +1974,203 @@ class Bridge:
             if was_stopped:
                 raise RunStopped
 
+    # ------------------------------------------------- async follow-ups
+
+    def _start_live_run(self, key: str, frame: dict, binding: dict, proc,
+                        tasks: list[dict], perm_ids: list[str],
+                        perm_tasks: list[asyncio.Task]) -> None:
+        """Keep a replied-to child alive so its background work can report in."""
+        live = LiveRun(proc, key, frame, binding, perm_ids)
+        live.tasks = list(tasks)
+        self.live[key] = live
+        names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
+                          for t in tasks) or "?"
+        log(f"live run held for {key}: {len(tasks)} background task(s) [{names}]")
+        live.reader = asyncio.create_task(self._followup_loop(live, perm_tasks))
+
+    async def _inject_into_live(self, live: LiveRun, frame: dict, prompt: str) -> str:
+        """Send a new channel turn down a live child's stdin and await its reply."""
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        live.waiters.append((fut, frame))
+        try:
+            await self._send_to_claude(live.proc, {
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            })
+        except Exception:
+            self._drop_waiter(live, fut)
+            raise
+        log(f"injected turn into live run for {live.key}")
+        try:
+            async with asyncio.timeout(self.timeout):
+                return await fut
+        except TimeoutError:
+            self._drop_waiter(live, fut)
+            raise RuntimeError(f"timed out after {self.timeout}s")
+
+    @staticmethod
+    def _drop_waiter(live: LiveRun, fut: asyncio.Future) -> None:
+        live.waiters = deque((f, fr) for f, fr in live.waiters if f is not fut)
+
+    async def _followup_loop(self, live: LiveRun, perm_tasks: list[asyncio.Task]) -> None:
+        """Sole reader of a live child's stdout.
+
+        Results claim a waiting injected turn if there is one; otherwise they
+        are background work reporting in and get posted to the channel on their
+        own. The child is released once it has no waiters and no tasks left.
+        """
+        key, proc = live.key, live.proc
+        assert proc.stdout is not None
+        started = last_event = time.monotonic()
+        last_progress = 0.0
+        # Same ambiguity the main loop handles: a result carries nothing that
+        # says which prompt it answers, so a blank one is held rather than
+        # handed to a waiter that is probably owed real text.
+        blank_held: str | None = None
+        blank_deadline: float | None = None
+        try:
+            while True:
+                deadlines = [started + self.followup_max_wait]
+                if not live.tasks and not live.waiters:
+                    # Nothing outstanding, so silence really is idleness.
+                    deadlines.append(last_event + self.followup_idle_timeout)
+                if blank_deadline is not None:
+                    deadlines.append(blank_deadline)
+                remaining = min(deadlines) - time.monotonic()
+                if remaining <= 0:
+                    if blank_held is not None and live.waiters:
+                        fut, _ = live.waiters.popleft()
+                        if not fut.done():
+                            fut.set_result(blank_held)
+                        blank_held, blank_deadline = None, None
+                        last_event = time.monotonic()
+                        continue
+                    waited = time.monotonic() - started
+                    log(f"live run for {key} released after {waited:.0f}s "
+                        f"({len(live.tasks)} task(s) still listed)")
+                    break
+                try:
+                    raw = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                except TimeoutError:
+                    continue
+                if not raw:
+                    break  # child exited on its own
+                last_event = time.monotonic()
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = event.get("type")
+                target = live.waiters[0][1] if live.waiters else live.frame
+                if kind == "rate_limit_event":
+                    self.capture_usage(event)
+                    continue
+                if kind == "system" and event.get("subtype") == "background_tasks_changed":
+                    listed = event.get("tasks")
+                    live.tasks = listed if isinstance(listed, list) else []
+                elif kind == "assistant":
+                    snippet = self._progress_snippet(event)
+                    if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
+                        last_progress = time.monotonic()
+                        self.progress(target, snippet)
+                elif kind == "control_request":
+                    perm_tasks.append(asyncio.create_task(
+                        self._handle_control_request(key, target, proc, event, live.perm_ids)
+                    ))
+                elif kind == "control_cancel_request":
+                    self._cancel_request(event.get("request_id") or "",
+                                         "Claude withdrew the request.")
+                elif kind == "result":
+                    text = event.get("result") or ""
+                    if event.get("is_error"):
+                        text = f"(claude error) {text}"
+                    binding = self.bindings.get(key) or live.binding
+                    new_sid = event.get("session_id")
+                    if (binding and new_sid and new_sid != binding.get("session_id")
+                            and not event.get("is_error")):
+                        binding["session_id"] = new_sid
+                        self.bindings[key] = binding
+                        self._save_state()
+                    if not text.strip():
+                        if live.waiters and blank_held is None:
+                            blank_held = text
+                            blank_deadline = time.monotonic() + BLANK_RESULT_IDLE_GRACE
+                        continue
+                    blank_held, blank_deadline = None, None
+                    if live.waiters:
+                        fut, _ = live.waiters.popleft()
+                        if not fut.done():
+                            fut.set_result(text)
+                    elif binding:
+                        # Nobody is waiting: this is backgrounded work reporting
+                        # in, so it becomes its own message in the channel.
+                        log(f"async follow-up posted for {key}")
+                        self._post_reply(live.frame, binding, text)
+                if (kind == "result" and not live.waiters and not live.tasks
+                        and blank_held is None):
+                    log(f"live run for {key} has no background work left — releasing")
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # never let a reader crash take the bridge down
+            log(f"follow-up loop failed for {key}: {e!r}")
+        finally:
+            live.closing = True
+            await self._retire_live_run(live, perm_tasks)
+
+    async def _retire_live_run(self, live: LiveRun, perm_tasks: list[asyncio.Task]) -> None:
+        key, proc = live.key, live.proc
+        if self.live.get(key) is live:
+            self.live.pop(key, None)
+        if proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        if self.procs.get(key) is proc:
+            self.procs.pop(key, None)
+        while live.waiters:
+            fut, _ = live.waiters.popleft()
+            if not fut.done():
+                fut.set_exception(RuntimeError("the background run ended before replying"))
+        for oid in live.perm_ids:
+            self._cancel_perm(oid, "The run ended before a decision.")
+        if perm_tasks:
+            await asyncio.gather(*perm_tasks, return_exceptions=True)
+
+    async def _end_live_run(self, key: str, why: str) -> None:
+        """Retire a live child early. Killing it gives the reader EOF, so the
+        loop finishes through its own cleanup rather than being cancelled
+        mid-await."""
+        live = self.live.get(key)
+        if live is None:
+            return
+        live.closing = True
+        log(f"ending live run for {key}: {why}")
+        if live.proc.returncode is None:
+            live.proc.kill()
+        if live.reader is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(live.reader), 15)
+            except (TimeoutError, Exception):
+                pass
+        self.live.pop(key, None)
+        if self.procs.get(key) is live.proc:
+            self.procs.pop(key, None)
+
+    def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:
+        """Format a model reply the channel's way and post it."""
+        reply, attachments, notices = self._split_outbound_attachments(
+            reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
+        body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
+        if notices:
+            body = (body + "\n\n" if body else "") + "\n".join(notices)
+        if not body and not attachments:
+            body = "(no reply — the run ended without any text)"
+        self.post(frame, body, tldr if body else None, attachments)
 
     @staticmethod
     def _annotate_slash_failure(prompt: str, result: str, slash_commands: list[str]) -> str:
@@ -2453,6 +2751,20 @@ def main() -> None:
                     help="only summarize replies at least this many chars long")
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("CLAUDE_TIMEOUT", "1800")),
                     help="per-run timeout in seconds")
+    ap.add_argument("--async-followups", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("CLAUDE_ASYNC_FOLLOWUPS", "1") not in ("0", "false", "no"),
+                    help="let a run that backgrounded work post its findings "
+                         "later as a second message (default: on)")
+    ap.add_argument("--followup-idle-timeout", type=float,
+                    default=float(os.environ.get("CLAUDE_FOLLOWUP_IDLE_TIMEOUT",
+                                                 str(FOLLOWUP_IDLE_TIMEOUT))),
+                    help="seconds of silence, with nothing outstanding, before a "
+                         "child held open for background work is released")
+    ap.add_argument("--followup-max-wait", type=float,
+                    default=float(os.environ.get("CLAUDE_FOLLOWUP_MAX_WAIT",
+                                                 str(FOLLOWUP_MAX_WAIT))),
+                    help="absolute cap in seconds on how long a child is held "
+                         "waiting for background work to report")
     ap.add_argument("--permission-timeout", type=int,
                     default=int(os.environ.get("CLAUDE_PERMISSION_TIMEOUT", "600")),
                     help="seconds to wait for an Approve/Reject tap before denying "

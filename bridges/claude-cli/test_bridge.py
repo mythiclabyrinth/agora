@@ -144,6 +144,10 @@ def make_bridge(peer_agents=""):
     instance.stopped_processes = set()
     instance.queue_full_notified = set()
     instance.procs = {}
+    instance.live = {}
+    instance.async_followups = True
+    instance.followup_idle_timeout = 900.0
+    instance.followup_max_wait = 21600.0
     instance.bindings = {}
     instance.pending_questions = {}
     instance.set_reaction = Mock()
@@ -344,6 +348,7 @@ class PeerForwardTests(unittest.TestCase):
 class AppendSystemArgsTests(unittest.TestCase):
     def test_blocks_join_into_a_single_flag(self):
         instance = make_bridge(peer_agents="codex-cli")
+        instance.async_followups = False
         instance.tldr_default = True
         args = instance._append_system_args({})
         self.assertEqual(args[0], "--append-system-prompt")
@@ -355,6 +360,7 @@ class AppendSystemArgsTests(unittest.TestCase):
 
     def test_each_block_rides_alone(self):
         instance = make_bridge(peer_agents="codex-cli")
+        instance.async_followups = False
         instance.tldr_default = False
         self.assertEqual(
             instance._append_system_args({}),
@@ -369,13 +375,25 @@ class AppendSystemArgsTests(unittest.TestCase):
 
     def test_neither_block_means_no_flag(self):
         instance = make_bridge()
+        instance.async_followups = False
         instance.tldr_default = False
         self.assertEqual(instance._append_system_args({}), ["--append-system-prompt", bridge.ATTACH_SYSTEM_PROMPT])
 
+    def test_background_block_rides_only_when_followups_are_on(self):
+        instance = make_bridge()
+        instance.tldr_default = False
+        self.assertEqual(
+            instance._append_system_args({}),
+            ["--append-system-prompt",
+             bridge.BACKGROUND_SYSTEM_PROMPT + "\n\n" + bridge.ATTACH_SYSTEM_PROMPT],
+        )
+        instance.async_followups = False
+        self.assertNotIn(bridge.BACKGROUND_SYSTEM_PROMPT, instance._append_system_args({})[1])
 
 
 
-def _fake_proc(lines, feed_delay=0.0):
+
+def _fake_proc(lines, feed_delay=0.0, returncode=0):
     """A stand-in for the CLI child process that replays `lines` on stdout.
 
     With ``feed_delay`` the lines trickle out from a background task, so a test
@@ -402,7 +420,7 @@ def _fake_proc(lines, feed_delay=0.0):
     proc.stdin.close = Mock()
     proc.wait = AsyncMock(return_value=0)
     proc.kill = Mock()
-    proc.returncode = 0
+    proc.returncode = returncode
     return proc
 
 
@@ -450,6 +468,143 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0):
         return asyncio.run(main()), b
     finally:
         bridge.BLANK_RESULT_IDLE_GRACE = original_grace
+
+
+def _tasks(*descriptions):
+    return json.dumps({
+        "type": "system", "subtype": "background_tasks_changed",
+        "tasks": [{"task_id": f"t{i}", "task_type": "local_agent",
+                   "description": d} for i, d in enumerate(descriptions)],
+    })
+
+
+def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0):
+    """Drive run_claude() and then let the follow-up loop drain the stream.
+
+    Returns ``(first_reply, bridge, injected_reply)``. Unlike run_bridge this
+    keeps the loop alive until the held child is released, so spontaneous
+    follow-up posts actually happen before the assertions run.
+    """
+    b = make_bridge()
+    b.claude_bin = "claude"
+    b.base_claude_args = []
+    b.default_model = None
+    b.default_permission_mode = "acceptEdits"
+    b.timeout = 10
+    b.followup_idle_timeout = idle
+    b.followup_max_wait = 60.0
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
+    b.bindings = {"k": {"cwd": "/tmp"}}
+    b.progress = Mock()
+    b._append_system_args = Mock(return_value=[])
+    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._save_state = Mock()
+
+    async def main():
+        # returncode None: a child held past its reply is still running, which
+        # is what LiveRun.alive gates on.
+        proc = _fake_proc(lines, feed_delay, returncode=None)
+
+        async def fake_exec(*a, **kw):
+            return proc
+
+        original_exec = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            first = await b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+        finally:
+            asyncio.create_subprocess_exec = original_exec
+        injected = None
+        live = b.live.get("k")
+        if inject is not None and live is not None:
+            # Answer the injected turn only once it is actually waiting, so the
+            # test exercises the waiter path rather than racing it.
+            async def feed_injected():
+                await asyncio.sleep(0.05)
+                for line in inject:
+                    proc.stdout.feed_data(line.encode() + b"\n")
+            b._send_to_claude = AsyncMock()
+            asyncio.get_running_loop().create_task(feed_injected())
+            injected = await b.run_claude("k", {"channel_id": "c1"},
+                                          b.bindings["k"], "follow up")
+        if live is not None and live.reader is not None:
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(live.reader, 10)
+        return first, injected
+
+    first, injected = asyncio.run(main())
+    return first, b, injected
+
+
+class AsyncFollowupTests(unittest.TestCase):
+    def test_child_is_held_when_the_reply_leaves_background_work_running(self):
+        first, b, _ = run_bridge_with_followups(
+            [_tasks("deep research"), _result("kicked off the research"),
+             _tasks(), _result("here is what I found")])
+        self.assertEqual(first, "kicked off the research")
+        posted = [c.args[1] for c in b.post.call_args_list]
+        self.assertEqual(posted, ["here is what I found"])
+        self.assertEqual(b.post.call_args_list[0].args[0]["channel_id"], "c1")
+
+    def test_held_child_is_released_once_its_task_list_empties(self):
+        _, b, _ = run_bridge_with_followups(
+            [_tasks("deep research"), _result("started"),
+             _tasks(), _result("done")])
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_reply_with_no_background_work_closes_the_child_as_before(self):
+        reply, b = run_bridge([_result("just an answer")])
+        self.assertEqual(reply, "just an answer")
+        self.assertEqual(b.live, {})
+
+    def test_followups_disabled_closes_the_child_even_with_tasks_pending(self):
+        b = make_bridge()
+        b.async_followups = False
+        b.claude_bin, b.base_claude_args = "claude", []
+        b.default_model, b.default_permission_mode = None, "acceptEdits"
+        b.timeout = 10
+        b.progress = Mock()
+        b._append_system_args = Mock(return_value=[])
+        b._stage_attachments = Mock(return_value=("hi", [], None))
+        b._save_state = Mock()
+
+        async def main():
+            proc = _fake_proc([_tasks("research"), _result("started")])
+
+            async def fake_exec(*a, **kw):
+                return proc
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                return await b.run_claude("k", {"channel_id": "c1"}, {"cwd": "/tmp"}, "hi")
+            finally:
+                asyncio.create_subprocess_exec = original
+
+        self.assertEqual(asyncio.run(main()), "started")
+        self.assertEqual(b.live, {})
+
+    def test_a_new_turn_is_injected_into_the_held_child(self):
+        """No second `claude --resume` against a session the held child owns."""
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[_result("answer to the follow-up")])
+        self.assertEqual(first, "started")
+        self.assertEqual(injected, "answer to the follow-up")
+        # Claimed by the waiting turn, so it is not also posted on its own.
+        self.assertEqual(b.post.call_args_list, [])
+
+    def test_background_result_posts_while_a_turn_is_still_waiting(self):
+        """A waiter takes the first real result; later ones post themselves."""
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[_result("your answer"), _tasks(), _result("research landed")])
+        self.assertEqual((first, injected), ("started", "your answer"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research landed"])
 
 
 class BlankResultTests(unittest.TestCase):
