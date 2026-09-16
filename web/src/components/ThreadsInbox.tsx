@@ -85,7 +85,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
                 },
               )} />}
             {canRemove && (
-              <button className={`ago-x ${armed ? "armed" : ""}`}
+              <button className={`ago-x ago-hide-btn ${armed ? "armed" : ""}`}
                 title={armed ? "Click again to remove this thread" : "Remove from Threads (messages stay in the channel; posting again restores it)"}
                 onClick={e => {
                   e.stopPropagation();
@@ -93,7 +93,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
                   disarm();
                   hide.mutate(root.id);
                 }}>
-                {armed ? "Confirm hide" : <><Icon name="x" /> Hide thread</>}
+                <Icon name="x" /> {armed ? "Sure?" : "Hide thread"}
               </button>
             )}
           </div>

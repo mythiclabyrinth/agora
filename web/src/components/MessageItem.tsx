@@ -257,31 +257,31 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
           <button className={`ago-thread-btn ago-pin-btn ${pinned ? "pinned" : ""}`}
             title={pinned ? "Unpin this thread" : "Pin this thread for quick access"}
             onClick={() => pinMut.mutate({ messageId: m.id, pinned: !pinned })}>
-            {pinned ? <><Icon name="pin-off" /> unpin</> : <><Icon name="pin" /> pin</>}
+            {pinned ? <><Icon name="pin-off" /> Unpin</> : <><Icon name="pin" /> Pin</>}
           </button>
         )}
         {FEATURES.stars && <button className={`ago-thread-btn ago-star-btn ${starred ? "starred" : ""}`}
           title={starred ? "Remove from your starred messages" : "Star this message"}
           onClick={() => starMut.mutate({ messageId: m.id, starred: !starred })}>
-          {starred ? <><Icon name="star" cls="fill" /> starred</> : <><Icon name="star" /> star</>}
+          {starred ? <><Icon name="star" cls="fill" /> Starred</> : <><Icon name="star" /> Star</>}
         </button>}
         {tldr != null && (
           <button className={`ago-thread-btn ago-tldr-btn ${onTldr ? "on" : ""}`}
             title={onTldr ? "Show the full message" : "Show the short version"}
             onClick={() => toggleTldr(m.id)}>
-            {onTldr ? <><Icon name="maximize-2" /> full</> : <><Icon name="minimize-2" /> tl;dr</>}
+            {onTldr ? <><Icon name="maximize-2" /> Full</> : <><Icon name="minimize-2" /> TL;DR</>}
           </button>
         )}
         {mine && !!m.text.trim() && !editing && (
           <button className="ago-thread-btn ago-edit-btn" title="Edit this message" onClick={openEdit}>
-            <Icon name="pencil" /> edit
+            <Icon name="pencil" /> Edit
           </button>
         )}
         {(mine || isAdmin) && (
           <button className={`ago-thread-btn ago-del-btn ${armed ? "armed" : ""}`}
             title={armed ? "Click again to delete for everyone" : "Delete this message"}
             onClick={onDelete}>
-            <Icon name="trash-2" /> {armed ? "sure?" : "delete"}
+            <Icon name="trash-2" /> {armed ? "Sure?" : "Delete"}
           </button>
         )}
         </div>
