@@ -145,8 +145,10 @@ def make_bridge(peer_agents=""):
     instance.queue_full_notified = set()
     instance.procs = {}
     instance.live = {}
+    instance._detached = set()
     instance.async_followups = True
     instance.followup_idle_timeout = 900.0
+    instance.followup_task_idle_timeout = 1800.0
     instance.followup_max_wait = 21600.0
     instance.bindings = {}
     instance.pending_questions = {}
@@ -419,8 +421,16 @@ def _fake_proc(lines, feed_delay=0.0, returncode=0):
     proc.stdin.drain = AsyncMock()
     proc.stdin.close = Mock()
     proc.wait = AsyncMock(return_value=0)
-    proc.kill = Mock()
     proc.returncode = returncode
+
+    def killed():
+        # A real kill ends the child, so its reader sees EOF rather than
+        # blocking until whatever deadline it happened to be waiting on.
+        proc.returncode = -9
+        if not stdout.at_eof():
+            stdout.feed_eof()
+
+    proc.kill = Mock(side_effect=killed)
     return proc
 
 
@@ -478,6 +488,45 @@ def _tasks(*descriptions):
     })
 
 
+def followup_bridge(idle=5.0):
+    """A Bridge configured for the async-follow-up path, bound at key "k"."""
+    b = make_bridge()
+    b.claude_bin = "claude"
+    b.base_claude_args = []
+    b.default_model = None
+    b.default_permission_mode = "acceptEdits"
+    b.timeout = 10
+    b.followup_idle_timeout = idle
+    b.followup_task_idle_timeout = idle
+    b.followup_max_wait = 60.0
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
+    b.bindings = {"k": {"cwd": "/tmp", "session_id": "sess-old"}}
+    b.progress = Mock()
+    b._append_system_args = Mock(return_value=[])
+    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._save_state = Mock()
+    return b
+
+
+async def hand_off(b, lines, feed_delay=0.0):
+    """Drive one turn that ends holding a live child; return (reply, proc)."""
+    proc = _fake_proc(lines, feed_delay, returncode=None)
+
+    async def fake_exec(*_a, **_kw):
+        return proc
+
+    original = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = fake_exec
+    try:
+        reply = await b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+    finally:
+        asyncio.create_subprocess_exec = original
+    return reply, proc
+
+
 def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0):
     """Drive run_claude() and then let the follow-up loop drain the stream.
 
@@ -492,6 +541,7 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0):
     b.default_permission_mode = "acceptEdits"
     b.timeout = 10
     b.followup_idle_timeout = idle
+    b.followup_task_idle_timeout = idle
     b.followup_max_wait = 60.0
     b.allowed_roots = []
     b.max_attachment_bytes = 1024
@@ -605,6 +655,132 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual((first, injected), ("started", "your answer"))
         self.assertEqual([c.args[1] for c in b.post.call_args_list],
                          ["research landed"])
+
+    def test_rebinding_retires_the_held_child_instead_of_injecting(self):
+        """/new, /use, /worktree, /model must not be swallowed by a held child."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            self.assertIn("k", b.live)
+            held = b.live["k"]
+            # What /new does: a brand-new binding object for the same key.
+            b.bindings["k"] = {"cwd": "/elsewhere", "session_id": None}
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("fresh session answer")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                reply = await b.run_claude("k", {"channel_id": "c1"},
+                                           b.bindings["k"], "next message")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return b, held, reply, spawned
+
+        b, held, reply, spawned = asyncio.run(main())
+        self.assertEqual(reply, "fresh session answer")
+        self.assertEqual(len(spawned), 1, "the new binding must spawn its own child")
+        self.assertNotIn("--resume", spawned[0])
+        self.assertFalse(held.alive)
+        self.assertEqual(b.live, {})
+
+    def test_a_late_result_never_overwrites_a_binding_that_was_replaced(self):
+        """The held child's session id belongs to the old conversation."""
+        async def main():
+            b = followup_bridge()
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            fresh = {"cwd": "/elsewhere", "session_id": None}
+            b.bindings["k"] = fresh
+            b._save_state.reset_mock()  # the first turn's own write is legitimate
+            # The held child reports in after the rebind, carrying its own id.
+            proc.stdout.feed_data((_result("late", session_id="sess-held")
+                                   + "\n").encode())
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b, fresh
+
+        b, fresh = asyncio.run(main())
+        self.assertIsNone(fresh["session_id"], "fresh binding must stay fresh")
+        b._save_state.assert_not_called()
+
+    def test_stop_during_an_injected_turn_says_stopped_and_leaves_no_residue(self):
+        """The busy path would kill the held child but skip run_claude's cleanup,
+        poisoning the next two messages."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+
+            async def stop_once_waiting():
+                await asyncio.sleep(0.05)
+                b.busy.add("k")  # forward_to_claude marks the key busy
+                return b._cmd_stop("k")
+
+            stopper = asyncio.create_task(stop_once_waiting())
+            with self.assertRaises(bridge.RunStopped):
+                await b.run_claude("k", {"channel_id": "c1"},
+                                   b.bindings["k"], "follow up")
+            return b, await stopper
+
+        b, message = asyncio.run(main())
+        self.assertIn("Stopping", message)
+        self.assertEqual(b.stop_requested, set())
+        self.assertEqual(b.stopped_processes, set())
+        self.assertEqual(b.live, {})
+
+    def test_stop_with_no_turn_waiting_reports_the_dropped_tasks(self):
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("deep research"), _result("started")])
+            message = b._cmd_stop("k")
+            await asyncio.sleep(0.05)
+            return b, message
+
+        b, message = asyncio.run(main())
+        self.assertIn("Dropped 1 background task", message)
+        self.assertEqual(b.stop_requested, set())
+
+    def test_a_blank_result_with_an_empty_inventory_releases_immediately(self):
+        """Re-invoked and said nothing: no reason to hold for the idle window."""
+        async def main():
+            b = followup_bridge(idle=30.0)  # long enough that idling would hang
+            started = asyncio.get_running_loop().time()
+            await hand_off(b, [_tasks("research"), _result("started"),
+                               _tasks(), _result("")])
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b, asyncio.get_running_loop().time() - started
+
+        b, elapsed = asyncio.run(main())
+        self.assertLess(elapsed, 5, "released on the blank, not after the idle window")
+        self.assertEqual(b.live, {})
+        b.post.assert_not_called()
+
+    def test_a_held_child_is_released_when_it_simply_goes_quiet(self):
+        """Deadline-driven exit: no EOF, no further events, inventory empty."""
+        async def main():
+            b = followup_bridge(idle=0.2)
+            await hand_off(b, [_tasks("research"), _result("started"), _tasks()])
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_shutdown_kills_children_that_outlived_their_turn(self):
+        async def main():
+            b = followup_bridge()
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            return b, proc
+
+        b, proc = asyncio.run(main())
+        b.kill_children()
+        proc.kill.assert_called()
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
 
 
 class BlankResultTests(unittest.TestCase):

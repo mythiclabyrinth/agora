@@ -39,6 +39,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -193,12 +194,16 @@ BLANK_RESULT_IDLE_GRACE = 45.0
 # messages instead of one long block. The child is released once its task
 # inventory empties, or it goes quiet with nothing left to wait for.
 #
-# Two limits, because silence means different things. With no task outstanding
-# the child is just idling and IDLE releases it. With one outstanding, silence
-# is expected — a backgrounded `sleep 20m` emits nothing at all until it lands —
-# so only the absolute MAX_WAIT applies, and an idle window would cut off
-# exactly the long work this feature exists to deliver.
+# Three limits, because silence means different things. With nothing
+# outstanding the child is just idling and IDLE releases it. With a task
+# outstanding silence is expected — a backgrounded `sleep 20m` emits nothing at
+# all until it lands, and a short window there would cut off exactly the long
+# work this exists to deliver — so the far looser TASK_IDLE applies instead; it
+# still bounds a child whose inventory never empties because an event was
+# dropped or an entry was never reaped. MAX_WAIT caps the whole hold regardless,
+# for a task that keeps emitting progress but never finishes.
 FOLLOWUP_IDLE_TIMEOUT = 900.0
+FOLLOWUP_TASK_IDLE_TIMEOUT = 1800.0
 FOLLOWUP_MAX_WAIT = 6 * 60 * 60.0
 TAIL_BYTES = 256 * 1024  # how much of a session .jsonl to scan for the last prompt
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -282,6 +287,7 @@ class LiveRun:
         self.tasks: list[dict] = []  # latest background_tasks_changed inventory
         self.waiters: deque = deque()  # (future, frame) per injected turn, FIFO
         self.closing = False
+        self.stopping = False  # ended by /stop, so waiters report RunStopped
         self.reader: asyncio.Task | None = None
 
     @property
@@ -735,7 +741,11 @@ class Bridge:
         self.live: dict[str, LiveRun] = {}
         self.async_followups = args.async_followups
         self.followup_idle_timeout = args.followup_idle_timeout
+        self.followup_task_idle_timeout = args.followup_task_idle_timeout
         self.followup_max_wait = args.followup_max_wait
+        # Strong references to fire-and-forget cleanup tasks; without these the
+        # loop only holds a weak one and can collect them mid-flight.
+        self._detached: set[asyncio.Task] = set()
         self.stop_requested: set[str] = set()  # keys cancelled via /stop
         self.stopped_processes: set[str] = set()
         self.queue_full_notified: set[str] = set()
@@ -1523,14 +1533,22 @@ class Bridge:
         for entry in queued:
             self.clear_reaction(entry["frame"])
         proc = self.procs.get(key)
+        # A held child is checked first even when the key is busy: during an
+        # injected turn both are true, and the generic path below would kill the
+        # held child while leaving stop_requested/stopped_processes set — which
+        # run_claude's finally never clears for an injected turn, poisoning the
+        # next two messages.
+        live = self.live.get(key)
+        if live is not None and live.alive:
+            pending, waiting = len(live.tasks), len(live.waiters)
+            live.stopping = True  # waiters raise RunStopped, so the channel says "Stopped."
+            self._spawn(self._end_live_run(key, "/stop"))
+            extra = f" and removed {len(queued)} queued message(s)" if queued else ""
+            if waiting:
+                return f"Stopping the current run{extra}…"
+            return (f"Dropped {pending} background task(s) still reporting "
+                    f"here{extra}.")
         if key not in self.busy:
-            live = self.live.get(key)
-            if live is not None and live.alive:
-                pending = len(live.tasks)
-                asyncio.create_task(self._end_live_run(key, "/stop"))
-                extra = f" and removed {len(queued)} queued message(s)" if queued else ""
-                return (f"Dropped {pending} background task(s) still reporting "
-                        f"here{extra}.")
             return f"Removed {len(queued)} queued message(s)." if queued else "Nothing running here."
         self.stop_requested.add(key)
         if proc and proc.returncode is None:
@@ -1778,11 +1796,16 @@ class Bridge:
             raise RunStopped
         # A child still working through background tasks already holds this
         # conversation; feed the new turn to it rather than resuming the same
-        # session id in a second process. Attachments are the exception: they
-        # arrive via --add-dir, which only a fresh spawn can widen.
+        # session id in a second process. Two exceptions retire it instead:
+        # attachments arrive via --add-dir, which only a fresh spawn can widen,
+        # and a binding that is no longer the one the child started on means
+        # /new, /use, /worktree, /model or /permissions has since changed what
+        # this conversation points at — the held child would silently ignore it.
         live = self.live.get(key)
         if live is not None and live.alive:
-            if extra_args:
+            if self.bindings.get(key) is not live.binding:
+                await self._end_live_run(key, "the binding changed")
+            elif extra_args:
                 await self._end_live_run(key, "a new message brought attachments")
             else:
                 try:
@@ -1976,6 +1999,29 @@ class Bridge:
 
     # ------------------------------------------------- async follow-ups
 
+    def _spawn(self, coro) -> asyncio.Task:
+        """Run a cleanup coroutine detached, keeping it alive until it finishes."""
+        task = asyncio.create_task(coro)
+        self._detached.add(task)
+        task.add_done_callback(self._detached.discard)
+        return task
+
+    def kill_children(self) -> None:
+        """Synchronous sweep for shutdown. A child held for background work has
+        no in-flight turn to reap it, so without this it survives the bridge —
+        and keeps applying edits under the channel's permission mode."""
+        held = [live.proc for live in self.live.values()]
+        for proc in [*held, *self.procs.values()]:
+            try:
+                if proc.returncode is None:
+                    proc.kill()
+            except (ProcessLookupError, OSError, AttributeError):
+                pass
+        if held:
+            log(f"killed {len(held)} held child process(es) on shutdown")
+        self.live.clear()
+        self.procs.clear()
+
     def _start_live_run(self, key: str, frame: dict, binding: dict, proc,
                         tasks: list[dict], perm_ids: list[str],
                         perm_tasks: list[asyncio.Task]) -> None:
@@ -2031,7 +2077,12 @@ class Bridge:
         try:
             while True:
                 deadlines = [started + self.followup_max_wait]
-                if not live.tasks and not live.waiters:
+                if live.tasks or live.waiters:
+                    # Something is outstanding, so silence is expected — but not
+                    # forever. This bounds a child whose inventory never empties
+                    # (a dropped event, or an entry the CLI never reaps).
+                    deadlines.append(last_event + self.followup_task_idle_timeout)
+                else:
                     # Nothing outstanding, so silence really is idleness.
                     deadlines.append(last_event + self.followup_idle_timeout)
                 if blank_deadline is not None:
@@ -2089,26 +2140,36 @@ class Bridge:
                         text = f"(claude error) {text}"
                     binding = self.bindings.get(key) or live.binding
                     new_sid = event.get("session_id")
+                    # Same identity guard the main loop uses: if the key was
+                    # rebound while this child ran, its session id belongs to
+                    # the old conversation and must not overwrite the new one.
                     if (binding and new_sid and new_sid != binding.get("session_id")
-                            and not event.get("is_error")):
+                            and not event.get("is_error")
+                            and binding is live.binding
+                            and (key not in self.bindings
+                                 or self.bindings.get(key) is binding)):
                         binding["session_id"] = new_sid
                         self.bindings[key] = binding
                         self._save_state()
                     if not text.strip():
+                        # A re-invoked model that said nothing. Held only if a
+                        # turn is waiting and might still be owed real text;
+                        # otherwise fall through so an empty inventory releases
+                        # the child now instead of idling for the full timeout.
                         if live.waiters and blank_held is None:
                             blank_held = text
                             blank_deadline = time.monotonic() + BLANK_RESULT_IDLE_GRACE
-                        continue
-                    blank_held, blank_deadline = None, None
-                    if live.waiters:
-                        fut, _ = live.waiters.popleft()
-                        if not fut.done():
-                            fut.set_result(text)
-                    elif binding:
-                        # Nobody is waiting: this is backgrounded work reporting
-                        # in, so it becomes its own message in the channel.
-                        log(f"async follow-up posted for {key}")
-                        self._post_reply(live.frame, binding, text)
+                    else:
+                        blank_held, blank_deadline = None, None
+                        if live.waiters:
+                            fut, _ = live.waiters.popleft()
+                            if not fut.done():
+                                fut.set_result(text)
+                        elif binding:
+                            # Nobody is waiting: this is backgrounded work
+                            # reporting in, so it becomes its own message.
+                            log(f"async follow-up posted for {key}")
+                            self._post_reply(live.frame, binding, text)
                 if (kind == "result" and not live.waiters and not live.tasks
                         and blank_held is None):
                     log(f"live run for {key} has no background work left — releasing")
@@ -2135,7 +2196,9 @@ class Bridge:
         while live.waiters:
             fut, _ = live.waiters.popleft()
             if not fut.done():
-                fut.set_exception(RuntimeError("the background run ended before replying"))
+                fut.set_exception(
+                    RunStopped() if live.stopping
+                    else RuntimeError("the background run ended before replying"))
         for oid in live.perm_ids:
             self._cancel_perm(oid, "The run ended before a decision.")
         if perm_tasks:
@@ -2155,8 +2218,8 @@ class Bridge:
         if live.reader is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(live.reader), 15)
-            except (TimeoutError, Exception):
-                pass
+            except Exception as e:
+                log(f"live run for {key} did not shut down cleanly: {e!r}")
         self.live.pop(key, None)
         if self.procs.get(key) is live.proc:
             self.procs.pop(key, None)
@@ -2760,6 +2823,11 @@ def main() -> None:
                                                  str(FOLLOWUP_IDLE_TIMEOUT))),
                     help="seconds of silence, with nothing outstanding, before a "
                          "child held open for background work is released")
+    ap.add_argument("--followup-task-idle-timeout", type=float,
+                    default=float(os.environ.get("CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT",
+                                                 str(FOLLOWUP_TASK_IDLE_TIMEOUT))),
+                    help="seconds of silence while a background task is still "
+                         "listed before the held child is released anyway")
     ap.add_argument("--followup-max-wait", type=float,
                     default=float(os.environ.get("CLAUDE_FOLLOWUP_MAX_WAIT",
                                                  str(FOLLOWUP_MAX_WAIT))),
@@ -2800,10 +2868,17 @@ def main() -> None:
     if not args.token:
         ap.error("a pairing token is required (AGORA_PAIRING_TOKEN, --token-file, or --token)")
     log(f"claude-cli bridge -> {re.sub(r'token=[^&]+', 'token=***', Bridge._normalize_url(args.url, args.token))}")
+    instance = Bridge(args)
+    # Children held for background work outlive their turn, so the process must
+    # reap them on the way out. SIGTERM's default disposition would skip the
+    # finally below; turning it into SystemExit lets the sweep run.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
-        asyncio.run(Bridge(args).run())
+        asyncio.run(instance.run())
     except KeyboardInterrupt:
         pass
+    finally:
+        instance.kill_children()
 
 
 if __name__ == "__main__":
