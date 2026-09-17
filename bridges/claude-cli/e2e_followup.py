@@ -85,6 +85,7 @@ async def main() -> int:
              "--state-file", str(state), "--env-file", str(tmp / "none.env"),
              "--allowed-roots", str(tmp),
              "--claude-args", "--permission-mode bypassPermissions",
+             "--async-followups",
              "--timeout", "180", "--followup-idle-timeout", "120"],
             stdout=log_file, stderr=subprocess.STDOUT, text=True,
         )

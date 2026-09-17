@@ -58,8 +58,12 @@ sent are delivered as their own messages rather than being mistaken for its
 answer. Two replies can still land in the opposite order to the one you'd
 expect, but neither is lost or mis-attributed.
 
-Run with `--no-async-followups` (or `CLAUDE_ASYNC_FOLLOWUPS=0`) for the older
-strictly one-reply-per-message behavior.
+**This is off by default.** Turn it on per bridge with `--async-followups` or
+`CLAUDE_ASYNC_FOLLOWUPS=1`. While it is off every code path above is inert and
+the bridge behaves exactly as it always has: one reply per message. The
+held-child lifecycle breaks the "one turn, one child" assumption the rest of
+this bridge is written against, and it is still earning trust — so it opts in
+per deployment rather than arriving with an upgrade.
 
 `python3 e2e_followup.py` exercises the whole path for real — it stands up a
 throwaway hub, runs this bridge against your actual `claude`, sends one message
@@ -237,8 +241,8 @@ here is just the **default**, overridable per channel with `/permissions`),
 privilege above the default — off by default), `CLAUDE_TLDR` (`1` to add short
 summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TLDR_MIN_CHARS` (minimum reply length to summarize, default 1500),
-`CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`0` to stop
-backgrounded work from posting its findings as a later message — on by default),
+`CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`1` to let
+backgrounded work post its findings as a later message — off by default),
 `CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (settle window in seconds once nothing is
 outstanding, default 180),
 `CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT` (the same while a task is still listed,

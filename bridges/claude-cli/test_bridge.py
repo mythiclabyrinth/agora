@@ -911,6 +911,56 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertNotIn("/tldr", bridge.REBINDING_COMMANDS)
         self.assertIn("/permissions", bridge.REBINDING_COMMANDS)
 
+    def test_permissions_changed_before_handoff_still_retires_the_child(self):
+        """The window before "started" is posted: the process is in self.procs
+        but not self.live, so nothing retires it — and the hand-off used to
+        fingerprint the binding *as it is then*, recording the new mode while
+        the process kept running the old one."""
+        async def main():
+            b = followup_bridge()
+            b.allow_escalation = False
+            b.default_permission_mode = "acceptEdits"
+            proc = _fake_proc([], returncode=None)
+
+            async def fake_exec(*a, **_kw):
+                # The child is spawned at acceptEdits; the user de-escalates
+                # while the first turn is still running, then it hands off.
+                b._cmd_permissions("k", "plan")
+                for line in (_tasks("long refactor"), _result("started")):
+                    proc.stdout.feed_data(line.encode() + b"\n")
+                return proc
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                first = await b.run_claude("k", {"channel_id": "c1"},
+                                           b.bindings["k"], "big refactor")
+            finally:
+                asyncio.create_subprocess_exec = original
+            held = b.live.get("k")
+            spawned = []
+
+            async def fake_exec2(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("answered under plan")])
+
+            asyncio.create_subprocess_exec = fake_exec2
+            try:
+                await b.run_claude("k", {"channel_id": "c1"},
+                                   b.bindings["k"], "next message")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return first, held, spawned
+
+        first, held, spawned = asyncio.run(main())
+        self.assertEqual(first, "started")
+        self.assertIsNotNone(held)
+        self.assertEqual(held.spawned_with[1], "acceptEdits",
+                         "the hold must record what the process actually ran as")
+        self.assertEqual(len(spawned), 1,
+                         "the acceptEdits child must not have been injected into")
+        self.assertIn("plan", spawned[0])
+
     def test_permissions_retires_the_held_child_with_no_next_message(self):
         """A de-escalation has to reach the process that is actually running —
         checking on the next inbound is too late when there isn't one."""
@@ -1064,7 +1114,8 @@ class AsyncFollowupTests(unittest.TestCase):
             await asyncio.sleep(0.02)
             # …and in that window a new turn hands off its own child.
             newer = bridge.LiveRun(_fake_proc([], returncode=None), "k",
-                                   {"channel_id": "c1"}, b.bindings["k"], [])
+                                   {"channel_id": "c1"}, b.bindings["k"],
+                                   (None, "acceptEdits"), [])
             b.live["k"] = newer
             await ending
             return b, newer, old_proc

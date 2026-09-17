@@ -301,25 +301,21 @@ class LiveRun:
     # (via _set_binding) but /model, /permissions and /tldr mutate it in place,
     # so a held child would keep the old model or permission mode while the
     # channel had been told the new one took effect.
-    # `tldr` is deliberately absent, to match /tldr's absence from
-    # REBINDING_COMMANDS: including it here would not retire the child at /tldr
-    # time but at the user's *next* message, dropping background work at a
-    # moment that has nothing to do with the command. Only the model's sentinel
-    # emission lags a spawn; the bridge-side split already reads the live
-    # setting, because _post_reply passes the same dict /tldr mutates.
-    SPAWN_FIELDS = ("session_id", "cwd", "model", "permission_mode")
-
-    @classmethod
-    def fingerprint(cls, binding: dict | None) -> tuple:
-        return tuple((binding or {}).get(field) for field in cls.SPAWN_FIELDS)
-
     def __init__(self, proc, key: str, frame: dict, binding: dict,
-                 perm_ids: list[str]) -> None:
+                 spawned_with: tuple, perm_ids: list[str]) -> None:
         self.proc = proc
         self.key = key
         self.frame = frame  # where spontaneous follow-ups get posted
         self.binding = binding  # fallback if the key is unbound by then
-        self.spawned_with = self.fingerprint(binding)
+        # The (model, permission_mode) this child was actually launched with —
+        # captured at spawn, NOT read back off the binding here. /model and
+        # /permissions mutate the binding dict in place, so a fingerprint taken
+        # at hand-off would record the new value while the process kept running
+        # the old one, and the comparison on the next message would see a match.
+        # That is the bug behind every "the command said it applied but didn't"
+        # report on this feature. Session and cwd changes go through
+        # _set_binding, which replaces the dict, so object identity catches them.
+        self.spawned_with = spawned_with
         self.perm_ids = perm_ids
         self.tasks: list[dict] = []  # latest background_tasks_changed inventory
         # One entry per injected turn, FIFO: {"fut", "frame", "ahead"}. `ahead`
@@ -1891,6 +1887,9 @@ class Bridge:
         handed_off = False
         mode = binding.get("permission_mode") or self.default_permission_mode
         model = binding.get("model") or self.default_model
+        # What this run is actually launched with, fixed here rather than read
+        # back later — see LiveRun.spawned_with.
+        spawned_with = (model, mode)
         sys_args = self._append_system_args(binding)
         try:
             # A child still working through background tasks already holds this
@@ -1912,7 +1911,7 @@ class Bridge:
             if live is not None and live.alive:
                 current = self.bindings.get(key)
                 if (current is not live.binding
-                        or LiveRun.fingerprint(current) != live.spawned_with):
+                        or self._resolved_spawn(current) != live.spawned_with):
                     await self._end_live_run(key, "the binding changed")
                 elif extra_args:
                     await self._end_live_run(key, "a new message brought attachments")
@@ -1956,6 +1955,12 @@ class Bridge:
                 limit=64 * 1024 * 1024,
             )
             self.procs[key] = proc  # so /stop can find and kill this run
+            # create_subprocess_exec above is an await, and for its duration
+            # self.procs still held the *previous* child — so a /stop landing in
+            # that window set the flag but had nothing to kill. Check it here,
+            # now that this child is registered and before it is given any work.
+            if key in self.stop_requested:
+                raise RunStopped
             await self._send_to_claude(proc, {
                 "type": "user",
                 "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
@@ -2066,8 +2071,9 @@ class Bridge:
                             and not result_text.startswith("(claude error)")
                             and key not in self.stop_requested):
                         handed_off = True
-                        self._start_live_run(key, frame, binding, proc, bg_tasks,
-                                             perm_ids, perm_tasks, tmpdir)
+                        self._start_live_run(key, frame, binding, spawned_with,
+                                             proc, bg_tasks, perm_ids,
+                                             perm_tasks, tmpdir)
                     else:
                         if proc.stdin is not None:
                             proc.stdin.close()
@@ -2141,12 +2147,12 @@ class Bridge:
         self.live.clear()
         self.procs.clear()
 
-    def _start_live_run(self, key: str, frame: dict, binding: dict, proc,
-                        tasks: list[dict], perm_ids: list[str],
-                        perm_tasks: list[asyncio.Task],
+    def _start_live_run(self, key: str, frame: dict, binding: dict,
+                        spawned_with: tuple, proc, tasks: list[dict],
+                        perm_ids: list[str], perm_tasks: list[asyncio.Task],
                         tmpdir: str | None = None) -> None:
         """Keep a replied-to child alive so its background work can report in."""
-        live = LiveRun(proc, key, frame, binding, perm_ids)
+        live = LiveRun(proc, key, frame, binding, spawned_with, perm_ids)
         live.tasks = list(tasks)
         live.tmpdir = tmpdir
         # stderr is a pipe nobody else reads for the life of the hold; once its
@@ -2386,6 +2392,14 @@ class Bridge:
         if perm_tasks:
             await asyncio.gather(*perm_tasks, return_exceptions=True)
 
+    def _resolved_spawn(self, binding: dict | None) -> tuple:
+        """The (model, permission_mode) a run started from this binding *now*
+        would use. Compared against LiveRun.spawned_with, which holds what the
+        held child was actually launched with."""
+        b = binding or {}
+        return (b.get("model") or self.default_model,
+                b.get("permission_mode") or self.default_permission_mode)
+
     async def _retire_if_stale(self, key: str) -> None:
         """End a held child whose binding no longer matches what it ran under."""
         live = self.live.get(key)
@@ -2393,7 +2407,7 @@ class Bridge:
             return
         current = self.bindings.get(key)
         if (current is not live.binding
-                or LiveRun.fingerprint(current) != live.spawned_with):
+                or self._resolved_spawn(current) != live.spawned_with):
             await self._end_live_run(key, "the binding changed")
 
     async def _end_live_run(self, key: str, why: str) -> None:
@@ -3050,9 +3064,11 @@ def main() -> None:
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("CLAUDE_TIMEOUT", "1800")),
                     help="per-run timeout in seconds")
     ap.add_argument("--async-followups", action=argparse.BooleanOptionalAction,
-                    default=os.environ.get("CLAUDE_ASYNC_FOLLOWUPS", "1") not in ("0", "false", "no"),
+                    default=os.environ.get("CLAUDE_ASYNC_FOLLOWUPS", "0") in ("1", "true", "yes"),
                     help="let a run that backgrounded work post its findings "
-                         "later as a second message (default: on)")
+                         "later as a second message. Off by default while the "
+                         "held-child lifecycle settles; every code path is "
+                         "inert when disabled")
     ap.add_argument("--followup-idle-timeout", type=float,
                     default=float(os.environ.get("CLAUDE_FOLLOWUP_IDLE_TIMEOUT",
                                                  str(FOLLOWUP_IDLE_TIMEOUT))),
