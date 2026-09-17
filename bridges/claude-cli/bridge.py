@@ -39,10 +39,12 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -183,6 +185,33 @@ PROGRESS_THROTTLE = 2.0  # seconds between progress frames
 # 57s later), so an absolute deadline would cut it off just as surely. We only
 # fall back to the blank once the stream has genuinely gone quiet this long.
 BLANK_RESULT_IDLE_GRACE = 45.0
+# Asynchronous follow-ups. The CLI re-invokes the model when a backgrounded
+# task (a `run_in_background` Bash command or subagent) finishes, and with stdin
+# held open the child keeps running long enough to say so — it emits a fresh
+# `result` minutes after the one that answered the channel. We keep that child
+# alive while it still owns background work and post each later result as its
+# own message, so "started the research" and "here is the research" are two
+# messages instead of one long block. The child is released once its task
+# inventory empties, or it goes quiet with nothing left to wait for.
+#
+# Three limits, because silence means different things.
+#
+# With nothing outstanding the child has no reason to exist, but it cannot be
+# killed the instant the inventory empties: the CLI clears a task *before*
+# re-invoking the model to report it, so the answer lands seconds later. IDLE is
+# that settle window — short, because the ordering can also go the other way
+# (the empty inventory arriving after the result), and a long one would park a
+# resident `claude` per channel for no reason.
+#
+# With a task outstanding silence is expected — a backgrounded `sleep 20m` emits
+# nothing at all until it lands, and a short window there would cut off exactly
+# the long work this exists to deliver — so the far looser TASK_IDLE applies
+# instead; it still bounds a child whose inventory never empties because an
+# event was dropped or an entry was never reaped. MAX_WAIT caps the whole hold
+# regardless, for a task that keeps emitting progress but never finishes.
+FOLLOWUP_IDLE_TIMEOUT = 180.0
+FOLLOWUP_TASK_IDLE_TIMEOUT = 1800.0
+FOLLOWUP_MAX_WAIT = 6 * 60 * 60.0
 TAIL_BYTES = 256 * 1024  # how much of a session .jsonl to scan for the last prompt
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
@@ -230,8 +259,88 @@ COLLAB_SYSTEM_PROMPT = (
 )
 
 
+BACKGROUND_SYSTEM_PROMPT = (
+    "This chat can hear you more than once per turn. When a request needs work "
+    "that would keep the channel waiting — deep research, a long test run, a "
+    "wide search — start it in the background (a background Bash command or a "
+    "background subagent), reply straight away saying what you kicked off, and "
+    "end your turn. You will be prompted again when that work lands; report the "
+    "findings then and they arrive as a new message in this same conversation. "
+    "Keep work in the foreground when it is quick enough to just answer."
+)
+
+
+# Commands that change what a conversation points at or what it is allowed to
+# do, and so must retire a child still held for background work rather than let
+# it run on under settings the channel has been told are no longer in force.
+# /tldr is deliberately absent: it only shapes how a reply is formatted, so
+# killing a live child (and any turn injected into it) to apply it sooner costs
+# more than it buys — run_claude's fingerprint check applies it on the next spawn.
+REBINDING_COMMANDS = frozenset({"/use", "/new", "/worktree", "/model",
+                                "/permissions"})
+
+
 class RunStopped(Exception):
-    """The active CLI child was cancelled by /stop."""
+    """The active CLI child was cancelled — by /stop, or by a command that
+    retired the session out from under it. `str(exc)` is what the channel is
+    told, so a turn killed by something other than /stop can say why."""
+
+
+class LiveRun:
+    """A `claude -p` child kept alive past the reply, because it still owns
+    background work that will re-invoke the model.
+
+    The child's stdout has exactly one reader — `Bridge._followup_loop` — so a
+    turn injected into a live child gets its answer through `waiters` rather
+    than by racing that loop. `results` that arrive with no waiter are
+    spontaneous: background work reporting in, which we post to the channel.
+    """
+
+    # Everything that shapes the spawned command. Object identity is too weak a
+    # proxy for "the binding changed": /new, /use and /worktree replace the dict
+    # (via _set_binding) but /model, /permissions and /tldr mutate it in place,
+    # so a held child would keep the old model or permission mode while the
+    # channel had been told the new one took effect.
+    def __init__(self, proc, key: str, frame: dict, binding: dict,
+                 spawned_with: tuple, perm_ids: list[str]) -> None:
+        self.proc = proc
+        self.key = key
+        self.frame = frame  # where spontaneous follow-ups get posted
+        self.binding = binding  # fallback if the key is unbound by then
+        # The (model, permission_mode) this child was actually launched with —
+        # captured at spawn, NOT read back off the binding here. /model and
+        # /permissions mutate the binding dict in place, so a fingerprint taken
+        # at hand-off would record the new value while the process kept running
+        # the old one, and the comparison on the next message would see a match.
+        # That is the bug behind every "the command said it applied but didn't"
+        # report on this feature. Session and cwd changes go through
+        # _set_binding, which replaces the dict, so object identity catches them.
+        self.spawned_with = spawned_with
+        self.perm_ids = perm_ids
+        self.tasks: list[dict] = []  # latest background_tasks_changed inventory
+        # One entry per injected turn, FIFO: {"fut", "frame", "ahead"}. `ahead`
+        # is how many background reports the CLI already owed when this turn was
+        # injected — results satisfy those first, so a report generated before
+        # the turn arrived is never mistaken for that turn's answer.
+        self.waiters: deque = deque()
+        self.owed_reports = 0  # tasks that completed and are yet to be reported
+        self.closing = False
+        # Deliberately ended (by /stop, or by a command that rebound the
+        # conversation) rather than having died on its own. Waiters report
+        # RunStopped carrying `ended_reason`, and /stop additionally suppresses
+        # the dropped-work notice because the user already knows.
+        self.stopping = False
+        self.user_stopped = False
+        self.ended_reason: str | None = None
+        self.reported = False  # produced at least one follow-up of its own
+        self.started = time.monotonic()
+        self.tmpdir: str | None = None  # --add-dir staging, removed at retirement
+        self.reader: asyncio.Task | None = None
+        self.stderr_drain: asyncio.Task | None = None
+
+    @property
+    def alive(self) -> bool:
+        return not self.closing and self.proc.returncode is None
 
 
 def parse_peer_agents(raw: str) -> frozenset[str]:
@@ -675,6 +784,16 @@ class Bridge:
         # (👀 → ✅) replaces the previous emoji instead of stacking.
         self._reactions: dict[int, str] = {}
         self.procs: dict[str, asyncio.subprocess.Process] = {}  # key -> running claude
+        # Children kept alive past their reply because background work is still
+        # theirs to report (see LiveRun). At most one per binding key.
+        self.live: dict[str, LiveRun] = {}
+        self.async_followups = args.async_followups
+        self.followup_idle_timeout = args.followup_idle_timeout
+        self.followup_task_idle_timeout = args.followup_task_idle_timeout
+        self.followup_max_wait = args.followup_max_wait
+        # Strong references to fire-and-forget cleanup tasks; without these the
+        # loop only holds a weak one and can collect them mid-flight.
+        self._detached: set[asyncio.Task] = set()
         self.stop_requested: set[str] = set()  # keys cancelled via /stop
         self.stopped_processes: set[str] = set()
         self.queue_full_notified: set[str] = set()
@@ -1167,6 +1286,15 @@ class Bridge:
             # Claude CLI slash commands (/compact, /usage, …) are real turns.
             await self.forward_to_claude(key, frame, text)
             return
+        if cmd in REBINDING_COMMANDS:
+            # Retire a held child *now*, not when the next message happens to
+            # arrive. run_claude checks the same fingerprint, but that only runs
+            # when someone writes again: a user who lowers privilege and then
+            # says nothing would otherwise leave a child auto-approving at the
+            # old mode until its own deadline, hours later. Done here rather
+            # than in each command because /use, /new and /worktree run in a
+            # worker thread, where there is no loop to schedule this on.
+            await self._retire_if_stale(key)
         self.set_reaction(frame, "✅", remember=False)
 
     # ---------------------------------------------------------- commands
@@ -1330,7 +1458,11 @@ class Bridge:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
-        if key in self.busy:
+        # `busy` used to mean "a child is running here", but a child held for
+        # background work has no in-flight turn — and this worktree is still its
+        # cwd. Removing it would delete the tree from under a live writer.
+        held = self.live.get(key)
+        if key in self.busy or (held is not None and held.alive):
             return "A run is in flight here — /stop it before removing the worktree."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
         args = ["worktree", "remove", path] + (["--force"] if force else [])
@@ -1462,6 +1594,46 @@ class Bridge:
         for entry in queued:
             self.clear_reaction(entry["frame"])
         proc = self.procs.get(key)
+        # A held child is checked first even when the key is busy: during an
+        # injected turn both are true, and the generic path below would kill the
+        # held child while leaving stop_requested/stopped_processes set — which
+        # run_claude's finally never clears for an injected turn, poisoning the
+        # next two messages.
+        live = self.live.get(key)
+        if live is not None and live.closing:
+            # Already retiring (its own reader, an earlier /stop, or run_claude
+            # replacing it before spawning). A turn still waiting on it should
+            # report "Stopped." rather than a run failure — and if the key is
+            # busy, the replacement turn has not started yet, so the flag has to
+            # be set or /stop is acknowledged and then quietly ignored. Gated on
+            # busy because run_claude's finally is what clears it again.
+            live.stopping = True
+            live.user_stopped = True
+            if key in self.busy:
+                self.stop_requested.add(key)
+                # The replacement turn may already be past both stop checks with
+                # a child of its own; the flag alone would never reach it, and
+                # run_claude's finally would then quietly clear it. /stop must
+                # not report success while a process keeps working.
+                replacement = self.procs.get(key)
+                if (replacement is not None and replacement is not live.proc
+                        and replacement.returncode is None):
+                    self.stopped_processes.add(key)
+                    replacement.kill()
+            extra = f" and removed {len(queued)} queued message(s)" if queued else ""
+            return f"Already stopping here{extra} — give it a moment."
+        if live is not None and live.alive:
+            pending, waiting = len(live.tasks), len(live.waiters)
+            live.stopping = True  # waiters raise RunStopped, so the channel says "Stopped."
+            live.user_stopped = True  # they asked; no "work was dropped" notice
+            self._spawn(self._end_live_run(key, "/stop"))
+            extra = f" and removed {len(queued)} queued message(s)" if queued else ""
+            if waiting:
+                return f"Stopping the current run{extra}…"
+            if pending:
+                return (f"Dropped {pending} background task(s) still reporting "
+                        f"here{extra}.")
+            return f"Released the held session{extra}."
         if key not in self.busy:
             return f"Removed {len(queued)} queued message(s)." if queued else "Nothing running here."
         self.stop_requested.add(key)
@@ -1480,6 +1652,11 @@ class Bridge:
         mode = b.get("permission_mode") or self.default_permission_mode
         tldr = "on" if self._tldr_enabled(b) else "off"
         busy = " — a run is in flight" if key in self.busy else ""
+        live = self.live.get(key)
+        if live is not None and live.alive and live.tasks:
+            names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
+                              for t in live.tasks)
+            busy += f"\nBackground: {len(live.tasks)} task(s) still to report ({names})"
         wt = b.get("worktree")
         wt_line = f"\nWorktree: {wt['branch']} @ {wt['path']}" if wt else ""
         return (
@@ -1564,18 +1741,11 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    reply, attachments, notices = self._split_outbound_attachments(
-                        reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
-                    body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
-                    if notices:
-                        body = (body + "\n\n" if body else "") + "\n".join(notices)
-                    if not body and not attachments:
-                        body = "(no reply — the run ended without any text)"
-                    self.post(batch_frame, body, tldr if body else None, attachments)
+                    self._post_reply(batch_frame, binding, reply)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
-                except RunStopped:
-                    self.post(batch_frame, "Stopped.")
+                except RunStopped as stopped:
+                    self.post(batch_frame, str(stopped) or "Stopped.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
@@ -1696,6 +1866,8 @@ class Bridge:
             blocks.append(COLLAB_SYSTEM_PROMPT)
         if self._tldr_enabled(binding):
             blocks.append(TLDR_SYSTEM_PROMPT)
+        if self.async_followups:
+            blocks.append(BACKGROUND_SYSTEM_PROMPT)
         blocks.append(ATTACH_SYSTEM_PROMPT)
         if not blocks:
             return []
@@ -1710,10 +1882,45 @@ class Bridge:
             raise RunStopped
         perm_tasks: list[asyncio.Task] = []
         perm_ids: list[str] = []
+        # Set before the try: an injected turn returns from inside it, and the
+        # finally reads this to decide whether the staging dir may be removed.
+        handed_off = False
         mode = binding.get("permission_mode") or self.default_permission_mode
         model = binding.get("model") or self.default_model
+        # What this run is actually launched with, fixed here rather than read
+        # back later — see LiveRun.spawned_with.
+        spawned_with = (model, mode)
         sys_args = self._append_system_args(binding)
         try:
+            # A child still working through background tasks already holds this
+            # conversation; feed the new turn to it rather than resuming the
+            # same session id in a second process. Two exceptions retire it
+            # instead: attachments arrive via --add-dir, which only a fresh
+            # spawn can widen, and a binding that is no longer the one the child
+            # started on means /new, /use, /worktree, /model or /permissions has
+            # changed what this conversation points at — the held child would
+            # silently ignore it.
+            #
+            # This lives inside the try so an injected turn leaves through the
+            # same finally as a spawned one. /stop routes around the live child
+            # when it can, but it cannot in every window (a child already
+            # retiring reads as not alive while its waiters are still pending),
+            # and skipping the cleanup below would leave stop_requested and
+            # stopped_processes set — poisoning the next two messages.
+            live = self.live.get(key)
+            if live is not None and live.alive:
+                current = self.bindings.get(key)
+                if (current is not live.binding
+                        or self._resolved_spawn(current) != live.spawned_with):
+                    await self._end_live_run(key, "the binding changed")
+                elif extra_args:
+                    await self._end_live_run(key, "a new message brought attachments")
+                else:
+                    return await self._inject_into_live(live, frame, prompt)
+                # Retirement awaits, and /stop can land inside that window —
+                # before this turn has spawned anything for it to kill.
+                if key in self.stop_requested:
+                    raise RunStopped
             # Bidirectional stream-json: the prompt rides on stdin and
             # `--permission-prompt-tool stdio` makes the CLI route permission
             # asks to us as `control_request` events instead of silently
@@ -1748,6 +1955,12 @@ class Bridge:
                 limit=64 * 1024 * 1024,
             )
             self.procs[key] = proc  # so /stop can find and kill this run
+            # create_subprocess_exec above is an await, and for its duration
+            # self.procs still held the *previous* child — so a /stop landing in
+            # that window set the flag but had nothing to kill. Check it here,
+            # now that this child is registered and before it is given any work.
+            if key in self.stop_requested:
+                raise RunStopped
             await self._send_to_claude(proc, {
                 "type": "user",
                 "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
@@ -1760,6 +1973,9 @@ class Bridge:
             # Headless-capable slash commands from the CLI's system/init frame
             # (interactive-only ones like /help are omitted — see _annotate_slash_failure).
             slash_commands: list[str] = []
+            # Live inventory of backgrounded work, from system/background_tasks_changed.
+            # Non-empty when the reply lands means the model owes us a follow-up.
+            bg_tasks: list[dict] = []
             try:
                 async with asyncio.timeout(self.timeout):
                     assert proc.stdout is not None
@@ -1800,6 +2016,9 @@ class Bridge:
                             raw_cmds = event.get("slash_commands") or []
                             if isinstance(raw_cmds, list):
                                 slash_commands = [c for c in raw_cmds if isinstance(c, str)]
+                        elif kind == "system" and event.get("subtype") == "background_tasks_changed":
+                            listed = event.get("tasks")
+                            bg_tasks = listed if isinstance(listed, list) else []
                         elif kind == "assistant":
                             snippet = self._progress_snippet(event)
                             if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
@@ -1840,32 +2059,51 @@ class Bridge:
                                 continue
                             result_text = text
                             break  # stdin stays open, so EOF never comes — stop here
-                    if proc.stdin is not None:
-                        proc.stdin.close()
-                    await proc.wait()
+                    # This answer is ours, but backgrounded work is still the
+                    # child's to report: keep it alive and let _followup_loop
+                    # take over its stdout, so the report reaches the channel as
+                    # its own message.
+                    # `result_text` may be "" (a genuinely blank answer): still a
+                    # successful turn, and killing the child would lose whatever
+                    # background work it is still holding.
+                    if (self.async_followups and bg_tasks
+                            and result_text is not None
+                            and not result_text.startswith("(claude error)")
+                            and key not in self.stop_requested):
+                        handed_off = True
+                        self._start_live_run(key, frame, binding, spawned_with,
+                                             proc, bg_tasks, perm_ids,
+                                             perm_tasks, tmpdir)
+                    else:
+                        if proc.stdin is not None:
+                            proc.stdin.close()
+                        await proc.wait()
             except TimeoutError:
                 raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
-                # Never leave an orphaned claude running: any exit path (timeout,
-                # stream parse error, disconnect, cancellation) must kill the
-                # child, otherwise it keeps auto-applying edits after a reported
-                # failure.
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
-                self.procs.pop(key, None)
-                # Unstick any approval still waiting on a button: cancel it and
-                # lock the buttons so a later tap can't answer a dead run.
-                for oid in perm_ids:
-                    self._cancel_perm(oid, "The run ended before a decision.")
-                if perm_tasks:
-                    await asyncio.gather(*perm_tasks, return_exceptions=True)
+                if not handed_off:
+                    # Never leave an orphaned claude running: any exit path (timeout,
+                    # stream parse error, disconnect, cancellation) must kill the
+                    # child, otherwise it keeps auto-applying edits after a reported
+                    # failure.
+                    if proc.returncode is None:
+                        proc.kill()
+                        await proc.wait()
+                    self.procs.pop(key, None)
+                    # Unstick any approval still waiting on a button: cancel it and
+                    # lock the buttons so a later tap can't answer a dead run.
+                    for oid in perm_ids:
+                        self._cancel_perm(oid, "The run ended before a decision.")
+                    if perm_tasks:
+                        await asyncio.gather(*perm_tasks, return_exceptions=True)
             if result_text is None:
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
                 raise RuntimeError(stderr[-500:] or f"claude exited {proc.returncode} with no result")
             return self._annotate_slash_failure(prompt, result_text, slash_commands)
         finally:
-            if tmpdir:
+            # A handed-off child is still running and its --add-dir points here,
+            # so the staging dir has to outlive this turn; retirement removes it.
+            if tmpdir and not handed_off:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             was_stopped = key in self.stopped_processes
             self.stop_requested.discard(key)
@@ -1873,6 +2111,378 @@ class Bridge:
             if was_stopped:
                 raise RunStopped
 
+    # ------------------------------------------------- async follow-ups
+
+    @staticmethod
+    async def _drain(stream) -> None:
+        """Read a pipe to EOF and discard it, so the child never blocks writing."""
+        if stream is None:
+            return
+        try:
+            while await stream.readline():
+                pass
+        except (asyncio.CancelledError, ValueError, OSError):
+            pass
+
+    def _spawn(self, coro) -> asyncio.Task:
+        """Run a cleanup coroutine detached, keeping it alive until it finishes."""
+        task = asyncio.create_task(coro)
+        self._detached.add(task)
+        task.add_done_callback(self._detached.discard)
+        return task
+
+    def kill_children(self) -> None:
+        """Synchronous sweep for shutdown. A child held for background work has
+        no in-flight turn to reap it, so without this it survives the bridge —
+        and keeps applying edits under the channel's permission mode."""
+        held = [live.proc for live in self.live.values()]
+        for proc in [*held, *self.procs.values()]:
+            try:
+                if proc.returncode is None:
+                    proc.kill()
+            except (ProcessLookupError, OSError, AttributeError):
+                pass
+        if held:
+            log(f"killed {len(held)} held child process(es) on shutdown")
+        self.live.clear()
+        self.procs.clear()
+
+    def _start_live_run(self, key: str, frame: dict, binding: dict,
+                        spawned_with: tuple, proc, tasks: list[dict],
+                        perm_ids: list[str], perm_tasks: list[asyncio.Task],
+                        tmpdir: str | None = None) -> None:
+        """Keep a replied-to child alive so its background work can report in."""
+        live = LiveRun(proc, key, frame, binding, spawned_with, perm_ids)
+        live.tasks = list(tasks)
+        live.tmpdir = tmpdir
+        # stderr is a pipe nobody else reads for the life of the hold; once its
+        # buffer fills the child blocks on write() and stops producing stdout
+        # entirely, so it would never report and would be reaped as a timeout.
+        live.stderr_drain = self._spawn(self._drain(proc.stderr))
+        self.live[key] = live
+        names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
+                          for t in tasks) or "?"
+        log(f"live run held for {key}: {len(tasks)} background task(s) [{names}]")
+        live.reader = asyncio.create_task(self._followup_loop(live, perm_tasks))
+
+    async def _inject_into_live(self, live: LiveRun, frame: dict, prompt: str) -> str:
+        """Send a new channel turn down a live child's stdin and await its reply."""
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        live.waiters.append({"fut": fut, "frame": frame,
+                             "ahead": live.owed_reports})
+        try:
+            await self._send_to_claude(live.proc, {
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            })
+        except Exception:
+            self._drop_waiter(live, fut)
+            raise
+        log(f"injected turn into live run for {live.key}")
+        try:
+            async with asyncio.timeout(self.timeout):
+                return await fut
+        except TimeoutError:
+            self._drop_waiter(live, fut)
+            raise RuntimeError(f"timed out after {self.timeout}s")
+
+    @staticmethod
+    def _drop_waiter(live: LiveRun, fut: asyncio.Future) -> None:
+        live.waiters = deque(w for w in live.waiters if w["fut"] is not fut)
+
+    async def _followup_loop(self, live: LiveRun, perm_tasks: list[asyncio.Task]) -> None:
+        """Sole reader of a live child's stdout.
+
+        Results claim a waiting injected turn if there is one; otherwise they
+        are background work reporting in and get posted to the channel on their
+        own. The child is released once it has no waiters and no tasks left.
+        """
+        key, proc = live.key, live.proc
+        assert proc.stdout is not None
+        started = last_event = time.monotonic()
+        last_progress = 0.0
+        # Same ambiguity the main loop handles: a result carries nothing that
+        # says which prompt it answers, so a blank one is held rather than
+        # handed to a waiter that is probably owed real text.
+        blank_held: str | None = None
+        blank_deadline: float | None = None
+        try:
+            while True:
+                deadlines = [started + self.followup_max_wait]
+                if live.tasks or live.waiters or live.owed_reports:
+                    # Something is outstanding, so silence is expected — but not
+                    # forever. This bounds a child whose inventory never empties
+                    # (a dropped event, or an entry the CLI never reaps).
+                    deadlines.append(last_event + self.followup_task_idle_timeout)
+                else:
+                    # Nothing outstanding, so silence really is idleness.
+                    deadlines.append(last_event + self.followup_idle_timeout)
+                if blank_deadline is not None:
+                    deadlines.append(blank_deadline)
+                remaining = min(deadlines) - time.monotonic()
+                if remaining <= 0:
+                    if blank_held is not None and live.waiters:
+                        waiter = live.waiters.popleft()
+                        if not waiter["fut"].done():
+                            waiter["fut"].set_result(blank_held)
+                        blank_held, blank_deadline = None, None
+                        last_event = time.monotonic()
+                        continue
+                    if blank_held is not None and (live.tasks or live.waiters):
+                        # The waiter this blank was held for is gone (an
+                        # injection timeout dropped it), but work is still
+                        # outstanding — keep reading rather than killing a child
+                        # that still owes an answer.
+                        blank_held, blank_deadline = None, None
+                        continue
+                    waited = time.monotonic() - started
+                    log(f"live run for {key} released after {waited:.0f}s "
+                        f"({len(live.tasks)} task(s) still listed)")
+                    # The notice is posted by _retire_live_run, which every
+                    # release path goes through — including a child retired by
+                    # a command, which exits below via EOF rather than here.
+                    break
+                try:
+                    raw = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                except TimeoutError:
+                    continue
+                if not raw:
+                    break  # child exited on its own
+                last_event = time.monotonic()
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = event.get("type")
+                target = live.waiters[0]["frame"] if live.waiters else live.frame
+                if kind == "rate_limit_event":
+                    self.capture_usage(event)
+                    continue
+                if kind == "system" and event.get("subtype") == "background_tasks_changed":
+                    listed = event.get("tasks")
+                    listed = listed if isinstance(listed, list) else []
+                    # A task leaving the inventory means the CLI is about to
+                    # re-invoke the model to report it — the report is owed
+                    # before any turn injected from here on, and the child must
+                    # not be released until it arrives.
+                    gone = ({t.get("task_id") for t in live.tasks if isinstance(t, dict)}
+                            - {t.get("task_id") for t in listed if isinstance(t, dict)})
+                    live.owed_reports += len(gone)
+                    live.tasks = listed
+                elif kind == "assistant":
+                    snippet = self._progress_snippet(event)
+                    if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
+                        last_progress = time.monotonic()
+                        self.progress(target, snippet)
+                elif kind == "control_request":
+                    perm_tasks.append(asyncio.create_task(
+                        self._handle_control_request(key, target, proc, event, live.perm_ids)
+                    ))
+                elif kind == "control_cancel_request":
+                    self._cancel_request(event.get("request_id") or "",
+                                         "Claude withdrew the request.")
+                elif kind == "result":
+                    text = event.get("result") or ""
+                    if event.get("is_error"):
+                        text = f"(claude error) {text}"
+                    binding = self.bindings.get(key) or live.binding
+                    new_sid = event.get("session_id")
+                    # Same identity guard the main loop uses: if the key was
+                    # rebound while this child ran, its session id belongs to
+                    # the old conversation and must not overwrite the new one.
+                    if (binding and new_sid and new_sid != binding.get("session_id")
+                            and not event.get("is_error")
+                            and binding is live.binding
+                            and (key not in self.bindings
+                                 or self.bindings.get(key) is binding)):
+                        binding["session_id"] = new_sid
+                        self.bindings[key] = binding
+                        self._save_state()
+                    # A result says nothing about which prompt it answers, so
+                    # attribution goes by obligation order: the head waiter may
+                    # only claim one once the reports the CLI already owed when
+                    # that turn was injected have been delivered. Without this a
+                    # background report generated *before* the user's message
+                    # became that message's answer — and the release check below
+                    # then killed the child before the real answer was written.
+                    claims_waiter = bool(live.waiters) and live.waiters[0]["ahead"] == 0
+                    if not text.strip():
+                        # A re-invoked model that said nothing. Held only if a
+                        # turn is waiting and might still be owed real text;
+                        # otherwise fall through so an empty inventory releases
+                        # the child now instead of idling for the full timeout.
+                        if claims_waiter and blank_held is None:
+                            blank_held = text
+                            blank_deadline = time.monotonic() + BLANK_RESULT_IDLE_GRACE
+                        elif not claims_waiter:
+                            # Re-invoked by its own background work and chose to
+                            # say nothing. That is still an answer, so the
+                            # release below owes no "never reported" notice.
+                            self._settle_report(live)
+                            live.reported = True
+                    else:
+                        blank_held, blank_deadline = None, None
+                        if claims_waiter:
+                            waiter = live.waiters.popleft()
+                            if not waiter["fut"].done():
+                                waiter["fut"].set_result(text)
+                            else:
+                                # Its turn was cancelled between appending and
+                                # now; post rather than discard the answer.
+                                live.reported = True
+                                self._post_reply(live.frame, live.binding, text)
+                        else:
+                            # Backgrounded work reporting in, so it becomes its
+                            # own message. Formatted against the binding the
+                            # child actually ran under — relative attachment
+                            # paths resolve against its cwd, and its TL;DR
+                            # setting is the one it was told to write for. The
+                            # current binding may point at another repo by now.
+                            self._settle_report(live)
+                            log(f"async follow-up posted for {key}")
+                            live.reported = True
+                            self._post_reply(live.frame, live.binding, text)
+                if (kind == "result" and not live.waiters and not live.tasks
+                        and not live.owed_reports and blank_held is None):
+                    log(f"live run for {key} has no background work left — releasing")
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # never let a reader crash take the bridge down
+            log(f"follow-up loop failed for {key}: {e!r}")
+        finally:
+            live.closing = True
+            await self._retire_live_run(live, perm_tasks)
+
+    async def _retire_live_run(self, live: LiveRun, perm_tasks: list[asyncio.Task]) -> None:
+        key, proc = live.key, live.proc
+        if self.live.get(key) is live:
+            self.live.pop(key, None)
+        if proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        if self.procs.get(key) is proc:
+            self.procs.pop(key, None)
+        # A release that still owes an answer says so here rather than in the
+        # deadline branch alone: a child retired by a command exits through the
+        # reader's EOF path, which used to drop its outstanding work silently.
+        if ((live.tasks or live.owed_reports or not live.reported)
+                and not live.user_stopped):
+            self._post_timeout_notice(live, time.monotonic() - live.started)
+        while live.waiters:
+            fut = live.waiters.popleft()["fut"]
+            if not fut.done():
+                fut.set_exception(
+                    RunStopped(self._stopped_message(live)) if live.stopping
+                    else RuntimeError("the background run ended before replying"))
+        if live.stderr_drain is not None:
+            live.stderr_drain.cancel()
+        if live.tmpdir:
+            # Held past its turn precisely so --add-dir stayed readable; the
+            # child is dead now, so this is the last chance to clean up.
+            shutil.rmtree(live.tmpdir, ignore_errors=True)
+            live.tmpdir = None
+        for oid in live.perm_ids:
+            self._cancel_perm(oid, "The run ended before a decision.")
+        if perm_tasks:
+            await asyncio.gather(*perm_tasks, return_exceptions=True)
+
+    def _resolved_spawn(self, binding: dict | None) -> tuple:
+        """The (model, permission_mode) a run started from this binding *now*
+        would use. Compared against LiveRun.spawned_with, which holds what the
+        held child was actually launched with."""
+        b = binding or {}
+        return (b.get("model") or self.default_model,
+                b.get("permission_mode") or self.default_permission_mode)
+
+    async def _retire_if_stale(self, key: str) -> None:
+        """End a held child whose binding no longer matches what it ran under."""
+        live = self.live.get(key)
+        if live is None or not live.alive:
+            return
+        current = self.bindings.get(key)
+        if (current is not live.binding
+                or self._resolved_spawn(current) != live.spawned_with):
+            await self._end_live_run(key, "the binding changed")
+
+    async def _end_live_run(self, key: str, why: str) -> None:
+        """Retire a live child early. Killing it gives the reader EOF, so the
+        loop finishes through its own cleanup rather than being cancelled
+        mid-await."""
+        live = self.live.get(key)
+        if live is None:
+            return
+        live.closing = True
+        live.stopping = True  # deliberate, so a waiting turn says so rather than "failed"
+        live.ended_reason = live.ended_reason or why
+        log(f"ending live run for {key}: {why}")
+        if live.proc.returncode is None:
+            live.proc.kill()
+        if live.reader is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(live.reader), 15)
+            except Exception as e:
+                log(f"live run for {key} did not shut down cleanly: {e!r}")
+        # Identity-guarded: awaiting the reader above can take seconds, and a
+        # new turn in that window may already have installed its own LiveRun
+        # here. Popping blindly would orphan that child from /status, /stop and
+        # the shutdown sweep while it kept running.
+        if self.live.get(key) is live:
+            self.live.pop(key, None)
+        if self.procs.get(key) is live.proc:
+            self.procs.pop(key, None)
+
+    @staticmethod
+    def _settle_report(live: LiveRun) -> None:
+        """Mark one owed background report delivered, and let every waiting turn
+        move one place closer to being allowed to claim a result."""
+        if live.owed_reports <= 0:
+            return
+        live.owed_reports -= 1
+        for waiter in live.waiters:
+            if waiter["ahead"] > 0:
+                waiter["ahead"] -= 1
+
+    @staticmethod
+    def _stopped_message(live: LiveRun) -> str:
+        """What a turn killed by a retirement tells the channel. Naming the
+        cause matters: the user typed a command and got their turn cancelled,
+        which without an explanation reads as a crash."""
+        if live.user_stopped or not live.ended_reason:
+            return "Stopped."
+        return (f"Stopped — {live.ended_reason}, so this session was replaced. "
+                "Send that message again to run it on the new one.")
+
+    def _post_timeout_notice(self, live: LiveRun, waited: float) -> None:
+        """State what happened, without claiming a promise that may never have
+        been made: plenty of backgrounded work (a dev server, a watcher) has no
+        completion to report, and telling its owner a follow-up "isn't coming"
+        would be both alarming and false."""
+        names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
+                          for t in live.tasks)
+        minutes = max(1, round(waited / 60))
+        what = f" for: {names}" if names else ""
+        self.post(live.frame, (
+            f"Stopped watching background work after {minutes} min, so nothing "
+            f"further will be reported here{what}. Message me if you want me to "
+            "pick it back up."
+        ))
+
+    def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:
+        """Format a model reply the channel's way and post it."""
+        reply, attachments, notices = self._split_outbound_attachments(
+            reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
+        body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
+        if notices:
+            body = (body + "\n\n" if body else "") + "\n".join(notices)
+        if not body and not attachments:
+            body = "(no reply — the run ended without any text)"
+        self.post(frame, body, tldr if body else None, attachments)
 
     @staticmethod
     def _annotate_slash_failure(prompt: str, result: str, slash_commands: list[str]) -> str:
@@ -2453,6 +3063,28 @@ def main() -> None:
                     help="only summarize replies at least this many chars long")
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("CLAUDE_TIMEOUT", "1800")),
                     help="per-run timeout in seconds")
+    ap.add_argument("--async-followups", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("CLAUDE_ASYNC_FOLLOWUPS", "0") in ("1", "true", "yes"),
+                    help="let a run that backgrounded work post its findings "
+                         "later as a second message. Off by default while the "
+                         "held-child lifecycle settles; every code path is "
+                         "inert when disabled")
+    ap.add_argument("--followup-idle-timeout", type=float,
+                    default=float(os.environ.get("CLAUDE_FOLLOWUP_IDLE_TIMEOUT",
+                                                 str(FOLLOWUP_IDLE_TIMEOUT))),
+                    help="settle window in seconds: how long a child held for "
+                         "background work waits, once nothing is outstanding, "
+                         "for a trailing reply before it is released")
+    ap.add_argument("--followup-task-idle-timeout", type=float,
+                    default=float(os.environ.get("CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT",
+                                                 str(FOLLOWUP_TASK_IDLE_TIMEOUT))),
+                    help="seconds of silence while a background task is still "
+                         "listed before the held child is released anyway")
+    ap.add_argument("--followup-max-wait", type=float,
+                    default=float(os.environ.get("CLAUDE_FOLLOWUP_MAX_WAIT",
+                                                 str(FOLLOWUP_MAX_WAIT))),
+                    help="absolute cap in seconds on how long a child is held "
+                         "waiting for background work to report")
     ap.add_argument("--permission-timeout", type=int,
                     default=int(os.environ.get("CLAUDE_PERMISSION_TIMEOUT", "600")),
                     help="seconds to wait for an Approve/Reject tap before denying "
@@ -2488,10 +3120,17 @@ def main() -> None:
     if not args.token:
         ap.error("a pairing token is required (AGORA_PAIRING_TOKEN, --token-file, or --token)")
     log(f"claude-cli bridge -> {re.sub(r'token=[^&]+', 'token=***', Bridge._normalize_url(args.url, args.token))}")
+    instance = Bridge(args)
+    # Children held for background work outlive their turn, so the process must
+    # reap them on the way out. SIGTERM's default disposition would skip the
+    # finally below; turning it into SystemExit lets the sweep run.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
-        asyncio.run(Bridge(args).run())
+        asyncio.run(instance.run())
     except KeyboardInterrupt:
         pass
+    finally:
+        instance.kill_children()
 
 
 if __name__ == "__main__":

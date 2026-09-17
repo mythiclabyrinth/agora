@@ -144,6 +144,12 @@ def make_bridge(peer_agents=""):
     instance.stopped_processes = set()
     instance.queue_full_notified = set()
     instance.procs = {}
+    instance.live = {}
+    instance._detached = set()
+    instance.async_followups = True
+    instance.followup_idle_timeout = bridge.FOLLOWUP_IDLE_TIMEOUT
+    instance.followup_task_idle_timeout = bridge.FOLLOWUP_TASK_IDLE_TIMEOUT
+    instance.followup_max_wait = bridge.FOLLOWUP_MAX_WAIT
     instance.bindings = {}
     instance.pending_questions = {}
     instance.set_reaction = Mock()
@@ -344,6 +350,7 @@ class PeerForwardTests(unittest.TestCase):
 class AppendSystemArgsTests(unittest.TestCase):
     def test_blocks_join_into_a_single_flag(self):
         instance = make_bridge(peer_agents="codex-cli")
+        instance.async_followups = False
         instance.tldr_default = True
         args = instance._append_system_args({})
         self.assertEqual(args[0], "--append-system-prompt")
@@ -355,6 +362,7 @@ class AppendSystemArgsTests(unittest.TestCase):
 
     def test_each_block_rides_alone(self):
         instance = make_bridge(peer_agents="codex-cli")
+        instance.async_followups = False
         instance.tldr_default = False
         self.assertEqual(
             instance._append_system_args({}),
@@ -369,13 +377,25 @@ class AppendSystemArgsTests(unittest.TestCase):
 
     def test_neither_block_means_no_flag(self):
         instance = make_bridge()
+        instance.async_followups = False
         instance.tldr_default = False
         self.assertEqual(instance._append_system_args({}), ["--append-system-prompt", bridge.ATTACH_SYSTEM_PROMPT])
 
+    def test_background_block_rides_only_when_followups_are_on(self):
+        instance = make_bridge()
+        instance.tldr_default = False
+        self.assertEqual(
+            instance._append_system_args({}),
+            ["--append-system-prompt",
+             bridge.BACKGROUND_SYSTEM_PROMPT + "\n\n" + bridge.ATTACH_SYSTEM_PROMPT],
+        )
+        instance.async_followups = False
+        self.assertNotIn(bridge.BACKGROUND_SYSTEM_PROMPT, instance._append_system_args({})[1])
 
 
 
-def _fake_proc(lines, feed_delay=0.0):
+
+def _fake_proc(lines, feed_delay=0.0, returncode=0):
     """A stand-in for the CLI child process that replays `lines` on stdout.
 
     With ``feed_delay`` the lines trickle out from a background task, so a test
@@ -401,8 +421,16 @@ def _fake_proc(lines, feed_delay=0.0):
     proc.stdin.drain = AsyncMock()
     proc.stdin.close = Mock()
     proc.wait = AsyncMock(return_value=0)
-    proc.kill = Mock()
-    proc.returncode = 0
+    proc.returncode = returncode
+
+    def killed():
+        # A real kill ends the child, so its reader sees EOF rather than
+        # blocking until whatever deadline it happened to be waiting on.
+        proc.returncode = -9
+        if not stdout.at_eof():
+            stdout.feed_eof()
+
+    proc.kill = Mock(side_effect=killed)
     return proc
 
 
@@ -450,6 +478,664 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0):
         return asyncio.run(main()), b
     finally:
         bridge.BLANK_RESULT_IDLE_GRACE = original_grace
+
+
+def _tasks(*descriptions):
+    return json.dumps({
+        "type": "system", "subtype": "background_tasks_changed",
+        "tasks": [{"task_id": f"t{i}", "task_type": "local_agent",
+                   "description": d} for i, d in enumerate(descriptions)],
+    })
+
+
+def followup_bridge(idle=5.0):
+    """A Bridge configured for the async-follow-up path, bound at key "k"."""
+    b = make_bridge()
+    b.claude_bin = "claude"
+    b.base_claude_args = []
+    b.default_model = None
+    b.default_permission_mode = "acceptEdits"
+    b.timeout = 10
+    b.followup_idle_timeout = idle
+    b.followup_task_idle_timeout = idle
+    b.followup_max_wait = 60.0
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
+    b.bindings = {"k": {"cwd": "/tmp", "session_id": "sess-old"}}
+    b.progress = Mock()
+    b._append_system_args = Mock(return_value=[])
+    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._save_state = Mock()
+    return b
+
+
+async def hand_off(b, lines, feed_delay=0.0):
+    """Drive one turn that ends holding a live child; return (reply, proc)."""
+    proc = _fake_proc(lines, feed_delay, returncode=None)
+
+    async def fake_exec(*_a, **_kw):
+        return proc
+
+    original = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = fake_exec
+    try:
+        reply = await b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+    finally:
+        asyncio.create_subprocess_exec = original
+    return reply, proc
+
+
+def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
+                              pre_inject=None):
+    """Drive run_claude() and then let the follow-up loop drain the stream.
+
+    Returns ``(first_reply, bridge, injected_reply)``. Unlike run_bridge this
+    keeps the loop alive until the held child is released, so spontaneous
+    follow-up posts actually happen before the assertions run.
+    """
+    b = make_bridge()
+    b.claude_bin = "claude"
+    b.base_claude_args = []
+    b.default_model = None
+    b.default_permission_mode = "acceptEdits"
+    b.timeout = 10
+    b.followup_idle_timeout = idle
+    b.followup_task_idle_timeout = idle
+    b.followup_max_wait = 60.0
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
+    b.bindings = {"k": {"cwd": "/tmp"}}
+    b.progress = Mock()
+    b._append_system_args = Mock(return_value=[])
+    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._save_state = Mock()
+
+    async def main():
+        # returncode None: a child held past its reply is still running, which
+        # is what LiveRun.alive gates on.
+        proc = _fake_proc(lines, feed_delay, returncode=None)
+
+        async def fake_exec(*a, **kw):
+            return proc
+
+        original_exec = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            first = await b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+        finally:
+            asyncio.create_subprocess_exec = original_exec
+        injected = None
+        live = b.live.get("k")
+        if pre_inject and live is not None:
+            # Events the held child emits *before* the next message arrives —
+            # e.g. its task inventory emptying, which owes a report.
+            for line in pre_inject:
+                proc.stdout.feed_data(line.encode() + b"\n")
+            await asyncio.sleep(0.05)
+        if inject is not None and live is not None:
+            # Answer the injected turn only once it is actually waiting, so the
+            # test exercises the waiter path rather than racing it.
+            async def feed_injected():
+                await asyncio.sleep(0.05)
+                for line in inject:
+                    proc.stdout.feed_data(line.encode() + b"\n")
+            b._send_to_claude = AsyncMock()
+            asyncio.get_running_loop().create_task(feed_injected())
+            injected = await b.run_claude("k", {"channel_id": "c1"},
+                                          b.bindings["k"], "follow up")
+        if live is not None and live.reader is not None:
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(live.reader, 10)
+        return first, injected
+
+    first, injected = asyncio.run(main())
+    return first, b, injected
+
+
+class AsyncFollowupTests(unittest.TestCase):
+    def test_child_is_held_when_the_reply_leaves_background_work_running(self):
+        first, b, _ = run_bridge_with_followups(
+            [_tasks("deep research"), _result("kicked off the research"),
+             _tasks(), _result("here is what I found")])
+        self.assertEqual(first, "kicked off the research")
+        posted = [c.args[1] for c in b.post.call_args_list]
+        self.assertEqual(posted, ["here is what I found"])
+        self.assertEqual(b.post.call_args_list[0].args[0]["channel_id"], "c1")
+
+    def test_held_child_is_released_once_its_task_list_empties(self):
+        _, b, _ = run_bridge_with_followups(
+            [_tasks("deep research"), _result("started"),
+             _tasks(), _result("done")])
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_reply_with_no_background_work_closes_the_child_as_before(self):
+        reply, b = run_bridge([_result("just an answer")])
+        self.assertEqual(reply, "just an answer")
+        self.assertEqual(b.live, {})
+
+    def test_followups_disabled_closes_the_child_even_with_tasks_pending(self):
+        b = make_bridge()
+        b.async_followups = False
+        b.claude_bin, b.base_claude_args = "claude", []
+        b.default_model, b.default_permission_mode = None, "acceptEdits"
+        b.timeout = 10
+        b.progress = Mock()
+        b._append_system_args = Mock(return_value=[])
+        b._stage_attachments = Mock(return_value=("hi", [], None))
+        b._save_state = Mock()
+
+        async def main():
+            proc = _fake_proc([_tasks("research"), _result("started")])
+
+            async def fake_exec(*a, **kw):
+                return proc
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                return await b.run_claude("k", {"channel_id": "c1"}, {"cwd": "/tmp"}, "hi")
+            finally:
+                asyncio.create_subprocess_exec = original
+
+        self.assertEqual(asyncio.run(main()), "started")
+        self.assertEqual(b.live, {})
+
+    def test_a_new_turn_is_injected_into_the_held_child(self):
+        """No second `claude --resume` against a session the held child owns."""
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[_result("answer to the follow-up")])
+        self.assertEqual(first, "started")
+        self.assertEqual(injected, "answer to the follow-up")
+        # Claimed by the waiting turn, so the answer is not also posted on its
+        # own. The teardown notice is separate: the harness ends the child while
+        # "research" is still listed, which is exactly when it should speak up.
+        answers = [c.args[1] for c in b.post.call_args_list
+                   if "Stopped watching" not in c.args[1]]
+        self.assertEqual(answers, [])
+
+    def test_background_result_posts_while_a_turn_is_still_waiting(self):
+        """A waiter takes the first real result; later ones post themselves.
+
+        This is the ordering where the user's message arrives *before* the task
+        completes, so the CLI answers the injected prompt first.
+        """
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[_result("your answer"), _tasks(), _result("research landed")])
+        self.assertEqual((first, injected), ("started", "your answer"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research landed"])
+
+    def test_a_report_already_owed_is_not_handed_to_a_later_message(self):
+        """The CLI clears a task *before* re-invoking the model to report it —
+        the ordering this feature is built around. A message injected during
+        that report turn must not be answered with the report, and the child
+        must not be released before the message itself is answered."""
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            # Inventory empties before the user's message exists, so the report
+            # is already owed when the turn is injected.
+            pre_inject=[_tasks()],
+            inject=[_result("research landed"), _result("your answer")])
+        self.assertEqual(first, "started")
+        self.assertEqual(injected, "your answer",
+                         "the injected turn was answered with the background report")
+        posted = [c.args[1] for c in b.post.call_args_list]
+        self.assertIn("research landed", posted,
+                      "the background report was consumed instead of posted")
+        self.assertNotIn("your answer", posted)
+
+    def test_rebinding_retires_the_held_child_instead_of_injecting(self):
+        """/new, /use, /worktree, /model must not be swallowed by a held child."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            self.assertIn("k", b.live)
+            held = b.live["k"]
+            # What /new does: a brand-new binding object for the same key.
+            b.bindings["k"] = {"cwd": "/elsewhere", "session_id": None}
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("fresh session answer")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                reply = await b.run_claude("k", {"channel_id": "c1"},
+                                           b.bindings["k"], "next message")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return b, held, reply, spawned
+
+        b, held, reply, spawned = asyncio.run(main())
+        self.assertEqual(reply, "fresh session answer")
+        self.assertEqual(len(spawned), 1, "the new binding must spawn its own child")
+        self.assertNotIn("--resume", spawned[0])
+        self.assertFalse(held.alive)
+        self.assertEqual(b.live, {})
+
+    def test_a_late_result_never_overwrites_a_binding_that_was_replaced(self):
+        """The held child's session id belongs to the old conversation."""
+        async def main():
+            b = followup_bridge()
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            fresh = {"cwd": "/elsewhere", "session_id": None}
+            b.bindings["k"] = fresh
+            b._save_state.reset_mock()  # the first turn's own write is legitimate
+            # The held child reports in after the rebind, carrying its own id.
+            proc.stdout.feed_data((_result("late", session_id="sess-held")
+                                   + "\n").encode())
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b, fresh
+
+        b, fresh = asyncio.run(main())
+        self.assertIsNone(fresh["session_id"], "fresh binding must stay fresh")
+        b._save_state.assert_not_called()
+
+    def test_stop_during_an_injected_turn_says_stopped_and_leaves_no_residue(self):
+        """The busy path would kill the held child but skip run_claude's cleanup,
+        poisoning the next two messages."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+
+            async def stop_once_waiting():
+                await asyncio.sleep(0.05)
+                b.busy.add("k")  # forward_to_claude marks the key busy
+                return b._cmd_stop("k")
+
+            stopper = asyncio.create_task(stop_once_waiting())
+            with self.assertRaises(bridge.RunStopped):
+                await b.run_claude("k", {"channel_id": "c1"},
+                                   b.bindings["k"], "follow up")
+            return b, await stopper
+
+        b, message = asyncio.run(main())
+        self.assertIn("Stopping", message)
+        self.assertEqual(b.stop_requested, set())
+        self.assertEqual(b.stopped_processes, set())
+        self.assertEqual(b.live, {})
+
+    def test_stop_with_no_turn_waiting_reports_the_dropped_tasks(self):
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("deep research"), _result("started")])
+            message = b._cmd_stop("k")
+            await asyncio.sleep(0.05)
+            return b, message
+
+        b, message = asyncio.run(main())
+        self.assertIn("Dropped 1 background task", message)
+        self.assertEqual(b.stop_requested, set())
+
+    def test_a_blank_result_with_an_empty_inventory_releases_immediately(self):
+        """Re-invoked and said nothing: no reason to hold for the idle window."""
+        async def main():
+            b = followup_bridge(idle=30.0)  # long enough that idling would hang
+            started = asyncio.get_running_loop().time()
+            await hand_off(b, [_tasks("research"), _result("started"),
+                               _tasks(), _result("")])
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b, asyncio.get_running_loop().time() - started
+
+        b, elapsed = asyncio.run(main())
+        self.assertLess(elapsed, 5, "released on the blank, not after the idle window")
+        self.assertEqual(b.live, {})
+        b.post.assert_not_called()
+
+    def test_a_held_child_is_released_when_it_simply_goes_quiet(self):
+        """Deadline-driven exit: no EOF, no further events, inventory empty."""
+        async def main():
+            b = followup_bridge(idle=0.2)
+            await hand_off(b, [_tasks("research"), _result("started"), _tasks()])
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_permissions_and_model_retire_the_held_child_despite_in_place_edits(self):
+        """/permissions and /model mutate the binding dict rather than replacing
+        it, so an identity check alone leaves the held child running under the
+        old permission mode while the channel was told otherwise."""
+        for command, arg, field, expected in (
+            ("_cmd_permissions", "plan", "permission_mode", "plan"),
+            ("_cmd_model", "haiku", "model", "haiku"),
+        ):
+            with self.subTest(command=command):
+                async def main():
+                    b = followup_bridge()
+                    b.allow_escalation = True
+                    b.default_permission_mode = "acceptEdits"
+                    await hand_off(b, [_tasks("research"), _result("started")])
+                    held = b.live["k"]
+                    before = b.bindings["k"]
+                    getattr(b, command)("k", arg)
+                    # The very hazard: same object, changed contents.
+                    self.assertIs(b.bindings["k"], before)
+                    self.assertEqual(b.bindings["k"][field], expected)
+                    spawned = []
+
+                    async def fake_exec(*a, **_kw):
+                        spawned.append(a)
+                        return _fake_proc([_result("answered afresh")])
+
+                    original = asyncio.create_subprocess_exec
+                    asyncio.create_subprocess_exec = fake_exec
+                    try:
+                        reply = await b.run_claude("k", {"channel_id": "c1"},
+                                                   b.bindings["k"], "next")
+                    finally:
+                        asyncio.create_subprocess_exec = original
+                    return b, held, reply, spawned
+
+                b, held, reply, spawned = asyncio.run(main())
+                self.assertEqual(reply, "answered afresh")
+                self.assertEqual(len(spawned), 1,
+                                 "the new setting must reach a fresh child")
+                self.assertIn(expected, spawned[0])
+                self.assertFalse(held.alive)
+
+    def test_retiring_mid_turn_says_why_and_reports_the_dropped_work(self):
+        """A command that retires the child cancels any turn injected into it.
+        That must read as "stopped, here is why", not as a crash — and the
+        background work it was holding must not vanish unmentioned."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("deep research"), _result("started")])
+            b._send_to_claude = AsyncMock()
+            turn = asyncio.create_task(
+                b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "what about X?"))
+            await asyncio.sleep(0.05)  # let it become a waiter
+            b.bindings["k"] = {"cwd": "/elsewhere", "session_id": None}
+            await b._retire_if_stale("k")
+            try:
+                await turn
+                return b, None
+            except bridge.RunStopped as stopped:
+                return b, str(stopped)
+
+        b, stopped = asyncio.run(main())
+        self.assertIsNotNone(stopped, "the injected turn must end as RunStopped")
+        self.assertIn("Stopped", stopped)
+        self.assertIn("binding changed", stopped)
+        posted = [c.args[1] for c in b.post.call_args_list]
+        self.assertTrue(any("deep research" in p for p in posted),
+                        f"dropped background work went unmentioned: {posted}")
+
+    def test_stop_during_a_retire_window_cancels_the_replacement_turn(self):
+        """live.closing is also true while run_claude retires a child before
+        spawning its replacement — a /stop there was acknowledged and ignored."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            # The state run_claude is in while retiring a child before spawning
+            # its replacement: child closing, key busy, nothing spawned yet.
+            b.live["k"].closing = True
+            b.busy.add("k")
+            message = b._cmd_stop("k")
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("this turn should never run")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                await b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+                stopped = False
+            except bridge.RunStopped:
+                stopped = True
+            finally:
+                asyncio.create_subprocess_exec = original
+            return message, stopped, spawned
+
+        message, stopped, spawned = asyncio.run(main())
+        self.assertIn("Already stopping", message)
+        self.assertTrue(stopped, "the replacement turn ran despite /stop")
+        self.assertEqual(spawned, [], "no child should have been spawned")
+
+    def test_tldr_does_not_kill_a_held_child(self):
+        """It only shapes formatting; the next spawn picks it up."""
+        self.assertNotIn("/tldr", bridge.REBINDING_COMMANDS)
+        self.assertIn("/permissions", bridge.REBINDING_COMMANDS)
+
+    def test_permissions_changed_before_handoff_still_retires_the_child(self):
+        """The window before "started" is posted: the process is in self.procs
+        but not self.live, so nothing retires it — and the hand-off used to
+        fingerprint the binding *as it is then*, recording the new mode while
+        the process kept running the old one."""
+        async def main():
+            b = followup_bridge()
+            b.allow_escalation = False
+            b.default_permission_mode = "acceptEdits"
+            proc = _fake_proc([], returncode=None)
+
+            async def fake_exec(*a, **_kw):
+                # The child is spawned at acceptEdits; the user de-escalates
+                # while the first turn is still running, then it hands off.
+                b._cmd_permissions("k", "plan")
+                for line in (_tasks("long refactor"), _result("started")):
+                    proc.stdout.feed_data(line.encode() + b"\n")
+                return proc
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                first = await b.run_claude("k", {"channel_id": "c1"},
+                                           b.bindings["k"], "big refactor")
+            finally:
+                asyncio.create_subprocess_exec = original
+            held = b.live.get("k")
+            spawned = []
+
+            async def fake_exec2(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("answered under plan")])
+
+            asyncio.create_subprocess_exec = fake_exec2
+            try:
+                await b.run_claude("k", {"channel_id": "c1"},
+                                   b.bindings["k"], "next message")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return first, held, spawned
+
+        first, held, spawned = asyncio.run(main())
+        self.assertEqual(first, "started")
+        self.assertIsNotNone(held)
+        self.assertEqual(held.spawned_with[1], "acceptEdits",
+                         "the hold must record what the process actually ran as")
+        self.assertEqual(len(spawned), 1,
+                         "the acceptEdits child must not have been injected into")
+        self.assertIn("plan", spawned[0])
+
+    def test_permissions_retires_the_held_child_with_no_next_message(self):
+        """A de-escalation has to reach the process that is actually running —
+        checking on the next inbound is too late when there isn't one."""
+        async def main():
+            b = followup_bridge()
+            b.allow_escalation = False
+            b.default_permission_mode = "acceptEdits"
+            b.sessions_limit = 5
+            await hand_off(b, [_tasks("long refactor"), _result("started")])
+            held = b.live["k"]
+            # binding_key() derives the key from channel_id, and hand_off binds "k".
+            await b.handle_inbound({
+                "channel_id": "k", "message_id": 2, "text": "/permissions plan",
+                "author": {"id": "u1", "name": "tom", "type": "user"},
+                "mentioned": True, "any_mention": True,
+            })
+            return b, held, dict(b.live)
+
+        b, held, live_after = asyncio.run(main())
+        self.assertEqual(b.bindings["k"]["permission_mode"], "plan")
+        self.assertFalse(held.alive, "the acceptEdits child must not outlive the change")
+        self.assertEqual(live_after, {})
+
+    def test_worktree_removal_refuses_while_a_child_is_still_held(self):
+        """`busy` no longer implies "a child is running" — the worktree is that
+        child's cwd and deleting it would pull the ground out from under it."""
+        async def main():
+            b = followup_bridge()
+            b.bindings["k"]["worktree"] = {
+                "base": "/repo", "path": "/repo/.worktrees/x", "branch": "x"}
+            await hand_off(b, [_tasks("running the suite"), _result("started")])
+            # Captured inside the loop: teardown retires held children.
+            return b._remove_worktree("k", force=True), b.live.get("k") is not None
+
+        message, still_held = asyncio.run(main())
+        self.assertIn("run is in flight", message)
+        self.assertTrue(still_held)
+
+    def test_a_follow_up_is_formatted_against_the_binding_its_child_ran_under(self):
+        """A relative attachment path resolves against the old cwd, not whatever
+        the channel points at by the time the report lands."""
+        async def main():
+            b = followup_bridge()
+            b.bindings["k"]["cwd"] = "/old/repo"
+            _, proc = await hand_off(b, [_tasks("render a chart"), _result("started")])
+            b.bindings["k"] = {"cwd": "/somewhere/else", "session_id": None}
+            seen = {}
+            b._split_outbound_attachments = Mock(
+                side_effect=lambda reply, cwd, *a: seen.setdefault("cwd", cwd) and None
+                or (reply, [], []))
+            proc.stdout.feed_data((_result("here is the chart") + "\n").encode())
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return seen
+
+        self.assertEqual(asyncio.run(main())["cwd"], "/old/repo")
+
+    def test_stop_during_retirement_still_reports_stopped(self):
+        """Not "Claude run failed" — the user asked for this."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.closing = True  # reader already retiring
+            message = b._cmd_stop("k")
+            self.assertTrue(live.stopping)
+            fut = asyncio.get_running_loop().create_future()
+            live.waiters.append({"fut": fut, "frame": {"channel_id": "c1"},
+                                 "ahead": 0})
+            await b._retire_live_run(live, [])
+            return message, fut
+
+        message, fut = asyncio.run(main())
+        self.assertIn("Already stopping", message)
+        self.assertIsInstance(fut.exception(), bridge.RunStopped)
+
+    def test_attachments_retire_the_held_child_and_spawn_fresh(self):
+        """--add-dir can only be widened by a new process."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            held = b.live["k"]
+            b._stage_attachments = Mock(
+                return_value=("look at this", ["--add-dir", "/tmp/att"], None))
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("I see the image")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                reply = await b.run_claude("k", {"channel_id": "c1"},
+                                           b.bindings["k"], "look")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return b, held, reply, spawned
+
+        b, held, reply, spawned = asyncio.run(main())
+        self.assertEqual(reply, "I see the image")
+        self.assertEqual(len(spawned), 1)
+        self.assertIn("--add-dir", spawned[0])
+        self.assertFalse(held.alive)
+        self.assertEqual(b.live, {})
+
+    def test_a_timeout_with_work_still_listed_tells_the_channel(self):
+        """Otherwise a dropped follow-up is indistinguishable from a slow one."""
+        async def main():
+            b = followup_bridge(idle=0.2)
+            # Inventory never empties, so the task-idle deadline is what fires.
+            await hand_off(b, [_tasks("a long silent build"), _result("started")])
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+        notice = b.post.call_args_list[-1].args[1]
+        self.assertIn("nothing further will be reported", notice)
+        self.assertIn("a long silent build", notice)
+        # Stating what happened, not claiming a promise: plenty of backgrounded
+        # work (a dev server) never had a follow-up to deliver.
+        self.assertNotIn("promised", notice)
+
+    def test_stop_stays_silent_about_tasks_it_deliberately_dropped(self):
+        """/stop already reported the drop; no second notice on the way out."""
+        async def main():
+            b = followup_bridge(idle=0.2)
+            await hand_off(b, [_tasks("research"), _result("started")])
+            b._cmd_stop("k")
+            await asyncio.sleep(0.1)
+            return b
+
+        b = asyncio.run(main())
+        b.post.assert_not_called()
+
+    def test_end_live_run_never_evicts_a_newer_held_child(self):
+        """A slow retirement must not orphan the run that replaced it."""
+        async def main():
+            b = followup_bridge()
+            _, old_proc = await hand_off(b, [_tasks("research"), _result("started")])
+            old = b.live["k"]
+
+            async def slow_retirement():
+                await asyncio.sleep(0.1)
+            old.reader = asyncio.create_task(slow_retirement())
+
+            # _end_live_run captures `old`, then waits on its reader…
+            ending = asyncio.create_task(b._end_live_run("k", "/stop"))
+            await asyncio.sleep(0.02)
+            # …and in that window a new turn hands off its own child.
+            newer = bridge.LiveRun(_fake_proc([], returncode=None), "k",
+                                   {"channel_id": "c1"}, b.bindings["k"],
+                                   (None, "acceptEdits"), [])
+            b.live["k"] = newer
+            await ending
+            return b, newer, old_proc
+
+        b, newer, old_proc = asyncio.run(main())
+        self.assertIs(b.live.get("k"), newer,
+                      "the newer run must stay reachable by /stop and shutdown")
+        old_proc.kill.assert_called()
+
+    def test_shutdown_kills_children_that_outlived_their_turn(self):
+        async def main():
+            b = followup_bridge()
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            return b, proc
+
+        b, proc = asyncio.run(main())
+        b.kill_children()
+        proc.kill.assert_called()
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
 
 
 class BlankResultTests(unittest.TestCase):
