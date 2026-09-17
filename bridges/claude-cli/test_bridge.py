@@ -147,9 +147,9 @@ def make_bridge(peer_agents=""):
     instance.live = {}
     instance._detached = set()
     instance.async_followups = True
-    instance.followup_idle_timeout = 900.0
-    instance.followup_task_idle_timeout = 1800.0
-    instance.followup_max_wait = 21600.0
+    instance.followup_idle_timeout = bridge.FOLLOWUP_IDLE_TIMEOUT
+    instance.followup_task_idle_timeout = bridge.FOLLOWUP_TASK_IDLE_TIMEOUT
+    instance.followup_max_wait = bridge.FOLLOWUP_MAX_WAIT
     instance.bindings = {}
     instance.pending_questions = {}
     instance.set_reaction = Mock()
@@ -770,6 +770,48 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual(b.live, {})
         self.assertEqual(b.procs, {})
 
+    def test_permissions_and_model_retire_the_held_child_despite_in_place_edits(self):
+        """/permissions and /model mutate the binding dict rather than replacing
+        it, so an identity check alone leaves the held child running under the
+        old permission mode while the channel was told otherwise."""
+        for command, arg, field, expected in (
+            ("_cmd_permissions", "plan", "permission_mode", "plan"),
+            ("_cmd_model", "haiku", "model", "haiku"),
+        ):
+            with self.subTest(command=command):
+                async def main():
+                    b = followup_bridge()
+                    b.allow_escalation = True
+                    b.default_permission_mode = "acceptEdits"
+                    await hand_off(b, [_tasks("research"), _result("started")])
+                    held = b.live["k"]
+                    before = b.bindings["k"]
+                    getattr(b, command)("k", arg)
+                    # The very hazard: same object, changed contents.
+                    self.assertIs(b.bindings["k"], before)
+                    self.assertEqual(b.bindings["k"][field], expected)
+                    spawned = []
+
+                    async def fake_exec(*a, **_kw):
+                        spawned.append(a)
+                        return _fake_proc([_result("answered afresh")])
+
+                    original = asyncio.create_subprocess_exec
+                    asyncio.create_subprocess_exec = fake_exec
+                    try:
+                        reply = await b.run_claude("k", {"channel_id": "c1"},
+                                                   b.bindings["k"], "next")
+                    finally:
+                        asyncio.create_subprocess_exec = original
+                    return b, held, reply, spawned
+
+                b, held, reply, spawned = asyncio.run(main())
+                self.assertEqual(reply, "answered afresh")
+                self.assertEqual(len(spawned), 1,
+                                 "the new setting must reach a fresh child")
+                self.assertIn(expected, spawned[0])
+                self.assertFalse(held.alive)
+
     def test_attachments_retire_the_held_child_and_spawn_fresh(self):
         """--add-dir can only be widened by a new process."""
         async def main():
@@ -812,8 +854,11 @@ class AsyncFollowupTests(unittest.TestCase):
         b = asyncio.run(main())
         self.assertEqual(b.live, {})
         notice = b.post.call_args_list[-1].args[1]
-        self.assertIn("isn't coming", notice)
+        self.assertIn("nothing further will be reported", notice)
         self.assertIn("a long silent build", notice)
+        # Stating what happened, not claiming a promise: plenty of backgrounded
+        # work (a dev server) never had a follow-up to deliver.
+        self.assertNotIn("promised", notice)
 
     def test_stop_stays_silent_about_tasks_it_deliberately_dropped(self):
         """/stop already reported the drop; no second notice on the way out."""

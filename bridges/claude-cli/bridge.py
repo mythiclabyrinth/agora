@@ -284,18 +284,33 @@ class LiveRun:
     spontaneous: background work reporting in, which we post to the channel.
     """
 
+    # Everything that shapes the spawned command. Object identity is too weak a
+    # proxy for "the binding changed": /new, /use and /worktree replace the dict
+    # (via _set_binding) but /model, /permissions and /tldr mutate it in place,
+    # so a held child would keep the old model or permission mode while the
+    # channel had been told the new one took effect.
+    SPAWN_FIELDS = ("session_id", "cwd", "model", "permission_mode", "tldr")
+
+    @classmethod
+    def fingerprint(cls, binding: dict | None) -> tuple:
+        return tuple((binding or {}).get(field) for field in cls.SPAWN_FIELDS)
+
     def __init__(self, proc, key: str, frame: dict, binding: dict,
                  perm_ids: list[str]) -> None:
         self.proc = proc
         self.key = key
         self.frame = frame  # where spontaneous follow-ups get posted
         self.binding = binding  # fallback if the key is unbound by then
+        self.spawned_with = self.fingerprint(binding)
         self.perm_ids = perm_ids
         self.tasks: list[dict] = []  # latest background_tasks_changed inventory
         self.waiters: deque = deque()  # (future, frame) per injected turn, FIFO
         self.closing = False
         self.stopping = False  # ended by /stop, so waiters report RunStopped
+        self.reported = False  # produced at least one follow-up of its own
+        self.tmpdir: str | None = None  # --add-dir staging, removed at retirement
         self.reader: asyncio.Task | None = None
+        self.stderr_drain: asyncio.Task | None = None
 
     @property
     def alive(self) -> bool:
@@ -1546,6 +1561,11 @@ class Bridge:
         # run_claude's finally never clears for an injected turn, poisoning the
         # next two messages.
         live = self.live.get(key)
+        if live is not None and live.closing:
+            # Already retiring (its own reader, or an earlier /stop). Falling
+            # through would promise "Stopping the current run…" for a child that
+            # is already gone, and then let the next turn run anyway.
+            return "Already stopping here — give it a moment."
         if live is not None and live.alive:
             pending, waiting = len(live.tasks), len(live.waiters)
             live.stopping = True  # waiters raise RunStopped, so the channel says "Stopped."
@@ -1805,6 +1825,9 @@ class Bridge:
             raise RunStopped
         perm_tasks: list[asyncio.Task] = []
         perm_ids: list[str] = []
+        # Set before the try: an injected turn returns from inside it, and the
+        # finally reads this to decide whether the staging dir may be removed.
+        handed_off = False
         mode = binding.get("permission_mode") or self.default_permission_mode
         model = binding.get("model") or self.default_model
         sys_args = self._append_system_args(binding)
@@ -1826,7 +1849,9 @@ class Bridge:
             # stopped_processes set — poisoning the next two messages.
             live = self.live.get(key)
             if live is not None and live.alive:
-                if self.bindings.get(key) is not live.binding:
+                current = self.bindings.get(key)
+                if (current is not live.binding
+                        or LiveRun.fingerprint(current) != live.spawned_with):
                     await self._end_live_run(key, "the binding changed")
                 elif extra_args:
                     await self._end_live_run(key, "a new message brought attachments")
@@ -1881,7 +1906,6 @@ class Bridge:
             # Live inventory of backgrounded work, from system/background_tasks_changed.
             # Non-empty when the reply lands means the model owes us a follow-up.
             bg_tasks: list[dict] = []
-            handed_off = False
             try:
                 async with asyncio.timeout(self.timeout):
                     assert proc.stdout is not None
@@ -1969,12 +1993,16 @@ class Bridge:
                     # child's to report: keep it alive and let _followup_loop
                     # take over its stdout, so the report reaches the channel as
                     # its own message.
-                    if (self.async_followups and bg_tasks and result_text
+                    # `result_text` may be "" (a genuinely blank answer): still a
+                    # successful turn, and killing the child would lose whatever
+                    # background work it is still holding.
+                    if (self.async_followups and bg_tasks
+                            and result_text is not None
                             and not result_text.startswith("(claude error)")
                             and key not in self.stop_requested):
                         handed_off = True
                         self._start_live_run(key, frame, binding, proc, bg_tasks,
-                                             perm_ids, perm_tasks)
+                                             perm_ids, perm_tasks, tmpdir)
                     else:
                         if proc.stdin is not None:
                             proc.stdin.close()
@@ -2002,7 +2030,9 @@ class Bridge:
                 raise RuntimeError(stderr[-500:] or f"claude exited {proc.returncode} with no result")
             return self._annotate_slash_failure(prompt, result_text, slash_commands)
         finally:
-            if tmpdir:
+            # A handed-off child is still running and its --add-dir points here,
+            # so the staging dir has to outlive this turn; retirement removes it.
+            if tmpdir and not handed_off:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             was_stopped = key in self.stopped_processes
             self.stop_requested.discard(key)
@@ -2011,6 +2041,17 @@ class Bridge:
                 raise RunStopped
 
     # ------------------------------------------------- async follow-ups
+
+    @staticmethod
+    async def _drain(stream) -> None:
+        """Read a pipe to EOF and discard it, so the child never blocks writing."""
+        if stream is None:
+            return
+        try:
+            while await stream.readline():
+                pass
+        except (asyncio.CancelledError, ValueError, OSError):
+            pass
 
     def _spawn(self, coro) -> asyncio.Task:
         """Run a cleanup coroutine detached, keeping it alive until it finishes."""
@@ -2037,10 +2078,16 @@ class Bridge:
 
     def _start_live_run(self, key: str, frame: dict, binding: dict, proc,
                         tasks: list[dict], perm_ids: list[str],
-                        perm_tasks: list[asyncio.Task]) -> None:
+                        perm_tasks: list[asyncio.Task],
+                        tmpdir: str | None = None) -> None:
         """Keep a replied-to child alive so its background work can report in."""
         live = LiveRun(proc, key, frame, binding, perm_ids)
         live.tasks = list(tasks)
+        live.tmpdir = tmpdir
+        # stderr is a pipe nobody else reads for the life of the hold; once its
+        # buffer fills the child blocks on write() and stops producing stdout
+        # entirely, so it would never report and would be reaped as a timeout.
+        live.stderr_drain = self._spawn(self._drain(proc.stderr))
         self.live[key] = live
         names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
                           for t in tasks) or "?"
@@ -2194,6 +2241,7 @@ class Bridge:
                             # Nobody is waiting: this is backgrounded work
                             # reporting in, so it becomes its own message.
                             log(f"async follow-up posted for {key}")
+                            live.reported = True
                             self._post_reply(live.frame, binding, text)
                 if (kind == "result" and not live.waiters and not live.tasks
                         and blank_held is None):
@@ -2224,6 +2272,13 @@ class Bridge:
                 fut.set_exception(
                     RunStopped() if live.stopping
                     else RuntimeError("the background run ended before replying"))
+        if live.stderr_drain is not None:
+            live.stderr_drain.cancel()
+        if live.tmpdir:
+            # Held past its turn precisely so --add-dir stayed readable; the
+            # child is dead now, so this is the last chance to clean up.
+            shutil.rmtree(live.tmpdir, ignore_errors=True)
+            live.tmpdir = None
         for oid in live.perm_ids:
             self._cancel_perm(oid, "The run ended before a decision.")
         if perm_tasks:
@@ -2255,13 +2310,17 @@ class Bridge:
             self.procs.pop(key, None)
 
     def _post_timeout_notice(self, live: LiveRun, waited: float) -> None:
+        """State what happened, without claiming a promise that may never have
+        been made: plenty of backgrounded work (a dev server, a watcher) has no
+        completion to report, and telling its owner a follow-up "isn't coming"
+        would be both alarming and false."""
         names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
                           for t in live.tasks)
         minutes = max(1, round(waited / 60))
         self.post(live.frame, (
-            f"Gave up waiting for background work after {minutes} min, so the "
-            f"follow-up I promised isn't coming: {names}. Ask again to pick it "
-            "back up."
+            f"Stopped watching background work after {minutes} min, so nothing "
+            f"further will be reported here for: {names}. Message me if you want "
+            "me to pick it back up."
         ))
 
     def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:
