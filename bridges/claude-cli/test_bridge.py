@@ -644,8 +644,12 @@ class AsyncFollowupTests(unittest.TestCase):
             inject=[_result("answer to the follow-up")])
         self.assertEqual(first, "started")
         self.assertEqual(injected, "answer to the follow-up")
-        # Claimed by the waiting turn, so it is not also posted on its own.
-        self.assertEqual(b.post.call_args_list, [])
+        # Claimed by the waiting turn, so the answer is not also posted on its
+        # own. The teardown notice is separate: the harness ends the child while
+        # "research" is still listed, which is exactly when it should speak up.
+        answers = [c.args[1] for c in b.post.call_args_list
+                   if "Stopped watching" not in c.args[1]]
+        self.assertEqual(answers, [])
 
     def test_background_result_posts_while_a_turn_is_still_waiting(self):
         """A waiter takes the first real result; later ones post themselves."""
@@ -811,6 +815,71 @@ class AsyncFollowupTests(unittest.TestCase):
                                  "the new setting must reach a fresh child")
                 self.assertIn(expected, spawned[0])
                 self.assertFalse(held.alive)
+
+    def test_retiring_mid_turn_says_why_and_reports_the_dropped_work(self):
+        """A command that retires the child cancels any turn injected into it.
+        That must read as "stopped, here is why", not as a crash — and the
+        background work it was holding must not vanish unmentioned."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("deep research"), _result("started")])
+            b._send_to_claude = AsyncMock()
+            turn = asyncio.create_task(
+                b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "what about X?"))
+            await asyncio.sleep(0.05)  # let it become a waiter
+            b.bindings["k"] = {"cwd": "/elsewhere", "session_id": None}
+            await b._retire_if_stale("k")
+            try:
+                await turn
+                return b, None
+            except bridge.RunStopped as stopped:
+                return b, str(stopped)
+
+        b, stopped = asyncio.run(main())
+        self.assertIsNotNone(stopped, "the injected turn must end as RunStopped")
+        self.assertIn("Stopped", stopped)
+        self.assertIn("binding changed", stopped)
+        posted = [c.args[1] for c in b.post.call_args_list]
+        self.assertTrue(any("deep research" in p for p in posted),
+                        f"dropped background work went unmentioned: {posted}")
+
+    def test_stop_during_a_retire_window_cancels_the_replacement_turn(self):
+        """live.closing is also true while run_claude retires a child before
+        spawning its replacement — a /stop there was acknowledged and ignored."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            # The state run_claude is in while retiring a child before spawning
+            # its replacement: child closing, key busy, nothing spawned yet.
+            b.live["k"].closing = True
+            b.busy.add("k")
+            message = b._cmd_stop("k")
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("this turn should never run")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                await b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+                stopped = False
+            except bridge.RunStopped:
+                stopped = True
+            finally:
+                asyncio.create_subprocess_exec = original
+            return message, stopped, spawned
+
+        message, stopped, spawned = asyncio.run(main())
+        self.assertIn("Already stopping", message)
+        self.assertTrue(stopped, "the replacement turn ran despite /stop")
+        self.assertEqual(spawned, [], "no child should have been spawned")
+
+    def test_tldr_does_not_kill_a_held_child(self):
+        """It only shapes formatting; the next spawn picks it up."""
+        self.assertNotIn("/tldr", bridge.REBINDING_COMMANDS)
+        self.assertIn("/permissions", bridge.REBINDING_COMMANDS)
 
     def test_permissions_retires_the_held_child_with_no_next_message(self):
         """A de-escalation has to reach the process that is actually running —

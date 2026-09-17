@@ -270,15 +270,20 @@ BACKGROUND_SYSTEM_PROMPT = (
 )
 
 
-# Commands that can change what a conversation points at, and so must retire a
-# child still held for background work rather than let it run on under settings
-# the channel has been told are no longer in force.
+# Commands that change what a conversation points at or what it is allowed to
+# do, and so must retire a child still held for background work rather than let
+# it run on under settings the channel has been told are no longer in force.
+# /tldr is deliberately absent: it only shapes how a reply is formatted, so
+# killing a live child (and any turn injected into it) to apply it sooner costs
+# more than it buys — run_claude's fingerprint check applies it on the next spawn.
 REBINDING_COMMANDS = frozenset({"/use", "/new", "/worktree", "/model",
-                                "/permissions", "/tldr"})
+                                "/permissions"})
 
 
 class RunStopped(Exception):
-    """The active CLI child was cancelled by /stop."""
+    """The active CLI child was cancelled — by /stop, or by a command that
+    retired the session out from under it. `str(exc)` is what the channel is
+    told, so a turn killed by something other than /stop can say why."""
 
 
 class LiveRun:
@@ -313,8 +318,15 @@ class LiveRun:
         self.tasks: list[dict] = []  # latest background_tasks_changed inventory
         self.waiters: deque = deque()  # (future, frame) per injected turn, FIFO
         self.closing = False
-        self.stopping = False  # ended by /stop, so waiters report RunStopped
+        # Deliberately ended (by /stop, or by a command that rebound the
+        # conversation) rather than having died on its own. Waiters report
+        # RunStopped carrying `ended_reason`, and /stop additionally suppresses
+        # the dropped-work notice because the user already knows.
+        self.stopping = False
+        self.user_stopped = False
+        self.ended_reason: str | None = None
         self.reported = False  # produced at least one follow-up of its own
+        self.started = time.monotonic()
         self.tmpdir: str | None = None  # --add-dir staging, removed at retirement
         self.reader: asyncio.Task | None = None
         self.stderr_drain: asyncio.Task | None = None
@@ -1582,16 +1594,22 @@ class Bridge:
         # next two messages.
         live = self.live.get(key)
         if live is not None and live.closing:
-            # Already retiring (its own reader, or an earlier /stop). Falling
-            # through would promise "Stopping the current run…" for a child that
-            # is already gone, and then let the next turn run anyway. Mark it
-            # stopped all the same: a turn still waiting on this child should
-            # report "Stopped." rather than a run failure.
+            # Already retiring (its own reader, an earlier /stop, or run_claude
+            # replacing it before spawning). A turn still waiting on it should
+            # report "Stopped." rather than a run failure — and if the key is
+            # busy, the replacement turn has not started yet, so the flag has to
+            # be set or /stop is acknowledged and then quietly ignored. Gated on
+            # busy because run_claude's finally is what clears it again.
             live.stopping = True
-            return "Already stopping here — give it a moment."
+            live.user_stopped = True
+            if key in self.busy:
+                self.stop_requested.add(key)
+            extra = f" and removed {len(queued)} queued message(s)" if queued else ""
+            return f"Already stopping here{extra} — give it a moment."
         if live is not None and live.alive:
             pending, waiting = len(live.tasks), len(live.waiters)
             live.stopping = True  # waiters raise RunStopped, so the channel says "Stopped."
+            live.user_stopped = True  # they asked; no "work was dropped" notice
             self._spawn(self._end_live_run(key, "/stop"))
             extra = f" and removed {len(queued)} queued message(s)" if queued else ""
             if waiting:
@@ -1710,8 +1728,8 @@ class Bridge:
                     self._post_reply(batch_frame, binding, reply)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
-                except RunStopped:
-                    self.post(batch_frame, "Stopped.")
+                except RunStopped as stopped:
+                    self.post(batch_frame, str(stopped) or "Stopped.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
@@ -1880,6 +1898,10 @@ class Bridge:
                     await self._end_live_run(key, "a new message brought attachments")
                 else:
                     return await self._inject_into_live(live, frame, prompt)
+                # Retirement awaits, and /stop can land inside that window —
+                # before this turn has spawned anything for it to kill.
+                if key in self.stop_requested:
+                    raise RunStopped
             # Bidirectional stream-json: the prompt rides on stdin and
             # `--permission-prompt-tool stdio` makes the CLI route permission
             # asks to us as `control_request` events instead of silently
@@ -2189,14 +2211,9 @@ class Bridge:
                     waited = time.monotonic() - started
                     log(f"live run for {key} released after {waited:.0f}s "
                         f"({len(live.tasks)} task(s) still listed)")
-                    if (live.tasks or not live.reported) and not live.stopping:
-                        # Say something on every release that owes an answer —
-                        # work still listed, or an inventory that emptied and
-                        # was never reported (the settle window covers model
-                        # latency for the report turn, so it can expire with an
-                        # empty list and nothing said). Silence here is the
-                        # exact failure this feature exists to prevent.
-                        self._post_timeout_notice(live, waited)
+                    # The notice is posted by _retire_live_run, which every
+                    # release path goes through — including a child retired by
+                    # a command, which exits below via EOF rather than here.
                     break
                 try:
                     raw = await asyncio.wait_for(proc.stdout.readline(), remaining)
@@ -2257,12 +2274,22 @@ class Bridge:
                         if live.waiters and blank_held is None:
                             blank_held = text
                             blank_deadline = time.monotonic() + BLANK_RESULT_IDLE_GRACE
+                        elif not live.waiters:
+                            # Re-invoked by its own background work and chose to
+                            # say nothing. That is still an answer, so the
+                            # release below owes no "never reported" notice.
+                            live.reported = True
                     else:
                         blank_held, blank_deadline = None, None
                         if live.waiters:
                             fut, _ = live.waiters.popleft()
                             if not fut.done():
                                 fut.set_result(text)
+                            else:
+                                # Its turn was cancelled between appending and
+                                # now; post rather than discard the answer.
+                                live.reported = True
+                                self._post_reply(live.frame, live.binding, text)
                         else:
                             # Nobody is waiting: this is backgrounded work
                             # reporting in, so it becomes its own message.
@@ -2297,11 +2324,16 @@ class Bridge:
         await proc.wait()
         if self.procs.get(key) is proc:
             self.procs.pop(key, None)
+        # A release that still owes an answer says so here rather than in the
+        # deadline branch alone: a child retired by a command exits through the
+        # reader's EOF path, which used to drop its outstanding work silently.
+        if (live.tasks or not live.reported) and not live.user_stopped:
+            self._post_timeout_notice(live, time.monotonic() - live.started)
         while live.waiters:
             fut, _ = live.waiters.popleft()
             if not fut.done():
                 fut.set_exception(
-                    RunStopped() if live.stopping
+                    RunStopped(self._stopped_message(live)) if live.stopping
                     else RuntimeError("the background run ended before replying"))
         if live.stderr_drain is not None:
             live.stderr_drain.cancel()
@@ -2333,6 +2365,8 @@ class Bridge:
         if live is None:
             return
         live.closing = True
+        live.stopping = True  # deliberate, so a waiting turn says so rather than "failed"
+        live.ended_reason = live.ended_reason or why
         log(f"ending live run for {key}: {why}")
         if live.proc.returncode is None:
             live.proc.kill()
@@ -2349,6 +2383,16 @@ class Bridge:
             self.live.pop(key, None)
         if self.procs.get(key) is live.proc:
             self.procs.pop(key, None)
+
+    @staticmethod
+    def _stopped_message(live: LiveRun) -> str:
+        """What a turn killed by a retirement tells the channel. Naming the
+        cause matters: the user typed a command and got their turn cancelled,
+        which without an explanation reads as a crash."""
+        if live.user_stopped or not live.ended_reason:
+            return "Stopped."
+        return (f"Stopped — {live.ended_reason}, so this session was replaced. "
+                "Send that message again to run it on the new one.")
 
     def _post_timeout_notice(self, live: LiveRun, waited: float) -> None:
         """State what happened, without claiming a promise that may never have

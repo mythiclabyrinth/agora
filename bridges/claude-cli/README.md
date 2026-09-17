@@ -45,8 +45,8 @@ A message sent while work is outstanding is fed to that same live child rather
 than starting a second `claude --resume` against the same session, so the
 conversation never forks. Two things retire the held child instead: attachments,
 which need `--add-dir` and so only a fresh run can carry, and anything that
-rebinds the conversation (`/new`, `/use`, `/worktree`, `/model`, `/permissions`,
-`/tldr`). Rebinding retires it **immediately**, not on your next message — a
+rebinds the conversation or changes what it may do (`/new`, `/use`,
+`/worktree`, `/model`, `/permissions`). Rebinding retires it **immediately**, not on your next message — a
 `/permissions plan` has to reach the process that is actually running, not just
 the one your next message would start. `/worktree remove` likewise refuses while
 a child is still held, rather than deleting the tree out from under it.
@@ -239,7 +239,7 @@ summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`0` to stop
 backgrounded work from posting its findings as a later message — on by default),
 `CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (settle window in seconds once nothing is
-outstanding, default 60),
+outstanding, default 180),
 `CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT` (the same while a task is still listed,
 default 1800), `CLAUDE_FOLLOWUP_MAX_WAIT` (hard cap on the whole hold, default
 21600), `SESSIONS_LIMIT`, `STATE_FILE`,

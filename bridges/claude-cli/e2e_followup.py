@@ -10,6 +10,7 @@ the background findings.
 """
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +107,7 @@ async def main() -> int:
 
     print("\n=== bridge log (tail) ===", flush=True)
     print(log_path.read_text()[-2500:], flush=True)
+    shutil.rmtree(tmp, ignore_errors=True)
     print("\n=== verdict ===", flush=True)
     for i, (at, text) in enumerate(posts, 1):
         print(f"post {i} at {at:.1f}s: {text[:200]!r}")
