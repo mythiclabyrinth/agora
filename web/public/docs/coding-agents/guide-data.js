@@ -130,7 +130,7 @@ export const guides = {
       ["CLAUDE_TLDR_MIN_CHARS", "Optional", "1500", "Minimum reply length eligible for a summary."],
       ["CLAUDE_TIMEOUT", "Optional", "1800", "Maximum seconds for one Claude run, including approval waits."],
       ["CLAUDE_ASYNC_FOLLOWUPS", "Optional", "1", "Let work Claude backgrounded post its findings later as their own message."],
-      ["CLAUDE_FOLLOWUP_IDLE_TIMEOUT", "Optional", "60", "Settle window in seconds for a trailing reply once nothing is outstanding."],
+      ["CLAUDE_FOLLOWUP_IDLE_TIMEOUT", "Optional", "180", "Settle window in seconds for a trailing reply once nothing is outstanding."],
       ["CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT", "Optional", "1800", "Seconds of silence while a background task is still listed before releasing anyway."],
       ["CLAUDE_FOLLOWUP_MAX_WAIT", "Optional", "21600", "Hard cap in seconds on how long a session is held waiting for background work."],
     ],

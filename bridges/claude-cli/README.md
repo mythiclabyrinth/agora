@@ -33,21 +33,23 @@ list empties. `/status` lists whatever is still cooking, and `/stop` drops it.
 Three limits bound the hold, because silence means different things. Once
 nothing is outstanding the session cannot be killed instantly — the CLI clears a
 task just *before* re-invoking the model to report it — so
-`--followup-idle-timeout` (1 min) is the settle window for that trailing reply.
+`--followup-idle-timeout` (3 min) is the settle window for that trailing reply.
 While a task is still listed, silence is expected — a backgrounded `sleep 20m`
 emits nothing at all until it lands — so the far looser
 `--followup-task-idle-timeout` (30 min) applies instead, which still catches an
 inventory that never empties. `--followup-max-wait` (6 h) caps the whole hold
-regardless. If a limit fires while work is still listed, the channel is told the
-promised follow-up isn't coming rather than being left waiting.
+regardless. Whenever a limit fires with an answer still owed, the channel is
+told that watching has stopped rather than being left waiting on silence.
 
 A message sent while work is outstanding is fed to that same live child rather
 than starting a second `claude --resume` against the same session, so the
 conversation never forks. Two things retire the held child instead: attachments,
 which need `--add-dir` and so only a fresh run can carry, and anything that
-rebinds the conversation (`/new`, `/use`, `/worktree`, `/model`,
-`/permissions`) — the next message then starts a fresh session as you asked,
-rather than being swallowed by the old one.
+rebinds the conversation (`/new`, `/use`, `/worktree`, `/model`, `/permissions`,
+`/tldr`). Rebinding retires it **immediately**, not on your next message — a
+`/permissions plan` has to reach the process that is actually running, not just
+the one your next message would start. `/worktree remove` likewise refuses while
+a child is still held, rather than deleting the tree out from under it.
 
 One wrinkle worth knowing: a `result` carries nothing saying which prompt it
 answers, so if background work reports in at the same moment as your message is

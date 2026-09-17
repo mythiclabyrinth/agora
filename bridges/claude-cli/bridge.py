@@ -209,7 +209,7 @@ BLANK_RESULT_IDLE_GRACE = 45.0
 # instead; it still bounds a child whose inventory never empties because an
 # event was dropped or an entry was never reaped. MAX_WAIT caps the whole hold
 # regardless, for a task that keeps emitting progress but never finishes.
-FOLLOWUP_IDLE_TIMEOUT = 60.0
+FOLLOWUP_IDLE_TIMEOUT = 180.0
 FOLLOWUP_TASK_IDLE_TIMEOUT = 1800.0
 FOLLOWUP_MAX_WAIT = 6 * 60 * 60.0
 TAIL_BYTES = 256 * 1024  # how much of a session .jsonl to scan for the last prompt
@@ -268,6 +268,13 @@ BACKGROUND_SYSTEM_PROMPT = (
     "findings then and they arrive as a new message in this same conversation. "
     "Keep work in the foreground when it is quick enough to just answer."
 )
+
+
+# Commands that can change what a conversation points at, and so must retire a
+# child still held for background work rather than let it run on under settings
+# the channel has been told are no longer in force.
+REBINDING_COMMANDS = frozenset({"/use", "/new", "/worktree", "/model",
+                                "/permissions", "/tldr"})
 
 
 class RunStopped(Exception):
@@ -1260,6 +1267,15 @@ class Bridge:
             # Claude CLI slash commands (/compact, /usage, …) are real turns.
             await self.forward_to_claude(key, frame, text)
             return
+        if cmd in REBINDING_COMMANDS:
+            # Retire a held child *now*, not when the next message happens to
+            # arrive. run_claude checks the same fingerprint, but that only runs
+            # when someone writes again: a user who lowers privilege and then
+            # says nothing would otherwise leave a child auto-approving at the
+            # old mode until its own deadline, hours later. Done here rather
+            # than in each command because /use, /new and /worktree run in a
+            # worker thread, where there is no loop to schedule this on.
+            await self._retire_if_stale(key)
         self.set_reaction(frame, "✅", remember=False)
 
     # ---------------------------------------------------------- commands
@@ -1423,7 +1439,11 @@ class Bridge:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
-        if key in self.busy:
+        # `busy` used to mean "a child is running here", but a child held for
+        # background work has no in-flight turn — and this worktree is still its
+        # cwd. Removing it would delete the tree from under a live writer.
+        held = self.live.get(key)
+        if key in self.busy or (held is not None and held.alive):
             return "A run is in flight here — /stop it before removing the worktree."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
         args = ["worktree", "remove", path] + (["--force"] if force else [])
@@ -1564,7 +1584,10 @@ class Bridge:
         if live is not None and live.closing:
             # Already retiring (its own reader, or an earlier /stop). Falling
             # through would promise "Stopping the current run…" for a child that
-            # is already gone, and then let the next turn run anyway.
+            # is already gone, and then let the next turn run anyway. Mark it
+            # stopped all the same: a turn still waiting on this child should
+            # report "Stopped." rather than a run failure.
+            live.stopping = True
             return "Already stopping here — give it a moment."
         if live is not None and live.alive:
             pending, waiting = len(live.tasks), len(live.waiters)
@@ -2166,10 +2189,13 @@ class Bridge:
                     waited = time.monotonic() - started
                     log(f"live run for {key} released after {waited:.0f}s "
                         f"({len(live.tasks)} task(s) still listed)")
-                    if live.tasks and not live.stopping:
-                        # Promised a follow-up and can no longer deliver one:
-                        # say so, or the channel cannot tell a dropped report
-                        # from work that is simply still running.
+                    if (live.tasks or not live.reported) and not live.stopping:
+                        # Say something on every release that owes an answer —
+                        # work still listed, or an inventory that emptied and
+                        # was never reported (the settle window covers model
+                        # latency for the report turn, so it can expire with an
+                        # empty list and nothing said). Silence here is the
+                        # exact failure this feature exists to prevent.
                         self._post_timeout_notice(live, waited)
                     break
                 try:
@@ -2237,12 +2263,17 @@ class Bridge:
                             fut, _ = live.waiters.popleft()
                             if not fut.done():
                                 fut.set_result(text)
-                        elif binding:
+                        else:
                             # Nobody is waiting: this is backgrounded work
                             # reporting in, so it becomes its own message.
+                            # Formatted against the binding the child actually
+                            # ran under — relative attachment paths resolve
+                            # against its cwd, and its TL;DR setting is the one
+                            # it was told to write for. The current binding may
+                            # by now point at another repo entirely.
                             log(f"async follow-up posted for {key}")
                             live.reported = True
-                            self._post_reply(live.frame, binding, text)
+                            self._post_reply(live.frame, live.binding, text)
                 if (kind == "result" and not live.waiters and not live.tasks
                         and blank_held is None):
                     log(f"live run for {key} has no background work left — releasing")
@@ -2284,6 +2315,16 @@ class Bridge:
         if perm_tasks:
             await asyncio.gather(*perm_tasks, return_exceptions=True)
 
+    async def _retire_if_stale(self, key: str) -> None:
+        """End a held child whose binding no longer matches what it ran under."""
+        live = self.live.get(key)
+        if live is None or not live.alive:
+            return
+        current = self.bindings.get(key)
+        if (current is not live.binding
+                or LiveRun.fingerprint(current) != live.spawned_with):
+            await self._end_live_run(key, "the binding changed")
+
     async def _end_live_run(self, key: str, why: str) -> None:
         """Retire a live child early. Killing it gives the reader EOF, so the
         loop finishes through its own cleanup rather than being cancelled
@@ -2317,10 +2358,11 @@ class Bridge:
         names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
                           for t in live.tasks)
         minutes = max(1, round(waited / 60))
+        what = f" for: {names}" if names else ""
         self.post(live.frame, (
             f"Stopped watching background work after {minutes} min, so nothing "
-            f"further will be reported here for: {names}. Message me if you want "
-            "me to pick it back up."
+            f"further will be reported here{what}. Message me if you want me to "
+            "pick it back up."
         ))
 
     def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:

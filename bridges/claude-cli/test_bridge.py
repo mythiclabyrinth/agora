@@ -812,6 +812,82 @@ class AsyncFollowupTests(unittest.TestCase):
                 self.assertIn(expected, spawned[0])
                 self.assertFalse(held.alive)
 
+    def test_permissions_retires_the_held_child_with_no_next_message(self):
+        """A de-escalation has to reach the process that is actually running —
+        checking on the next inbound is too late when there isn't one."""
+        async def main():
+            b = followup_bridge()
+            b.allow_escalation = False
+            b.default_permission_mode = "acceptEdits"
+            b.sessions_limit = 5
+            await hand_off(b, [_tasks("long refactor"), _result("started")])
+            held = b.live["k"]
+            # binding_key() derives the key from channel_id, and hand_off binds "k".
+            await b.handle_inbound({
+                "channel_id": "k", "message_id": 2, "text": "/permissions plan",
+                "author": {"id": "u1", "name": "tom", "type": "user"},
+                "mentioned": True, "any_mention": True,
+            })
+            return b, held, dict(b.live)
+
+        b, held, live_after = asyncio.run(main())
+        self.assertEqual(b.bindings["k"]["permission_mode"], "plan")
+        self.assertFalse(held.alive, "the acceptEdits child must not outlive the change")
+        self.assertEqual(live_after, {})
+
+    def test_worktree_removal_refuses_while_a_child_is_still_held(self):
+        """`busy` no longer implies "a child is running" — the worktree is that
+        child's cwd and deleting it would pull the ground out from under it."""
+        async def main():
+            b = followup_bridge()
+            b.bindings["k"]["worktree"] = {
+                "base": "/repo", "path": "/repo/.worktrees/x", "branch": "x"}
+            await hand_off(b, [_tasks("running the suite"), _result("started")])
+            # Captured inside the loop: teardown retires held children.
+            return b._remove_worktree("k", force=True), b.live.get("k") is not None
+
+        message, still_held = asyncio.run(main())
+        self.assertIn("run is in flight", message)
+        self.assertTrue(still_held)
+
+    def test_a_follow_up_is_formatted_against_the_binding_its_child_ran_under(self):
+        """A relative attachment path resolves against the old cwd, not whatever
+        the channel points at by the time the report lands."""
+        async def main():
+            b = followup_bridge()
+            b.bindings["k"]["cwd"] = "/old/repo"
+            _, proc = await hand_off(b, [_tasks("render a chart"), _result("started")])
+            b.bindings["k"] = {"cwd": "/somewhere/else", "session_id": None}
+            seen = {}
+            b._split_outbound_attachments = Mock(
+                side_effect=lambda reply, cwd, *a: seen.setdefault("cwd", cwd) and None
+                or (reply, [], []))
+            proc.stdout.feed_data((_result("here is the chart") + "\n").encode())
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return seen
+
+        self.assertEqual(asyncio.run(main())["cwd"], "/old/repo")
+
+    def test_stop_during_retirement_still_reports_stopped(self):
+        """Not "Claude run failed" — the user asked for this."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.closing = True  # reader already retiring
+            message = b._cmd_stop("k")
+            self.assertTrue(live.stopping)
+            fut = asyncio.get_running_loop().create_future()
+            live.waiters.append((fut, {"channel_id": "c1"}))
+            await b._retire_live_run(live, [])
+            return message, fut
+
+        message, fut = asyncio.run(main())
+        self.assertIn("Already stopping", message)
+        self.assertIsInstance(fut.exception(), bridge.RunStopped)
+
     def test_attachments_retire_the_held_child_and_spawn_fresh(self):
         """--add-dir can only be widened by a new process."""
         async def main():
