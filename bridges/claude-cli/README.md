@@ -52,10 +52,11 @@ the one your next message would start. `/worktree remove` likewise refuses while
 a child is still held, rather than deleting the tree out from under it.
 
 One wrinkle worth knowing: a `result` carries nothing saying which prompt it
-answers, so if background work reports in at the same moment as your message is
-being answered, the two replies can land in the opposite order. Nothing is lost,
-and the far more common case — work reporting in with nobody waiting — is never
-ambiguous.
+answers, so the bridge attributes them by obligation instead. A task leaving the
+inventory means a report is owed, and reports owed *before* your message was
+sent are delivered as their own messages rather than being mistaken for its
+answer. Two replies can still land in the opposite order to the one you'd
+expect, but neither is lost or mis-attributed.
 
 Run with `--no-async-followups` (or `CLAUDE_ASYNC_FOLLOWUPS=0`) for the older
 strictly one-reply-per-message behavior.

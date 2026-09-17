@@ -301,7 +301,13 @@ class LiveRun:
     # (via _set_binding) but /model, /permissions and /tldr mutate it in place,
     # so a held child would keep the old model or permission mode while the
     # channel had been told the new one took effect.
-    SPAWN_FIELDS = ("session_id", "cwd", "model", "permission_mode", "tldr")
+    # `tldr` is deliberately absent, to match /tldr's absence from
+    # REBINDING_COMMANDS: including it here would not retire the child at /tldr
+    # time but at the user's *next* message, dropping background work at a
+    # moment that has nothing to do with the command. Only the model's sentinel
+    # emission lags a spawn; the bridge-side split already reads the live
+    # setting, because _post_reply passes the same dict /tldr mutates.
+    SPAWN_FIELDS = ("session_id", "cwd", "model", "permission_mode")
 
     @classmethod
     def fingerprint(cls, binding: dict | None) -> tuple:
@@ -316,7 +322,12 @@ class LiveRun:
         self.spawned_with = self.fingerprint(binding)
         self.perm_ids = perm_ids
         self.tasks: list[dict] = []  # latest background_tasks_changed inventory
-        self.waiters: deque = deque()  # (future, frame) per injected turn, FIFO
+        # One entry per injected turn, FIFO: {"fut", "frame", "ahead"}. `ahead`
+        # is how many background reports the CLI already owed when this turn was
+        # injected — results satisfy those first, so a report generated before
+        # the turn arrived is never mistaken for that turn's answer.
+        self.waiters: deque = deque()
+        self.owed_reports = 0  # tasks that completed and are yet to be reported
         self.closing = False
         # Deliberately ended (by /stop, or by a command that rebound the
         # conversation) rather than having died on its own. Waiters report
@@ -1604,6 +1615,15 @@ class Bridge:
             live.user_stopped = True
             if key in self.busy:
                 self.stop_requested.add(key)
+                # The replacement turn may already be past both stop checks with
+                # a child of its own; the flag alone would never reach it, and
+                # run_claude's finally would then quietly clear it. /stop must
+                # not report success while a process keeps working.
+                replacement = self.procs.get(key)
+                if (replacement is not None and replacement is not live.proc
+                        and replacement.returncode is None):
+                    self.stopped_processes.add(key)
+                    replacement.kill()
             extra = f" and removed {len(queued)} queued message(s)" if queued else ""
             return f"Already stopping here{extra} — give it a moment."
         if live is not None and live.alive:
@@ -2142,7 +2162,8 @@ class Bridge:
     async def _inject_into_live(self, live: LiveRun, frame: dict, prompt: str) -> str:
         """Send a new channel turn down a live child's stdin and await its reply."""
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        live.waiters.append((fut, frame))
+        live.waiters.append({"fut": fut, "frame": frame,
+                             "ahead": live.owed_reports})
         try:
             await self._send_to_claude(live.proc, {
                 "type": "user",
@@ -2161,7 +2182,7 @@ class Bridge:
 
     @staticmethod
     def _drop_waiter(live: LiveRun, fut: asyncio.Future) -> None:
-        live.waiters = deque((f, fr) for f, fr in live.waiters if f is not fut)
+        live.waiters = deque(w for w in live.waiters if w["fut"] is not fut)
 
     async def _followup_loop(self, live: LiveRun, perm_tasks: list[asyncio.Task]) -> None:
         """Sole reader of a live child's stdout.
@@ -2182,7 +2203,7 @@ class Bridge:
         try:
             while True:
                 deadlines = [started + self.followup_max_wait]
-                if live.tasks or live.waiters:
+                if live.tasks or live.waiters or live.owed_reports:
                     # Something is outstanding, so silence is expected — but not
                     # forever. This bounds a child whose inventory never empties
                     # (a dropped event, or an entry the CLI never reaps).
@@ -2195,9 +2216,9 @@ class Bridge:
                 remaining = min(deadlines) - time.monotonic()
                 if remaining <= 0:
                     if blank_held is not None and live.waiters:
-                        fut, _ = live.waiters.popleft()
-                        if not fut.done():
-                            fut.set_result(blank_held)
+                        waiter = live.waiters.popleft()
+                        if not waiter["fut"].done():
+                            waiter["fut"].set_result(blank_held)
                         blank_held, blank_deadline = None, None
                         last_event = time.monotonic()
                         continue
@@ -2230,13 +2251,21 @@ class Bridge:
                 except json.JSONDecodeError:
                     continue
                 kind = event.get("type")
-                target = live.waiters[0][1] if live.waiters else live.frame
+                target = live.waiters[0]["frame"] if live.waiters else live.frame
                 if kind == "rate_limit_event":
                     self.capture_usage(event)
                     continue
                 if kind == "system" and event.get("subtype") == "background_tasks_changed":
                     listed = event.get("tasks")
-                    live.tasks = listed if isinstance(listed, list) else []
+                    listed = listed if isinstance(listed, list) else []
+                    # A task leaving the inventory means the CLI is about to
+                    # re-invoke the model to report it — the report is owed
+                    # before any turn injected from here on, and the child must
+                    # not be released until it arrives.
+                    gone = ({t.get("task_id") for t in live.tasks if isinstance(t, dict)}
+                            - {t.get("task_id") for t in listed if isinstance(t, dict)})
+                    live.owed_reports += len(gone)
+                    live.tasks = listed
                 elif kind == "assistant":
                     snippet = self._progress_snippet(event)
                     if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
@@ -2266,43 +2295,52 @@ class Bridge:
                         binding["session_id"] = new_sid
                         self.bindings[key] = binding
                         self._save_state()
+                    # A result says nothing about which prompt it answers, so
+                    # attribution goes by obligation order: the head waiter may
+                    # only claim one once the reports the CLI already owed when
+                    # that turn was injected have been delivered. Without this a
+                    # background report generated *before* the user's message
+                    # became that message's answer — and the release check below
+                    # then killed the child before the real answer was written.
+                    claims_waiter = bool(live.waiters) and live.waiters[0]["ahead"] == 0
                     if not text.strip():
                         # A re-invoked model that said nothing. Held only if a
                         # turn is waiting and might still be owed real text;
                         # otherwise fall through so an empty inventory releases
                         # the child now instead of idling for the full timeout.
-                        if live.waiters and blank_held is None:
+                        if claims_waiter and blank_held is None:
                             blank_held = text
                             blank_deadline = time.monotonic() + BLANK_RESULT_IDLE_GRACE
-                        elif not live.waiters:
+                        elif not claims_waiter:
                             # Re-invoked by its own background work and chose to
                             # say nothing. That is still an answer, so the
                             # release below owes no "never reported" notice.
+                            self._settle_report(live)
                             live.reported = True
                     else:
                         blank_held, blank_deadline = None, None
-                        if live.waiters:
-                            fut, _ = live.waiters.popleft()
-                            if not fut.done():
-                                fut.set_result(text)
+                        if claims_waiter:
+                            waiter = live.waiters.popleft()
+                            if not waiter["fut"].done():
+                                waiter["fut"].set_result(text)
                             else:
                                 # Its turn was cancelled between appending and
                                 # now; post rather than discard the answer.
                                 live.reported = True
                                 self._post_reply(live.frame, live.binding, text)
                         else:
-                            # Nobody is waiting: this is backgrounded work
-                            # reporting in, so it becomes its own message.
-                            # Formatted against the binding the child actually
-                            # ran under — relative attachment paths resolve
-                            # against its cwd, and its TL;DR setting is the one
-                            # it was told to write for. The current binding may
-                            # by now point at another repo entirely.
+                            # Backgrounded work reporting in, so it becomes its
+                            # own message. Formatted against the binding the
+                            # child actually ran under — relative attachment
+                            # paths resolve against its cwd, and its TL;DR
+                            # setting is the one it was told to write for. The
+                            # current binding may point at another repo by now.
+                            self._settle_report(live)
                             log(f"async follow-up posted for {key}")
                             live.reported = True
                             self._post_reply(live.frame, live.binding, text)
                 if (kind == "result" and not live.waiters and not live.tasks
-                        and blank_held is None):
+                        and not live.owed_reports and blank_held is None):
                     log(f"live run for {key} has no background work left — releasing")
                     break
         except asyncio.CancelledError:
@@ -2327,10 +2365,11 @@ class Bridge:
         # A release that still owes an answer says so here rather than in the
         # deadline branch alone: a child retired by a command exits through the
         # reader's EOF path, which used to drop its outstanding work silently.
-        if (live.tasks or not live.reported) and not live.user_stopped:
+        if ((live.tasks or live.owed_reports or not live.reported)
+                and not live.user_stopped):
             self._post_timeout_notice(live, time.monotonic() - live.started)
         while live.waiters:
-            fut, _ = live.waiters.popleft()
+            fut = live.waiters.popleft()["fut"]
             if not fut.done():
                 fut.set_exception(
                     RunStopped(self._stopped_message(live)) if live.stopping
@@ -2383,6 +2422,17 @@ class Bridge:
             self.live.pop(key, None)
         if self.procs.get(key) is live.proc:
             self.procs.pop(key, None)
+
+    @staticmethod
+    def _settle_report(live: LiveRun) -> None:
+        """Mark one owed background report delivered, and let every waiting turn
+        move one place closer to being allowed to claim a result."""
+        if live.owed_reports <= 0:
+            return
+        live.owed_reports -= 1
+        for waiter in live.waiters:
+            if waiter["ahead"] > 0:
+                waiter["ahead"] -= 1
 
     @staticmethod
     def _stopped_message(live: LiveRun) -> str:

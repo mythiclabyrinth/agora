@@ -527,7 +527,8 @@ async def hand_off(b, lines, feed_delay=0.0):
     return reply, proc
 
 
-def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0):
+def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
+                              pre_inject=None):
     """Drive run_claude() and then let the follow-up loop drain the stream.
 
     Returns ``(first_reply, bridge, injected_reply)``. Unlike run_bridge this
@@ -569,6 +570,12 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0):
             asyncio.create_subprocess_exec = original_exec
         injected = None
         live = b.live.get("k")
+        if pre_inject and live is not None:
+            # Events the held child emits *before* the next message arrives —
+            # e.g. its task inventory emptying, which owes a report.
+            for line in pre_inject:
+                proc.stdout.feed_data(line.encode() + b"\n")
+            await asyncio.sleep(0.05)
         if inject is not None and live is not None:
             # Answer the injected turn only once it is actually waiting, so the
             # test exercises the waiter path rather than racing it.
@@ -652,13 +659,36 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual(answers, [])
 
     def test_background_result_posts_while_a_turn_is_still_waiting(self):
-        """A waiter takes the first real result; later ones post themselves."""
+        """A waiter takes the first real result; later ones post themselves.
+
+        This is the ordering where the user's message arrives *before* the task
+        completes, so the CLI answers the injected prompt first.
+        """
         first, b, injected = run_bridge_with_followups(
             [_tasks("research"), _result("started")],
             inject=[_result("your answer"), _tasks(), _result("research landed")])
         self.assertEqual((first, injected), ("started", "your answer"))
         self.assertEqual([c.args[1] for c in b.post.call_args_list],
                          ["research landed"])
+
+    def test_a_report_already_owed_is_not_handed_to_a_later_message(self):
+        """The CLI clears a task *before* re-invoking the model to report it —
+        the ordering this feature is built around. A message injected during
+        that report turn must not be answered with the report, and the child
+        must not be released before the message itself is answered."""
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            # Inventory empties before the user's message exists, so the report
+            # is already owed when the turn is injected.
+            pre_inject=[_tasks()],
+            inject=[_result("research landed"), _result("your answer")])
+        self.assertEqual(first, "started")
+        self.assertEqual(injected, "your answer",
+                         "the injected turn was answered with the background report")
+        posted = [c.args[1] for c in b.post.call_args_list]
+        self.assertIn("research landed", posted,
+                      "the background report was consumed instead of posted")
+        self.assertNotIn("your answer", posted)
 
     def test_rebinding_retires_the_held_child_instead_of_injecting(self):
         """/new, /use, /worktree, /model must not be swallowed by a held child."""
@@ -949,7 +979,8 @@ class AsyncFollowupTests(unittest.TestCase):
             message = b._cmd_stop("k")
             self.assertTrue(live.stopping)
             fut = asyncio.get_running_loop().create_future()
-            live.waiters.append((fut, {"channel_id": "c1"}))
+            live.waiters.append({"fut": fut, "frame": {"channel_id": "c1"},
+                                 "ahead": 0})
             await b._retire_live_run(live, [])
             return message, fut
 
