@@ -71,6 +71,11 @@ async def main() -> int:
     # Pre-bind the channel so the bridge does not ask for /use first.
     state.write_text(json.dumps({CHANNEL: {"session_id": None, "cwd": str(tmp)}}))
 
+    # The bridge logs freely for the whole run; a PIPE nobody drains until the
+    # end would block it once the buffer fills, failing the harness for the
+    # wrong reason. Give it a file instead and read that at the end.
+    log_path = tmp / "bridge.log"
+    log_file = log_path.open("w")
     async with websockets.serve(hub, "127.0.0.1", PORT):
         proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).with_name("bridge.py")),
@@ -80,7 +85,7 @@ async def main() -> int:
              "--allowed-roots", str(tmp),
              "--claude-args", "--permission-mode bypassPermissions",
              "--timeout", "180", "--followup-idle-timeout", "120"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            stdout=log_file, stderr=subprocess.STDOUT, text=True,
         )
         try:
             deadline = time.monotonic() + 220
@@ -88,7 +93,8 @@ async def main() -> int:
                 await asyncio.sleep(0.5)
                 if proc.poll() is not None:
                     print("bridge exited early:", flush=True)
-                    print(proc.stdout.read()[-3000:], flush=True)
+                    log_file.flush()
+                    print(log_path.read_text()[-3000:], flush=True)
                     return 1
         finally:
             proc.terminate()
@@ -96,9 +102,10 @@ async def main() -> int:
                 proc.wait(10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            log_file.close()
 
     print("\n=== bridge log (tail) ===", flush=True)
-    print((proc.stdout.read() or "")[-2500:], flush=True)
+    print(log_path.read_text()[-2500:], flush=True)
     print("\n=== verdict ===", flush=True)
     for i, (at, text) in enumerate(posts, 1):
         print(f"post {i} at {at:.1f}s: {text[:200]!r}")

@@ -770,6 +770,89 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual(b.live, {})
         self.assertEqual(b.procs, {})
 
+    def test_attachments_retire_the_held_child_and_spawn_fresh(self):
+        """--add-dir can only be widened by a new process."""
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            held = b.live["k"]
+            b._stage_attachments = Mock(
+                return_value=("look at this", ["--add-dir", "/tmp/att"], None))
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("I see the image")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                reply = await b.run_claude("k", {"channel_id": "c1"},
+                                           b.bindings["k"], "look")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return b, held, reply, spawned
+
+        b, held, reply, spawned = asyncio.run(main())
+        self.assertEqual(reply, "I see the image")
+        self.assertEqual(len(spawned), 1)
+        self.assertIn("--add-dir", spawned[0])
+        self.assertFalse(held.alive)
+        self.assertEqual(b.live, {})
+
+    def test_a_timeout_with_work_still_listed_tells_the_channel(self):
+        """Otherwise a dropped follow-up is indistinguishable from a slow one."""
+        async def main():
+            b = followup_bridge(idle=0.2)
+            # Inventory never empties, so the task-idle deadline is what fires.
+            await hand_off(b, [_tasks("a long silent build"), _result("started")])
+            await asyncio.wait_for(b.live["k"].reader, 5)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+        notice = b.post.call_args_list[-1].args[1]
+        self.assertIn("isn't coming", notice)
+        self.assertIn("a long silent build", notice)
+
+    def test_stop_stays_silent_about_tasks_it_deliberately_dropped(self):
+        """/stop already reported the drop; no second notice on the way out."""
+        async def main():
+            b = followup_bridge(idle=0.2)
+            await hand_off(b, [_tasks("research"), _result("started")])
+            b._cmd_stop("k")
+            await asyncio.sleep(0.1)
+            return b
+
+        b = asyncio.run(main())
+        b.post.assert_not_called()
+
+    def test_end_live_run_never_evicts_a_newer_held_child(self):
+        """A slow retirement must not orphan the run that replaced it."""
+        async def main():
+            b = followup_bridge()
+            _, old_proc = await hand_off(b, [_tasks("research"), _result("started")])
+            old = b.live["k"]
+
+            async def slow_retirement():
+                await asyncio.sleep(0.1)
+            old.reader = asyncio.create_task(slow_retirement())
+
+            # _end_live_run captures `old`, then waits on its reader…
+            ending = asyncio.create_task(b._end_live_run("k", "/stop"))
+            await asyncio.sleep(0.02)
+            # …and in that window a new turn hands off its own child.
+            newer = bridge.LiveRun(_fake_proc([], returncode=None), "k",
+                                   {"channel_id": "c1"}, b.bindings["k"], [])
+            b.live["k"] = newer
+            await ending
+            return b, newer, old_proc
+
+        b, newer, old_proc = asyncio.run(main())
+        self.assertIs(b.live.get("k"), newer,
+                      "the newer run must stay reachable by /stop and shutdown")
+        old_proc.kill.assert_called()
+
     def test_shutdown_kills_children_that_outlived_their_turn(self):
         async def main():
             b = followup_bridge()

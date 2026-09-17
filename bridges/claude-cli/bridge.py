@@ -194,15 +194,22 @@ BLANK_RESULT_IDLE_GRACE = 45.0
 # messages instead of one long block. The child is released once its task
 # inventory empties, or it goes quiet with nothing left to wait for.
 #
-# Three limits, because silence means different things. With nothing
-# outstanding the child is just idling and IDLE releases it. With a task
-# outstanding silence is expected — a backgrounded `sleep 20m` emits nothing at
-# all until it lands, and a short window there would cut off exactly the long
-# work this exists to deliver — so the far looser TASK_IDLE applies instead; it
-# still bounds a child whose inventory never empties because an event was
-# dropped or an entry was never reaped. MAX_WAIT caps the whole hold regardless,
-# for a task that keeps emitting progress but never finishes.
-FOLLOWUP_IDLE_TIMEOUT = 900.0
+# Three limits, because silence means different things.
+#
+# With nothing outstanding the child has no reason to exist, but it cannot be
+# killed the instant the inventory empties: the CLI clears a task *before*
+# re-invoking the model to report it, so the answer lands seconds later. IDLE is
+# that settle window — short, because the ordering can also go the other way
+# (the empty inventory arriving after the result), and a long one would park a
+# resident `claude` per channel for no reason.
+#
+# With a task outstanding silence is expected — a backgrounded `sleep 20m` emits
+# nothing at all until it lands, and a short window there would cut off exactly
+# the long work this exists to deliver — so the far looser TASK_IDLE applies
+# instead; it still bounds a child whose inventory never empties because an
+# event was dropped or an entry was never reaped. MAX_WAIT caps the whole hold
+# regardless, for a task that keeps emitting progress but never finishes.
+FOLLOWUP_IDLE_TIMEOUT = 60.0
 FOLLOWUP_TASK_IDLE_TIMEOUT = 1800.0
 FOLLOWUP_MAX_WAIT = 6 * 60 * 60.0
 TAIL_BYTES = 256 * 1024  # how much of a session .jsonl to scan for the last prompt
@@ -1546,8 +1553,10 @@ class Bridge:
             extra = f" and removed {len(queued)} queued message(s)" if queued else ""
             if waiting:
                 return f"Stopping the current run{extra}…"
-            return (f"Dropped {pending} background task(s) still reporting "
-                    f"here{extra}.")
+            if pending:
+                return (f"Dropped {pending} background task(s) still reporting "
+                        f"here{extra}.")
+            return f"Released the held session{extra}."
         if key not in self.busy:
             return f"Removed {len(queued)} queued message(s)." if queued else "Nothing running here."
         self.stop_requested.add(key)
@@ -1794,31 +1803,35 @@ class Bridge:
             if tmpdir:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             raise RunStopped
-        # A child still working through background tasks already holds this
-        # conversation; feed the new turn to it rather than resuming the same
-        # session id in a second process. Two exceptions retire it instead:
-        # attachments arrive via --add-dir, which only a fresh spawn can widen,
-        # and a binding that is no longer the one the child started on means
-        # /new, /use, /worktree, /model or /permissions has since changed what
-        # this conversation points at — the held child would silently ignore it.
-        live = self.live.get(key)
-        if live is not None and live.alive:
-            if self.bindings.get(key) is not live.binding:
-                await self._end_live_run(key, "the binding changed")
-            elif extra_args:
-                await self._end_live_run(key, "a new message brought attachments")
-            else:
-                try:
-                    return await self._inject_into_live(live, frame, prompt)
-                finally:
-                    if tmpdir:
-                        shutil.rmtree(tmpdir, ignore_errors=True)
         perm_tasks: list[asyncio.Task] = []
         perm_ids: list[str] = []
         mode = binding.get("permission_mode") or self.default_permission_mode
         model = binding.get("model") or self.default_model
         sys_args = self._append_system_args(binding)
         try:
+            # A child still working through background tasks already holds this
+            # conversation; feed the new turn to it rather than resuming the
+            # same session id in a second process. Two exceptions retire it
+            # instead: attachments arrive via --add-dir, which only a fresh
+            # spawn can widen, and a binding that is no longer the one the child
+            # started on means /new, /use, /worktree, /model or /permissions has
+            # changed what this conversation points at — the held child would
+            # silently ignore it.
+            #
+            # This lives inside the try so an injected turn leaves through the
+            # same finally as a spawned one. /stop routes around the live child
+            # when it can, but it cannot in every window (a child already
+            # retiring reads as not alive while its waiters are still pending),
+            # and skipping the cleanup below would leave stop_requested and
+            # stopped_processes set — poisoning the next two messages.
+            live = self.live.get(key)
+            if live is not None and live.alive:
+                if self.bindings.get(key) is not live.binding:
+                    await self._end_live_run(key, "the binding changed")
+                elif extra_args:
+                    await self._end_live_run(key, "a new message brought attachments")
+                else:
+                    return await self._inject_into_live(live, frame, prompt)
             # Bidirectional stream-json: the prompt rides on stdin and
             # `--permission-prompt-tool stdio` makes the CLI route permission
             # asks to us as `control_request` events instead of silently
@@ -2096,9 +2109,21 @@ class Bridge:
                         blank_held, blank_deadline = None, None
                         last_event = time.monotonic()
                         continue
+                    if blank_held is not None and (live.tasks or live.waiters):
+                        # The waiter this blank was held for is gone (an
+                        # injection timeout dropped it), but work is still
+                        # outstanding — keep reading rather than killing a child
+                        # that still owes an answer.
+                        blank_held, blank_deadline = None, None
+                        continue
                     waited = time.monotonic() - started
                     log(f"live run for {key} released after {waited:.0f}s "
                         f"({len(live.tasks)} task(s) still listed)")
+                    if live.tasks and not live.stopping:
+                        # Promised a follow-up and can no longer deliver one:
+                        # say so, or the channel cannot tell a dropped report
+                        # from work that is simply still running.
+                        self._post_timeout_notice(live, waited)
                     break
                 try:
                     raw = await asyncio.wait_for(proc.stdout.readline(), remaining)
@@ -2220,9 +2245,24 @@ class Bridge:
                 await asyncio.wait_for(asyncio.shield(live.reader), 15)
             except Exception as e:
                 log(f"live run for {key} did not shut down cleanly: {e!r}")
-        self.live.pop(key, None)
+        # Identity-guarded: awaiting the reader above can take seconds, and a
+        # new turn in that window may already have installed its own LiveRun
+        # here. Popping blindly would orphan that child from /status, /stop and
+        # the shutdown sweep while it kept running.
+        if self.live.get(key) is live:
+            self.live.pop(key, None)
         if self.procs.get(key) is live.proc:
             self.procs.pop(key, None)
+
+    def _post_timeout_notice(self, live: LiveRun, waited: float) -> None:
+        names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
+                          for t in live.tasks)
+        minutes = max(1, round(waited / 60))
+        self.post(live.frame, (
+            f"Gave up waiting for background work after {minutes} min, so the "
+            f"follow-up I promised isn't coming: {names}. Ask again to pick it "
+            "back up."
+        ))
 
     def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:
         """Format a model reply the channel's way and post it."""
@@ -2821,8 +2861,9 @@ def main() -> None:
     ap.add_argument("--followup-idle-timeout", type=float,
                     default=float(os.environ.get("CLAUDE_FOLLOWUP_IDLE_TIMEOUT",
                                                  str(FOLLOWUP_IDLE_TIMEOUT))),
-                    help="seconds of silence, with nothing outstanding, before a "
-                         "child held open for background work is released")
+                    help="settle window in seconds: how long a child held for "
+                         "background work waits, once nothing is outstanding, "
+                         "for a trailing reply before it is released")
     ap.add_argument("--followup-task-idle-timeout", type=float,
                     default=float(os.environ.get("CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT",
                                                  str(FOLLOWUP_TASK_IDLE_TIMEOUT))),

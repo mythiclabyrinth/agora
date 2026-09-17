@@ -27,16 +27,19 @@ with nobody having to send anything in between.
 
 Nothing to type: no command turns this on and Claude does not have to ask for
 it. The bridge watches the CLI's own background-task inventory, so the child is
-held exactly as long as it still owes an answer and released the moment its task
+held for as long as it still owes an answer, and released shortly after its task
 list empties. `/status` lists whatever is still cooking, and `/stop` drops it.
 
-Three limits bound the hold, because silence means different things. With
-nothing outstanding the session is simply idle and `--followup-idle-timeout`
-(15 min) releases it. While a task is still listed, silence is expected — a
-backgrounded `sleep 20m` emits nothing at all until it lands — so the far looser
+Three limits bound the hold, because silence means different things. Once
+nothing is outstanding the session cannot be killed instantly — the CLI clears a
+task just *before* re-invoking the model to report it — so
+`--followup-idle-timeout` (1 min) is the settle window for that trailing reply.
+While a task is still listed, silence is expected — a backgrounded `sleep 20m`
+emits nothing at all until it lands — so the far looser
 `--followup-task-idle-timeout` (30 min) applies instead, which still catches an
 inventory that never empties. `--followup-max-wait` (6 h) caps the whole hold
-regardless.
+regardless. If a limit fires while work is still listed, the channel is told the
+promised follow-up isn't coming rather than being left waiting.
 
 A message sent while work is outstanding is fed to that same live child rather
 than starting a second `claude --resume` against the same session, so the
@@ -45,6 +48,12 @@ which need `--add-dir` and so only a fresh run can carry, and anything that
 rebinds the conversation (`/new`, `/use`, `/worktree`, `/model`,
 `/permissions`) — the next message then starts a fresh session as you asked,
 rather than being swallowed by the old one.
+
+One wrinkle worth knowing: a `result` carries nothing saying which prompt it
+answers, so if background work reports in at the same moment as your message is
+being answered, the two replies can land in the opposite order. Nothing is lost,
+and the far more common case — work reporting in with nobody waiting — is never
+ambiguous.
 
 Run with `--no-async-followups` (or `CLAUDE_ASYNC_FOLLOWUPS=0`) for the older
 strictly one-reply-per-message behavior.
@@ -227,8 +236,8 @@ summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TLDR_MIN_CHARS` (minimum reply length to summarize, default 1500),
 `CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`0` to stop
 backgrounded work from posting its findings as a later message — on by default),
-`CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (seconds of silence, with nothing outstanding,
-before a child held for background work is released, default 900),
+`CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (settle window in seconds once nothing is
+outstanding, default 60),
 `CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT` (the same while a task is still listed,
 default 1800), `CLAUDE_FOLLOWUP_MAX_WAIT` (hard cap on the whole hold, default
 21600), `SESSIONS_LIMIT`, `STATE_FILE`,
