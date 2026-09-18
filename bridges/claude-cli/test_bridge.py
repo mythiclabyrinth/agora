@@ -462,8 +462,10 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0):
 
     async def main():
         proc = _fake_proc(lines, feed_delay)  # StreamReader needs a running loop
+        b.spawn_calls = []
 
         async def fake_exec(*a, **kw):
+            b.spawn_calls.append((a, kw))
             return proc
 
         original_exec = asyncio.create_subprocess_exec
@@ -1529,6 +1531,7 @@ class UsageTests(unittest.TestCase):
             "claude-test", "-p", "/usage", "--output-format", "json",
             stdout=bridge.asyncio.subprocess.PIPE,
             stderr=bridge.asyncio.subprocess.PIPE,
+            env=instance.child_env(),
         )
         self.assertEqual(instance.last_usage_frame["windows"][0]["used_percent"], 16)
         instance.send.assert_called_once_with(instance.last_usage_frame)
@@ -1583,6 +1586,276 @@ class UsageTests(unittest.TestCase):
         instance.send = Mock()
         instance.capture_usage({"rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": "nope"}}}})
         instance.send.assert_not_called()
+
+
+class ClaudeAccountTests(unittest.TestCase):
+    def _bridge(self, tmp):
+        b = bridge.Bridge.__new__(bridge.Bridge)
+        b.accounts = bridge.parse_accounts(
+            f"work:{tmp}/work,personal:{tmp}/personal")
+        b.account = "work"
+        b.account_epoch = 0
+        b.state_file = Path(tmp) / "state.json"
+        b.bindings = {"c1": {"session_id": "old", "cwd": "/repo",
+                              "model": "sonnet", "permission_mode": "plan"}}
+        b.listings = {"c1": [{"session_id": "old"}]}
+        b.busy = set()
+        b.live = {}
+        b.claude_bin = "claude-test"
+        b.agent_id = "claude-cli"
+        b.last_usage_frame = {"windows": [{"key": "five_hour"}]}
+        b.send = Mock()
+        b._saved_account = "work"
+        b._previous_config_dir = b.config_dir
+        b._account_state_valid = True
+        b.account_auth_problem = None
+        b._spawn = lambda coro: coro.close()
+        return b
+
+    def test_parse_accounts_and_single_account_compatibility(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            accounts = bridge.parse_accounts(f"Work:{tmp}/w,personal:{tmp}/p")
+            self.assertEqual(list(accounts), ["work", "personal"])
+            self.assertTrue(accounts["work"].is_absolute())
+        with patch.dict(bridge.os.environ, {"CLAUDE_CONFIG_DIR": "/tmp/claude-one"}):
+            self.assertEqual(
+                bridge.parse_accounts(""),
+                {bridge.DEFAULT_ACCOUNT: Path("/tmp/claude-one").resolve()},
+            )
+
+    def test_parse_accounts_rejects_bad_and_duplicate_names(self):
+        for raw in ("missing-path", "bad name:/tmp/x", "work:/a,work:/b"):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                bridge.parse_accounts(raw)
+
+    def test_child_env_pins_selected_config_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            self.assertEqual(b.child_env()["CLAUDE_CONFIG_DIR"], str(b.accounts["work"]))
+            self.assertEqual(
+                b.child_env("personal")["CLAUDE_CONFIG_DIR"],
+                str(b.accounts["personal"]),
+            )
+
+    def test_main_run_spawn_pins_active_account_environment(self):
+        async def exercise():
+            b = followup_bridge()
+            b.async_followups = False
+            b.accounts = {"work": Path("/tmp/claude-work").resolve()}
+            b.account = "work"
+            proc = _fake_proc([_result("done")])
+            with patch.object(bridge.asyncio, "create_subprocess_exec",
+                              new=AsyncMock(return_value=proc)) as spawn:
+                reply = await b.run_claude(
+                    "k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+            return b, reply, spawn
+
+        b, reply, spawn = asyncio.run(exercise())
+        self.assertEqual(reply, "done")
+        self.assertEqual(
+            spawn.await_args.kwargs["env"]["CLAUDE_CONFIG_DIR"],
+            str(b.accounts["work"]),
+        )
+
+    def test_auth_status_uses_target_env_and_parses_cli_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            proc = Mock(returncode=0)
+            proc.communicate = AsyncMock(return_value=(json.dumps({
+                "loggedIn": True, "authMethod": "claude.ai",
+                "projectsDirectory": str(b.accounts["personal"] / "projects"),
+            }).encode(), b""))
+            with patch.object(bridge.asyncio, "create_subprocess_exec",
+                              new=AsyncMock(return_value=proc)) as spawn:
+                status = asyncio.run(b.account_status("personal"))
+            self.assertTrue(status["ok"])
+            self.assertEqual(
+                spawn.await_args.kwargs["env"]["CLAUDE_CONFIG_DIR"],
+                str(b.accounts["personal"]),
+            )
+
+    def test_auth_status_timeout_kills_probe_and_reports_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            proc = Mock(returncode=None)
+            proc.communicate = AsyncMock(side_effect=TimeoutError())
+            proc.kill = Mock()
+            proc.wait = AsyncMock(return_value=1)
+            with patch.object(bridge.asyncio, "create_subprocess_exec",
+                              new=AsyncMock(return_value=proc)):
+                status = asyncio.run(b.account_status("personal"))
+            self.assertFalse(status["ok"])
+            proc.kill.assert_called_once()
+            proc.wait.assert_awaited_once()
+
+    def test_switch_rejects_unusable_target_without_mutating_bindings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            b.account_status = AsyncMock(return_value={"ok": False})
+            reply = asyncio.run(b._cmd_switch("personal"))
+            self.assertIn("claude auth login", reply)
+            self.assertEqual(b.account, "work")
+            self.assertEqual(b.bindings["c1"]["session_id"], "old")
+
+    def test_switch_rejects_busy_and_live_children(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            b.busy.add("c1")
+            self.assertIn("still active", asyncio.run(b._cmd_switch("personal")))
+            b.busy.clear()
+            b.live["c1"] = Mock(alive=True)
+            self.assertIn("background", asyncio.run(b._cmd_switch("personal")))
+
+    def test_switch_rejects_credential_override(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            bridge.os.environ, {"ANTHROPIC_API_KEY": "test-only"}, clear=False
+        ):
+            b = self._bridge(tmp)
+            reply = asyncio.run(b._cmd_switch("personal"))
+            self.assertIn("ANTHROPIC_API_KEY", reply)
+            self.assertEqual(b.account, "work")
+
+    def test_successful_switch_releases_only_account_local_state(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            bridge.os.environ,
+            {name: "" for name in bridge.CLAUDE_CREDENTIAL_OVERRIDES}, clear=False,
+        ):
+            b = self._bridge(tmp)
+            b.account_status = AsyncMock(return_value={
+                "ok": True,
+                "projectsDirectory": str(b.accounts["personal"] / "projects"),
+            })
+            reply = asyncio.run(b._cmd_switch("personal"))
+            self.assertIn("Switched from work to personal", reply)
+            self.assertIsNone(b.bindings["c1"]["session_id"])
+            self.assertEqual(b.bindings["c1"]["cwd"], "/repo")
+            self.assertEqual(b.bindings["c1"]["model"], "sonnet")
+            self.assertEqual(b.account_epoch, 1)
+            saved = json.loads(b.state_file.read_text())
+            self.assertEqual(saved["config_dir"], str(b.accounts["personal"]))
+            self.assertEqual(b.last_usage_frame["availability"], "unavailable")
+
+    def test_v2_state_matches_renamed_account_by_persisted_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = bridge.Bridge.__new__(bridge.Bridge)
+            b.accounts = bridge.parse_accounts(f"renamed:{tmp}/same,other:{tmp}/other")
+            b.account = "renamed"
+            b.state_file = Path(tmp) / "state.json"
+            b.state_file.write_text(json.dumps({
+                "_v": 2, "account": "old-name",
+                "config_dir": str(Path(tmp) / "same"),
+                "bindings": {"c1": {"session_id": "keep", "cwd": "/repo"}},
+            }))
+            bindings = b._load_state()
+            self.assertEqual(b.account, "renamed")
+            self.assertEqual(bindings["c1"]["session_id"], "keep")
+
+    def test_flat_state_migrates_without_losing_bindings(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            bridge.os.environ, {"CLAUDE_CONFIG_DIR": str(Path(tmp) / "config")}
+        ):
+            b = bridge.Bridge.__new__(bridge.Bridge)
+            b.accounts = bridge.parse_accounts("")
+            b.account = bridge.DEFAULT_ACCOUNT
+            b.state_file = Path(tmp) / "state.json"
+            b.state_file.write_text(json.dumps({
+                "c1": {"session_id": "keep", "cwd": "/repo"},
+            }))
+            b.bindings = b._load_state()
+            b._account_state_valid = True
+            b._save_state()
+            saved = json.loads(b.state_file.read_text())
+            self.assertEqual(saved["_v"], 2)
+            self.assertEqual(saved["bindings"]["c1"]["session_id"], "keep")
+
+    def test_unusable_changed_startup_preserves_previous_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            b._previous_config_dir = Path(tmp) / "old"
+            b._saved_account = "old"
+            b.account_status = AsyncMock(return_value={"ok": False})
+            asyncio.run(b._reconcile_startup_account())
+            self.assertEqual(b.bindings["c1"]["session_id"], "old")
+            self.assertFalse(b._account_state_valid)
+            b._save_state()
+            saved = json.loads(b.state_file.read_text())
+            self.assertEqual(saved["account"], "old")
+            self.assertEqual(saved["config_dir"], str(Path(tmp) / "old"))
+
+    def test_startup_projects_mismatch_preserves_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            b._previous_config_dir = Path(tmp) / "old"
+            b.account_status = AsyncMock(return_value={
+                "ok": True, "projectsDirectory": str(Path(tmp) / "unexpected"),
+            })
+            asyncio.run(b._reconcile_startup_account())
+            self.assertEqual(b.bindings["c1"]["session_id"], "old")
+            self.assertIn("projectsDirectory", b.account_auth_problem)
+
+    def test_status_names_account_even_without_a_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            b.bindings = {}
+            b.account_auth_problem = "login required"
+            reply = b._cmd_status("missing")
+            self.assertIn("Account: work", reply)
+            self.assertIn("login required", reply)
+
+    def test_usage_result_from_previous_epoch_is_discarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            proc = Mock(returncode=0)
+
+            async def communicate():
+                b.account_epoch += 1
+                return (json.dumps({"result": (
+                    "Current session: 16% used · resets Aug 31 at 3:09pm (Asia/Calcutta)\n"
+                    "Current week (all models): 9% used · resets Sep 3 at 1:29pm (Asia/Calcutta)"
+                )}).encode(), b"")
+
+            proc.communicate = communicate
+            b.last_usage_frame = None
+            with patch.object(bridge.asyncio, "create_subprocess_exec",
+                              new=AsyncMock(return_value=proc)):
+                asyncio.run(b.refresh_usage())
+            b.send.assert_not_called()
+
+    def test_sessions_result_from_previous_epoch_is_discarded(self):
+        b = make_bridge()
+        b.accounts = {"work": Path("/tmp/claude-work")}
+        b.account = "work"
+        b.account_epoch = 0
+        b.sessions_limit = 10
+        b.listings = {}
+
+        async def stale_scan(*_args):
+            b.account_epoch += 1
+            return [{"session_id": "stale", "cwd": "/old", "last_prompt": "old"}]
+
+        frame = {
+            "channel_id": "c1", "text": "/sessions", "mentioned": True,
+            "author": {"type": "user", "id": "u1"},
+        }
+        with patch.object(bridge.asyncio, "to_thread", side_effect=stale_scan):
+            asyncio.run(b.handle_inbound(frame))
+        self.assertNotIn("c1", b.listings)
+        self.assertIn("run /sessions again", b.post.call_args.args[1])
+
+    def test_use_result_from_previous_epoch_is_not_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = self._bridge(tmp)
+            b.listings = {}
+            b._set_binding = Mock()
+
+            def stale_lookup(_session_id, _projects_dir):
+                b.account_epoch += 1
+                return {"session_id": "stale", "cwd": "/old", "last_prompt": "old"}
+
+            with patch.object(bridge, "find_session", side_effect=stale_lookup):
+                reply = b._cmd_use("c1", "stale", epoch=0)
+            self.assertIn("previous account", reply)
+            b._set_binding.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -120,6 +120,7 @@ follow-up machinery.
 | `/model <opus\|sonnet\|haiku\|fable\|…\|default>` | set the model for this channel (`default` clears the override); persists in the binding and is passed as `claude --model` on every run |
 | `/permissions <plan\|acceptEdits\|bypass\|default\|reset>` | set the permission mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CLAUDE_ALLOW_PERMISSION_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override). When on, Claude is asked to end a long reply with a summary the bridge lifts into the message's `tldr`; clients show a TL;DR toggle |
+| `/switch [account]` | list configured Claude accounts, or move every conversation onto one (see [Multiple accounts](#multiple-accounts)) |
 | `/stop` | cancel the run in flight on this channel (kills the `claude` child) |
 | `/status` | show the current binding, model, permission mode, TL;DR state, and whether a run is in flight |
 | `/commands` | show this bridge command list |
@@ -229,10 +230,47 @@ Bindings are per channel (and per thread), persisted in `state.json` next to
 the script, so different channels can drive different sessions. While Claude
 works, the bridge streams typing + progress lines to the channel.
 
+## Multiple accounts
+
+Claude Code scopes its login, settings and sessions to `CLAUDE_CONFIG_DIR`, so
+separate directories let several accounts remain signed in on one machine. Log
+the additional account in interactively once:
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude-personal claude auth login
+```
+
+Then configure ordered `name:path` pairs in the bridge `.env` and restart:
+
+```sh
+CLAUDE_ACCOUNTS=work:~/.claude,personal:~/.claude-personal
+```
+
+Use `/switch` to list them and `/switch personal` to change the bridge-wide
+account. Switching is refused while a turn or background follow-up is alive and
+when `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or
+`CLAUDE_CODE_OAUTH_TOKEN` would override directory-scoped OAuth. The target is
+checked with `claude auth status --json` before anything changes. A successful
+switch releases session ids because sessions are account-local, but retains each
+channel's directory, model, permissions, TL;DR and worktree settings. The usage
+panel is cleared immediately and refreshed from the new account.
+
+The active account and its resolved config directory are persisted. On restart,
+sessions are released only after a changed target directory is confirmed usable;
+an unusable target leaves the old bindings intact and reports the exact login
+command instead of silently falling back to another subscription. An older
+bridge can read the v2 state file as a plain mapping but will not find its
+bindings inside the envelope, so downgrading temporarily appears to lose them;
+returning to this version restores them.
+
+Without `CLAUDE_ACCOUNTS`, behavior stays single-account at
+`$CLAUDE_CONFIG_DIR` or `~/.claude`.
+
 ## Options
 
 Everything is env-overridable (flags take precedence): `AGORA_URL`,
 `AGORA_PAIRING_TOKEN`, `AGENT_ID` / `AGENT_NAME`, `AGENT_AVATAR`, `CLAUDE_BIN`,
+`CLAUDE_ACCOUNTS` (comma-separated `name:CLAUDE_CONFIG_DIR` pairs),
 `CLAUDE_PERMISSION_ARGS` (default `--permission-mode acceptEdits`; set
 `--dangerously-skip-permissions` for fully unattended runs — the permission mode
 here is just the **default**, overridable per channel with `/permissions`),
