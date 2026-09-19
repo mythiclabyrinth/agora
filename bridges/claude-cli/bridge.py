@@ -56,8 +56,15 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("missing dependency: pip install websockets")
 
-CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+def default_claude_config_dir() -> Path:
+    """The config directory Claude itself would use, made absolute for children."""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser().resolve()
+
+
+DEFAULT_ACCOUNT = "default"
+CLAUDE_PROJECTS = default_claude_config_dir() / "projects"
 USAGE_REFRESH_TIMEOUT = 15
+AUTH_STATUS_TIMEOUT = 10
 _USAGE_LINE_RE = re.compile(
     r"^(Current session|Current week(?: \(([^)]+)\))?):\s*"
     r"(\d+(?:\.\d+)?)% used\s*[·•-]\s*resets\s+"
@@ -279,6 +286,10 @@ BACKGROUND_SYSTEM_PROMPT = (
 REBINDING_COMMANDS = frozenset({"/use", "/new", "/worktree", "/model",
                                 "/permissions"})
 
+CLAUDE_CREDENTIAL_OVERRIDES = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+)
+
 
 class RunStopped(Exception):
     """The active CLI child was cancelled — by /stop, or by a command that
@@ -346,6 +357,58 @@ class LiveRun:
 def parse_peer_agents(raw: str) -> frozenset[str]:
     """Normalize a comma-separated list of agent ids into a lowercase set."""
     return frozenset(t.strip().lower() for t in (raw or "").split(",") if t.strip())
+
+
+def parse_accounts(raw: str) -> dict[str, Path]:
+    """Parse CLAUDE_ACCOUNTS name:path pairs, preserving configured order."""
+    accounts: dict[str, Path] = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, sep, path = part.partition(":")
+        name, path = name.strip().lower(), path.strip()
+        if not sep or not path:
+            raise ValueError(f"account {part!r} is not name:path")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+            raise ValueError(
+                f"account name {name!r} must be letters/digits/-/_ (it is typed in chat)"
+            )
+        if name in accounts:
+            raise ValueError(f"duplicate account name {name!r}")
+        accounts[name] = Path(path).expanduser().resolve()
+    return accounts or {DEFAULT_ACCOUNT: default_claude_config_dir()}
+
+
+def credential_overrides() -> list[str]:
+    """Credential variables that take precedence over config-directory OAuth."""
+    overrides = []
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        overrides.append("ANTHROPIC_API_KEY")
+    if os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        overrides.append("ANTHROPIC_AUTH_TOKEN")
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        overrides.append("CLAUDE_CODE_OAUTH_TOKEN")
+    return overrides
+
+
+def account_email(config_dir: Path) -> str | None:
+    """Read non-secret account metadata for /switch's local account label."""
+    candidates = [config_dir / ".claude.json"]
+    if config_dir == (Path.home() / ".claude").resolve():
+        candidates.append(Path.home() / ".claude.json")
+    raw = None
+    for path in candidates:
+        try:
+            raw = json.loads(path.read_text())
+            break
+        except (OSError, json.JSONDecodeError):
+            continue
+    if raw is None:
+        return None
+    account = raw.get("oauthAccount") if isinstance(raw, dict) else None
+    email = account.get("emailAddress") if isinstance(account, dict) else None
+    return email.strip() if isinstance(email, str) and email.strip() else None
 
 # Models a channel may switch to via bridge /model. Keys are what a user can
 # type; values are passed to `claude --model`. Allowlisted so chat cannot inject
@@ -432,6 +495,7 @@ HELP = """Bridge commands (plain text + other Claude slash cmds are forwarded):
 /model <opus|sonnet|haiku|fable|…|default> - set the model for this channel
 /permissions <plan|acceptEdits|bypass|default|reset> - set the permission mode
 /tldr <on|off|default> - add a toggleable short summary to long replies
+/switch [account] - list Claude accounts, or move every channel onto one
 /stop - cancel the run in flight on this channel
 /status - show the current binding
 /commands - this message"""
@@ -569,9 +633,10 @@ def _scan_session_file(path: Path) -> dict | None:
     }
 
 
-def recent_sessions(limit: int) -> list[dict]:
+def recent_sessions(limit: int, projects_dir: Path | None = None) -> list[dict]:
+    root = projects_dir or CLAUDE_PROJECTS
     files = sorted(
-        CLAUDE_PROJECTS.glob("*/*.jsonl"),
+        root.glob("*/*.jsonl"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -585,8 +650,9 @@ def recent_sessions(limit: int) -> list[dict]:
     return out
 
 
-def find_session(session_id: str) -> dict | None:
-    for path in CLAUDE_PROJECTS.glob(f"*/{session_id}.jsonl"):
+def find_session(session_id: str, projects_dir: Path | None = None) -> dict | None:
+    root = projects_dir or CLAUDE_PROJECTS
+    for path in root.glob(f"*/{session_id}.jsonl"):
         return _scan_session_file(path)
     return None
 
@@ -771,9 +837,15 @@ class Bridge:
         self.allowed_roots = parse_allowed_roots(args.allowed_roots)
         self.max_attachment_bytes = args.max_file_mb * 1024 * 1024
         self.auto_worktree = args.auto_worktree
+        self.multi_account_configured = bool((args.accounts or "").strip())
+        self.accounts = parse_accounts(args.accounts)
+        self.account = next(iter(self.accounts))
+        self.account_epoch = 0
         self.state_file = Path(args.state_file)
-        self.bindings: dict[str, dict] = self._load_state()
+        self.bindings: dict[str, dict] = self._load_state()  # may select a persisted account
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
+        self._account_state_valid = True
+        self.account_auth_problem: str | None = None
         self.busy: set[str] = set()
         self.pending_turns: dict[str, list[dict]] = {}
         self.pending_updates: dict[int, str] = {}
@@ -843,14 +915,125 @@ class Bridge:
     # ------------------------------------------------------------- state
 
     def _load_state(self) -> dict[str, dict]:
+        self._previous_config_dir: Path | None = self.config_dir
+        self._saved_account: str | None = self.account
         try:
-            return json.loads(self.state_file.read_text())
+            raw = json.loads(self.state_file.read_text())
         except (OSError, json.JSONDecodeError):
             return {}
+        if not isinstance(raw, dict):
+            return {}
+        if raw.get("_v") == 2 and isinstance(raw.get("bindings"), dict):
+            saved = raw.get("account")
+            saved_dir = raw.get("config_dir")
+            self._saved_account = saved if isinstance(saved, str) else None
+            if isinstance(saved_dir, str):
+                self._previous_config_dir = Path(saved_dir).expanduser().resolve()
+            self.account = self._resolve_account(saved, self._previous_config_dir)
+            return raw["bindings"]
+        # A flat legacy state was written using Claude's ordinary config dir.
+        self._previous_config_dir = default_claude_config_dir()
+        return raw
 
     def _save_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self.state_file.write_text(json.dumps(self.bindings, indent=2))
+        account = self.account if self._account_state_valid else self._saved_account
+        config_dir = self.config_dir if self._account_state_valid else self._previous_config_dir
+        self.state_file.write_text(json.dumps({
+            "_v": 2, "account": account,
+            "config_dir": str(config_dir) if config_dir is not None else None,
+            "bindings": self.bindings,
+        }, indent=2))
+
+    def _resolve_account(self, name: object, saved_dir: Path | None) -> str:
+        if isinstance(name, str) and name.lower() in self.accounts:
+            return name.lower()
+        if saved_dir is not None:
+            for candidate, config_dir in self.accounts.items():
+                if config_dir == saved_dir:
+                    return candidate
+        fallback = next(iter(self.accounts))
+        if isinstance(name, str) and name:
+            log(f"state names account {name!r}, which CLAUDE_ACCOUNTS no longer "
+                f"lists; falling back to {fallback!r}")
+        return fallback
+
+    @property
+    def config_dir(self) -> Path:
+        return self.accounts[self.account]
+
+    @property
+    def projects_dir(self) -> Path:
+        return self.config_dir / "projects"
+
+    def child_env(self, account: str | None = None) -> dict[str, str]:
+        accounts = getattr(self, "accounts", None)
+        if not accounts:
+            config_dir = default_claude_config_dir()
+        else:
+            config_dir = accounts[account or self.account]
+        return {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)}
+
+    async def account_status(self, account: str | None = None) -> dict:
+        """Ask Claude whether the selected config directory has a usable login."""
+        selected = account or self.account
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.claude_bin, "auth", "status", "--json",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=self.child_env(selected),
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=AUTH_STATUS_TIMEOUT)
+            payload = json.loads(stdout.decode("utf-8", errors="replace"))
+            if not isinstance(payload, dict):
+                raise ValueError("status was not an object")
+            payload["ok"] = proc.returncode == 0 and payload.get("loggedIn") is True
+            payload["error"] = None if payload["ok"] else (
+                stderr.decode("utf-8", errors="replace").strip() or "not logged in")
+            return payload
+        except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            return {"ok": False, "loggedIn": False, "error": str(exc)}
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+
+    async def _reconcile_startup_account(self) -> None:
+        """Release cross-account sessions only after proving the target is usable."""
+        # Preserve the pre-feature single-account path, including third-party
+        # providers whose credentials `claude auth status` does not represent.
+        if (not getattr(self, "multi_account_configured", len(self.accounts) > 1)
+                and self._previous_config_dir == self.config_dir):
+            return
+        status = ({"ok": True, "projectsDirectory": str(self.projects_dir)}
+                  if credential_overrides() else await self.account_status())
+        if not status.get("ok"):
+            self._account_state_valid = self._previous_config_dir == self.config_dir
+            self.account_auth_problem = (
+                f"Account {self.account!r} is not logged in. Run "
+                f"`CLAUDE_CONFIG_DIR={self.config_dir} claude auth login`, then restart the bridge."
+            )
+            log(f"warning: account {self.account!r} ({self.config_dir}) is not logged in; "
+                "preserving bindings from the previous account. Run "
+                f"`CLAUDE_CONFIG_DIR={self.config_dir} claude auth login`, then restart")
+            return
+        reported = status.get("projectsDirectory")
+        if (isinstance(reported, str)
+                and Path(reported).expanduser().resolve() != self.projects_dir):
+            self._account_state_valid = self._previous_config_dir == self.config_dir
+            self.account_auth_problem = (
+                f"Claude reports projectsDirectory={reported}, expected {self.projects_dir}; "
+                "check CLAUDE_ACCOUNTS and restart the bridge."
+            )
+            log(f"warning: {self.account_auth_problem}")
+            return
+        if self._previous_config_dir == self.config_dir:
+            return
+        dropped = self._drop_bound_sessions()
+        log(f"state moved from {self._previous_config_dir} to {self.config_dir}; "
+            f"released {dropped} session(s) from the previous account")
 
     # ------------------------------------------------------------ frames
 
@@ -891,6 +1074,7 @@ class Bridge:
 
     async def refresh_usage(self) -> None:
         """Fetch live subscription limits through Claude's zero-turn /usage command."""
+        epoch = getattr(self, "account_epoch", 0)
         proc = None
         windows = None
         try:
@@ -898,6 +1082,7 @@ class Bridge:
                 self.claude_bin, "-p", "/usage", "--output-format", "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self.child_env(),
             )
             stdout, _stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=USAGE_REFRESH_TIMEOUT
@@ -912,6 +1097,8 @@ class Bridge:
             if proc is not None and proc.returncode is None:
                 proc.kill()
                 await proc.wait()
+        if epoch != getattr(self, "account_epoch", 0):
+            return
         if windows:
             self.last_usage_frame = {
                 "type": "usage_update", "agent_id": self.agent_id,
@@ -920,6 +1107,14 @@ class Bridge:
             }
         if self.last_usage_frame:
             self.send(self.last_usage_frame)
+
+    def clear_usage(self) -> None:
+        self.last_usage_frame = {
+            "type": "usage_update", "agent_id": self.agent_id,
+            "provider": "claude", "availability": "unavailable",
+            "captured_at": time.time(), "windows": [],
+        }
+        self.send(self.last_usage_frame)
 
     def post(self, key_frame: dict, text: str, tldr: str | None = None,
              attachments: list[dict] | None = None) -> None:
@@ -1261,11 +1456,17 @@ class Bridge:
             self.post(frame, HELP)
         elif cmd == "/sessions":
             limit = int(rest) if rest.isdigit() else self.sessions_limit
-            sessions = await asyncio.to_thread(recent_sessions, limit)
+            epoch = self.account_epoch
+            sessions = await asyncio.to_thread(recent_sessions, limit, self.projects_dir)
+            if epoch != self.account_epoch:
+                self.post(frame, f"Switched to {self.account} while listing — run /sessions again.")
+                self.set_reaction(frame, "✅", remember=False)
+                return
             self.listings[key] = sessions
             self.post(frame, format_sessions(sessions))
         elif cmd == "/use":
-            self.post(frame, await asyncio.to_thread(self._cmd_use, key, rest))
+            self.post(frame, await asyncio.to_thread(
+                self._cmd_use, key, rest, self.account_epoch))
         elif cmd == "/new":
             self.post(frame, await asyncio.to_thread(self._cmd_new, key, rest))
         elif cmd == "/worktree":
@@ -1278,6 +1479,8 @@ class Bridge:
             self.post(frame, self._cmd_permissions(key, rest))
         elif cmd == "/tldr":
             self.post(frame, self._cmd_tldr(key, rest))
+        elif cmd == "/switch":
+            self.post(frame, await self._cmd_switch(rest))
         elif cmd == "/stop":
             self.post(frame, self._cmd_stop(key))
         elif cmd == "/status":
@@ -1309,19 +1512,23 @@ class Bridge:
         self.bindings[key] = binding
         self._save_state()
 
-    def _cmd_use(self, key: str, arg: str) -> str:
+    def _cmd_use(self, key: str, arg: str, epoch: int | None = None) -> str:
         if not arg:
             return "Usage: /use <n from /sessions | session-id>"
         if arg.isdigit():
-            listing = self.listings.get(key) or recent_sessions(self.sessions_limit)
+            listing = self.listings.get(key) or recent_sessions(
+                self.sessions_limit, self.projects_dir)
             idx = int(arg) - 1
             if not 0 <= idx < len(listing):
                 return f"No session #{arg} — run /sessions first."
             info = listing[idx]
         else:
-            info = find_session(arg)
+            info = find_session(arg, self.projects_dir)
             if not info:
-                return f"Session {arg} not found under {CLAUDE_PROJECTS}."
+                return f"Session {arg} not found under {self.projects_dir}."
+        if epoch is not None and epoch != self.account_epoch:
+            return (f"Switched to {self.account} while looking that session up — "
+                    "it belongs to the previous account. Run /sessions again.")
         self._set_binding(key, info["session_id"], info["cwd"])
         prompt = info["last_prompt"][:120]
         return (
@@ -1643,10 +1850,113 @@ class Bridge:
         suffix = f" and removed {len(queued)} queued message(s)" if queued else ""
         return f"Stopping the current run{suffix}…"
 
+    def _format_accounts(self) -> str:
+        if len(self.accounts) == 1:
+            name, config_dir = next(iter(self.accounts.items()))
+            return (
+                f"One Claude account configured: {name} ({config_dir}).\n"
+                "Add more with CLAUDE_ACCOUNTS in the bridge .env — see "
+                "README.md → Multiple accounts."
+            )
+        lines = []
+        for name, config_dir in self.accounts.items():
+            details = []
+            if email := account_email(config_dir):
+                details.append(email)
+            if name == self.account:
+                details.append("login required" if self.account_auth_problem else "active")
+            else:
+                details.append("configured")
+            lines.append(
+                f"{'*' if name == self.account else ' '} {name} — {config_dir} "
+                f"({'; '.join(details)})"
+            )
+        warning = ""
+        if overrides := credential_overrides():
+            warning = ("\n\nSwitching is disabled while credential override(s) are set: "
+                       + ", ".join(overrides) + ".")
+        return (
+            "Claude accounts:\n" + "\n".join(lines)
+            + "\n\nSwitch with /switch <name>. Bound sessions do not carry over."
+            + warning
+        )
+
+    def _drop_bound_sessions(self) -> int:
+        dropped = 0
+        for binding in self.bindings.values():
+            if isinstance(binding, dict) and binding.get("session_id"):
+                binding["session_id"] = None
+                dropped += 1
+        self.listings.clear()
+        self._save_state()
+        return dropped
+
+    async def _cmd_switch(self, arg: str) -> str:
+        if not arg:
+            return self._format_accounts()
+        name = arg.split()[0].strip().lower()
+        if name not in self.accounts:
+            return f"Unknown account {name!r}.\n\n{self._format_accounts()}"
+        if overrides := credential_overrides():
+            return (
+                "Cannot switch accounts while Claude credential override(s) are set: "
+                + ", ".join(overrides) + ". Unset them and restart the bridge so "
+                "CLAUDE_CONFIG_DIR selects the login."
+            )
+        if self.busy or any(live.alive for live in self.live.values()):
+            return (
+                "A run or background follow-up is still active. Switching now would "
+                "leave it on the old account — wait for it, or /stop it first."
+            )
+        if name == self.account and self._account_state_valid and not self.account_auth_problem:
+            return f"Already on {name} ({self.config_dir})."
+        status = await self.account_status(name)
+        config_dir = self.accounts[name]
+        if not status.get("ok"):
+            return (
+                f"Cannot switch to {name}: not logged in.\n"
+                f"Log that account in once, by hand:\n\n    "
+                f"CLAUDE_CONFIG_DIR={config_dir} claude auth login"
+            )
+        expected_projects = config_dir / "projects"
+        reported = status.get("projectsDirectory")
+        if (isinstance(reported, str)
+                and Path(reported).expanduser().resolve() != expected_projects):
+            return (
+                f"Cannot switch to {name}: Claude reports its projects directory as "
+                f"{reported}, expected {expected_projects}."
+            )
+        if name == self.account and self._previous_config_dir == self.config_dir:
+            self._account_state_valid = True
+            self.account_auth_problem = None
+            self._save_state()
+            self.clear_usage()
+            self._spawn(self.refresh_usage())
+            return f"Login verified for {name} ({self.config_dir}); existing sessions were kept."
+        previous = self.account
+        self.account = name
+        self.account_epoch += 1
+        self._account_state_valid = True
+        self.account_auth_problem = None
+        dropped = self._drop_bound_sessions()
+        self.clear_usage()
+        self._spawn(self.refresh_usage())
+        log(f"account switch: {previous} -> {name} ({config_dir}), dropped {dropped} session(s)")
+        carried = " Directory, model, permissions and worktree settings are unchanged." if dropped else ""
+        return (
+            f"Switched from {previous} to {name} ({config_dir}).\n"
+            f"{dropped} bound session(s) released — the next message in a channel "
+            f"starts a fresh Claude session.{carried}\n"
+            "Refreshing this account's usage now."
+        )
+
     def _cmd_status(self, key: str) -> str:
+        account_line = f"Account: {self.account} ({self.config_dir})\n" if len(self.accounts) > 1 else ""
+        auth_line = f"\n{self.account_auth_problem}" if self.account_auth_problem else ""
         b = self.bindings.get(key)
         if not b:
-            return "No session bound here. Run /sessions then /use <n>."
+            return (account_line + "No session bound here. Run /sessions then /use <n>."
+                    + auth_line)
         sid = b["session_id"][:8] + "…" if b["session_id"] else "(new, not started)"
         model = b.get("model") or self.default_model or "session default"
         mode = b.get("permission_mode") or self.default_permission_mode
@@ -1660,8 +1970,9 @@ class Bridge:
         wt = b.get("worktree")
         wt_line = f"\nWorktree: {wt['branch']} @ {wt['path']}" if wt else ""
         return (
-            f"Session {sid} in {b['cwd']}\nModel: {model}\n"
+            f"{account_line}Session {sid} in {b['cwd']}\nModel: {model}\n"
             f"Permissions: {mode}\nTL;DR: {tldr}{busy}{wt_line}"
+            f"{auth_line}"
         )
 
     # ------------------------------------------------------------ claude
@@ -1670,6 +1981,10 @@ class Bridge:
         self, key: str, frame: dict, text: str, from_peer: bool = False
     ) -> bool:
         """Run now or enqueue behind the active turn for this conversation."""
+        if getattr(self, "account_auth_problem", None):
+            self.set_reaction(frame, "🚫", remember=False)
+            self.post(frame, self.account_auth_problem)
+            return False
         # A peer agent's turn never answers an AskUserQuestion — those wait
         # for a human.
         if not from_peer and self._answer_pending_question(key, frame, text):
@@ -1950,6 +2265,7 @@ class Bridge:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE,
+                env=self.child_env(),
                 # stream-json events are single lines that can carry whole file
                 # contents; the default 64 KB readline limit is far too small.
                 limit=64 * 1024 * 1024,
@@ -2837,6 +3153,7 @@ class Bridge:
     # --------------------------------------------------------- main loop
 
     async def run(self) -> None:
+        await self._reconcile_startup_account()
         backoff = 1.0
         while True:
             try:
@@ -3037,6 +3354,10 @@ def main() -> None:
                     help="/new into a git repo creates an isolated git worktree + "
                          "branch per thread instead of binding the repo directly "
                          "(also available on demand via /worktree)")
+    ap.add_argument("--accounts", default=os.environ.get("CLAUDE_ACCOUNTS", ""),
+                    help="comma-separated name:CLAUDE_CONFIG_DIR pairs for accounts "
+                         "logged in on this machine; switch in chat with /switch. "
+                         "Empty means the single account in $CLAUDE_CONFIG_DIR or ~/.claude")
     ap.add_argument("--agent-id", default=os.environ.get("AGENT_ID", "claude-cli"))
     ap.add_argument("--agent-name", default=os.environ.get("AGENT_NAME", "Claude"))
     ap.add_argument("--agent-avatar", default=os.environ.get("AGENT_AVATAR", ""),
@@ -3106,6 +3427,13 @@ def main() -> None:
     args = ap.parse_args()
     if args.max_file_mb <= 0:
         ap.error("--max-file-mb must be positive")
+    try:
+        parse_accounts(args.accounts)
+    except ValueError as exc:
+        ap.error(f"bad --accounts: {exc}")
+    if overrides := credential_overrides():
+        log("warning: Claude credential override(s) " + ", ".join(overrides)
+            + " take precedence over CLAUDE_CONFIG_DIR; /switch will be disabled")
     if args.token:
         log("warning: --token on the command line is visible to other local users "
             "(ps/proc). Prefer AGORA_PAIRING_TOKEN or --token-file.")
