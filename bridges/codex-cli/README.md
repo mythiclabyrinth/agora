@@ -254,7 +254,9 @@ time, and every channel uses it. What you need to know:
   session started on one account cannot be resumed under another. Switching
   releases every bound session id; the next message in a channel starts a fresh
   Codex session *in the same directory*, keeping its `/model`, `/sandbox`,
-  `/tldr` and worktree settings. Conversation history does not transfer.
+  `/tldr` and worktree settings. Conversation history does not transfer — but
+  Codex can read the channel's own earlier messages when you ask it to, see
+  [Reading earlier messages](#reading-earlier-messages).
   The same release happens on start-up when the bridge comes up on a different
   account than it shut down on — reordering or renaming `CODEX_ACCOUNTS`, or
   adding it for the first time — so an edit to `.env` cannot leave channels
@@ -283,6 +285,28 @@ one account's limits may conflict with OpenAI's terms depending on how those
 accounts are held — a personal plan plus a separate work/business seat is not
 the same situation as two personal plans.
 
+## Reading earlier messages
+
+A Codex session and an Agora conversation are not the same thing: `/switch`,
+`/new`, and a bridge restart each leave the channel's history intact while the
+session behind it starts blank. The bridge never pre-loads that history — a new
+session stays cheap and uncluttered — but it tells Codex the transcript is one
+request away.
+
+So when the missing context matters, just say so in the channel:
+
+> @codex read the earlier messages in this thread, then tell me where we landed
+
+Codex answers that turn with a request the bridge intercepts (it is never
+posted), the bridge pulls one membership-checked page over the agent protocol's
+`history_request`, hands it back, and Codex answers with the context in hand.
+It can page further back on its own, up to three fetches per turn. The scope is
+this thread by default, or the channel's top-level messages when Codex asks for
+that; either way the server only ever returns rooms this agent is a member of.
+
+Nothing happens unless a turn needs it. `--no-history` (or `AGORA_HISTORY=0`)
+removes the capability entirely.
+
 ## Options
 
 Everything is env-overridable (flags take precedence): `AGORA_URL`,
@@ -302,8 +326,11 @@ replies by default; channels override with `/tldr`), `CODEX_TLDR_MIN_CHARS`
 (minimum reply length to summarize, default 1500), `CODEX_TIMEOUT` (seconds,
 default 1800), `SESSIONS_LIMIT`, `STATE_FILE`, `CONTEXT_BUFFER` (messages
 buffered per channel while staying silent, default 50; `0` disables the context
-feed), `AGORA_PEER_AGENTS` (comma-separated agent ids whose `@mentions` may
-drive Codex — empty/unset by default, keeping the humans-only posture).
+feed), `AGORA_HISTORY` (`0` to remove the on-demand
+[earlier messages](#reading-earlier-messages) capability; on by default and idle
+until a turn asks for it), `AGORA_PEER_AGENTS` (comma-separated agent ids whose
+`@mentions` may drive Codex — empty/unset by default, keeping the humans-only
+posture).
 
 Any of these can live in a `.env` file (see [`.env.example`](.env.example))
 loaded from this directory at startup, so you don't have to pass them on the

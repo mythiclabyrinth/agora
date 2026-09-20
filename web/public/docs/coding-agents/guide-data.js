@@ -55,6 +55,7 @@ export const guides = {
       ["CODEX_TLDR", "Optional", "0", "Enable short summaries for long replies by default; /tldr overrides per conversation."],
       ["CODEX_TLDR_MIN_CHARS", "Optional", "1500", "Minimum reply length eligible for a summary."],
       ["CODEX_TIMEOUT", "Optional", "1800", "Maximum seconds for one Codex run."],
+      ["AGORA_HISTORY", "Optional", "1", "Let Codex read this conversation's earlier messages when a turn needs them. Nothing is pre-loaded: a session that starts fresh after /switch, /new or a restart stays blank until someone asks it to catch up. Set 0 to remove the capability."],
     ],
   },
   cursor: {
@@ -139,6 +140,7 @@ export const guides = {
       ["CLAUDE_FOLLOWUP_IDLE_TIMEOUT", "Optional", "180", "Settle window in seconds for a trailing reply once nothing is outstanding."],
       ["CLAUDE_FOLLOWUP_TASK_IDLE_TIMEOUT", "Optional", "1800", "Seconds of silence while a background task is still listed before releasing anyway."],
       ["CLAUDE_FOLLOWUP_MAX_WAIT", "Optional", "21600", "Hard cap in seconds on how long a session is held waiting for background work."],
+      ["AGORA_HISTORY", "Optional", "1", "Let Claude read this conversation's earlier messages when a turn needs them. Nothing is pre-loaded: a session that starts fresh after /switch, /new or a restart stays blank until someone asks it to catch up. Set 0 to remove the capability."],
     ],
   },
 };

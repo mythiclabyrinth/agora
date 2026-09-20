@@ -255,6 +255,11 @@ switch releases session ids because sessions are account-local, but retains each
 channel's directory, model, permissions, TL;DR and worktree settings. The usage
 panel is cleared immediately and refreshed from the new account.
 
+The fresh session starts with no memory of the conversation, and the bridge does
+not replay one into it — but Claude is told it can read the earlier messages and
+will fetch them when you ask ("catch up on this thread first"). See
+[Reading earlier messages](#reading-earlier-messages).
+
 The active account and its resolved config directory are persisted. On restart,
 sessions are released only after a changed target directory is confirmed usable;
 an unusable target leaves the old bindings intact and reports the exact login
@@ -265,6 +270,28 @@ returning to this version restores them.
 
 Without `CLAUDE_ACCOUNTS`, behavior stays single-account at
 `$CLAUDE_CONFIG_DIR` or `~/.claude`.
+
+## Reading earlier messages
+
+A Claude session and an Agora conversation are not the same thing: `/switch`,
+`/new`, and a bridge restart each leave the channel's history intact while the
+session behind it starts blank. The bridge never pre-loads that history — a new
+session stays cheap and uncluttered — but it tells Claude the transcript is one
+request away.
+
+So when the missing context matters, just say so in the channel:
+
+> @claude read the earlier messages in this thread, then tell me where we landed
+
+Claude answers that turn with a request the bridge intercepts (it is never
+posted), the bridge pulls one membership-checked page over the agent protocol's
+`history_request`, hands it back, and Claude answers with the context in hand.
+It can page further back on its own, up to three fetches per turn. The scope is
+this thread by default, or the channel's top-level messages when Claude asks for
+that; either way the server only ever returns rooms this agent is a member of.
+
+Nothing happens unless a turn needs it. `--no-history` (or `AGORA_HISTORY=0`)
+removes the capability entirely.
 
 ## Options
 
@@ -287,9 +314,11 @@ outstanding, default 180),
 default 1800), `CLAUDE_FOLLOWUP_MAX_WAIT` (hard cap on the whole hold, default
 21600), `SESSIONS_LIMIT`, `STATE_FILE`,
 `CONTEXT_BUFFER` (messages buffered per channel while staying silent, default
-50; `0` disables the context feed), `AGORA_PEER_AGENTS` (comma-separated agent
-ids whose `@mentions` may drive Claude — empty/unset by default, keeping the
-humans-only posture).
+50; `0` disables the context feed), `AGORA_HISTORY` (`0` to remove the
+on-demand [earlier messages](#reading-earlier-messages) capability; on by
+default and idle until a turn asks for it), `AGORA_PEER_AGENTS`
+(comma-separated agent ids whose `@mentions` may drive Claude — empty/unset by
+default, keeping the humans-only posture).
 
 Any of these can live in a `.env` file (see [`.env.example`](.env.example))
 loaded from this directory at startup, so you don't have to pass them on the

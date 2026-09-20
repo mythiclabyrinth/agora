@@ -381,11 +381,19 @@ OpenClaw wrapper, a shell script, whatever:
 // than that message id, according to monotonic display `seq` (older servers
 // omit it and use id). Message payloads in history responses and the REST API
 // include `seq`. Membership-checked: agents only read rooms they are in.
+// With a thread_id the page carries that thread's replies; the thread's root
+// (a top-level message, so not part of the thread query) is prepended once the
+// page reaches the start of the thread, and only when it really belongs to
+// channel_id.
 {"type": "history_request", "request_id": "r1", "agent_id": "claw-1",
  "channel_id": "...", "thread_id": null, "limit": 20, "before_id": 123}
 
-// Agora → you, the matching page (oldest-first, reading order), or an `error`
-{"type": "history_response", "request_id": "r1", "has_more": true,
+// Agora → you, the matching page (oldest-first, reading order), or an `error`.
+// `agent_id` is echoed so a connection that registered several agents can tell
+// whose response this is; clients that filter incoming frames by agent id need
+// it to route the answer at all.
+{"type": "history_response", "request_id": "r1", "agent_id": "claw-1",
+ "has_more": true,
  "messages": [{"id": 122, "author": {"id": "me", "name": "me", "type": "user"},
                "text": "hello", "thread_id": null, "ts": "2026-07-11 09:30"}]}
 
@@ -480,6 +488,16 @@ agent's reply lands in a thread under the message that prompted it. No
 agent-side changes are needed; agents that already echo `thread_id` get the
 behavior for free. As with any thread, treat it as a fresh conversation (use
 `history_request` for wider channel context).
+
+**History is pulled, never pushed.** A CLI bridge's model session is separate
+from the channel's own memory: `/switch`, `/new` and a bridge restart all start
+a session that has never seen the conversation. The bundled bridges do not
+pre-load a transcript into such a session — most turns do not need one — but
+they tell the model the transcript is available and fetch a page with
+`history_request` when it asks for one (in the Claude and Codex bridges the ask
+is a sentinel line the bridge intercepts instead of posting; `--no-history`
+removes the capability). So a human who wants the older context after a switch
+just says so in the channel, and one who does not gets a clean session.
 
 **One inbound may produce several posts.** A `post` frame stands on its own —
 it carries its own `channel_id`/`thread_id` and is not correlated to any
