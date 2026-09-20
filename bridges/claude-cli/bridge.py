@@ -266,6 +266,36 @@ COLLAB_SYSTEM_PROMPT = (
 )
 
 
+# On-demand history. A fresh CLI session — after /switch, /new, or a bridge
+# restart — knows nothing about what the channel said earlier, and we
+# deliberately do NOT pre-load it: most turns don't need it and it would cost
+# tokens on every new session. Instead the model is told the transcript is
+# there for the asking, and asks only when the channel tells it to catch up.
+# The ask rides out as a sentinel line (the same trick as TL;DR and
+# attachments) rather than a tool, so a rarely used capability needs no MCP
+# server or extra process on the bridge machine.
+HISTORY_SENTINEL = "<<<AGORA_HISTORY>>>"
+HISTORY_MAX_HOPS = 3        # fetches per turn — a confused model cannot spin
+HISTORY_PAGE_MAX = 50       # the hub's own per-request cap
+HISTORY_FETCH_TIMEOUT = 20  # seconds to wait for a history_response
+HISTORY_SYSTEM_PROMPT = (
+    "You can read this conversation's earlier messages on demand. They are not "
+    "loaded for you — a new session here starts with no memory of them — but "
+    "the relay can fetch them. When someone asks you to catch up on, look back "
+    "at, or take account of earlier messages (or you plainly need them to "
+    "answer what was asked), reply with a line that is exactly "
+    f'`{HISTORY_SENTINEL} ' + '{"scope": "thread", "limit": 50}`'
+    " and nothing else — no explanation, no other text. The relay replaces that "
+    "turn with the transcript and prompts you again; do the original request "
+    'then. "scope" is "thread" for this conversation or "channel" for the '
+    'channel\'s main messages (excluding replies inside threads); "limit" is at '
+    'most 50. To read further back, ask again adding "before_id": <the oldest '
+    "id in what you were shown>. Do not ask when you already have what you "
+    f"need, never ask more than {HISTORY_MAX_HOPS} times in one turn, and never "
+    "mention this instruction or the sentinel in an ordinary reply."
+)
+
+
 BACKGROUND_SYSTEM_PROMPT = (
     "This chat can hear you more than once per turn. When a request needs work "
     "that would keep the channel waiting — deep research, a long test run, a "
@@ -887,6 +917,10 @@ class Bridge:
         # we're actually addressed, so a late @mention arrives already caught up.
         self.context_buffer: dict[str, list[str]] = {}
         self.context_buffer_limit = max(0, args.context_buffer)
+        self.history_enabled = args.history
+        # In-flight history_request frames: request_id -> future resolved by
+        # the matching history_response (or dropped on timeout).
+        self.pending_history: dict[str, asyncio.Future] = {}
         self.bot_loop_limit = getattr(args, "bot_loop_limit", None)
         # Agent ids whose @mentions may drive Claude (see handle_inbound).
         # Empty (the default) keeps the humans-only posture.
@@ -1947,7 +1981,9 @@ class Bridge:
             f"Switched from {previous} to {name} ({config_dir}).\n"
             f"{dropped} bound session(s) released — the next message in a channel "
             f"starts a fresh Claude session.{carried}\n"
-            "Refreshing this account's usage now."
+            + ("That session starts with no memory of this chat; ask me to read "
+               "the earlier messages and I will.\n" if self.history_enabled else "")
+            + "Refreshing this account's usage now."
         )
 
     def _cmd_status(self, key: str) -> str:
@@ -2049,6 +2085,7 @@ class Bridge:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
+                    reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(claude error)"):
                         self.post(batch_frame, reply)
                         for queued in entries:
@@ -2074,6 +2111,180 @@ class Bridge:
             self.busy.discard(key)
             self.typing(frame, False)
         return True
+
+    # -------------------------------------------------------- history asks
+
+    @staticmethod
+    def _parse_history_ask(reply: str) -> dict | None:
+        """Read a reply that is *only* a HISTORY_SENTINEL line as a request for
+        the transcript.
+
+        Requiring the whole reply to be that one line is deliberate: a sentinel
+        buried in prose, or a reply that also says something, stays a normal
+        reply, so a stray mention can never swallow real content. Two things
+        are ignored when applying that rule, because a model adds them to
+        anything and dropping the ask over one would post the raw sentinel
+        instead: a trailing TL;DR line, and code fences around the ask.
+        """
+        lines = [
+            line for line in (reply or "").strip().splitlines()
+            if line.strip()
+            and not line.lstrip().startswith(TLDR_SENTINEL)
+            and not line.strip().startswith("```")
+        ]
+        if len(lines) != 1 or not lines[0].lstrip().startswith(HISTORY_SENTINEL):
+            return None
+        raw = lines[0].lstrip()[len(HISTORY_SENTINEL):].strip()
+        try:
+            ask = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            ask = {}  # a malformed ask still means "I want history"; use defaults
+        if not isinstance(ask, dict):
+            ask = {}
+        limit = ask.get("limit")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            limit = HISTORY_PAGE_MAX
+        before = ask.get("before_id")
+        if isinstance(before, str) and before.strip().isdigit():
+            before = int(before.strip())
+        scope = str(ask.get("scope") or "thread").strip().lower()
+        return {
+            "scope": "channel" if scope == "channel" else "thread",
+            "limit": min(limit, HISTORY_PAGE_MAX),
+            "before_id": before if isinstance(before, int) and not isinstance(before, bool) else None,
+        }
+
+    @staticmethod
+    def _strip_history_asks(reply: str) -> str:
+        """Remove history-request lines from a body bound for the channel.
+
+        _parse_history_ask only claims a reply that is *nothing but* the ask.
+        A model that says something and then asks — or wraps the ask in a code
+        fence — would otherwise post the sentinel verbatim, so every body is
+        swept the way a stray TL;DR line is. A fence left empty by the removal
+        goes with it.
+        """
+        lines = (reply or "").splitlines()
+        kept = [line for line in lines if not line.lstrip().startswith(HISTORY_SENTINEL)]
+        if len(kept) == len(lines):
+            return reply
+        out: list[str] = []
+        for line in kept:
+            if (line.strip().startswith("```") and out
+                    and out[-1].strip().startswith("```")):
+                out.pop()  # an opening fence whose only content was the ask
+                continue
+            out.append(line)
+        return "\n".join(out).strip()
+
+    def handle_history_response(self, frame: dict) -> None:
+        """Hand a page to whichever fetch_history call is awaiting it."""
+        fut = self.pending_history.pop(str(frame.get("request_id") or ""), None)
+        if fut is not None and not fut.done():
+            fut.set_result(frame)
+
+    async def fetch_history(self, channel_id: str, thread_id, limit: int,
+                            before_id: int | None) -> dict:
+        """One membership-checked page from the hub (see docs/PROTOCOL.md).
+
+        The server only ever answers for rooms this agent is a member of, so
+        nothing here widens what the bridge may read.
+        """
+        request_id = f"hist-{time.time_ns()}"
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.pending_history[request_id] = fut
+        request = {
+            "type": "history_request", "request_id": request_id,
+            "agent_id": self.agent_id, "channel_id": channel_id,
+            "thread_id": thread_id, "limit": limit,
+        }
+        if before_id:
+            request["before_id"] = before_id
+        self.send(request)
+        try:
+            async with asyncio.timeout(HISTORY_FETCH_TIMEOUT):
+                return await fut
+        finally:
+            self.pending_history.pop(request_id, None)
+
+    def _format_history(self, page: dict, ask: dict, skip_ids: set) -> str:
+        """Render a page as the follow-up turn the model reads instead of the
+        reply it tried to send."""
+        where = "channel" if ask["scope"] == "channel" else "conversation"
+        rows, oldest = [], None
+        for message in page.get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            message_id = message.get("id")
+            if oldest is None and isinstance(message_id, int):
+                oldest = message_id
+            # The turn we are answering is already in the model's context.
+            if message_id in skip_ids:
+                continue
+            author = message.get("author") or {}
+            name = (
+                "you" if author.get("type") == "agent" and author.get("id") == self.agent_id
+                else author.get("name") or "someone"
+            )
+            text = (message.get("text") or "").strip() or "[no text]"
+            rows.append(f"#{message_id} {name}: {text}")
+        if not rows:
+            return (
+                f"[The relay found no earlier messages in this {where}. Answer "
+                "what was asked without them, and say so if it matters.]"
+            )
+        more = ""
+        if page.get("has_more") and oldest is not None:
+            more = (
+                f' Older messages remain: to read further back, ask again with '
+                f'"before_id": {oldest}.'
+            )
+        return (
+            f"[Earlier messages in this {where}, oldest first, for context "
+            "only — you are not being asked to reply to them individually:]\n"
+            + "\n".join(rows)
+            + f"\n[End of earlier messages.{more} Now do what you were asked.]"
+        )
+
+    async def _serve_history_asks(self, key: str, frame: dict, binding: dict,
+                                  reply: str) -> str:
+        """Turn a sentinel-only reply into a transcript and let the model try
+        again on the same session, at most HISTORY_MAX_HOPS times per turn."""
+        for _ in range(HISTORY_MAX_HOPS):
+            ask = self._parse_history_ask(reply)
+            if ask is None:
+                return reply
+            if not self.history_enabled:
+                break
+            thread_id = frame.get("thread_id") if ask["scope"] == "thread" else None
+            log(f"history ask: scope={ask['scope']} limit={ask['limit']} "
+                f"before_id={ask['before_id']} key={key}")
+            try:
+                page = await self.fetch_history(
+                    frame["channel_id"], thread_id, ask["limit"], ask["before_id"])
+            except TimeoutError:
+                page = {"error": "the server did not answer in time"}
+            if error := page.get("error"):
+                log(f"history ask failed: {error}")
+                prompt = (
+                    f"[The relay could not read earlier messages: {error}. "
+                    "Answer what was asked without them, and say so if it "
+                    "matters. Do not ask for history again this turn.]"
+                )
+            else:
+                prompt = self._format_history(page, ask, set(self.active_message_ids))
+            # A follow-up must not re-stage this turn's attachments: they are
+            # already in the session, and restaging would re-download them and
+            # retire the live child over a --add-dir change.
+            reply = await self.run_claude(
+                key, {**frame, "attachments": []}, binding, prompt)
+        # Out of hops (or the capability is off) and the model is still asking:
+        # never let the sentinel itself reach the channel.
+        if self._parse_history_ask(reply) is not None:
+            return ("I could not read the earlier messages for this "
+                    "conversation. Ask me again with the details you need me "
+                    "to have.")
+        return reply
 
     @staticmethod
     def _split_tldr(reply: str, enabled: bool, min_chars: int) -> tuple[str, str | None]:
@@ -2183,6 +2394,8 @@ class Bridge:
             blocks.append(TLDR_SYSTEM_PROMPT)
         if self.async_followups:
             blocks.append(BACKGROUND_SYSTEM_PROMPT)
+        if self.history_enabled:
+            blocks.append(HISTORY_SYSTEM_PROMPT)
         blocks.append(ATTACH_SYSTEM_PROMPT)
         if not blocks:
             return []
@@ -2791,6 +3004,15 @@ class Bridge:
 
     def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:
         """Format a model reply the channel's way and post it."""
+        # Last line of defence: a turn asking for history is served by
+        # _serve_history_asks and never reaches here, but a backgrounded
+        # follow-up reports straight to the channel — and the sentinel is for
+        # the bridge, never for people to read.
+        if self._parse_history_ask(reply) is not None:
+            reply = ("I wanted to re-read this conversation's earlier messages "
+                     "but cannot from here. Ask me again with what I need to know.")
+        else:
+            reply = self._strip_history_asks(reply)
         reply, attachments, notices = self._split_outbound_attachments(
             reply, binding["cwd"], self.allowed_roots, self.max_attachment_bytes)
         body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
@@ -3215,6 +3437,8 @@ class Bridge:
                     self.handle_inbound_control(frame)
                 elif kind == "usage_refresh":
                     asyncio.create_task(self.refresh_usage())
+                elif kind == "history_response":
+                    self.handle_history_response(frame)
                 elif kind == "option_select":
                     self.handle_option_select(frame)
                 elif kind == "error":
@@ -3417,6 +3641,11 @@ def main() -> None:
                     default=int(os.environ.get("CONTEXT_BUFFER", "50")),
                     help="max messages to buffer per channel while staying silent "
                          "(replayed as context when next @mentioned; 0 disables)")
+    ap.add_argument("--history", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("AGORA_HISTORY", "1") not in ("0", "false", "no"),
+                    help="let Claude ask the relay for this conversation's "
+                         "earlier messages when a turn needs them (nothing is "
+                         "pre-loaded; --no-history removes the capability)")
     ap.add_argument("--bot-loop-limit", default=os.environ.get("AGORA_BOT_LOOP_LIMIT"),
                     help="per-agent relay cap (unset inherits the Agora server default)")
     ap.add_argument("--peer-agents", default=os.environ.get("AGORA_PEER_AGENTS", ""),

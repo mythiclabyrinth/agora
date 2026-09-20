@@ -157,6 +157,8 @@ def make_bridge(peer_agents=""):
     instance.pending_deletes = {}
     instance.deleted_thread_roots = {}
     instance.active_message_ids = set()
+    instance.history_enabled = True
+    instance.pending_history = {}
     instance.stop_requested = set()
     instance.stopped_processes = set()
     instance.queue_full_notified = set()
@@ -439,6 +441,7 @@ class PromptSuffixTests(unittest.TestCase):
     def test_collab_suffix_rides_only_with_peer_agents(self):
         instance = make_bridge(peer_agents="claude-cli")
         instance.tldr_default = False
+        instance.history_enabled = False
         self.assertEqual(
             instance._prompt_suffixes({}), bridge.COLLAB_PROMPT_SUFFIX + bridge.ATTACH_PROMPT_SUFFIX)
         instance.peer_agents = frozenset()
@@ -446,6 +449,15 @@ class PromptSuffixTests(unittest.TestCase):
         instance.tldr_default = True
         self.assertEqual(
             instance._prompt_suffixes({}), bridge.TLDR_PROMPT_SUFFIX + bridge.ATTACH_PROMPT_SUFFIX)
+
+    def test_history_suffix_rides_only_when_the_capability_is_on(self):
+        instance = make_bridge()
+        instance.tldr_default = False
+        self.assertEqual(
+            instance._prompt_suffixes({}),
+            bridge.HISTORY_PROMPT_SUFFIX + bridge.ATTACH_PROMPT_SUFFIX)
+        instance.history_enabled = False
+        self.assertNotIn(bridge.HISTORY_PROMPT_SUFFIX, instance._prompt_suffixes({}))
 
 
 class OutboundAttachmentTests(unittest.TestCase):
@@ -682,6 +694,7 @@ def make_account_bridge(tmp, raw_accounts, logged_in=("a", "b"), bindings=None):
     instance.bindings = bindings if bindings is not None else {}
     instance.listings = {"c1": [{"session_id": "old"}]}
     instance.busy = set()
+    instance.history_enabled = True
     instance.send = Mock()
     return instance
 
@@ -1087,6 +1100,135 @@ class SingleAccountCompatTests(unittest.TestCase):
                 self.assertEqual(bridge.read_codex_usage()["windows"][0]["used_percent"], 7.0)
                 self.assertEqual(bridge.recent_sessions(5), [])
                 self.assertIsNone(bridge.find_session("t1"))
+
+
+class HistoryAskTests(unittest.TestCase):
+    def test_only_a_bare_sentinel_line_counts_as_an_ask(self):
+        parse = bridge.Bridge._parse_history_ask
+        self.assertEqual(
+            parse(bridge.HISTORY_SENTINEL + ' {"scope": "channel", "limit": 10}'),
+            {"scope": "channel", "limit": 10, "before_id": None},
+        )
+        self.assertEqual(
+            parse(bridge.HISTORY_SENTINEL),
+            {"scope": "thread", "limit": bridge.HISTORY_PAGE_MAX, "before_id": None},
+        )
+        self.assertEqual(parse(bridge.HISTORY_SENTINEL + " {oops")["scope"], "thread")
+        ask = parse(bridge.HISTORY_SENTINEL + ' {"limit": 500, "before_id": "42"}')
+        self.assertEqual((ask["limit"], ask["before_id"]), (bridge.HISTORY_PAGE_MAX, 42))
+        self.assertIsNone(parse(f"Sure, I can use {bridge.HISTORY_SENTINEL} for that."))
+        self.assertIsNone(parse("Here is the answer.\n" + bridge.HISTORY_SENTINEL))
+        self.assertIsNone(parse("plain reply"))
+        self.assertIsNotNone(
+            parse(bridge.HISTORY_SENTINEL + "\n" + bridge.TLDR_SENTINEL + " asked for history"))
+
+    def test_a_fenced_ask_is_still_an_ask(self):
+        parse = bridge.Bridge._parse_history_ask
+        fenced = "```json\n" + bridge.HISTORY_SENTINEL + ' {"scope": "channel"}\n```'
+        self.assertEqual(parse(fenced)["scope"], "channel")
+        self.assertEqual(parse("```\n" + bridge.HISTORY_SENTINEL + "\n```")["scope"], "thread")
+        self.assertIsNone(parse("```\nprint('hi')\n```"))
+
+    def test_a_mixed_reply_is_swept_before_posting(self):
+        strip = bridge.Bridge._strip_history_asks
+        self.assertEqual(
+            strip("Let me look that up.\n" + bridge.HISTORY_SENTINEL + ' {"scope": "thread"}'),
+            "Let me look that up.",
+        )
+        # Fenced and mixed: the fence left empty by the removal goes too.
+        self.assertEqual(
+            strip("Checking.\n```json\n" + bridge.HISTORY_SENTINEL + "\n```"), "Checking.")
+        # An ordinary reply is returned untouched, object identity and all.
+        plain = "Done — deployed."
+        self.assertIs(strip(plain), plain)
+
+    def test_ask_is_answered_with_a_transcript_and_the_reply_is_reissued(self):
+        async def run():
+            b = make_bridge()
+            b.active_message_ids = {9}
+            frame = {"channel_id": "c1", "thread_id": 7, "attachments": [{"id": "f1"}]}
+
+            def answer(request):
+                self.assertEqual(request["type"], "history_request")
+                self.assertEqual(request["thread_id"], 7)
+                b.handle_history_response({
+                    "request_id": request["request_id"], "agent_id": "codex-cli",
+                    "has_more": True,
+                    "messages": [
+                        {"id": 4, "author": {"type": "user", "name": "Tom"}, "text": "ship it"},
+                        {"id": 5, "author": {"type": "agent", "id": "codex-cli"}, "text": "on it"},
+                        {"id": 9, "author": {"type": "user", "name": "Tom"}, "text": "catch up"},
+                    ],
+                })
+
+            b.send = Mock(side_effect=answer)
+            b.run_codex = AsyncMock(return_value="Caught up: we agreed to ship.")
+            reply = await b._serve_history_asks(
+                "c1:7", frame, {}, bridge.HISTORY_SENTINEL + ' {"scope": "thread"}')
+
+            self.assertEqual(reply, "Caught up: we agreed to ship.")
+            prompt = b.run_codex.await_args.args[3]
+            self.assertIn("#4 Tom: ship it", prompt)
+            self.assertIn("#5 you: on it", prompt)
+            self.assertNotIn("catch up", prompt)
+            self.assertIn('"before_id": 4', prompt)
+            self.assertEqual(b.run_codex.await_args.args[1]["attachments"], [])
+
+        asyncio.run(run())
+
+    def test_a_failed_fetch_tells_the_model_instead_of_posting_the_sentinel(self):
+        async def run():
+            b = make_bridge()
+            b.send = Mock(side_effect=lambda request: b.handle_history_response({
+                "request_id": request["request_id"],
+                "error": "agent is not a member of this channel",
+            }))
+            b.run_codex = AsyncMock(return_value="I do not have the earlier context.")
+            reply = await b._serve_history_asks(
+                "c1", {"channel_id": "c1", "thread_id": None}, {}, bridge.HISTORY_SENTINEL)
+            self.assertEqual(reply, "I do not have the earlier context.")
+            self.assertIn("not a member", b.run_codex.await_args.args[3])
+
+        asyncio.run(run())
+
+    def test_asking_forever_is_capped_and_never_leaks_the_sentinel(self):
+        async def run():
+            b = make_bridge()
+            b.send = Mock(side_effect=lambda request: b.handle_history_response({
+                "request_id": request["request_id"], "messages": [], "has_more": False,
+            }))
+            b.run_codex = AsyncMock(return_value=bridge.HISTORY_SENTINEL)
+            reply = await b._serve_history_asks(
+                "c1", {"channel_id": "c1", "thread_id": None}, {}, bridge.HISTORY_SENTINEL)
+            self.assertEqual(b.run_codex.await_count, bridge.HISTORY_MAX_HOPS)
+            self.assertNotIn(bridge.HISTORY_SENTINEL, reply)
+
+        asyncio.run(run())
+
+    def test_disabled_capability_never_fetches(self):
+        async def run():
+            b = make_bridge()
+            b.history_enabled = False
+            b.send = Mock()
+            b.run_codex = AsyncMock()
+            reply = await b._serve_history_asks(
+                "c1", {"channel_id": "c1", "thread_id": None}, {}, bridge.HISTORY_SENTINEL)
+            b.send.assert_not_called()
+            b.run_codex.assert_not_awaited()
+            self.assertNotIn(bridge.HISTORY_SENTINEL, reply)
+
+        asyncio.run(run())
+
+    def test_an_ordinary_reply_passes_straight_through(self):
+        async def run():
+            b = make_bridge()
+            b.send = Mock()
+            reply = await b._serve_history_asks(
+                "c1", {"channel_id": "c1", "thread_id": None}, {}, "Done — deployed.")
+            self.assertEqual(reply, "Done — deployed.")
+            b.send.assert_not_called()
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

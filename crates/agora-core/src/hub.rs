@@ -2168,9 +2168,13 @@ impl Hub {
         let Some(handle) = self.agent_handle(agent_id) else {
             return; // no live connection to answer on
         };
+        // `agent_id` is echoed because one connection may register several
+        // agents: without it a client cannot tell whose response this is, and
+        // bridges that filter incoming frames by agent id drop it outright.
         let mut response = json!({
             "type": "history_response",
             "request_id": frame["request_id"],
+            "agent_id": agent_id,
         });
         if channel_id.is_empty() || self.store.channel(channel_id).is_none() {
             response["error"] = json!("unknown channel");
@@ -2200,6 +2204,22 @@ impl Hub {
         let has_more = rows.len() > limit;
         if has_more {
             rows.remove(0);
+        }
+        // A thread's root is a top-level message, so a thread page never
+        // contains it — and the root is usually what the thread is *about*.
+        // Prepend it once the page reaches the start of the thread. The
+        // channel check matters: without it a `thread_id` from another room
+        // would hand back a message this agent may not read.
+        if let Some(tid) = thread_id {
+            if !has_more {
+                if let Some(root) = self
+                    .store
+                    .message(tid)
+                    .filter(|root| root["channel_id"].as_str() == Some(channel_id))
+                {
+                    rows.insert(0, root);
+                }
+            }
         }
         let messages: Vec<Value> = rows
             .iter()
@@ -2853,6 +2873,8 @@ mod tests {
         }));
         let resp = last_frame(&mut rx, "history_response").unwrap();
         assert_eq!(resp["request_id"], "r1");
+        // Clients route responses by agent id on a multi-agent connection.
+        assert_eq!(resp["agent_id"], "bot-a");
         assert_eq!(resp["has_more"], true);
         let msgs = resp["messages"].as_array().unwrap();
         // Most recent page, oldest-first within it.
@@ -2907,9 +2929,43 @@ mod tests {
         }));
         let resp = last_frame(&mut rx, "history_response").unwrap();
         let msgs = resp["messages"].as_array().unwrap();
+        // The root rides along — it is a top-level row, so the thread query
+        // cannot see it, but it is what the thread is about.
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["text"], "root");
+        assert_eq!(msgs[0]["id"].as_i64(), Some(tid));
+        assert_eq!(msgs[1]["text"], "in thread");
+        assert_eq!(msgs[1]["thread_id"].as_i64(), Some(tid));
+
+        // Only on the page that reaches the start of the thread.
+        h.post_user_message(&cid, "later", "tom", None, Some(tid), vec![]);
+        h.handle_agent_frame(&json!({
+            "type": "history_request", "request_id": "r2", "agent_id": "bot-a",
+            "channel_id": cid, "thread_id": tid, "limit": 1,
+        }));
+        let resp = last_frame(&mut rx, "history_response").unwrap();
+        let msgs = resp["messages"].as_array().unwrap();
+        assert_eq!(resp["has_more"], true);
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0]["text"], "in thread");
-        assert_eq!(msgs[0]["thread_id"].as_i64(), Some(tid));
+        assert_eq!(msgs[0]["text"], "later");
+    }
+
+    #[test]
+    fn history_request_thread_root_stays_inside_the_named_channel() {
+        let h = hub();
+        let mut rx = add_agent(&h, "bot-a", "Bot A", false);
+        let mine = setup_channel(&h, &["bot-a"]);
+        let theirs = setup_channel(&h, &[]); // bot-a is not a member
+        let secret = h.post_user_message(&theirs, "secret", "tom", None, None, vec![]);
+
+        // A thread id pointing into another room must not leak that message
+        // through the page this agent *is* allowed to read.
+        h.handle_agent_frame(&json!({
+            "type": "history_request", "request_id": "r1", "agent_id": "bot-a",
+            "channel_id": mine, "thread_id": secret["id"],
+        }));
+        let resp = last_frame(&mut rx, "history_response").unwrap();
+        assert_eq!(resp["messages"].as_array().unwrap().len(), 0);
     }
 
     #[test]
