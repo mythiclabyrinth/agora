@@ -9,6 +9,7 @@ import type {
   AgentUsageResponse,
   Message,
   MessageDeleteEvent,
+  MessageClearEvent,
   MessageEvent,
   PinEvent,
   PinnedMessage,
@@ -287,6 +288,52 @@ export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): voi
   void qc.invalidateQueries({ queryKey: keys.stars(ev.channel_id) });
 }
 
+const emptyPages = (data: MessagePages | undefined): MessagePages | undefined =>
+  data ? { ...data, pages: [[]], pageParams: [undefined] } : data;
+
+/** Apply a bulk history clear without replaying one event per deleted row. */
+export function applyMessageClear(qc: QueryClient, ev: MessageClearEvent): void {
+  if (ev.thread_id == null) {
+    qc.setQueryData<MessagePages>(keys.messages(ev.channel_id, null), emptyPages);
+    qc.removeQueries({
+      predicate: query => query.queryKey[0] === "messages"
+        && query.queryKey[1] === ev.channel_id && query.queryKey[2] !== 0,
+    });
+    qc.removeQueries({
+      predicate: query => query.queryKey[0] === "message"
+        && (query.state.data as Message | undefined)?.channel_id === ev.channel_id,
+    });
+    qc.setQueryData<ThreadRow[]>(keys.threads, rows =>
+      rows?.filter(row => row.channel_id !== ev.channel_id),
+    );
+  } else {
+    qc.setQueryData<MessagePages>(keys.messages(ev.channel_id, ev.thread_id), emptyPages);
+    qc.setQueryData<MessagePages>(keys.messages(ev.channel_id, null), data => {
+      if (!data) return data;
+      return {
+        ...data,
+        pages: data.pages.map(page => page.map(message =>
+          message.id === ev.thread_id ? { ...message, reply_count: 0 } : message)),
+      };
+    });
+    qc.setQueryData<Message>(keys.message(ev.thread_id), root =>
+      root ? { ...root, reply_count: 0 } : root,
+    );
+    qc.setQueryData<ThreadRow[]>(keys.threads, rows => rows?.map(row =>
+      row.root.id === ev.thread_id
+        ? { ...row, reply_count: 0, unread: 0, root: { ...row.root, reply_count: 0 } }
+        : row),
+    );
+  }
+  void qc.invalidateQueries({ queryKey: keys.pins(ev.channel_id) });
+  void qc.invalidateQueries({ queryKey: keys.stars(ev.channel_id) });
+  void qc.invalidateQueries({ queryKey: ["attachments", ev.channel_id] });
+  void qc.invalidateQueries({ queryKey: ["search"] });
+  void qc.invalidateQueries({ queryKey: keys.groups });
+  void qc.invalidateQueries({ queryKey: keys.dms });
+  void qc.invalidateQueries({ queryKey: keys.threads });
+}
+
 /* ------------------------------------------------------------- driver */
 
 export interface WsContext {
@@ -406,6 +453,10 @@ export function applyWsEvent(
     case "message_delete": {
       applyMessageDelete(qc, ev);
       void qc.invalidateQueries({ queryKey: ["attachments", ev.channel_id] });
+      break;
+    }
+    case "message_clear": {
+      applyMessageClear(qc, ev);
       break;
     }
     case "read": {

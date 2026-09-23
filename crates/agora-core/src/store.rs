@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 pub const DM_GROUP_ID: &str = "__dms";
 pub const DM_GROUP_NAME: &str = "Direct messages";
 
+#[derive(Clone, Copy)]
+enum DeleteScope { Channel, Message, ThreadReplies }
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS groups (
     id TEXT PRIMARY KEY,
@@ -2374,53 +2377,69 @@ impl Store {
     /// removed rows: attachments (files unlinked from disk), pins, stars,
     /// reactions, mentions, and the thread's read/hide markers.
     pub fn delete_message(&self, message_id: i64) -> bool {
-        let file_ids: Vec<String>;
-        let deleted;
-        {
+        let channel_id = {
             let conn = self.conn.lock().unwrap();
-            let message_ids: Vec<i64> = {
-                let mut stmt = conn
-                    .prepare("SELECT id FROM messages WHERE id = ?1 OR thread_id = ?1")
-                    .unwrap();
-                stmt.query_map(params![message_id], |r| r.get::<_, i64>(0))
-                    .unwrap()
-                    .filter_map(Result::ok)
-                    .collect()
+            conn.query_row("SELECT channel_id FROM messages WHERE id = ?1", params![message_id],
+                |r| r.get::<_, String>(0)).ok()
+        };
+        let Some(channel_id) = channel_id else { return false };
+        self.delete_messages(&channel_id, Some(message_id), DeleteScope::Message) > 0
+    }
+
+    /// Delete every message in a channel without deleting the channel itself.
+    pub fn clear_channel_messages(&self, channel_id: &str) -> usize {
+        self.delete_messages(channel_id, None, DeleteScope::Channel)
+    }
+
+    /// Delete only replies under a root, preserving the root and its metadata.
+    pub fn clear_thread_replies(&self, channel_id: &str, thread_id: i64) -> usize {
+        self.delete_messages(channel_id, Some(thread_id), DeleteScope::ThreadReplies)
+    }
+
+    fn delete_messages(&self, channel_id: &str, target_id: Option<i64>, scope: DeleteScope) -> usize {
+        let (deleted, file_ids) = {
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            // Dependent rows are selected in SQLite instead of materializing
+            // ids into a huge IN list that can exceed its parameter limit.
+            let predicate = match scope {
+                DeleteScope::Channel => "channel_id = ?1 AND ?2 IS NULL",
+                DeleteScope::Message => "channel_id = ?1 AND (id = ?2 OR thread_id = ?2)",
+                DeleteScope::ThreadReplies => "channel_id = ?1 AND thread_id = ?2",
             };
-            if message_ids.is_empty() {
-                return false;
-            }
-            let placeholders = vec!["?"; message_ids.len()].join(",");
-            file_ids = {
-                let mut stmt = conn
-                    .prepare(&format!(
-                        "SELECT id FROM files WHERE message_id IN ({placeholders})"
-                    ))
-                    .unwrap();
-                stmt.query_map(params_from_iter(message_ids.iter()), |r| {
-                    r.get::<_, String>(0)
-                })
-                .unwrap()
-                .filter_map(Result::ok)
-                .collect()
+            let selected = format!("SELECT id FROM messages WHERE {predicate}");
+            let file_ids = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT id FROM files WHERE message_id IN ({selected})")).unwrap();
+                stmt.query_map(params![channel_id, target_id], |r| r.get::<_, String>(0))
+                    .unwrap().filter_map(Result::ok).collect::<Vec<_>>()
             };
-            for table in ["messages", "files", "pins", "stars", "reactions", "mentions"] {
-                let column = if table == "messages" { "id" } else { "message_id" };
-                conn.execute(
-                    &format!("DELETE FROM {table} WHERE {column} IN ({placeholders})"),
-                    params_from_iter(message_ids.iter()),
-                )
-                .unwrap();
+            let deleted = tx.query_row(
+                &format!("SELECT COUNT(*) FROM messages WHERE {predicate}"),
+                params![channel_id, target_id], |r| r.get::<_, usize>(0)).unwrap();
+            for table in ["files", "pins", "stars", "reactions", "mentions"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE message_id IN ({selected})"),
+                    params![channel_id, target_id]).unwrap();
             }
-            for table in ["thread_reads", "thread_hides"] {
-                conn.execute(
-                    &format!("DELETE FROM {table} WHERE thread_id = ?1"),
-                    params![message_id],
-                )
-                .unwrap();
+            match scope {
+                DeleteScope::Channel => for table in ["thread_reads", "thread_hides"] {
+                    tx.execute(&format!(
+                        "DELETE FROM {table} WHERE thread_id IN (SELECT id FROM messages WHERE {predicate})"),
+                        params![channel_id, target_id]).unwrap();
+                },
+                DeleteScope::Message => for table in ["thread_reads", "thread_hides"] {
+                    tx.execute(&format!("DELETE FROM {table} WHERE thread_id = ?1"),
+                        params![target_id]).unwrap();
+                },
+                DeleteScope::ThreadReplies => {
+                    tx.execute("DELETE FROM thread_reads WHERE thread_id = ?1", params![target_id]).unwrap();
+                }
             }
-            deleted = true;
-        }
+            tx.execute(&format!("DELETE FROM messages WHERE {predicate}"),
+                params![channel_id, target_id]).unwrap();
+            tx.commit().unwrap();
+            (deleted, file_ids)
+        };
         self.unlink_files(&file_ids);
         deleted
     }
@@ -3931,6 +3950,78 @@ mod tests {
         // Already gone: false, and nothing else is disturbed.
         assert!(!s.delete_message(root_id));
         assert_eq!(s.messages(cid, None, None, 50).len(), 1);
+    }
+
+    #[test]
+    fn clear_channel_removes_all_history_but_not_other_channels() {
+        let (s, _dir) = disk_store();
+        let g = s.create_group("Team", "", Some("tom"));
+        let gid = g["id"].as_str().unwrap();
+        let c = s.create_channel(gid, "main", "");
+        let cid = c["id"].as_str().unwrap();
+        let other = s.create_channel(gid, "other", "");
+        let other_id = other["id"].as_str().unwrap();
+        let root = s.add_message(cid, "clearable root", "user", "tom", None, None,
+            &[attachment("root.txt")]);
+        let root_id = root["id"].as_i64().unwrap();
+        let reply = s.add_message(cid, "clearable reply", "agent", "bot", None, Some(root_id),
+            &[attachment("reply.txt")]);
+        let keep = s.add_message(other_id, "clearable keeper", "user", "tom", None, None, &[]);
+        s.pin_message(cid, root_id, Some("tom"));
+        s.star_message("tom", cid, reply["id"].as_i64().unwrap());
+        s.add_reaction("tom", cid, root_id, "👍");
+        s.add_mentions(reply["id"].as_i64().unwrap(), cid, &["tom".into()]);
+        s.mark_thread_read("tom", root_id, Some(reply["id"].as_i64().unwrap()));
+        s.hide_thread("tom", root_id);
+        let root_file = attachment_id(&root);
+        let reply_file = attachment_id(&reply);
+
+        assert_eq!(s.clear_channel_messages(cid), 2);
+        assert!(s.messages(cid, None, None, 10).is_empty());
+        assert_eq!(s.message(keep["id"].as_i64().unwrap()).unwrap()["text"], "clearable keeper");
+        assert_attachment_deleted(&s, &root_file);
+        assert_attachment_deleted(&s, &reply_file);
+        let hits = s.search_messages("clearable", false, None, None, None, None, None, false, 10, 0);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["channel_id"], other_id);
+        assert!(s.channel_pins(cid).is_empty());
+        assert!(s.user_stars("tom", cid).is_empty());
+        assert_eq!(s.clear_channel_messages(cid), 0);
+    }
+
+    #[test]
+    fn clear_thread_preserves_root_metadata_and_sibling_threads() {
+        let s = store();
+        let g = s.create_group("Team", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        let root = s.add_message(cid, "root", "user", "tom", None, None, &[]);
+        let root_id = root["id"].as_i64().unwrap();
+        let reply = s.add_message(cid, "remove me", "agent", "bot", None, Some(root_id), &[]);
+        let sibling = s.add_message(cid, "sibling", "user", "tom", None, None, &[]);
+        let sibling_id = sibling["id"].as_i64().unwrap();
+        let sibling_reply = s.add_message(cid, "keep me", "agent", "bot", None, Some(sibling_id), &[]);
+        s.pin_message(cid, root_id, Some("tom"));
+        s.star_message("tom", cid, root_id);
+        s.add_reaction("tom", cid, root_id, "👍");
+        s.hide_thread("tom", root_id);
+        s.mark_thread_read("tom", root_id, Some(reply["id"].as_i64().unwrap()));
+
+        assert_eq!(s.clear_thread_replies(cid, root_id), 1);
+        assert!(s.message(root_id).is_some());
+        assert!(s.message(reply["id"].as_i64().unwrap()).is_none());
+        assert!(s.message(sibling_reply["id"].as_i64().unwrap()).is_some());
+        assert_eq!(s.channel_pins(cid).len(), 1);
+        assert_eq!(s.user_stars("tom", cid).len(), 1);
+        assert_eq!(s.message(root_id).unwrap()["reactions"].as_array().unwrap().len(), 1);
+        let conn = s.conn.lock().unwrap();
+        let hidden: i64 = conn.query_row("SELECT COUNT(*) FROM thread_hides WHERE thread_id = ?1",
+            params![root_id], |r| r.get(0)).unwrap();
+        let reads: i64 = conn.query_row("SELECT COUNT(*) FROM thread_reads WHERE thread_id = ?1",
+            params![root_id], |r| r.get(0)).unwrap();
+        assert_eq!((hidden, reads), (1, 0));
+        drop(conn);
+        assert_eq!(s.clear_thread_replies(cid, root_id), 0);
     }
 
     #[test]

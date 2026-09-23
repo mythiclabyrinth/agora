@@ -4,7 +4,7 @@
 
 import { useMemo, useState } from "react";
 import {
-  FEATURES, fmtTs, useAgents, useChannelAgents, useChannelLive, useGroups, useMe, useMembers,
+  FEATURES, fmtTs, useAgents, useChannelAgents, useChannelLive, useClearMessages, useGroups, useMe, useMembers,
   usePinMessage, usePins, useSeedActivity, useStarMessage, useStars,
   useUpdateChannel, type Message,
 } from "@agora/core";
@@ -19,6 +19,7 @@ import { MessageLog } from "./MessageLog";
 import { Composer } from "./Composer";
 import { LiveButton, LiveStrip, SpeakButton } from "./VoiceControls";
 import { copyDeepLink } from "../lib/deepLinks";
+import { confirmStep, useConfirm } from "../state/confirm";
 
 function pinSnippet(m: { alias?: string | null; text?: string }): string {
   const alias = (m.alias || "").trim();
@@ -166,10 +167,14 @@ export function ChannelPane() {
   const [toolsOpen, setToolsOpen] = useState(false);
   const [starsOpen, setStarsOpen] = useState(false);
   const stars = useStars(channel?.id || "").data || [];
+  const clearChat = useClearMessages(channel?.id || "", null);
+  const clearArmed = useConfirm(s => s.armed) === `clear-chat:${channel?.id}`;
 
   const isDm = channel?.kind === "agent_dm";
   const members = useMembers(isDm ? "" : (group?.id || "")).data || [];
-  const isAdmin = !!(!isDm && group && (group.role === "admin" || me?.instance_admin));
+  const isAdmin = !!(!isDm && group && (
+    group.role === "admin" || channel?.role === "admin" || me?.instance_admin
+  ));
   const mentions = useMemo(
     () => buildMentionIndex(
       agents.map(a => ({ id: a.id, name: a.name })),
@@ -270,6 +275,22 @@ export function ChannelPane() {
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread == null), null)}>
             <Icon name="paperclip" /> Files
           </button>
+          {(isDm || isAdmin) && <button
+            className={`btn sm danger ${clearArmed ? "armed" : ""}`}
+            disabled={clearChat.isPending}
+            title={clearArmed ? "Click again to clear all messages" : `Clear all messages in ${isDm ? "this chat" : `#${channel.name}`}`}
+            onClick={() => {
+              if (!confirmStep(`clear-chat:${channel.id}`)) return;
+              clearChat.mutate(undefined, {
+                onSuccess: result => {
+                  ui.setFilesOpen(false);
+                  toast(result.deleted ? `Cleared ${result.deleted} messages` : "Chat is already empty");
+                },
+                onError: e => toast(`Couldn't clear chat: ${(e as Error).message}`, { variant: "warn" }),
+              });
+            }}>
+            <Icon name="trash-2" /> {clearArmed ? "Clear all?" : "Clear chat"}
+          </button>}
           {!isDm && <button className="btn sm" title="Copy link to this channel"
             onClick={() => void copyDeepLink({
               kind: "channel", groupId: group.id, channelId: channel.id,

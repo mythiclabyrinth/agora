@@ -595,6 +595,14 @@ export interface MessageDeleteEvent {
   thread_id: number | null;
 }
 
+/** Shared history was cleared. A null thread_id clears the whole channel;
+    otherwise only replies under that root were removed. */
+export interface MessageClearEvent {
+  type: "message_clear";
+  channel_id: string;
+  thread_id: number | null;
+}
+
 export type WsEvent =
   | TypingEvent
   | ProgressEvent
@@ -602,6 +610,7 @@ export type WsEvent =
   | MessageUpdateEvent
   | MessageMoveEvent
   | MessageDeleteEvent
+  | MessageClearEvent
   | ReadEvent
   | ThreadReadEvent
   | ThreadRenamedEvent
