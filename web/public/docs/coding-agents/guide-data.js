@@ -33,7 +33,7 @@ export const guides = {
       ["/new <dir>", "Start under an allowed root."],
       ["/worktree <repo> [branch]", "Create an isolated worktree."],
       ["/worktrees", "List worktrees managed by this agent."],
-      ["/model <astra|sol|terra|luna|default>", "Set the model for this conversation. Astra requires Codex CLI 0.153.0 or newer."],
+      ["/model <astra|sol|terra|luna|model-id|default>", "Set the model for this conversation. A family name follows the newest id in the installed Codex CLI; a full id such as gpt-5.6-sol stays pinned. Astra requires Codex CLI 0.153.0 or newer."],
       ["/sandbox <mode>", "Change the sandbox within locally allowed limits."],
       ["/tldr <on|off|default>", "Toggle compact summaries."],
       ["/switch [account]", "List the configured Codex accounts, or move every conversation onto one of them. Requires CODEX_ACCOUNTS."],

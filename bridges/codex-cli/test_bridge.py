@@ -95,16 +95,40 @@ class AttachmentFetchTests(unittest.TestCase):
 
 
 class ModelSelectionTests(unittest.TestCase):
-    def test_friendly_names_are_case_insensitive(self):
-        self.assertEqual(bridge.normalize_model("astra"), "gpt-6-astra")
-        self.assertEqual(bridge.normalize_model("sol"), "gpt-5.6-sol")
-        self.assertEqual(bridge.normalize_model("TERRA"), "gpt-5.6-terra")
-        self.assertEqual(bridge.normalize_model(" luna "), "gpt-5.6-luna")
+    def test_friendly_names_stay_families(self):
+        self.assertEqual(bridge.normalize_model("astra"), "astra")
+        self.assertEqual(bridge.normalize_model("sol"), "sol")
+        self.assertEqual(bridge.normalize_model("TERRA"), "terra")
+        self.assertEqual(bridge.normalize_model(" luna "), "luna")
+
+    def test_explicit_ids_stay_pinned(self):
+        self.assertEqual(bridge.normalize_model("gpt-5.6-sol"), "gpt-5.6-sol")
+        self.assertEqual(bridge.normalize_model("gpt-6-luna"), "gpt-6-luna")
+        self.assertEqual(bridge.normalize_model("GPT-6-Sol"), "gpt-6-sol")
+        self.assertEqual(bridge.normalize_model("gpt-5.5", {"gpt-5.5"}), "gpt-5.5")
 
     def test_unknown_models_are_rejected(self):
         self.assertIsNone(bridge.normalize_model("gpt-unlisted"))
+        self.assertIsNone(bridge.normalize_model("gpt-5.5"))
+        self.assertIsNone(bridge.normalize_model("sol;rm -rf"))
+        self.assertIsNone(bridge.normalize_model("--dangerously-bypass-approvals-and-sandbox"))
 
-    def test_model_command_persists_canonical_id(self):
+    def test_family_resolves_to_the_newest_listed_id(self):
+        models = [
+            {"slug": "gpt-5.6-sol", "visibility": "list", "supported_in_api": True},
+            {"slug": "gpt-6-sol", "visibility": "list", "supported_in_api": True},
+            {"slug": "gpt-6.1-sol", "visibility": "hide", "supported_in_api": True},
+            {"slug": "gpt-8-sol", "visibility": "list", "supported_in_api": False},
+            {"slug": "gpt-5.6-luna", "visibility": "list", "supported_in_api": True},
+            {"slug": "gpt-6-luna", "visibility": "list", "supported_in_api": True},
+            {"slug": "gpt-5.6-terra", "visibility": "list", "supported_in_api": True},
+        ]
+        self.assertEqual(bridge.resolve_model("sol", models), "gpt-6-sol")
+        self.assertEqual(bridge.resolve_model("luna", models), "gpt-6-luna")
+        self.assertEqual(bridge.resolve_model("terra", models), "gpt-5.6-terra")
+        self.assertEqual(bridge.resolve_model("gpt-5.6-sol", models), "gpt-5.6-sol")
+
+    def test_model_command_stores_the_family(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.bindings = {"channel": {"cwd": "/tmp"}}
         instance.default_model = bridge.DEFAULT_MODEL
@@ -112,9 +136,20 @@ class ModelSelectionTests(unittest.TestCase):
 
         reply = instance._cmd_model("channel", "luna")
 
-        self.assertEqual(instance.bindings["channel"]["model"], "gpt-5.6-luna")
-        self.assertIn("gpt-5.6-luna", reply)
+        self.assertEqual(instance.bindings["channel"]["model"], "luna")
+        self.assertIn("gpt-6-luna", reply)
         instance._save_state.assert_called_once()
+
+    def test_explicit_model_command_pins_that_id(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.bindings = {"channel": {"cwd": "/tmp"}}
+        instance.default_model = bridge.DEFAULT_MODEL
+        instance._save_state = Mock()
+
+        reply = instance._cmd_model("channel", "gpt-5.6-sol")
+
+        self.assertEqual(instance.bindings["channel"]["model"], "gpt-5.6-sol")
+        self.assertIn("`codex -m gpt-5.6-sol`", reply)
 
     def test_default_clears_override_and_falls_back_to_sol(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
@@ -127,7 +162,8 @@ class ModelSelectionTests(unittest.TestCase):
         reply = instance._cmd_model("channel", "default")
 
         self.assertNotIn("model", instance.bindings["channel"])
-        self.assertIn("gpt-5.6-sol", reply)
+        self.assertIn("sol", reply)
+        self.assertIn("gpt-6-sol", reply)
 
 
 class SandboxSelectionTests(unittest.TestCase):
@@ -1081,7 +1117,7 @@ class SingleAccountCompatTests(unittest.TestCase):
         instance.account = bridge.DEFAULT_ACCOUNT
         instance.bindings = {"c1": {"session_id": None, "cwd": "/repo"}}
         instance.busy = set()
-        instance.default_model = "gpt-5.6-sol"
+        instance.default_model = "gpt-6-sol"
         instance.default_sandbox = "workspace-write"
         instance.tldr_default = False
         status = instance._cmd_status("c1")
