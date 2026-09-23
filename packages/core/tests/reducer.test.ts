@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { appendMessage, applyAliasToPages, applyMessageDelete, applyMessageUpdate, applyWsEvent, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
+import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
 import { flattenMessages } from "../src/api/queries";
 import { keys } from "../src/api/keys";
 import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
@@ -154,6 +154,43 @@ describe("attachment browser invalidation", () => {
     await Promise.resolve();
     expect(qc.getQueryState(keys.attachments("c1", null))?.isInvalidated).toBe(true);
     expect(qc.getQueryState(keys.attachments("c1", 42))?.isInvalidated).toBe(true);
+  });
+});
+
+describe("applyMessageClear", () => {
+  it("empties a channel and removes only that channel's thread caches", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), pages([1, 2]));
+    qc.setQueryData(keys.messages("c1", 1), pages([3]));
+    qc.setQueryData(keys.messages("c2", 9), pages([10]));
+    qc.setQueryData<ThreadRow[]>(keys.threads, [
+      { root: msg(1), channel_id: "c1" } as ThreadRow,
+      { root: { ...msg(9), channel_id: "c2" }, channel_id: "c2" } as ThreadRow,
+    ]);
+    applyMessageClear(qc, { type: "message_clear", channel_id: "c1", thread_id: null });
+    expect(flattenMessages(qc.getQueryData(keys.messages("c1", null)))).toEqual([]);
+    expect(qc.getQueryData(keys.messages("c1", 1))).toBeUndefined();
+    expect(flattenMessages(qc.getQueryData(keys.messages("c2", 9))).map(m => m.id)).toEqual([10]);
+    expect(qc.getQueryData<ThreadRow[]>(keys.threads)?.map(row => row.channel_id)).toEqual(["c2"]);
+  });
+
+  it("clears replies and resets the surviving root's reply count", () => {
+    const qc = new QueryClient();
+    const root = { ...msg(5), reply_count: 2 };
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[root, msg(6)]], pageParams: [undefined],
+    });
+    qc.setQueryData(keys.messages("c1", 5), {
+      pages: [[{ ...msg(7), thread_id: 5 }, { ...msg(8), thread_id: 5 }]],
+      pageParams: [undefined],
+    });
+    qc.setQueryData<ThreadRow[]>(keys.threads, [{
+      root, channel_id: "c1", reply_count: 2, unread: 2,
+    } as ThreadRow]);
+    applyWsEvent(qc, { type: "message_clear", channel_id: "c1", thread_id: 5 }, { username: "me" });
+    expect(flattenMessages(qc.getQueryData(keys.messages("c1", 5)))).toEqual([]);
+    expect(flattenMessages(qc.getQueryData(keys.messages("c1", null)))[0].reply_count).toBe(0);
+    expect(qc.getQueryData<ThreadRow[]>(keys.threads)?.[0]).toMatchObject({ reply_count: 0, unread: 0 });
   });
 });
 

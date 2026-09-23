@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flashMessage, useJump } from "../state/jump";
 import {
-  flattenMessages, useAgents, useChannelAgents, useGroups, useMarkThreadRead, useMe,
+  flattenMessages, useAgents, useChannelAgents, useClearMessages, useGroups, useMarkThreadRead, useMe,
   useMessage, useMessages, usePinMessage, usePins, useThreads, type Message,
 } from "@agora/core";
 import { slugify } from "../lib/mentions";
@@ -19,6 +19,8 @@ import { SectionRail } from "./SectionRail";
 import { Composer } from "./Composer";
 import { LiveRows } from "./ChannelPane";
 import { LiveButton, LiveStrip, SpeakButton } from "./VoiceControls";
+import { confirmStep, useConfirm } from "../state/confirm";
+import { toast } from "../lib/toast";
 
 const AT_BOTTOM_PX = 40;
 const NEAR_TOP_PX = 400;
@@ -169,6 +171,8 @@ export function ThreadPane() {
   const pins = usePins(channel?.id || "").data || [];
   const pinMut = usePinMessage(channel?.id || "");
   const pinned = pins.some(p => p.id === rootId);
+  const clearThread = useClearMessages(channel?.id || "", rootId);
+  const clearArmed = useConfirm(s => s.armed) === `clear-thread:${rootId}`;
 
   const jumpTarget = useJump(s => s.target);
   const clearJump = useJump(s => s.clear);
@@ -191,7 +195,9 @@ export function ThreadPane() {
   // Avatars come from the full /api/agents roster (the channel-agents payload
   // is {id, name} only) — same lookup as vanilla and MessageItem.
   const roster = useAgents().data || [];
-  const isAdmin = !!(group && (group.role === "admin" || me?.instance_admin));
+  const isAdmin = !!(group && (
+    group.role === "admin" || channel?.role === "admin" || me?.instance_admin
+  ));
   const mentions = useMemo(
     () => buildMentionIndex(agents.map(a => ({ id: a.id, name: a.name })), me ? [me.username] : []),
     [agents, me],
@@ -255,6 +261,22 @@ export function ThreadPane() {
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread === rootId), rootId)}>
             <Icon name="paperclip" /><span className="ago-btn-label">Files</span>
           </button>
+          {(channel.kind === "agent_dm" || isAdmin) && <button
+            className={`btn sm danger ${clearArmed ? "armed" : ""}`}
+            disabled={clearThread.isPending}
+            title={clearArmed ? "Click again to clear all replies" : "Clear all replies; keep the first message"}
+            onClick={() => {
+              if (!confirmStep(`clear-thread:${rootId}`)) return;
+              clearThread.mutate(undefined, {
+                onSuccess: result => {
+                  ui.setFilesOpen(false);
+                  toast(result.deleted ? `Cleared ${result.deleted} replies` : "Thread is already empty");
+                },
+                onError: e => toast(`Couldn't clear thread: ${(e as Error).message}`, { variant: "warn" }),
+              });
+            }}>
+            <Icon name="trash-2" /><span className="ago-btn-label">{clearArmed ? "Clear all?" : "Clear thread"}</span>
+          </button>}
           {me?.voice_tts && <SpeakButton />}
           {me?.voice_stt && me?.voice_tts && <LiveButton channelId={channel.id} threadId={rootId} />}
           <button className={`btn sm ${pinned ? "active" : ""}`}

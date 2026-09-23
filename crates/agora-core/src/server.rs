@@ -403,8 +403,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/channels/{channel_id}/messages",
-            get(list_messages).post(post_message),
+            get(list_messages).post(post_message).delete(clear_channel_messages),
         )
+        .route("/api/channels/{channel_id}/threads/{thread_id}/replies", delete(clear_thread_replies))
         .route("/api/channels/{channel_id}/attachments", get(list_attachments))
         .route(
             "/api/channels/{channel_id}/attachments/{file_id}",
@@ -2868,6 +2869,43 @@ async fn delete_message(
         }),
     );
     Ok(Json(json!({"ok": true})))
+}
+
+/// Clear shared history without deleting its container. Agent DMs remain
+/// owner-private; ordinary channels require their normal admin boundary.
+async fn clear_channel_messages(
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channel = require_channel_member(&state, &user, &channel_id)?;
+    if channel["kind"] != "agent_dm" { require_channel_admin(&state, &user, &channel_id)?; }
+    let deleted = state.hub.store.clear_channel_messages(&channel_id);
+    state.hub.post_transient(&channel_id, json!({
+        "type": "message_clear", "channel_id": channel_id, "thread_id": null,
+    }));
+    Ok(Json(json!({"ok": true, "deleted": deleted})))
+}
+
+async fn clear_thread_replies(
+    State(state): State<AppState>,
+    Path((channel_id, thread_id)): Path<(String, i64)>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channel = require_channel_member(&state, &user, &channel_id)?;
+    if channel["kind"] != "agent_dm" { require_channel_admin(&state, &user, &channel_id)?; }
+    state.hub.store.message(thread_id)
+        .filter(|m| m["channel_id"] == channel_id.as_str() && m["thread_id"].is_null())
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown thread root"))?;
+    let deleted = state.hub.store.clear_thread_replies(&channel_id, thread_id);
+    state.hub.post_transient(&channel_id, json!({
+        "type": "message_clear", "channel_id": channel_id, "thread_id": thread_id,
+    }));
+    Ok(Json(json!({"ok": true, "deleted": deleted})))
 }
 
 /// Edit a human author's own message without replaying it as a fresh turn.
@@ -7209,6 +7247,71 @@ mod tests {
         .await;
         assert!(missed.is_err());
         assert!(store.message(mid(&stray)).is_some());
+    }
+
+    #[tokio::test]
+    async fn clear_history_enforces_admin_and_private_dm_boundaries() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("boss", "", None, "member").unwrap();
+        store.create_user("member", "", None, "member").unwrap();
+        store.create_user("super", "", None, "admin").unwrap();
+        let g = store.create_group("Team", "", Some("boss"));
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "boss", "admin", None);
+        store.add_member(gid, "user", "member", "member", None);
+        let c = store.create_channel(gid, "general", "");
+        let cid = c["id"].as_str().unwrap().to_string();
+        store.add_message(&cid, "keep until admin", "user", "member", None, None, &[]);
+        let q = || Query(HashMap::new());
+
+        let denied = clear_channel_messages(State(state.clone()), Path(cid.clone()), q(),
+            session_headers(&state, "member")).await.unwrap_err();
+        assert_eq!(denied.0, StatusCode::FORBIDDEN);
+        assert_eq!(store.messages(&cid, None, None, 10).len(), 1);
+        let cleared = clear_channel_messages(State(state.clone()), Path(cid.clone()), q(),
+            session_headers(&state, "boss")).await.unwrap();
+        assert_eq!(cleared.0["deleted"], 1);
+        let empty = clear_channel_messages(State(state.clone()), Path(cid), q(),
+            session_headers(&state, "boss")).await.unwrap();
+        assert_eq!(empty.0["deleted"], 0);
+
+        let dm = store.open_agent_dm("member", "bot", "Bot");
+        let dm_id = dm["id"].as_str().unwrap().to_string();
+        store.add_message(&dm_id, "private", "user", "member", None, None, &[]);
+        let admin_denied = clear_channel_messages(State(state.clone()), Path(dm_id.clone()), q(),
+            session_headers(&state, "super")).await.unwrap_err();
+        assert_eq!(admin_denied.0, StatusCode::FORBIDDEN);
+        let owner = clear_channel_messages(State(state.clone()), Path(dm_id), q(),
+            session_headers(&state, "member")).await.unwrap();
+        assert_eq!(owner.0["deleted"], 1);
+    }
+
+    #[tokio::test]
+    async fn clear_thread_requires_a_root_in_the_named_channel() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("boss", "", None, "member").unwrap();
+        let g = store.create_group("Team", "", Some("boss"));
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "boss", "admin", None);
+        let c = store.create_channel(gid, "general", "");
+        let cid = c["id"].as_str().unwrap().to_string();
+        let other = store.create_channel(gid, "other", "");
+        let root = store.add_message(&cid, "root", "user", "boss", None, None, &[]);
+        let root_id = root["id"].as_i64().unwrap();
+        let reply = store.add_message(&cid, "reply", "user", "boss", None, Some(root_id), &[]);
+        let call = |channel_id: String, thread_id: i64| clear_thread_replies(
+            State(state.clone()), Path((channel_id, thread_id)), Query(HashMap::new()),
+            session_headers(&state, "boss"));
+
+        assert_eq!(call(cid.clone(), reply["id"].as_i64().unwrap()).await.unwrap_err().0,
+            StatusCode::NOT_FOUND);
+        assert_eq!(call(other["id"].as_str().unwrap().to_string(), root_id).await.unwrap_err().0,
+            StatusCode::NOT_FOUND);
+        assert_eq!(call(cid.clone(), root_id).await.unwrap().0["deleted"], 1);
+        assert_eq!(call(cid, root_id).await.unwrap().0["deleted"], 0);
+        assert!(store.message(root_id).is_some());
     }
 
     #[tokio::test]

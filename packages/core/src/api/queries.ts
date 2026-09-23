@@ -15,6 +15,7 @@ import { useApi } from "./context";
 import { useLive } from "../state/live";
 import {
   appendMessage,
+  applyMessageClear,
   applyMessageDelete,
   applyMessageUpdate,
   applyMessageToGroups,
@@ -635,6 +636,21 @@ export function useDeleteMessage() {
         message_id: v.message.id,
         thread_id: v.message.thread_id,
       }),
+  });
+}
+
+export function useClearMessages(channelId: string, threadId: number | null) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete<{ ok: boolean; deleted: number }>(
+      threadId == null
+        ? `/api/channels/${encodeURIComponent(channelId)}/messages`
+        : `/api/channels/${encodeURIComponent(channelId)}/threads/${threadId}/replies`,
+    ),
+    onSuccess: () => applyMessageClear(qc, {
+      type: "message_clear", channel_id: channelId, thread_id: threadId,
+    }),
   });
 }
 

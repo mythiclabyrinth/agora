@@ -61,6 +61,8 @@ const routes = {
   "GET /api/channels/general/stars": { stars: [] },
   "PUT /api/channels/general/read": { ok: true, last_read_id: 43 },
   "PUT /api/threads/42/read": { ok: true, last_read_id: 45 },
+  "DELETE /api/channels/general/messages": { ok: true, deleted: 2 },
+  "DELETE /api/channels/general/threads/42/replies": { ok: true, deleted: 2 },
 };
 
 function setup(mode: LayoutMode, threadExpanded = false): void {
@@ -117,6 +119,21 @@ export const Desktop: Story = {
     expect(canvasElement.querySelector('[role="alert"]')).not.toBeInTheDocument();
     expect(getComputedStyle(element(canvasElement, "#agora-side")).position).not.toBe("fixed");
     await expectNoHorizontalOverflow(canvasElement);
+  },
+};
+
+export const DesktopClearChatArmed: Story = {
+  globals: { viewport: { value: "desktopBoundary", isRotated: false } },
+  parameters: {
+    viewport: { defaultViewport: "desktopBoundary" },
+    setup: () => setup("channel"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const clear = await canvas.findByRole("button", { name: /^Clear chat$/ });
+    await userEvent.click(clear);
+    expect(clear).toHaveTextContent("Clear all?");
+    expect(clear).toHaveAttribute("title", "Click again to clear all messages");
   },
 };
 
@@ -210,6 +227,22 @@ export const DesktopThreadExpanded: Story = {
     expect(labels.map(l => l.textContent)).toContain("Files");
     for (const label of labels) await waitFor(() => expect(label).toBeVisible());
     await expectNoHorizontalOverflow(canvasElement);
+  },
+};
+
+export const DesktopClearThreadArmed: Story = {
+  globals: { viewport: { value: "desktopBoundary", isRotated: false } },
+  args: { mode: "thread" },
+  parameters: {
+    viewport: { defaultViewport: "desktopBoundary" },
+    setup: () => setup("thread", true),
+  },
+  play: async ({ canvasElement }) => {
+    const thread = within(element(canvasElement, "#agora-thread"));
+    const clear = await thread.findByRole("button", { name: /^Clear thread$/ });
+    await userEvent.click(clear);
+    expect(clear).toHaveTextContent("Clear all?");
+    expect(clear).toHaveAttribute("title", "Click again to clear all replies");
   },
 };
 
