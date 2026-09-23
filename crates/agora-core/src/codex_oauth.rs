@@ -33,17 +33,19 @@ const OAUTH_SCOPES: &str = "openid profile email offline_access";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Default Ask-AI model when provider is `codex`.
-pub const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
+pub const DEFAULT_CODEX_MODEL: &str = "gpt-6-sol";
 
 /// Client version the Codex CLI sends when listing models. Required by
 /// `GET …/codex/models` (`client_version` query param). Bump when updating
 /// the fallback catalog from a newer CLI cache.
-pub const CODEX_CLIENT_VERSION: &str = "0.147.0";
+pub const CODEX_CLIENT_VERSION: &str = "0.156.1";
 
 /// Fallback suggestions when the live Codex catalog cannot be fetched
 /// (OAuth not linked, network error, cold cache, etc.). Prefer live
 /// `/models?client_version=…` when linked.
 pub const SUGGESTED_CODEX_MODELS: &[&str] = &[
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",

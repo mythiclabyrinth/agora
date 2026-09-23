@@ -88,9 +88,7 @@ ordered by decreasing severity.
      autonomous agent (a hostile image/file could carry a prompt-injection
      payload the model then acts on). Bounded only by the sandbox mode (#1).
 
-7. **Models are allowlisted.** `/model` accepts only `astra`, `sol`, `terra`, or `luna` and
-   maps those friendly names to fixed Codex model ids before constructing the
-   argument vector. Values are never interpreted by a shell.
+7. **Models are allowlisted.** `/model` accepts `astra`, `sol`, `terra`, `luna`, or a concrete model id (a versioned family slug such as `gpt-5.6-sol`, or any slug in this Codex CLI's bundled catalog). A family name is resolved to the newest listed id of that family when a run starts, so it follows `codex update`. The chosen value is one argv element of `codex -m` and is never interpreted by a shell.
 
 8. **Bounded memory DoS on large output.** The subprocess stdout limit is
    64 MB (raised from asyncio's 64 KB default so JSONL lines carrying whole

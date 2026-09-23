@@ -62,7 +62,7 @@ one shows at a time. Messages addressed to another agent have the
 | `/use <n \| session-id>` | bind this channel/thread to a session |
 | `/new <dir>` | bind to a fresh session started in `<dir>` — **`<dir>` must be under an allowed root** (see below); disabled entirely when no roots are configured |
 | `/worktree <repo> [branch]` | isolate this thread in a fresh git worktree + branch; `/worktree [show]`, `/worktree remove [force]`, `/worktrees` work like the Claude bridge |
-| `/model <astra\|sol\|terra\|luna\|default>` | switch this channel to the named model (`default` resets it to the bridge default, `sol` unless configured otherwise); persists in the binding and is passed as `codex -m` on every run. Astra requires Codex CLI 0.153.0 or newer. |
+| `/model <astra\|sol\|terra\|luna\|model-id\|default>` | switch this channel's model (`default` resets it to the bridge default, `sol` unless configured otherwise). A family name is resolved to the newest id of that family in the installed Codex CLI on every run, so `codex update` moves `sol` and `luna` forward. A full id such as `gpt-5.6-sol` stays pinned. Passed as `codex -m`. Astra requires Codex CLI 0.153.0 or newer. |
 | `/sandbox <read-only\|workspace-write\|workspace-git\|full\|bypass\|reset>` | set the sandbox mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CODEX_ALLOW_SANDBOX_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override) |
 | `/switch [account]` | list the configured Codex accounts, or move every channel onto one of them (see [Multiple accounts](#multiple-accounts)) |
@@ -318,8 +318,10 @@ between with `/switch` — see [Multiple accounts](#multiple-accounts)),
 `CODEX_SANDBOX` (default sandbox mode, `workspace-write` when unset —
 overridable per channel with `/sandbox`), `CODEX_ARGS` (extra args for every
 run, e.g. `-c` config overrides or `--profile`), `CODEX_MODEL` (default model
-for every run: `astra`, `sol`, `terra`, or `luna`; defaults to `sol`, and channels
-override it with `/model`),
+for every run: `astra`, `sol`, `terra`, `luna`, or a full id such as
+`gpt-5.6-sol`; defaults to `sol`. A family name tracks the newest id in the
+installed Codex CLI; a full id stays pinned. Channels override it with
+`/model`),
 `CODEX_ALLOW_SANDBOX_ESCALATION` (`1` to let `/sandbox` raise privilege above
 the default — off by default), `CODEX_TLDR` (`1` to add short summaries to long
 replies by default; channels override with `/tldr`), `CODEX_TLDR_MIN_CHARS`

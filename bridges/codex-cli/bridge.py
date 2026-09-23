@@ -215,26 +215,127 @@ def parse_peer_agents(raw: str) -> frozenset[str]:
     return frozenset(t.strip().lower() for t in (raw or "").split(",") if t.strip())
 
 
-# Friendly model choices exposed in chat. Keep the raw ids out of channel
-# state so a future id change only needs this mapping updated.
-MODEL_IDS = {
+# Family names stay unresolved in channel state. Each run asks the installed
+# Codex CLI which id is the newest of that family, so `codex update` changes
+# what `sol` means without an Agora change. A full id is a pin.
+MODEL_FAMILIES = ("astra", "sol", "terra", "luna")
+DEFAULT_MODEL = "sol"
+MODEL_CHOICES = "astra | sol | terra | luna | <model-id> | default"
+# Last resort when this machine's Codex binary can't be asked. Not a pin:
+# a readable catalog always wins.
+_FALLBACK_MODEL_IDS = {
     "astra": "gpt-6-astra",
-    "sol": "gpt-5.6-sol",
+    "sol": "gpt-6-sol",
     "terra": "gpt-5.6-terra",
-    "luna": "gpt-5.6-luna",
+    "luna": "gpt-6-luna",
 }
-DEFAULT_MODEL = MODEL_IDS["sol"]
-MODEL_CHOICES = "astra | sol | terra | luna | default"
+_PINNED_MODEL = re.compile(r"^gpt-\d+(?:\.\d+)*-(?:astra|sol|terra|luna)$")
+_SAFE_MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$")
+_CATALOG_CACHE: dict[str, tuple[int, int, list[dict]]] = {}
 
 
-def normalize_model(raw: str) -> str | None:
-    """Map a friendly name or its exact Codex id to a canonical model id."""
+def normalize_model(raw: str, catalog: set[str] | None = None) -> str | None:
+    """A family name, or an explicit model id. None when it isn't allowlisted.
+
+    Family names are stored as-is and resolved per run. An explicit id is
+    either a versioned family slug (`gpt-5.6-sol`) or a slug from this CLI's
+    bundled catalog (`gpt-5.5`).
+    """
     choice = (raw or "").strip().lower()
-    if choice in MODEL_IDS:
-        return MODEL_IDS[choice]
-    if choice in MODEL_IDS.values():
+    if choice in MODEL_FAMILIES:
+        return choice
+    if not _SAFE_MODEL_ID.fullmatch(choice):
+        return None
+    if _PINNED_MODEL.fullmatch(choice):
+        return choice
+    if catalog and choice in catalog:
         return choice
     return None
+
+
+def _version_key(slug: str) -> tuple[int, ...]:
+    match = re.match(r"^gpt-(\d+(?:\.\d+)*)-", slug)
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _family_of(slug: str) -> str | None:
+    match = re.fullmatch(r"gpt-\d+(?:\.\d+)*-(astra|sol|terra|luna)", slug)
+    return match.group(1) if match else None
+
+
+def resolve_model(choice: str, models: list[dict] | None = None) -> str:
+    """Turn a stored choice into the id passed to `codex -m`."""
+    if choice not in MODEL_FAMILIES:
+        return choice
+    best: str | None = None
+    best_key: tuple[int, ...] | None = None
+    for model in models or []:
+        slug = str(model.get("slug") or "").strip().lower()
+        if _family_of(slug) != choice:
+            continue
+        if model.get("visibility") not in (None, "list"):
+            continue
+        if model.get("supported_in_api") is False:
+            continue
+        key = _version_key(slug)
+        if best is None or key > best_key:
+            best, best_key = slug, key
+    return best or _FALLBACK_MODEL_IDS[choice]
+
+
+def catalog_slugs(models: list[dict]) -> set[str]:
+    return {
+        slug.lower()
+        for model in models
+        if isinstance(model, dict)
+        and isinstance(slug := model.get("slug"), str)
+        and slug.strip()
+    }
+
+
+def bundled_model_catalog(codex_bin: str) -> list[dict]:
+    """Model list shipped inside the installed Codex binary.
+
+    Cached on the binary's mtime, so a `codex update` that replaces the
+    executable is picked up on the next run without a network refresh.
+    """
+    resolved = shutil.which(codex_bin) or codex_bin
+    try:
+        st = os.stat(resolved)
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = None
+    cached = _CATALOG_CACHE.get(resolved)
+    if stamp and cached and cached[:2] == stamp:
+        return cached[2]
+    try:
+        proc = subprocess.run(
+            [codex_bin, "debug", "models", "--bundled"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        raw = proc.stdout or ""
+        start = raw.find("{")
+        if proc.returncode != 0 or start < 0:
+            return cached[2] if cached else []
+        models = json.loads(raw[start:]).get("models") or []
+        if not isinstance(models, list):
+            return []
+    except (OSError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        return cached[2] if cached else []
+    if stamp:
+        _CATALOG_CACHE[resolved] = (*stamp, models)
+    return models
+
+
+def describe_model(choice: str, resolved: str) -> str:
+    if choice == resolved:
+        return choice
+    return f"{choice} ({resolved})"
 
 # Sandbox modes, ordered least->most privileged. A channel may always lower
 # privilege; raising above the bridge startup default needs
@@ -317,7 +418,7 @@ HELP = """Bridge commands (anything else is sent to the bound Codex session):
 /worktree <repo> [branch] - isolate this thread in a fresh git worktree + branch
 /worktree [show] - show this thread's worktree; /worktree remove [force] - delete it
 /worktrees - list every tracked worktree
-/model <astra|sol|terra|luna|default> - set the model for this channel (codex -m)
+/model <astra|sol|terra|luna|<model-id>|default> - set the model (a family tracks the newest id in this Codex CLI; a full id pins it)
 /sandbox <read-only|workspace-write|workspace-git|full|bypass|reset> - set the sandbox mode
 /tldr <on|off|default> - add a toggleable short summary to long replies
 /switch [account] - list Codex accounts, or move every channel onto one
@@ -721,7 +822,14 @@ class Bridge:
         self.default_sandbox = (
             normalize_sandbox_mode(args.sandbox) or args_mode or "workspace-write"
         )
-        self.default_model = normalize_model(args.model) or DEFAULT_MODEL
+        raw_model = (args.model or "").strip()
+        # Family names and versioned pins don't need the catalog. Anything
+        # else (gpt-5.5, …) has to be a slug this CLI actually ships.
+        slugs = None
+        lowered = raw_model.lower()
+        if raw_model and lowered not in MODEL_FAMILIES and not _PINNED_MODEL.fullmatch(lowered):
+            slugs = catalog_slugs(self._model_catalog())
+        self.default_model = normalize_model(raw_model, slugs) or DEFAULT_MODEL
         self.tldr_default = args.tldr
         self.tldr_min_chars = max(0, args.tldr_min_chars)
         self.allow_escalation = args.allow_sandbox_escalation
@@ -1522,26 +1630,65 @@ class Bridge:
         repo_arg, _, branch_arg = arg.partition(" ")
         return self._create_worktree(key, repo_arg.strip(), branch_arg.strip())
 
+    def _model_catalog(self) -> list[dict]:
+        if not getattr(self, "codex_bin", None):
+            return []
+        return bundled_model_catalog(self.codex_bin)
+
+    def _resolved_model(self, raw: str | None) -> str | None:
+        """Family names become the newest id this CLI ships; explicit ids stay."""
+        if not raw and not self.default_model:
+            return None
+        models = self._model_catalog()
+        choice = normalize_model(raw, catalog_slugs(models)) if raw else None
+        if choice is None:
+            choice = self.default_model
+        if not choice:
+            return None
+        return resolve_model(choice, models)
+
+    def _describe_model(self, raw: str | None) -> str:
+        models = self._model_catalog()
+        choice = normalize_model(raw, catalog_slugs(models)) if raw else None
+        if choice is None:
+            choice = self.default_model or "session default"
+        if choice == "session default":
+            return choice
+        return describe_model(choice, resolve_model(choice, models))
+
     def _cmd_model(self, key: str, arg: str) -> str:
         b = self.bindings.get(key)
         if not b:
             return "No session bound here. Run /sessions then /use <n>."
         if not arg:
-            cur = normalize_model(b.get("model")) or self.default_model
-            return f"Model: {cur}\nUsage: /model <{MODEL_CHOICES}>"
+            cur = self._describe_model(b.get("model"))
+            return (
+                f"Model: {cur}\n"
+                "A family name (astra, sol, terra, luna) follows the newest id "
+                "in the installed Codex CLI. A full id such as gpt-5.6-sol stays pinned.\n"
+                f"Usage: /model <{MODEL_CHOICES}>"
+            )
         choice = arg.strip()
         if choice.lower() == "default":
             b.pop("model", None)
             self.bindings[key] = b
             self._save_state()
-            return f"Model reset to the bridge default ({self.default_model})."
-        model = normalize_model(choice)
+            return f"Model reset to the bridge default ({self._describe_model(None)})."
+        model = normalize_model(choice, catalog_slugs(self._model_catalog()))
         if not model:
-            return f"Unknown model {arg!r}. Options: {MODEL_CHOICES}"
+            return (
+                f"Unknown model {arg!r}. Options: {MODEL_CHOICES}. "
+                "Family names track the newest id; pass a full id to pin one."
+            )
         b["model"] = model
         self.bindings[key] = b
         self._save_state()
-        return f"Model set to {model} for this channel. Next messages use `codex -m {model}`."
+        shown = self._describe_model(model)
+        resolved = resolve_model(model, self._model_catalog())
+        return (
+            f"Model set to {shown} for this channel. "
+            f"Next messages use `codex -m {resolved}`."
+        )
 
     def _cmd_sandbox(self, key: str, arg: str) -> str:
         b = self.bindings.get(key)
@@ -1718,7 +1865,7 @@ class Bridge:
         if not b:
             return "No session bound here. Run /sessions then /use <n>."
         sid = b["session_id"][:8] + "…" if b["session_id"] else "(new, not started)"
-        model = normalize_model(b.get("model")) or self.default_model
+        model = self._describe_model(b.get("model"))
         mode = b.get("sandbox") or self.default_sandbox
         tldr = "on" if self._tldr_enabled(b) else "off"
         busy = " — a run is in flight" if key in self.busy else ""
@@ -2134,9 +2281,12 @@ class Bridge:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             raise RunStopped
         mode = binding.get("sandbox") or self.default_sandbox
-        # Normalize persisted values too: older state files could contain an
-        # arbitrary model id from before the friendly-name allowlist existed.
-        model = normalize_model(binding.get("model")) or self.default_model
+        # Family names resolve here, against the CLI that is about to run, so a
+        # Codex update changes the id without rewriting the binding. A stored
+        # full id is passed through. Older state files may hold an id from
+        # before the allowlist; those that still match are kept, the rest fall
+        # back to the bridge default.
+        model = self._resolved_model(binding.get("model"))
         prompt += self._prompt_suffixes(binding)
         try:
             cmd = [self.codex_bin, "exec"]
