@@ -157,20 +157,26 @@ export function MessageItem({
      onLongPress themselves (via MdText) and an absolute-fill backdrop behind
      the content catches long-presses on the bubble's padding and gaps — the
      table's ScrollView never has a Pressable ancestor. */
-  const longPressedAt = React.useRef(0);
+  const longPressed = React.useRef(false);
   const longPress = onLongPress ? () => {
-    longPressedAt.current = Date.now();
+    longPressed.current = true;
     onLongPress(message);
   } : undefined;
   const openThread = onOpenThread && message.id > 0 ? () => {
     // React Native may emit onPress when a long press is released. Options
     // and thread navigation are mutually exclusive gestures.
-    if (Date.now() - longPressedAt.current < 600) return;
+    if (longPressed.current) return;
     onOpenThread(message);
   } : undefined;
+  const pressIn = longPress || openThread
+    ? () => { longPressed.current = false; }
+    : undefined;
+  // Code-block and table bodies deliberately have no tap handler: wrapping
+  // their horizontal ScrollViews in a Pressable steals the pan gesture.
   const pressBackdrop = longPress || openThread ? (
     <Pressable
       style={StyleSheet.absoluteFill}
+      onPressIn={pressIn}
       onPress={openThread}
       onLongPress={longPress}
     />
@@ -181,7 +187,7 @@ export function MessageItem({
       <View style={[styles.row, styles.rowMine]}>
         <View style={[styles.bubble, styles.bubbleMine]}>
           {pressBackdrop}
-          <MdText text={body} onPress={openThread} onLongPress={longPress} />
+          <MdText text={body} onPressIn={pressIn} onPress={openThread} onLongPress={longPress} />
           <ArtifactList artifacts={message.meta?.artifacts} />
           <Attachments
             session={session}
@@ -228,7 +234,7 @@ export function MessageItem({
           {flags}
           <Text style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
         </View>
-        <MdText text={body} onPress={openThread} onLongPress={longPress} />
+        <MdText text={body} onPressIn={pressIn} onPress={openThread} onLongPress={longPress} />
         <ArtifactList artifacts={message.meta?.artifacts} />
         <Attachments
           session={session}

@@ -392,7 +392,7 @@ export function Composer({
         await onSendVoice?.(file, prefix || undefined, showRequireAgent && requireAgentOn);
       }
     } catch (e) {
-      toastErr("Voice message failed", e);
+      toastErr(mode === "draft" ? "Transcription failed" : "Voice message failed", e);
     }
     setRecPhase("idle");
   };

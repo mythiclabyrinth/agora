@@ -68,6 +68,8 @@ async function start(channelId: string, threadId: number | null): Promise<void> 
     useVoiceRec.setState({ recordingKey: null, startedAt: 0 });
     if (session.finishMode !== "cancel" && session.finishMode && session.chunks.length) {
       void processRecording(session, session.finishMode);
+    } else if (session.finishMode === null && session.chunks.length) {
+      toast("Recording stopped unexpectedly and was discarded", { variant: "warn" });
     }
   };
   rec = session;
@@ -98,7 +100,8 @@ async function processRecording(session: RecSession, mode: "send" | "draft"): Pr
       // The WS echo delivers the transcribed message.
     }
   } catch (e) {
-    toast("Voice message failed: " + (e as Error).message, { variant: "warn" });
+    const action = mode === "draft" ? "Transcription" : "Voice message";
+    toast(`${action} failed: ${(e as Error).message}`, { variant: "warn" });
   } finally {
     useVoiceRec.setState({ busyKey: null });
   }

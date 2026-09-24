@@ -43,10 +43,11 @@ function Spans({ spans }: { spans: Span[] }) {
 
 export { columnWidths } from "../lib/tableLayout";
 
-export function MdText({ text, onLongPress, onPress }: {
+export function MdText({ text, onLongPress, onPress, onPressIn }: {
   text: string;
   onLongPress?: () => void;
   onPress?: () => void;
+  onPressIn?: () => void;
 }) {
   const blocks = React.useMemo(() => {
     let validIndex = 0;
@@ -102,7 +103,7 @@ export function MdText({ text, onLongPress, onPress }: {
             );
           case "heading":
             return (
-              <Text key={i} style={[styles.para, styles.bold]} onPress={onPress}
+              <Text key={i} style={[styles.para, styles.bold]} onPress={onPress} onPressIn={onPressIn}
                 onLongPress={onLongPress}>
                 <Spans spans={b.spans} />
               </Text>
@@ -146,7 +147,7 @@ export function MdText({ text, onLongPress, onPress }: {
           }
           default:
             return (
-              <Text key={i} style={styles.para} selectable onPress={onPress}
+              <Text key={i} style={styles.para} selectable onPress={onPress} onPressIn={onPressIn}
                 onLongPress={onLongPress}>
                 <Spans spans={b.spans} />
               </Text>

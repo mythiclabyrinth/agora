@@ -141,6 +141,26 @@ test("tap opens the thread while long-press opens only message options", () => {
   expect(onOpenThread).not.toHaveBeenCalled();
 });
 
+test("a long hold never opens the thread when released", () => {
+  jest.useFakeTimers();
+  const onOpenThread = jest.fn();
+  const onLongPress = jest.fn();
+  const m = message("Hold me for options");
+  const tree = render(m, onLongPress, onOpenThread);
+  const paragraph = tree.root.find((node) =>
+    node.type === Text && node.props.selectable && typeof node.props.onPress === "function"
+  );
+
+  act(() => paragraph.props.onPressIn());
+  act(() => paragraph.props.onLongPress());
+  act(() => { jest.advanceTimersByTime(1_600); });
+  act(() => paragraph.props.onPress());
+
+  expect(onLongPress).toHaveBeenCalledWith(m);
+  expect(onOpenThread).not.toHaveBeenCalled();
+  jest.useRealTimers();
+});
+
 test("tapping a nested link does not open the thread", () => {
   const onOpenThread = jest.fn();
   const tree = render(message("Visit [Agora](https://example.com)"), undefined, onOpenThread);

@@ -2016,39 +2016,63 @@ async fn transcribe_voice_message(
     let stt_provider = voice.stt_provider.clone();
     let stt_model = voice.stt_model.clone();
     let upload_id = new_token();
+    let request_bytes = headers.get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
     let edge_request_id = headers.get("x-request-id")
         .and_then(|value| value.to_str().ok())
         .map(|value| value.chars().take(100).collect::<String>());
+    let ingest_started = Instant::now();
+    tracing::info!(upload_id, edge_request_id, request_bytes, "voice upload started");
     let upload = read_voice_upload(multipart, &upload_id, edge_request_id.as_deref()).await?;
+    tracing::info!(
+        upload_id, edge_request_id, audio_bytes = upload.audio.len(), request_bytes,
+        ingest_ms = ingest_started.elapsed().as_millis(),
+        "voice upload completed"
+    );
     // Validate the conversation scope even though no message is written.
     resolve_thread(&state, &channel_id, upload.thread_id)?;
     let text = run_voice_transcription(
-        &voice.stt_provider, &voice.stt_model,
+        &voice.stt_provider, &voice.stt_model, &upload_id, edge_request_id.as_deref(),
         move || crate::voice::transcribe(
             &stt_provider, &key, &upload.audio, &upload.filename, &stt_model,
         ),
     ).await?;
-    Ok(Json(json!({ "text": text })))
+    Ok(Json(json!({ "text": text.trim() })))
 }
 
 async fn run_voice_transcription<F>(
     provider: &str,
     model: &str,
+    upload_id: &str,
+    edge_request_id: Option<&str>,
     transcribe: F,
 ) -> Result<String, ApiError>
 where
     F: FnOnce() -> anyhow::Result<String> + Send + 'static,
 {
+    let started = Instant::now();
+    tracing::info!(upload_id, edge_request_id, "voice transcription started");
     match tokio::task::spawn_blocking(transcribe).await {
-        Err(_) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed")),
-        Ok(Err(e)) => Err(err(StatusCode::BAD_GATEWAY, &format!(
-            "Voice transcription failed ({provider} / {model}): {}",
-            truncate_err(&format!("{e:#}"), 200),
-        ))),
-        Ok(Ok(text)) if text.is_empty() => {
+        Err(e) => {
+            tracing::error!(upload_id, edge_request_id, elapsed_ms = started.elapsed().as_millis(), error = %e, "voice transcription task failed");
+            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed"))
+        }
+        Ok(Err(e)) => {
+            tracing::error!(upload_id, edge_request_id, elapsed_ms = started.elapsed().as_millis(), error = %e, "voice transcription failed");
+            Err(err(StatusCode::BAD_GATEWAY, &format!(
+                "Voice transcription failed ({provider} / {model}): {}",
+                truncate_err(&format!("{e:#}"), 200),
+            )))
+        }
+        Ok(Ok(text)) if text.trim().is_empty() => {
+            tracing::warn!(upload_id, edge_request_id, elapsed_ms = started.elapsed().as_millis(), "voice transcription was empty");
             Err(err(StatusCode::BAD_REQUEST, "Couldn't hear anything in that recording"))
         }
-        Ok(Ok(text)) => Ok(text),
+        Ok(Ok(text)) => {
+            tracing::info!(upload_id, edge_request_id, elapsed_ms = started.elapsed().as_millis(), "voice transcription completed");
+            Ok(text)
+        }
     }
 }
 
@@ -2097,7 +2121,7 @@ where
                     truncate_err(&format!("{e:#}"), 200)
                 )))
             }
-            Ok(Ok(text)) if text.is_empty() => {
+            Ok(Ok(text)) if text.trim().is_empty() => {
                 tracing::warn!(upload_id = job.upload_id, edge_request_id = job.edge_request_id, elapsed_ms = started.elapsed().as_millis(), "voice transcription was empty");
                 Err(err(StatusCode::BAD_REQUEST, "Couldn't hear anything in that recording"))
             }
@@ -6329,7 +6353,7 @@ mod tests {
     async fn voice_post_rejects_empty_transcript_without_writing() {
         let (state, _dir, channel_id) = voice_post_fixture();
         let error = spawn_voice_post(voice_post_job(&state, &channel_id, ""), || {
-            Ok(String::new())
+            Ok("  \n\t ".into())
         }).await.unwrap().unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(state.hub.store.messages(&channel_id, None, None, 10).is_empty());
@@ -6373,7 +6397,8 @@ mod tests {
     #[tokio::test]
     async fn voice_draft_transcription_returns_text_without_writing() {
         let (state, _dir, channel_id) = voice_post_fixture();
-        let text = run_voice_transcription("test-provider", "test-model", || {
+        let text = run_voice_transcription(
+            "test-provider", "test-model", "test-upload", Some("edge-test"), || {
             Ok("draft transcript".into())
         }).await.unwrap();
         assert_eq!(text, "draft transcript");
@@ -6382,9 +6407,11 @@ mod tests {
 
     #[tokio::test]
     async fn voice_draft_transcription_rejects_empty_text() {
-        let error = run_voice_transcription("test-provider", "test-model", || {
-            Ok(String::new())
-        }).await.unwrap_err();
+        let error = run_voice_transcription(
+            "test-provider", "test-model", "test-upload", Some("edge-test"), || {
+                Ok("  \n\t ".into())
+            },
+        ).await.unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert_eq!(error.1.0["detail"], "Couldn't hear anything in that recording");
     }
@@ -6426,6 +6453,43 @@ mod tests {
             format!("/api/channels/{channel_id}/transcribe"), headers,
         )).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn voice_draft_route_rejects_thread_from_another_channel_before_transcription() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        state.config.update(|config| {
+            config.ai.voice.stt_enabled = true;
+            config.ai.voice.api_key = "test-key".into();
+        });
+        let other_group = state.hub.store.create_group("Other voice", "", Some("alice"));
+        let other_channel = state.hub.store.create_channel(
+            other_group["id"].as_str().unwrap(), "other-notes", "",
+        );
+        let root = state.hub.store.add_message(
+            other_channel["id"].as_str().unwrap(), "root", "user", "alice",
+            Some("Alice"), None, &[],
+        );
+        let thread_id = root["id"].as_i64().unwrap();
+        let boundary = "agora-voice-cross-channel";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.webm\"\r\nContent-Type: audio/webm\r\n\r\naudio\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"thread_id\"\r\n\r\n{thread_id}\r\n--{boundary}--\r\n"
+        );
+        let mut request = Request::post(format!("/api/channels/{channel_id}/transcribe"))
+            .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+            .extension(ConnectInfo("127.0.0.1:12347".parse::<SocketAddr>().unwrap()))
+            .body(Body::from(body))
+            .unwrap();
+        *request.headers_mut() = session_headers(&state, "alice");
+        request.headers_mut().insert(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}").parse().unwrap(),
+        );
+
+        let response = router(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Unknown thread"));
     }
 
     #[test]
