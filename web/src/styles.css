@@ -2575,7 +2575,7 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .conn-row { padding: 10px; gap: 8px; }
 .chat-input { flex-wrap: wrap; }
 .chat-input textarea { flex: 1 0 100%; width: 100%; }
-.chat-input .ago-composer-tools { display: flex; align-items: center; gap: 6px; width: 100%; }
+.chat-input .ago-composer-tools { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; width: 100%; min-width: 0; }
 .chat-input:not(:focus-within):not(.has-draft):not(.tools-active):not(:has(.ago-mic.recording, .ago-template-pop, .ago-template-dialog)) .ago-composer-tools { display: none; }
 @media (max-width: 820px), (hover: none) {
   .ago-msg-row.is-mine { width: 96%; }
@@ -2619,7 +2619,7 @@ input[type="checkbox"] { accent-color: var(--a1); }
   .ai-section:first-of-type { margin-top: 0; }
   .ago-log, .agora-layout.thread-expanded .ago-thread-log { padding: 8px 6px; }
   .ago-inbox-search { margin: 6px 8px 4px; padding: 6px 8px; }
-  .chat-input .ago-composer-tools { flex-wrap: wrap; gap: 4px; }
+  .chat-input .ago-composer-tools { gap: 4px; }
 }
 @media (max-width: 820px) {
   .ago-scope-row { flex-direction: row; flex-wrap: wrap; align-items: center; }
@@ -2777,10 +2777,15 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .ago-membership-role-control { position: relative; display: block; }
 .ago-membership-role-control select { appearance: none; padding-right: 36px; }
 .ago-membership-role-control > .ico { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; }
-.chat-input .ago-composer-right { display: flex; align-items: center; gap: 6px; margin-left: auto; max-width: 100%; }
+.chat-input .ago-composer-right { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; margin-left: auto; min-width: 0; max-width: 100%; }
 .chat-input .ago-composer-right > .btn.primary { margin-left: 0; }
+.chat-input:has(.ago-mic.recording) .ago-composer-extra { display: none; }
 @media (max-width: 820px) {
-  .chat-input .ago-composer-right { flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+  .chat-input .ago-composer-right { justify-content: flex-end; gap: 4px; }
+}
+@media (max-width: 640px) {
+  .chat-input:has(.ago-mic.recording) .ago-composer-right { gap: 3px; }
+  .chat-input .ago-mic.recording { min-width: 36px; min-height: 36px; padding: 4px 8px; gap: 2px; }
 }
 
 /* Mobile toolbar icons use quiet, compact chrome inside full tap targets. */

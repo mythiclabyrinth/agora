@@ -3,7 +3,7 @@ import TestRenderer, { act } from "react-test-renderer";
 import { Image, Platform, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as FileSystem from "expo-file-system/legacy";
-import { Composer, withinUploadLimit } from "../src/components/Composer";
+import { appendVoiceTranscript, Composer, withinUploadLimit } from "../src/components/Composer";
 import { Attachments, VideoAttachment } from "../src/components/Attachments";
 import { useMessageDrafts } from "@agora/core";
 
@@ -21,6 +21,12 @@ test("mobile attachment limits reject known oversize files but allow unknown siz
   expect(withinUploadLimit({ uri: "file:///doc.pdf", name: "doc.pdf", type: "application/pdf", size: 60 * 1024 * 1024 }, 10, 100)).toBe(false);
   expect(withinUploadLimit({ uri: "content://provider/file", name: "file", type: "application/pdf" }, 10, 100)).toBe(true);
 });
+
+test("voice transcript appends to the freshest conversation draft", () => {
+  useMessageDrafts.setState({ byConvo: { general: "Typed while waiting" } });
+  appendVoiceTranscript("general", " voice result ", jest.fn());
+  expect(useMessageDrafts.getState().byConvo.general).toBe("Typed while waiting voice result");
+});
 jest.mock("expo-paste-input", () => {
   const mockReact = require("react");
   const { View: MockView } = require("react-native");
@@ -32,13 +38,14 @@ jest.mock("expo-paste-input", () => {
 jest.mock("expo-audio", () => ({
   AudioModule: { requestRecordingPermissionsAsync: jest.fn() },
   RecordingPresets: { HIGH_QUALITY: {} },
-  setAudioModeAsync: jest.fn(),
+  setAudioModeAsync: jest.fn(async () => {}),
   useAudioRecorder: () => ({
+    uri: "file:///voice-note.m4a",
     prepareToRecordAsync: jest.fn(),
     record: jest.fn(),
     stop: jest.fn(),
   }),
-  useAudioRecorderState: () => ({ durationMillis: 0 }),
+  useAudioRecorderState: () => ({ durationMillis: 1_000 }),
 }));
 jest.mock("lucide-react-native", () => new Proxy({}, {
   get: () => function MockIcon() { return null; },
@@ -139,6 +146,37 @@ test("text typed while a send is pending survives when the earlier send complete
 function labelled(root: TestRenderer.ReactTestInstance, label: string) {
   return root.find((node) => node.props.accessibilityLabel === label);
 }
+
+test("stopping a recording transcribes into the draft without sending", async () => {
+  const onTranscribeVoice = jest.fn().mockResolvedValue("Draft transcript");
+  const onSendVoice = jest.fn().mockResolvedValue(undefined);
+  let tree!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    tree = TestRenderer.create(React.createElement(
+      SafeAreaProvider,
+      { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+      React.createElement(Composer, {
+        placeholder: "Message #test",
+        mentions: [],
+        addressKey: "channel-a",
+        sending: false,
+        initialRecording: true,
+        onSend: async () => {},
+        onSendVoice,
+        onTranscribeVoice,
+      }),
+    ));
+  });
+
+  await act(async () => {
+    await labelled(tree.root, "Stop and add to message").props.onPress();
+  });
+
+  expect(onTranscribeVoice).toHaveBeenCalledTimes(1);
+  expect(onSendVoice).not.toHaveBeenCalled();
+  expect(useMessageDrafts.getState().byConvo["channel-a"]).toBe("Draft transcript");
+  act(() => tree.unmount());
+});
 
 test("composer attachment cards preview images and remove the selected file", () => {
   let tree!: TestRenderer.ReactTestRenderer;

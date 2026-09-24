@@ -6,6 +6,7 @@ import { me, message } from "../stories/fixtures/data";
 import { useAttachmentDrafts } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
 import { useVoiceRec } from "../state/voiceRec";
+import { appendDraft } from "../state/drafts";
 
 const agents = [
   { id: "codex", name: "Codex" },
@@ -59,6 +60,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Empty: Story = {};
+
+export const VoiceTranscriptAppend: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox");
+    await userEvent.type(input, "Typed while transcribing");
+    appendDraft("c:general", " voice result ");
+    await waitFor(() => expect(input).toHaveValue("Typed while transcribing voice result"));
+  },
+};
 
 function InitiallyHiddenComposer(props: React.ComponentProps<typeof Composer>) {
   const [visible, setVisible] = useState(false);
@@ -339,7 +350,72 @@ export const AddressingWithVoiceRecording: Story = {
     await expect(canvas.findByText("To")).resolves.toBeVisible();
     await expect(canvas.findByText("Codex")).resolves.toBeVisible();
     await expect(canvas.findByText("Claude")).resolves.toBeVisible();
+    await expect(canvas.findByTitle("Stop and add to message")).resolves.toBeVisible();
     await expect(canvas.findByTitle("Stop and send")).resolves.toBeVisible();
+    await waitFor(() => {
+      const rects = Array.from(
+        canvasElement.querySelectorAll<HTMLElement>(
+          ".ago-composer-tools button, .ago-composer-tools summary",
+        ),
+      ).filter(el => el.offsetParent !== null).map(el => el.getBoundingClientRect());
+      // One row: every control overlaps the same horizontal band.
+      expect(Math.max(...rects.map(rect => rect.top))).toBeLessThan(
+        Math.min(...rects.map(rect => rect.bottom)),
+      );
+    });
+  },
+};
+
+export const VoiceRecordingAt360: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "recordingPhone" },
+  },
+};
+
+export const VoiceRecordingAt390: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "phone" },
+  },
+};
+
+export const VoiceRecordingAt768: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "tabletComposer" },
+  },
+};
+
+export const VoiceRecordingAt1280: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "desktopComposer" },
+  },
+};
+
+export const ThreadVoiceRecordingAt360: Story = {
+  ...AddressingWithVoiceRecording,
+  args: {
+    ...AddressingWithVoiceRecording.args,
+    threadId: 42,
+    onSetReplyInThread: undefined,
+  },
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    setup: () => {
+      useAddressing.setState({ addr: { "t:42": ["codex", "claude"] } });
+      useVoiceRec.setState({
+        recordingKey: "t:42",
+        startedAt: Date.now() - 12_000,
+        busyKey: null,
+      });
+    },
+    viewport: { defaultViewport: "recordingPhone" },
   },
 };
 

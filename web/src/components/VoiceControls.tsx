@@ -1,10 +1,10 @@
-/* Voice UI: the composer mic button (record → stop-and-send / discard),
+/* Voice UI: the composer mic button (record → draft / send / discard),
    the channel-header speak-aloud and Live buttons, and the live-session
    strip. */
 
 import { useEffect, useState } from "react";
 import { Icon } from "../lib/icons";
-import { useVoiceRec, voiceCancel, voiceRecKey, voiceToggle } from "../state/voiceRec";
+import { useVoiceRec, voiceCancel, voiceRecKey, voiceSend, voiceToDraft, voiceToggle } from "../state/voiceRec";
 import { liveLabel, liveMuteToggle, liveScopeActive, liveToggle, useLiveVoice } from "../state/liveVoice";
 import { useSpeak } from "../state/speak";
 
@@ -18,11 +18,12 @@ function RecTimer({ startedAt }: { startedAt: number }) {
   return <span className="ago-rec-time">{Math.floor(s / 60)}:{String(s % 60).padStart(2, "0")}</span>;
 }
 
-export function MicButton({ channelId, threadId, mentions }: {
+export function MicButton({ channelId, threadId, mentions, draftOK = false }: {
   channelId: string;
   threadId: number | null;
   /** Current "talk to" prefix; captured on stop-and-send, ignored at start. */
   mentions?: string;
+  draftOK?: boolean;
 }) {
   const { recordingKey, startedAt, busyKey } = useVoiceRec();
   const key = voiceRecKey(channelId, threadId);
@@ -36,19 +37,27 @@ export function MicButton({ channelId, threadId, mentions }: {
   if (recordingKey === key) {
     return (
       <>
-        <button className="btn ago-mic cancel" title="Discard recording" onClick={() => voiceCancel()}>
+        <button className="btn ago-mic cancel" title="Discard recording" aria-label="Discard recording"
+          onClick={() => voiceCancel()}>
           <Icon name="x" />
         </button>
-        <button className="btn ago-mic recording" title="Stop and send"
-          onClick={() => void voiceToggle(channelId, threadId, mentions)}>
+        {draftOK && <button className="btn ago-mic recording" title="Stop and add to message"
+          aria-label="Stop and add to message"
+          onClick={() => voiceToDraft()}>
           <Icon name="square" cls="fill" />&nbsp;<RecTimer startedAt={startedAt} />
+        </button>}
+        <button className={`btn ago-mic send${draftOK ? "" : " recording"}`} title="Stop and send"
+          aria-label="Stop and send"
+          onClick={() => voiceSend(mentions)}>
+          <Icon name={draftOK ? "arrow-up" : "square"} cls={draftOK ? undefined : "fill"} />
+          {!draftOK && <>&nbsp;<RecTimer startedAt={startedAt} /></>}
         </button>
       </>
     );
   }
   return (
     <button className="btn ago-mic" title="Record a voice message"
-      onClick={() => void voiceToggle(channelId, threadId, mentions)}>
+      onClick={() => void voiceToggle(channelId, threadId, mentions, draftOK)}>
       <Icon name="mic" />
     </button>
   );

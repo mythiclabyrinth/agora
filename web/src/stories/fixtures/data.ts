@@ -4,7 +4,7 @@ import {
   fixtureMe,
 } from "@agora/core/testing/fixtures";
 
-export const me = { ...fixtureMe, voice: true };
+export const me = { ...fixtureMe, voice: true, voice_stt: true, voice_transcribe: true };
 export const message = { ...fixtureAgentMessage, id: 42 };
 
 export const mapArtifact: MapArtifactData = {

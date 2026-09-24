@@ -119,6 +119,31 @@ export async function uploadVoice(v: {
   }
 }
 
+/** Transcribe a recording without posting it. Kept on a separate endpoint so
+    version-skewed servers fail safely instead of treating Stop as Send. */
+export async function transcribeVoice(v: {
+  channelId: string;
+  threadId: number | null;
+  blob: Blob;
+}): Promise<string> {
+  const type = (v.blob.type || "audio/webm").toLowerCase();
+  const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+  const fd = new FormData();
+  fd.append("file", v.blob, `voice-draft.${ext}`);
+  if (v.threadId != null) fd.append("thread_id", String(v.threadId));
+  const res = await fetch(`/api/channels/${encodeURIComponent(v.channelId)}/transcribe`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${sessionToken()}` },
+    body: fd,
+  });
+  if (!res.ok) {
+    let detail = await res.text();
+    try { detail = JSON.parse(detail).detail || detail; } catch { /* plain text */ }
+    throw new Error(detail);
+  }
+  return String((await res.json()).text || "");
+}
+
 export async function fetchSpeechUrl(messageId: number): Promise<string> {
   const res = await fetch(`/api/messages/${messageId}/speech`, {
     headers: { Authorization: `Bearer ${sessionToken()}` },

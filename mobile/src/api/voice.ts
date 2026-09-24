@@ -74,3 +74,17 @@ export function useSendVoice(channelId: string) {
     },
   });
 }
+
+/** Transcribe into the composer without posting or touching message caches. */
+export function useTranscribeVoice(channelId: string) {
+  const api = useApi();
+  return useMutation({
+    mutationFn: async (v: { file: LocalFile; threadId: number | null }) => {
+      const form = new FormData();
+      const out = toOutgoing(v.file);
+      form.append("file", out.part, out.name);
+      if (v.threadId != null) form.append("thread_id", String(v.threadId));
+      return api.upload<{ text: string }>(`/api/channels/${channelId}/transcribe`, form);
+    },
+  });
+}

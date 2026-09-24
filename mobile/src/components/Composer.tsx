@@ -45,6 +45,7 @@ import {
   Mic,
   NotepadText,
   Paperclip,
+  Square,
   X,
 } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -75,6 +76,23 @@ const MAX_FILES = 5;
 /** Keep-awake tag for voice notes: the screen must not auto-lock mid-take. */
 const REC_KEEP_AWAKE = "composer-voice-note";
 const COMPOSER_INPUT_MIN_HEIGHT = 40;
+
+export function appendVoiceTranscript(
+  addressKey: string | undefined,
+  transcript: string,
+  setLocal: React.Dispatch<React.SetStateAction<string>>,
+): void {
+  const clean = transcript.trim();
+  if (!clean) return;
+  const append = (current: string) =>
+    current + (current && !/\s$/.test(current) ? " " : "") + clean;
+  if (addressKey) {
+    const drafts = useMessageDrafts.getState();
+    drafts.setDraft(addressKey, append(drafts.byConvo[addressKey] ?? ""));
+  } else {
+    setLocal(append);
+  }
+}
 
 /** Longest edge for uploads; keeps photos comfortably under server caps. */
 const MAX_IMAGE_EDGE = 2048;
@@ -169,7 +187,9 @@ export function Composer({
   requireAgentToggle,
   onSend,
   onSendVoice,
+  onTranscribeVoice,
   initialFiles = [],
+  initialRecording = false,
   maxFileMb,
   maxVideoMb,
 }: {
@@ -203,8 +223,12 @@ export function Composer({
     mentions?: string,
     requireAgent?: boolean,
   ) => Promise<void>;
+  /** Fail-safe transcription-only capability; absent on older servers. */
+  onTranscribeVoice?: (file: LocalFile) => Promise<string>;
   /** Deterministic initial attachments for component catalogs and tests. */
   initialFiles?: LocalFile[];
+  /** Deterministic recording surface for component catalogs. */
+  initialRecording?: boolean;
   maxFileMb?: number;
   maxVideoMb?: number;
 }) {
@@ -299,7 +323,9 @@ export function Composer({
 
   /* Voice note recording. The recorder hook is unconditional (hooks rule);
      nothing touches the mic until the 🎤 tap. */
-  const [recPhase, setRecPhase] = useState<"idle" | "recording" | "uploading">("idle");
+  const [recPhase, setRecPhase] = useState<"idle" | "recording" | "uploading">(
+    initialRecording ? "recording" : "idle",
+  );
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recState = useAudioRecorderState(recorder, 500);
 
@@ -346,7 +372,7 @@ export function Composer({
     setRecPhase("idle");
   };
 
-  const finishRec = async () => {
+  const finishRec = async (mode: "send" | "draft") => {
     const tooShort = (recState.durationMillis ?? 0) < 500;
     const uri = await stopRec();
     if (!uri || tooShort) {
@@ -356,19 +382,17 @@ export function Composer({
     }
     setRecPhase("uploading");
     try {
-      // Voice notes address the "talk to" agents exactly like typed sends.
-      const prefix = addressedAgents.map((a) => `@${slugify(a.name)}`).join(", ");
-      await onSendVoice?.(
-        {
-          uri,
-          name: `voice-note-${Date.now()}.m4a`,
-          type: "audio/m4a",
-        },
-        prefix || undefined,
-        showRequireAgent && requireAgentOn,
-      );
+      const file = { uri, name: `voice-note-${Date.now()}.m4a`, type: "audio/m4a" };
+      if (mode === "draft") {
+        const transcript = await onTranscribeVoice?.(file);
+        if (transcript) appendVoiceTranscript(addressKey, transcript, setLocalText);
+      } else {
+        // Voice notes address the "talk to" agents exactly like typed sends.
+        const prefix = addressedAgents.map((a) => `@${slugify(a.name)}`).join(", ");
+        await onSendVoice?.(file, prefix || undefined, showRequireAgent && requireAgentOn);
+      }
     } catch (e) {
-      toastErr("Voice message failed", e);
+      toastErr(mode === "draft" ? "Transcription failed" : "Voice message failed", e);
     }
     setRecPhase("idle");
   };
@@ -609,12 +633,26 @@ export function Composer({
             {recPhase === "uploading" ? "Transcribing…" : clock}
           </Text>
           <View style={{ flex: 1 }} />
-          <Pressable onPress={cancelRec} disabled={recPhase === "uploading"} style={styles.recCancel}>
-            <Text style={styles.recCancelText}>Cancel</Text>
-          </Pressable>
           <Pressable
-            onPress={finishRec}
+            onPress={cancelRec}
             disabled={recPhase === "uploading"}
+            accessibilityLabel="Discard recording"
+            style={[styles.recCancel, recPhase === "uploading" && styles.sendOff]}
+          >
+            <Icon icon={X} size={20} color={colors.dim} />
+          </Pressable>
+          {onTranscribeVoice ? <Pressable
+            onPress={() => finishRec("draft")}
+            disabled={recPhase === "uploading"}
+            accessibilityLabel="Stop and add to message"
+            style={[styles.stopBtn, recPhase === "uploading" && styles.sendOff]}
+          >
+            <Icon icon={Square} size={17} color={colors.text} fill={colors.text} />
+          </Pressable> : null}
+          <Pressable
+            onPress={() => finishRec("send")}
+            disabled={recPhase === "uploading"}
+            accessibilityLabel="Stop and send"
             style={[styles.sendBtn, recPhase === "uploading" && styles.sendOff]}
           >
             {recPhase === "uploading" ? (
@@ -1130,6 +1168,22 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     marginLeft: 8,
   },
-  recCancel: { alignSelf: "center", paddingHorizontal: 12, paddingVertical: 8 },
-  recCancelText: { color: colors.dim, fontSize: 14.5, fontWeight: "600" },
+  recCancel: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stopBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });
