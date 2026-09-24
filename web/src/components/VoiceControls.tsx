@@ -37,14 +37,17 @@ export function MicButton({ channelId, threadId, mentions, draftOK = false }: {
   if (recordingKey === key) {
     return (
       <>
-        <button className="btn ago-mic cancel" title="Discard recording" onClick={() => voiceCancel()}>
+        <button className="btn ago-mic cancel" title="Discard recording" aria-label="Discard recording"
+          onClick={() => voiceCancel()}>
           <Icon name="x" />
         </button>
         {draftOK && <button className="btn ago-mic recording" title="Stop and add to message"
+          aria-label="Stop and add to message"
           onClick={() => voiceToDraft()}>
           <Icon name="square" cls="fill" />&nbsp;<RecTimer startedAt={startedAt} />
         </button>}
         <button className={`btn ago-mic send${draftOK ? "" : " recording"}`} title="Stop and send"
+          aria-label="Stop and send"
           onClick={() => voiceSend(mentions)}>
           <Icon name={draftOK ? "arrow-up" : "square"} cls={draftOK ? undefined : "fill"} />
           {!draftOK && <>&nbsp;<RecTimer startedAt={startedAt} /></>}
@@ -54,7 +57,7 @@ export function MicButton({ channelId, threadId, mentions, draftOK = false }: {
   }
   return (
     <button className="btn ago-mic" title="Record a voice message"
-      onClick={() => void voiceToggle(channelId, threadId, mentions)}>
+      onClick={() => void voiceToggle(channelId, threadId, mentions, draftOK)}>
       <Icon name="mic" />
     </button>
   );

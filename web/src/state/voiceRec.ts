@@ -20,6 +20,7 @@ interface RecSession {
   stream: MediaStream;
   chunks: Blob[];
   finishMode: "cancel" | "send" | "draft" | null;
+  draftOK: boolean;
   startedAt: number;
   /** "Talk to" prefix captured at stop-and-send (not at record start). */
   mentions?: string;
@@ -43,7 +44,7 @@ export const useVoiceRec = create<VoiceRecState>(() => ({
 
 export { recKey as voiceRecKey };
 
-async function start(channelId: string, threadId: number | null): Promise<void> {
+async function start(channelId: string, threadId: number | null, draftOK: boolean): Promise<void> {
   if (!voiceSupported()) {
     toast("Voice input isn't supported in this browser", { variant: "warn" });
     return;
@@ -59,17 +60,21 @@ async function start(channelId: string, threadId: number | null): Promise<void> 
   const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
   const session: RecSession = {
     key: recKey(channelId, threadId), channelId, threadId,
-    recorder, stream, chunks: [], finishMode: null, startedAt: Date.now(),
+    recorder, stream, chunks: [], finishMode: null, draftOK, startedAt: Date.now(),
   };
   recorder.ondataavailable = e => { if (e.data && e.data.size) session.chunks.push(e.data); };
   recorder.onstop = () => {
     stream.getTracks().forEach(t => t.stop());
     if (rec === session) rec = null;
     useVoiceRec.setState({ recordingKey: null, startedAt: 0 });
-    if (session.finishMode !== "cancel" && session.finishMode && session.chunks.length) {
+    if ((session.finishMode === "send" || session.finishMode === "draft") && session.chunks.length) {
       void processRecording(session, session.finishMode);
     } else if (session.finishMode === null && session.chunks.length) {
-      toast("Recording stopped unexpectedly and was discarded", { variant: "warn" });
+      if (session.draftOK) {
+        void processRecording(session, "draft");
+      } else {
+        toast("Recording stopped unexpectedly and was discarded", { variant: "warn" });
+      }
     }
   };
   rec = session;
@@ -112,6 +117,7 @@ function finish(mode: "cancel" | "send" | "draft", mentions?: string): void {
   rec.finishMode = mode;
   if (mode === "send") rec.mentions = mentions;
   try { rec.recorder.stop(); } catch {
+    rec.stream.getTracks().forEach(track => track.stop());
     rec = null;
     useVoiceRec.setState({ recordingKey: null, startedAt: 0 });
   }
@@ -125,6 +131,7 @@ export async function voiceToggle(
   channelId: string,
   threadId: number | null,
   mentions?: string,
+  draftOK = false,
 ): Promise<void> {
   // Capture mentions at stop-and-send so mid-recording picker changes apply.
   if (rec && rec.key === recKey(channelId, threadId)) {
@@ -132,5 +139,5 @@ export async function voiceToggle(
     return;
   }
   if (rec) finish("cancel"); // one recording at a time
-  await start(channelId, threadId);
+  await start(channelId, threadId, draftOK);
 }
