@@ -67,7 +67,7 @@ export const VoiceTranscriptAppend: Story = {
     const input = canvas.getByRole("textbox");
     await userEvent.type(input, "Typed while transcribing");
     appendDraft("c:general", " voice result ");
-    await expect(input).toHaveValue("Typed while transcribing voice result");
+    await waitFor(() => expect(input).toHaveValue("Typed while transcribing voice result"));
   },
 };
 
@@ -352,11 +352,16 @@ export const AddressingWithVoiceRecording: Story = {
     await expect(canvas.findByText("Claude")).resolves.toBeVisible();
     await expect(canvas.findByTitle("Stop and add to message")).resolves.toBeVisible();
     await expect(canvas.findByTitle("Stop and send")).resolves.toBeVisible();
-    const visibleButtons = Array.from(
-      canvasElement.querySelectorAll<HTMLButtonElement>(".ago-composer-tools button"),
-    ).filter(button => button.offsetParent !== null);
     await waitFor(() => {
-      expect(new Set(visibleButtons.map(button => button.offsetTop)).size).toBe(1);
+      const rects = Array.from(
+        canvasElement.querySelectorAll<HTMLElement>(
+          ".ago-composer-tools button, .ago-composer-tools summary",
+        ),
+      ).filter(el => el.offsetParent !== null).map(el => el.getBoundingClientRect());
+      // One row: every control overlaps the same horizontal band.
+      expect(Math.max(...rects.map(rect => rect.top))).toBeLessThan(
+        Math.min(...rects.map(rect => rect.bottom)),
+      );
     });
   },
 };
