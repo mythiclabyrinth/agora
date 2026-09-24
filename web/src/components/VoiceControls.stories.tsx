@@ -5,7 +5,7 @@ import { useSpeak } from "../state/speak";
 import { useVoiceRec } from "../state/voiceRec";
 import { LiveButton, LiveStrip, MicButton, SpeakButton } from "./VoiceControls";
 
-type VoiceState = "idle" | "recording" | "transcribing" | "live"
+type VoiceState = "idle" | "recording" | "recording-legacy" | "transcribing" | "live"
   | "live-muted" | "live-muted-speaker-off" | "live-thinking-muted" | "live-speaking-muted";
 
 function VoiceSurface({ state }: { state: VoiceState }) {
@@ -40,7 +40,7 @@ function VoiceSurface({ state }: { state: VoiceState }) {
       <LiveStrip channelId="general" threadId={null} />
       <div className="chat-input">
         <textarea aria-label="Message preview" placeholder="Message #general" />
-        <MicButton channelId="general" threadId={null} />
+        <MicButton channelId="general" threadId={null} draftOK={state !== "recording-legacy"} />
         <button className="btn primary">Send</button>
       </div>
       <span hidden>{state}</span>
@@ -52,7 +52,7 @@ function setup(state: VoiceState) {
   const live = state.startsWith("live");
   const muted = state.includes("muted");
   useVoiceRec.setState({
-    recordingKey: state === "recording" ? "c:general" : null,
+    recordingKey: state === "recording" || state === "recording-legacy" ? "c:general" : null,
     startedAt: Date.now() - 12_000,
     busyKey: state === "transcribing" ? "c:general" : null,
   });
@@ -81,7 +81,18 @@ export const Recording: Story = {
   args: { state: "recording" },
   parameters: { setup: () => setup("recording") },
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).findByTitle("Stop and send")).resolves.toBeVisible();
+    const canvas = within(canvasElement);
+    await expect(canvas.findByTitle("Stop and add to message")).resolves.toBeVisible();
+    await expect(canvas.findByTitle("Stop and send")).resolves.toBeVisible();
+  },
+};
+export const RecordingWithoutDraftCapability: Story = {
+  args: { state: "recording-legacy" },
+  parameters: { setup: () => setup("recording-legacy") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByTitle("Stop and add to message")).not.toBeInTheDocument();
+    await expect(canvas.findByTitle("Stop and send")).resolves.toBeVisible();
   },
 };
 export const Transcribing: Story = {

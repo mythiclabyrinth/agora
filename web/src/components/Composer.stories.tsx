@@ -6,6 +6,7 @@ import { me, message } from "../stories/fixtures/data";
 import { useAttachmentDrafts } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
 import { useVoiceRec } from "../state/voiceRec";
+import { appendDraft } from "../state/drafts";
 
 const agents = [
   { id: "codex", name: "Codex" },
@@ -59,6 +60,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Empty: Story = {};
+
+export const VoiceTranscriptAppend: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox");
+    await userEvent.type(input, "Typed while transcribing");
+    appendDraft("c:general", " voice result ");
+    await expect(input).toHaveValue("Typed while transcribing voice result");
+  },
+};
 
 function InitiallyHiddenComposer(props: React.ComponentProps<typeof Composer>) {
   const [visible, setVisible] = useState(false);
@@ -339,6 +350,7 @@ export const AddressingWithVoiceRecording: Story = {
     await expect(canvas.findByText("To")).resolves.toBeVisible();
     await expect(canvas.findByText("Codex")).resolves.toBeVisible();
     await expect(canvas.findByText("Claude")).resolves.toBeVisible();
+    await expect(canvas.findByTitle("Stop and add to message")).resolves.toBeVisible();
     await expect(canvas.findByTitle("Stop and send")).resolves.toBeVisible();
   },
 };

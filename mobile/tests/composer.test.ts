@@ -3,7 +3,7 @@ import TestRenderer, { act } from "react-test-renderer";
 import { Image, Platform, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as FileSystem from "expo-file-system/legacy";
-import { Composer, withinUploadLimit } from "../src/components/Composer";
+import { appendVoiceTranscript, Composer, withinUploadLimit } from "../src/components/Composer";
 import { Attachments, VideoAttachment } from "../src/components/Attachments";
 import { useMessageDrafts } from "@agora/core";
 
@@ -20,6 +20,12 @@ test("mobile attachment limits reject known oversize files but allow unknown siz
   expect(withinUploadLimit({ uri: "file:///clip.mp4", name: "clip.mp4", type: "video/mp4", size: 60 * 1024 * 1024 }, 10, 100)).toBe(true);
   expect(withinUploadLimit({ uri: "file:///doc.pdf", name: "doc.pdf", type: "application/pdf", size: 60 * 1024 * 1024 }, 10, 100)).toBe(false);
   expect(withinUploadLimit({ uri: "content://provider/file", name: "file", type: "application/pdf" }, 10, 100)).toBe(true);
+});
+
+test("voice transcript appends to the freshest conversation draft", () => {
+  useMessageDrafts.setState({ byConvo: { general: "Typed while waiting" } });
+  appendVoiceTranscript("general", " voice result ", jest.fn());
+  expect(useMessageDrafts.getState().byConvo.general).toBe("Typed while waiting voice result");
 });
 jest.mock("expo-paste-input", () => {
   const mockReact = require("react");

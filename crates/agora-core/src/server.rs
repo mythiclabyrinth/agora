@@ -423,6 +423,10 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{channel_id}/voice",
             post(post_voice_message).layer(voice_body_limit()),
         )
+        .route(
+            "/api/channels/{channel_id}/transcribe",
+            post(transcribe_voice_message).layer(voice_body_limit()),
+        )
         .route("/api/channels/{channel_id}/read", put(mark_read))
         .route("/api/messages/{message_id}", get(get_message))
         .route("/api/messages/{message_id}/select", post(select_message_option))
@@ -701,6 +705,9 @@ async fn me(
         // Coarse "any voice at all" flag, kept for older clients.
         "voice": voice.stt_enabled || voice.tts_enabled,
         "voice_stt": voice.stt_enabled,
+        // Additive capability: older servers omit it, so clients never risk
+        // treating their post-only /voice endpoint as draft transcription.
+        "voice_transcribe": true,
         "voice_tts": voice.tts_enabled,
         "search_ai": search.enabled,
         // MapLibre style URL for map artifacts; empty when the operator has
@@ -1872,7 +1879,7 @@ async fn post_voice_message(
     Query(q): Query<HashMap<String, String>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     if !state.upload_limiter.allow(&rate_key(&peer)) {
@@ -1905,74 +1912,144 @@ async fn post_voice_message(
         .map(|value| value.chars().take(100).collect());
     let ingest_started = Instant::now();
     tracing::info!(upload_id, edge_request_id, request_bytes, "voice upload started");
-    let mut audio: Vec<u8> = Vec::new();
-    let mut filename = String::new();
-    let mut thread_id: Option<i64> = None;
-    let mut live = false;
-    let mut mentions = String::new();
-    let mut timezone: Option<String> = None;
-    let mut require_agent = false;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| {
-            tracing::warn!(upload_id, edge_request_id, error = %e, "voice upload incomplete");
-            err(StatusCode::BAD_REQUEST, "Invalid upload")
-        })?
-    {
-        match field.name().unwrap_or("") {
-            "file" => {
-                filename = safe_filename(field.file_name().unwrap_or("voice-note.webm"));
-                audio = field
-                    .bytes()
-                    .await
-                    .map_err(|e| {
-                        tracing::warn!(upload_id, edge_request_id, error = %e, "voice upload incomplete");
-                        err(StatusCode::BAD_REQUEST, "Upload read failed")
-                    })?
-                    .to_vec();
-            }
-            "thread_id" => {
-                let raw = field.text().await.unwrap_or_default();
-                if !raw.is_empty() {
-                    thread_id = Some(
-                        raw.parse()
-                            .map_err(|_| err(StatusCode::BAD_REQUEST, "Invalid thread_id"))?,
-                    );
-                }
-            }
-            "live" => live = field.text().await.unwrap_or_default() == "true",
-            "mentions" => mentions = field.text().await.unwrap_or_default(),
-            "timezone" => timezone = client_timezone(&field.text().await.unwrap_or_default()),
-            "require_agent" => {
-                require_agent = field.text().await.unwrap_or_default().trim() == "true";
-            }
-            _ => {}
-        }
-    }
-    if audio.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "Empty audio upload"));
-    }
-    if audio.len() > MAX_VOICE_BYTES {
-        return Err(err(StatusCode::BAD_REQUEST, "Voice recording too large"));
-    }
+    let upload = read_voice_upload(multipart, &upload_id, edge_request_id.as_deref()).await?;
     tracing::info!(
-        upload_id, edge_request_id, audio_bytes = audio.len(), request_bytes,
+        upload_id, edge_request_id, audio_bytes = upload.audio.len(), request_bytes,
         ingest_ms = ingest_started.elapsed().as_millis(),
         "voice upload completed"
     );
-    let thread_id = resolve_thread(&state, &channel_id, thread_id)?;
+    let thread_id = resolve_thread(&state, &channel_id, upload.thread_id)?;
     let job = VoicePostJob {
         state, channel_id, username: user.username, display_name: user.display_name,
-        thread_id, live, mentions, timezone, require_agent, upload_id, edge_request_id,
+        thread_id, live: upload.live, mentions: upload.mentions, timezone: upload.timezone,
+        require_agent: upload.require_agent, upload_id, edge_request_id,
         stt_provider_label, stt_model_label,
     };
     let message = spawn_voice_post(job, move || {
-        crate::voice::transcribe(&stt_provider, &key, &audio, &filename, &stt_model)
+        crate::voice::transcribe(&stt_provider, &key, &upload.audio, &upload.filename, &stt_model)
     })
     .await
     .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Voice processing task failed"))??;
     Ok(Json(message))
+}
+
+struct VoiceUpload {
+    audio: Vec<u8>,
+    filename: String,
+    thread_id: Option<i64>,
+    live: bool,
+    mentions: String,
+    timezone: Option<String>,
+    require_agent: bool,
+}
+
+async fn read_voice_upload(
+    mut multipart: Multipart,
+    upload_id: &str,
+    edge_request_id: Option<&str>,
+) -> Result<VoiceUpload, ApiError> {
+    let mut upload = VoiceUpload {
+        audio: vec![], filename: String::new(), thread_id: None, live: false,
+        mentions: String::new(), timezone: None, require_agent: false,
+    };
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        tracing::warn!(upload_id, edge_request_id, error = %e, "voice upload incomplete");
+        err(StatusCode::BAD_REQUEST, "Invalid upload")
+    })? {
+        match field.name().unwrap_or("") {
+            "file" => {
+                upload.filename = safe_filename(field.file_name().unwrap_or("voice-note.webm"));
+                upload.audio = field.bytes().await.map_err(|e| {
+                    tracing::warn!(upload_id, edge_request_id, error = %e, "voice upload incomplete");
+                    err(StatusCode::BAD_REQUEST, "Upload read failed")
+                })?.to_vec();
+            }
+            "thread_id" => {
+                let raw = field.text().await.unwrap_or_default();
+                if !raw.is_empty() {
+                    upload.thread_id = Some(raw.parse()
+                        .map_err(|_| err(StatusCode::BAD_REQUEST, "Invalid thread_id"))?);
+                }
+            }
+            "live" => upload.live = field.text().await.unwrap_or_default() == "true",
+            "mentions" => upload.mentions = field.text().await.unwrap_or_default(),
+            "timezone" => upload.timezone = client_timezone(&field.text().await.unwrap_or_default()),
+            "require_agent" => upload.require_agent = field.text().await.unwrap_or_default().trim() == "true",
+            _ => {}
+        }
+    }
+    if upload.audio.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "Empty audio upload"));
+    }
+    if upload.audio.len() > MAX_VOICE_BYTES {
+        return Err(err(StatusCode::BAD_REQUEST, "Voice recording too large"));
+    }
+    Ok(upload)
+}
+
+/// Draft voice input: transcribe without writing or broadcasting a message.
+/// This is deliberately a separate route from /voice so old servers fail
+/// safely with 404 instead of ignoring a mode field and posting the draft.
+async fn transcribe_voice_message(
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    if !state.upload_limiter.allow(&rate_key(&peer)) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many uploads — slow down"));
+    }
+    require_channel_postable(&state, &user, &channel_id)?;
+    let voice = resolved_voice(&state);
+    if !voice.stt_enabled {
+        return Err(err(StatusCode::BAD_REQUEST, "Voice input is disabled for this instance"));
+    }
+    let Some(key) = voice.stt_api_key().map(str::to_string) else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "Voice input is not configured (set a key for the selected STT provider in Settings → Credentials)",
+        ));
+    };
+    let stt_provider = voice.stt_provider.clone();
+    let stt_model = voice.stt_model.clone();
+    let upload_id = new_token();
+    let edge_request_id = headers.get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.chars().take(100).collect::<String>());
+    let upload = read_voice_upload(multipart, &upload_id, edge_request_id.as_deref()).await?;
+    // Validate the conversation scope even though no message is written.
+    resolve_thread(&state, &channel_id, upload.thread_id)?;
+    let text = run_voice_transcription(
+        &voice.stt_provider, &voice.stt_model,
+        move || crate::voice::transcribe(
+            &stt_provider, &key, &upload.audio, &upload.filename, &stt_model,
+        ),
+    ).await?;
+    Ok(Json(json!({ "text": text })))
+}
+
+async fn run_voice_transcription<F>(
+    provider: &str,
+    model: &str,
+    transcribe: F,
+) -> Result<String, ApiError>
+where
+    F: FnOnce() -> anyhow::Result<String> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(transcribe).await {
+        Err(_) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "Transcription task failed")),
+        Ok(Err(e)) => Err(err(StatusCode::BAD_GATEWAY, &format!(
+            "Voice transcription failed ({provider} / {model}): {}",
+            truncate_err(&format!("{e:#}"), 200),
+        ))),
+        Ok(Ok(text)) if text.is_empty() => {
+            Err(err(StatusCode::BAD_REQUEST, "Couldn't hear anything in that recording"))
+        }
+        Ok(Ok(text)) => Ok(text),
+    }
 }
 
 struct VoicePostJob {
@@ -6291,6 +6368,64 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("detached voice post should reach the real store");
+    }
+
+    #[tokio::test]
+    async fn voice_draft_transcription_returns_text_without_writing() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        let text = run_voice_transcription("test-provider", "test-model", || {
+            Ok("draft transcript".into())
+        }).await.unwrap();
+        assert_eq!(text, "draft transcript");
+        assert!(state.hub.store.messages(&channel_id, None, None, 10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn voice_draft_transcription_rejects_empty_text() {
+        let error = run_voice_transcription("test-provider", "test-model", || {
+            Ok(String::new())
+        }).await.unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1.0["detail"], "Couldn't hear anything in that recording");
+    }
+
+    fn empty_voice_request(path: String, headers: HeaderMap) -> Request<Body> {
+        let boundary = "agora-voice-draft";
+        let mut request = Request::post(path)
+            .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+            .extension(ConnectInfo("127.0.0.1:12346".parse::<SocketAddr>().unwrap()))
+            .body(Body::from(format!("--{boundary}--\r\n")))
+            .unwrap();
+        *request.headers_mut() = headers;
+        request.headers_mut().insert(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}").parse().unwrap(),
+        );
+        request
+    }
+
+    #[tokio::test]
+    async fn voice_draft_route_rejects_disabled_stt_before_upload() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        state.config.update(|config| config.ai.voice.stt_enabled = false);
+        let headers = session_headers(&state, "alice");
+        let response = router(state).oneshot(empty_voice_request(
+            format!("/api/channels/{channel_id}/transcribe"), headers,
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Voice input is disabled"));
+    }
+
+    #[tokio::test]
+    async fn voice_draft_route_rejects_non_member_before_upload() {
+        let (state, _dir, channel_id) = voice_post_fixture();
+        state.hub.store.create_user("outsider", "Outsider", None, "member").unwrap();
+        let headers = session_headers(&state, "outsider");
+        let response = router(state).oneshot(empty_voice_request(
+            format!("/api/channels/{channel_id}/transcribe"), headers,
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

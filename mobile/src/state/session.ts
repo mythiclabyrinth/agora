@@ -38,6 +38,8 @@ interface SessionState {
   voiceOk: boolean;
   /** Speech-to-text Enabled: voice notes / mic. */
   sttOk: boolean;
+  /** Server supports transcription without posting the resulting message. */
+  transcribeOk: boolean;
   /** Text-to-speech Enabled: speak-aloud. Live voice needs both. */
   ttsOk: boolean;
   /** Last known server URL. Survives a sign-out (an expired Google session
@@ -60,6 +62,7 @@ export const useSession = create<SessionState>((set) => ({
   instanceAdminKnown: false,
   voiceOk: false,
   sttOk: false,
+  transcribeOk: false,
   ttsOk: false,
   savedUrl: "",
 
@@ -120,6 +123,7 @@ export const useSession = create<SessionState>((set) => ({
           instanceAdminKnown: true,
           voiceOk: !!me.voice,
           sttOk: !!me.voice_stt,
+          transcribeOk: !!me.voice_transcribe,
           ttsOk: !!me.voice_tts,
         });
         await SecureStore.setItemAsync(
@@ -172,6 +176,7 @@ export const useSession = create<SessionState>((set) => ({
       instanceAdminKnown: true,
       voiceOk: !!me.voice,
       sttOk: !!me.voice_stt,
+      transcribeOk: !!me.voice_transcribe,
       ttsOk: !!me.voice_tts,
       savedUrl: session.baseUrl,
     });
@@ -197,6 +202,7 @@ export const useSession = create<SessionState>((set) => ({
       instanceAdminKnown: false,
       voiceOk: false,
       sttOk: false,
+      transcribeOk: false,
       ttsOk: false,
     });
   },
@@ -220,8 +226,9 @@ export const useSession = create<SessionState>((set) => ({
       instanceAdmin: false,
       instanceAdminKnown: false,
       voiceOk: false,
-  sttOk: false,
-  ttsOk: false,
+      sttOk: false,
+      transcribeOk: false,
+      ttsOk: false,
       savedUrl: "",
     });
   },

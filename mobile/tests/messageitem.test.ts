@@ -50,7 +50,11 @@ afterEach(() => {
   act(() => useSession.setState(initialSessionState, true));
 });
 
-function render(m: Message, onLongPress?: (msg: Message) => void) {
+function render(
+  m: Message,
+  onLongPress?: (msg: Message) => void,
+  onOpenThread?: (msg: Message) => void,
+) {
   let tree!: TestRenderer.ReactTestRenderer;
   act(() => {
     tree = TestRenderer.create(
@@ -66,6 +70,7 @@ function render(m: Message, onLongPress?: (msg: Message) => void) {
             session,
             message: m,
             onLongPress,
+            onOpenThread,
           }),
         ),
       ),
@@ -115,6 +120,47 @@ test("long-press still reaches the handler from the text, and the backdrop exist
 test("without an onLongPress handler no backdrop Pressable is rendered", () => {
   const tree = render(message(TABLE));
   expect(tree.root.findAll(isBackdrop)).toHaveLength(0);
+});
+
+test("tap opens the thread while long-press opens only message options", () => {
+  const onOpenThread = jest.fn();
+  const onLongPress = jest.fn();
+  const m = message("Tap or hold me");
+  const tree = render(m, onLongPress, onOpenThread);
+  const paragraph = tree.root.find((node) =>
+    node.type === Text && node.props.selectable && typeof node.props.onPress === "function"
+  );
+
+  act(() => paragraph.props.onPress());
+  expect(onOpenThread).toHaveBeenCalledWith(m);
+  onOpenThread.mockClear();
+
+  act(() => paragraph.props.onLongPress());
+  act(() => paragraph.props.onPress());
+  expect(onLongPress).toHaveBeenCalledWith(m);
+  expect(onOpenThread).not.toHaveBeenCalled();
+});
+
+test("tapping a nested link does not open the thread", () => {
+  const onOpenThread = jest.fn();
+  const tree = render(message("Visit [Agora](https://example.com)"), undefined, onOpenThread);
+  const link = tree.root.find((node) => node.type === Text && node.props.style?.textDecorationLine === "underline");
+  const stopPropagation = jest.fn();
+  act(() => link.props.onPress({ stopPropagation }));
+  expect(stopPropagation).toHaveBeenCalled();
+  expect(onOpenThread).not.toHaveBeenCalled();
+});
+
+test("tapping a reaction does not open the thread", () => {
+  const onOpenThread = jest.fn();
+  const reacted = message("React independently");
+  reacted.reactions = [{ emoji: "👍", users: ["bob"] }];
+  const tree = render(reacted, undefined, onOpenThread);
+  const reaction = tree.root.find((node) =>
+    node.props.accessibilityLabel === "bob reacted with 👍"
+  );
+  act(() => reaction.props.onPress());
+  expect(onOpenThread).not.toHaveBeenCalled();
 });
 
 test.each([

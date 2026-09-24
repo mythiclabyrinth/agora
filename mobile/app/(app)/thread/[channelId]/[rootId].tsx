@@ -23,7 +23,7 @@ import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { Headphones, Paperclip, Volume2 } from "lucide-react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "@agora/core";
-import { useSendVoice } from "../../../../src/api/voice";
+import { useSendVoice, useTranscribeVoice } from "../../../../src/api/voice";
 import {
   flattenMessages,
   useChannelAgents,
@@ -83,7 +83,9 @@ export default function ThreadScreen() {
   const topLevel = useMessages(channelId, null);
   const send = useSendMessage(channelId);
   const sendVoice = useSendVoice(channelId);
+  const transcribeVoice = useTranscribeVoice(channelId);
   const sttOk = useSession((s) => s.sttOk);
+  const transcribeOk = useSession((s) => s.transcribeOk);
   const ttsOk = useSession((s) => s.ttsOk);
   const channelAgents = useChannelAgents(channelId);
   const stars = useStars(channelId);
@@ -432,6 +434,11 @@ export default function ThreadScreen() {
                     requireAgent,
                   });
                 }
+              : undefined
+          }
+          onTranscribeVoice={
+            sttOk && transcribeOk
+              ? async (file) => (await transcribeVoice.mutateAsync({ file, threadId: rootId })).text
               : undefined
           }
         />

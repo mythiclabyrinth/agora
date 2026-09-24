@@ -38,7 +38,7 @@ import {
   useSeedActivity,
   useStars,
 } from "@agora/core";
-import { useSendVoice } from "../../../src/api/voice";
+import { useSendVoice, useTranscribeVoice } from "../../../src/api/voice";
 import type { Message, PinnedMessage, StarredMessage } from "@agora/core";
 import { Composer, type MentionCandidate } from "../../../src/components/Composer";
 import { EmojiPicker } from "../../../src/components/EmojiPicker";
@@ -66,7 +66,7 @@ const MAX_DEEP_LINK_PAGES = 10;
 function openThread(channelId: string, root: Message, channelName: string) {
   router.push({
     pathname: "/(app)/thread/[channelId]/[rootId]",
-    params: { channelId, rootId: String(root.id), channelName },
+    params: { channelId, rootId: String(root.thread_id ?? root.id), channelName },
   });
 }
 
@@ -142,6 +142,7 @@ export default function ChannelScreen() {
   const messages = useMessages(channelId, null);
   const send = useSendMessage(channelId);
   const sendVoice = useSendVoice(channelId);
+  const transcribeVoice = useTranscribeVoice(channelId);
   const markRead = useMarkRead(channelId);
   const pins = usePins(channelId);
   const stars = useStars(channelId);
@@ -307,6 +308,7 @@ export default function ChannelScreen() {
   /* 🔊 speak-aloud: while this channel is focused (and not covered by the
      live screen), agent replies landing here are read out via server TTS. */
   const sttOk = useSession((s) => s.sttOk);
+  const transcribeOk = useSession((s) => s.transcribeOk);
   const ttsOk = useSession((s) => s.ttsOk);
   const speakAloud = usePrefs((s) => s.speakAloud);
   const setSpeakAloud = usePrefs((s) => s.setSpeakAloud);
@@ -522,6 +524,11 @@ export default function ChannelScreen() {
               ? async (file, mentions) => {
                   await sendVoice.mutateAsync({ file, threadId: null, mentions });
                 }
+              : undefined
+          }
+          onTranscribeVoice={
+            sttOk && transcribeOk
+              ? async (file) => (await transcribeVoice.mutateAsync({ file, threadId: null })).text
               : undefined
           }
         />}

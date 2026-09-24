@@ -99,6 +99,14 @@ export const Sending: Story = {
   },
 };
 
+export const VoiceRecording: Story = {
+  args: {
+    initialRecording: true,
+    onSendVoice: fn(async () => {}),
+    onTranscribeVoice: fn(async () => "A transcript added to the draft"),
+  },
+};
+
 export const ThreadReply: Story = {
   args: {
     placeholder: "Reply in thread",

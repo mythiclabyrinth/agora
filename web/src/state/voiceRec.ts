@@ -1,13 +1,13 @@
-/* Voice-note recorder (🎙 in the composers): click to
-   record, click again to stop-and-send; the audio is uploaded to /voice,
-   transcribed server-side, and posted as a normal text message. Nothing is
-   stored as audio. One recording at a time across all composers. */
+/* Voice-note recorder (🎙 in the composers): a take can be discarded,
+   transcribed into the draft, or transcribed and sent. Nothing is stored as
+   audio. One recording at a time across all composers. */
 
 import { create } from "zustand";
 import { threadAddressKey } from "@agora/core";
-import { recMime, uploadVoice, voiceSupported } from "../lib/voice";
+import { recMime, transcribeVoice, uploadVoice, voiceSupported } from "../lib/voice";
 import { toast } from "../lib/toast";
 import { useRequireAgent } from "./requireAgent";
+import { appendDraft } from "./drafts";
 
 const recKey = (channelId: string, threadId: number | null) =>
   threadId != null ? `t:${threadId}` : `c:${channelId}`;
@@ -19,7 +19,7 @@ interface RecSession {
   recorder: MediaRecorder;
   stream: MediaStream;
   chunks: Blob[];
-  canceled: boolean;
+  finishMode: "cancel" | "send" | "draft" | null;
   startedAt: number;
   /** "Talk to" prefix captured at stop-and-send (not at record start). */
   mentions?: string;
@@ -59,35 +59,44 @@ async function start(channelId: string, threadId: number | null): Promise<void> 
   const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
   const session: RecSession = {
     key: recKey(channelId, threadId), channelId, threadId,
-    recorder, stream, chunks: [], canceled: false, startedAt: Date.now(),
+    recorder, stream, chunks: [], finishMode: null, startedAt: Date.now(),
   };
   recorder.ondataavailable = e => { if (e.data && e.data.size) session.chunks.push(e.data); };
   recorder.onstop = () => {
     stream.getTracks().forEach(t => t.stop());
     if (rec === session) rec = null;
     useVoiceRec.setState({ recordingKey: null, startedAt: 0 });
-    if (!session.canceled && session.chunks.length) void upload(session);
+    if (session.finishMode !== "cancel" && session.finishMode && session.chunks.length) {
+      void processRecording(session, session.finishMode);
+    }
   };
   rec = session;
   recorder.start();
   useVoiceRec.setState({ recordingKey: session.key, startedAt: session.startedAt });
 }
 
-async function upload(session: RecSession): Promise<void> {
+async function processRecording(session: RecSession, mode: "send" | "draft"): Promise<void> {
   const type = (session.recorder.mimeType || "audio/webm").toLowerCase();
   const blob = new Blob(session.chunks, { type });
   useVoiceRec.setState({ busyKey: session.key });
   const requireAgent = session.threadId != null
     && useRequireAgent.getState().isOn(threadAddressKey(session.channelId, session.threadId));
   try {
-    await uploadVoice({
-      channelId: session.channelId,
-      threadId: session.threadId,
-      blob,
-      mentions: session.mentions,
-      requireAgent,
-    });
-    // The WS echo delivers the transcribed message.
+    if (mode === "draft") {
+      const text = await transcribeVoice({
+        channelId: session.channelId, threadId: session.threadId, blob,
+      });
+      appendDraft(session.key, text);
+    } else {
+      await uploadVoice({
+        channelId: session.channelId,
+        threadId: session.threadId,
+        blob,
+        mentions: session.mentions,
+        requireAgent,
+      });
+      // The WS echo delivers the transcribed message.
+    }
   } catch (e) {
     toast("Voice message failed: " + (e as Error).message, { variant: "warn" });
   } finally {
@@ -95,16 +104,19 @@ async function upload(session: RecSession): Promise<void> {
   }
 }
 
-function finish(send: boolean): void {
+function finish(mode: "cancel" | "send" | "draft", mentions?: string): void {
   if (!rec) return;
-  rec.canceled = !send;
+  rec.finishMode = mode;
+  if (mode === "send") rec.mentions = mentions;
   try { rec.recorder.stop(); } catch {
     rec = null;
     useVoiceRec.setState({ recordingKey: null, startedAt: 0 });
   }
 }
 
-export function voiceCancel(): void { finish(false); }
+export function voiceCancel(): void { finish("cancel"); }
+export function voiceSend(mentions?: string): void { finish("send", mentions); }
+export function voiceToDraft(): void { finish("draft"); }
 
 export async function voiceToggle(
   channelId: string,
@@ -113,10 +125,9 @@ export async function voiceToggle(
 ): Promise<void> {
   // Capture mentions at stop-and-send so mid-recording picker changes apply.
   if (rec && rec.key === recKey(channelId, threadId)) {
-    rec.mentions = mentions;
-    finish(true);
+    voiceSend(mentions);
     return;
   }
-  if (rec) finish(false); // one recording at a time
+  if (rec) finish("cancel"); // one recording at a time
   await start(channelId, threadId);
 }

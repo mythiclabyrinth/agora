@@ -18,6 +18,8 @@ export interface Me {
   voice?: boolean;
   /** Speech-to-text Enabled: show the composer mic / voice notes. */
   voice_stt?: boolean;
+  /** Server exposes the fail-safe transcription-only voice endpoint. */
+  voice_transcribe?: boolean;
   /** Text-to-speech Enabled: show speak-aloud. Live voice needs both. */
   voice_tts?: boolean;
   /** Ask AI Enabled (credentials checked when the user asks). */

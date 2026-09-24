@@ -17,7 +17,10 @@ function SpanText({ span }: { span: Span }) {
       return <Text style={styles.code}>{span.text}</Text>;
     case "link":
       return (
-        <Text style={styles.link} onPress={() => void openLink(span.url)} suppressHighlighting={false}>
+        <Text style={styles.link} onPress={(event) => {
+          event.stopPropagation();
+          void openLink(span.url);
+        }} suppressHighlighting={false}>
           {span.text}
         </Text>
       );
@@ -40,7 +43,11 @@ function Spans({ spans }: { spans: Span[] }) {
 
 export { columnWidths } from "../lib/tableLayout";
 
-export function MdText({ text, onLongPress }: { text: string; onLongPress?: () => void }) {
+export function MdText({ text, onLongPress, onPress }: {
+  text: string;
+  onLongPress?: () => void;
+  onPress?: () => void;
+}) {
   const blocks = React.useMemo(() => {
     let validIndex = 0;
     return parseMd(text).map((block, blockIndex) => {
@@ -95,7 +102,8 @@ export function MdText({ text, onLongPress }: { text: string; onLongPress?: () =
             );
           case "heading":
             return (
-              <Text key={i} style={[styles.para, styles.bold]} onLongPress={onLongPress}>
+              <Text key={i} style={[styles.para, styles.bold]} onPress={onPress}
+                onLongPress={onLongPress}>
                 <Spans spans={b.spans} />
               </Text>
             );
@@ -138,7 +146,8 @@ export function MdText({ text, onLongPress }: { text: string; onLongPress?: () =
           }
           default:
             return (
-              <Text key={i} style={styles.para} selectable onLongPress={onLongPress}>
+              <Text key={i} style={styles.para} selectable onPress={onPress}
+                onLongPress={onLongPress}>
                 <Spans spans={b.spans} />
               </Text>
             );

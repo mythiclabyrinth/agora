@@ -157,12 +157,22 @@ export function MessageItem({
      onLongPress themselves (via MdText) and an absolute-fill backdrop behind
      the content catches long-presses on the bubble's padding and gaps — the
      table's ScrollView never has a Pressable ancestor. */
-  const longPress = onLongPress ? () => onLongPress(message) : undefined;
-  const pressBackdrop = longPress ? (
+  const longPressedAt = React.useRef(0);
+  const longPress = onLongPress ? () => {
+    longPressedAt.current = Date.now();
+    onLongPress(message);
+  } : undefined;
+  const openThread = onOpenThread && message.id > 0 ? () => {
+    // React Native may emit onPress when a long press is released. Options
+    // and thread navigation are mutually exclusive gestures.
+    if (Date.now() - longPressedAt.current < 600) return;
+    onOpenThread(message);
+  } : undefined;
+  const pressBackdrop = longPress || openThread ? (
     <Pressable
       style={StyleSheet.absoluteFill}
+      onPress={openThread}
       onLongPress={longPress}
-      delayLongPress={300}
     />
   ) : null;
 
@@ -171,7 +181,7 @@ export function MessageItem({
       <View style={[styles.row, styles.rowMine]}>
         <View style={[styles.bubble, styles.bubbleMine]}>
           {pressBackdrop}
-          <MdText text={body} onLongPress={longPress} />
+          <MdText text={body} onPress={openThread} onLongPress={longPress} />
           <ArtifactList artifacts={message.meta?.artifacts} />
           <Attachments
             session={session}
@@ -218,7 +228,7 @@ export function MessageItem({
           {flags}
           <Text style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
         </View>
-        <MdText text={body} onLongPress={longPress} />
+        <MdText text={body} onPress={openThread} onLongPress={longPress} />
         <ArtifactList artifacts={message.meta?.artifacts} />
         <Attachments
           session={session}

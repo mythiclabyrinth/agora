@@ -17,6 +17,7 @@ import { BROWSER_IMAGE, humanSize, withToken } from "../lib/files";
 import { slugify } from "../lib/mentions";
 import { toast } from "../lib/toast";
 import { useRequireAgent } from "../state/requireAgent";
+import { useDrafts } from "../state/drafts";
 import { MicButton } from "./VoiceControls";
 import { ImageLightbox } from "./ImageLightbox";
 import { TemplateControls } from "./TemplateControls";
@@ -34,14 +35,7 @@ export interface MentionCandidate {
 }
 
 /* Per-target drafts: keyed "c:<channelId>" or "t:<rootId>". */
-interface DraftState {
-  drafts: Record<string, string>;
-  set: (key: string, text: string) => void;
-}
-export const useDrafts = create<DraftState>((set) => ({
-  drafts: {},
-  set: (key, text) => set(s => ({ drafts: { ...s.drafts, [key]: text } })),
-}));
+export { useDrafts } from "../state/drafts";
 
 /* "Talk to" selection per composer target (channel / thread), ephemeral. */
 interface AddrState {
@@ -559,6 +553,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
             channelId={channelId}
             threadId={threadId}
             mentions={addr || undefined}
+            draftOK={!!me?.voice_transcribe}
           />
         )}
         <details className="ago-composer-extra" open={extraOpen} onToggle={e => setExtraOpen(e.currentTarget.open)}
