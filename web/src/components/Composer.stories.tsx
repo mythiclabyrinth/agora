@@ -352,6 +352,65 @@ export const AddressingWithVoiceRecording: Story = {
     await expect(canvas.findByText("Claude")).resolves.toBeVisible();
     await expect(canvas.findByTitle("Stop and add to message")).resolves.toBeVisible();
     await expect(canvas.findByTitle("Stop and send")).resolves.toBeVisible();
+    const visibleButtons = Array.from(
+      canvasElement.querySelectorAll<HTMLButtonElement>(".ago-composer-tools button"),
+    ).filter(button => button.offsetParent !== null);
+    await waitFor(() => {
+      expect(new Set(visibleButtons.map(button => button.offsetTop)).size).toBe(1);
+    });
+  },
+};
+
+export const VoiceRecordingAt360: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "recordingPhone" },
+  },
+};
+
+export const VoiceRecordingAt390: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "phone" },
+  },
+};
+
+export const VoiceRecordingAt768: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "tabletComposer" },
+  },
+};
+
+export const VoiceRecordingAt1280: Story = {
+  ...AddressingWithVoiceRecording,
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    viewport: { defaultViewport: "desktopComposer" },
+  },
+};
+
+export const ThreadVoiceRecordingAt360: Story = {
+  ...AddressingWithVoiceRecording,
+  args: {
+    ...AddressingWithVoiceRecording.args,
+    threadId: 42,
+    onSetReplyInThread: undefined,
+  },
+  parameters: {
+    ...AddressingWithVoiceRecording.parameters,
+    setup: () => {
+      useAddressing.setState({ addr: { "t:42": ["codex", "claude"] } });
+      useVoiceRec.setState({
+        recordingKey: "t:42",
+        startedAt: Date.now() - 12_000,
+        busyKey: null,
+      });
+    },
+    viewport: { defaultViewport: "recordingPhone" },
   },
 };
 

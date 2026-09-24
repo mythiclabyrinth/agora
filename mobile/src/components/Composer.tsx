@@ -633,8 +633,13 @@ export function Composer({
             {recPhase === "uploading" ? "Transcribing…" : clock}
           </Text>
           <View style={{ flex: 1 }} />
-          <Pressable onPress={cancelRec} disabled={recPhase === "uploading"} style={styles.recCancel}>
-            <Text style={styles.recCancelText}>Cancel</Text>
+          <Pressable
+            onPress={cancelRec}
+            disabled={recPhase === "uploading"}
+            accessibilityLabel="Discard recording"
+            style={[styles.recCancel, recPhase === "uploading" && styles.sendOff]}
+          >
+            <Icon icon={X} size={20} color={colors.dim} />
           </Pressable>
           {onTranscribeVoice ? <Pressable
             onPress={() => finishRec("draft")}
@@ -1163,8 +1168,15 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     marginLeft: 8,
   },
-  recCancel: { alignSelf: "center", paddingHorizontal: 12, paddingVertical: 8 },
-  recCancelText: { color: colors.dim, fontSize: 14.5, fontWeight: "600" },
+  recCancel: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   stopBtn: {
     width: 38,
     height: 38,
