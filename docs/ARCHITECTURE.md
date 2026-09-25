@@ -163,7 +163,8 @@ It accepts a user session or admin key through `Authorization: Bearer` or
 `?token=` and returns `agent: {id, name, live}` plus
 `channels: [{id, name, group_id, group, kind, member}]`. Group-wide agent rows
 mark every channel in that group as a member; the caller's agent DM, when one
-exists, is appended with group id `__dms`, kind `agent_dm`, and `member: true`.
+exists and they may still post to it, is appended with group id `__dms`, kind
+`agent_dm`, and `member: true`.
 
 **Presentation state is per-user, never shared.** Hiding and reordering
 groups/channels live in the `user_prefs` table and are overlaid onto payloads

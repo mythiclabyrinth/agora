@@ -3276,13 +3276,18 @@ async fn agent_channels(
         }
     }
 
+    let can_post_dm = state
+        .hub
+        .store
+        .user_can_start_agent_dm(&user.username, &agent_id);
     if let Some(dm) = state
         .hub
         .store
         .agent_dms_for_user(&user.username)
         .into_iter()
         .find(|dm| {
-            dm["agent_id"].as_str() == Some(agent_id.as_str())
+            can_post_dm
+                && dm["agent_id"].as_str() == Some(agent_id.as_str())
                 && dm["channel_id"]
                     .as_str()
                     .is_some_and(|id| !channel_prefs.get(id).is_some_and(|pref| pref.0))
@@ -7050,6 +7055,7 @@ mod tests {
         let store = &state.hub.store;
         store.create_user("ana", "Ana", None, "member").unwrap();
         store.upsert_agent("claude", "Claude", "pairing:test", false, false, 0);
+        store.set_agent_dm_policy("claude", false, &["ana".into()]);
         let dm = store.open_agent_dm("ana", "claude", "Claude");
 
         let response = get_agent_channels(&state, "claude", session_headers(&state, "ana")).await;
@@ -7061,6 +7067,20 @@ mod tests {
             "kind": "agent_dm",
             "member": true,
         }]));
+    }
+
+    #[tokio::test]
+    async fn agent_channels_omits_a_revoked_agent_dm() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.upsert_agent("claude", "Claude", "pairing:test", false, false, 0);
+        store.set_agent_dm_policy("claude", false, &["ana".into()]);
+        store.open_agent_dm("ana", "claude", "Claude");
+        store.set_agent_dm_policy("claude", false, &[]);
+
+        let response = get_agent_channels(&state, "claude", session_headers(&state, "ana")).await;
+        assert_eq!(response["channels"], json!([]));
     }
 
     #[tokio::test]
