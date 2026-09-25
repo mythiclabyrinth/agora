@@ -8,7 +8,7 @@
 //! Route shapes mirror Pantheo's old `/agora/api/*` so the ported UI's calls
 //! stay mechanical: same payloads, same event frames.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -480,6 +480,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agents", get(available_agents))
         .route("/api/agents/{agent_id}", delete(forget_agent))
         .route("/api/agents/{agent_id}/avatar", get(agent_avatar))
+        .route("/api/agents/{agent_id}/channels", get(agent_channels))
         .route("/api/agents/{agent_id}/usage", get(agent_usage))
         .route("/api/admin/agents/{agent_id}/tts", put(update_agent_tts_settings))
         .route("/api/dms", get(list_agent_dms))
@@ -3212,6 +3213,99 @@ async fn available_agents(
         })
         .collect();
     Ok(Json(json!({"agents": agents})))
+}
+
+async fn agent_channels(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let agent = state
+        .hub
+        .store
+        .agent(&agent_id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "Unknown agent"))?;
+    let live = state.hub.live_agent_ids().contains(&agent_id);
+    let group_prefs = state.hub.store.user_prefs(&user.username, "group");
+    let channel_prefs = state.hub.store.user_prefs(&user.username, "channel");
+    let memberships = state.hub.store.channels_for_agent(&agent_id);
+    let member_groups: HashSet<&str> = memberships
+        .iter()
+        .filter(|(_, channel_id)| channel_id.is_empty())
+        .map(|(group_id, _)| group_id.as_str())
+        .collect();
+    let member_channels: HashSet<&str> = memberships
+        .iter()
+        .filter(|(_, channel_id)| !channel_id.is_empty())
+        .map(|(_, channel_id)| channel_id.as_str())
+        .collect();
+    let mut channels = Vec::new();
+
+    for group in state.hub.store.list_groups() {
+        let group_id = group["id"].as_str().unwrap_or_default();
+        if group_prefs.get(group_id).is_some_and(|pref| pref.0)
+            || (!user.instance_admin
+                && !state
+                    .hub
+                    .store
+                    .user_can_access_group(&user.username, group_id))
+        {
+            continue;
+        }
+        for channel in state.hub.store.group_channels(group_id) {
+            let channel_id = channel["id"].as_str().unwrap_or_default();
+            if channel_prefs.get(channel_id).is_some_and(|pref| pref.0)
+                || (!user.instance_admin
+                    && !state
+                        .hub
+                        .store
+                        .user_can_see_channel(&user.username, channel_id))
+            {
+                continue;
+            }
+            channels.push(json!({
+                "id": channel_id,
+                "name": channel["name"],
+                "group_id": group_id,
+                "group": group["name"],
+                "kind": "channel",
+                "member": member_groups.contains(group_id) || member_channels.contains(channel_id),
+            }));
+        }
+    }
+
+    if let Some(dm) = state
+        .hub
+        .store
+        .agent_dms_for_user(&user.username)
+        .into_iter()
+        .find(|dm| {
+            dm["agent_id"].as_str() == Some(agent_id.as_str())
+                && dm["channel_id"]
+                    .as_str()
+                    .is_some_and(|id| !channel_prefs.get(id).is_some_and(|pref| pref.0))
+        })
+    {
+        channels.push(json!({
+            "id": dm["channel_id"],
+            "name": dm["agent_name"],
+            "group_id": crate::store::DM_GROUP_ID,
+            "group": crate::store::DM_GROUP_NAME,
+            "kind": "agent_dm",
+            "member": true,
+        }));
+    }
+
+    Ok(Json(json!({
+        "agent": {
+            "id": agent_id,
+            "name": agent["name"].as_str().unwrap_or(&agent_id),
+            "live": live,
+        },
+        "channels": channels,
+    })))
 }
 
 async fn agent_usage(
@@ -6805,6 +6899,168 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("authorization", format!("Bearer {token}").parse().unwrap());
         h
+    }
+
+    fn admin_headers(state: &AppState) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.config.admin_key()).parse().unwrap(),
+        );
+        headers
+    }
+
+    async fn get_agent_channels(state: &AppState, agent_id: &str, headers: HeaderMap) -> Value {
+        agent_channels(
+            State(state.clone()),
+            Path(agent_id.to_string()),
+            Query(HashMap::new()),
+            headers,
+        )
+        .await
+        .unwrap()
+        .0
+    }
+
+    #[tokio::test]
+    async fn agent_channels_returns_not_found_for_unknown_agent() {
+        let (state, _dir) = test_state();
+        let error = agent_channels(
+            State(state.clone()),
+            Path("missing".into()),
+            Query(HashMap::new()),
+            admin_headers(&state),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.0, StatusCode::NOT_FOUND);
+        assert_eq!(error.1.0["detail"], "Unknown agent");
+    }
+
+    #[tokio::test]
+    async fn agent_channels_marks_group_wide_membership_and_omits_hidden_channels() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.upsert_agent("claude", "Claude", "pairing:test", false, false, 0);
+        let engineering = store.create_group("Engineering", "", None);
+        let engineering_id = engineering["id"].as_str().unwrap();
+        let general = store.create_channel(engineering_id, "general", "");
+        let hidden = store.create_channel(engineering_id, "hidden", "");
+        let elsewhere = store.create_group("Elsewhere", "", None);
+        let elsewhere_id = elsewhere["id"].as_str().unwrap();
+        let random = store.create_channel(elsewhere_id, "random", "");
+        store.add_member(engineering_id, "agent", "claude", "member", None);
+        store.set_pref_hidden(
+            &state.config.username(),
+            "channel",
+            hidden["id"].as_str().unwrap(),
+            true,
+        );
+
+        let response = get_agent_channels(&state, "claude", admin_headers(&state)).await;
+        let channels = response["channels"].as_array().unwrap();
+        assert_eq!(channels.len(), 2);
+        assert_eq!(channels[0]["id"], general["id"]);
+        assert_eq!(channels[0]["member"], true);
+        assert_eq!(channels[1]["id"], random["id"]);
+        assert_eq!(channels[1]["member"], false);
+        assert!(channels.iter().all(|channel| channel["id"] != hidden["id"]));
+    }
+
+    #[tokio::test]
+    async fn agent_channels_marks_only_the_channel_scoped_membership() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.upsert_agent("claude", "Claude", "pairing:test", false, false, 0);
+        let group = store.create_group("Engineering", "", None);
+        let group_id = group["id"].as_str().unwrap();
+        let general = store.create_channel(group_id, "general", "");
+        let random = store.create_channel(group_id, "random", "");
+        store.add_member(
+            group_id,
+            "agent",
+            "claude",
+            "member",
+            Some(general["id"].as_str().unwrap()),
+        );
+
+        let response = get_agent_channels(&state, "claude", admin_headers(&state)).await;
+        let channels = response["channels"].as_array().unwrap();
+        assert_eq!(channels[0]["id"], general["id"]);
+        assert_eq!(channels[0]["member"], true);
+        assert_eq!(channels[1]["id"], random["id"]);
+        assert_eq!(channels[1]["member"], false);
+    }
+
+    #[tokio::test]
+    async fn agent_channels_limits_non_admins_to_visible_channels_and_groups() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.upsert_agent("claude", "Claude", "pairing:test", false, false, 0);
+        let visible = store.create_group("Visible", "", None);
+        let visible_id = visible["id"].as_str().unwrap();
+        let allowed = store.create_channel(visible_id, "allowed", "");
+        let denied = store.create_channel(visible_id, "denied", "");
+        store.add_member(
+            visible_id,
+            "user",
+            "ana",
+            "member",
+            Some(allowed["id"].as_str().unwrap()),
+        );
+        let private = store.create_group("Private", "", None);
+        let private_channel =
+            store.create_channel(private["id"].as_str().unwrap(), "secret", "");
+
+        let response = get_agent_channels(&state, "claude", session_headers(&state, "ana")).await;
+        let channels = response["channels"].as_array().unwrap();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0]["id"], allowed["id"]);
+        assert!(channels.iter().all(|channel| channel["id"] != denied["id"]));
+        assert!(channels
+            .iter()
+            .all(|channel| channel["id"] != private_channel["id"]));
+    }
+
+    #[tokio::test]
+    async fn agent_channels_reports_live_agent_status() {
+        let (state, _dir) = test_state();
+        let (tx, _rx) = unbounded_channel();
+        state.hub.register_agent(AgentHandle {
+            agent_id: "claude".into(),
+            agent_name: "Claude".into(),
+            requires_mention: false,
+            bot_loop_limit: None,
+            wants_context_feed: false,
+            has_avatar: false,
+            avatar_v: 0,
+            source: "pairing:test".into(),
+            conn_id: state.hub.next_conn_id(),
+            tx,
+        });
+
+        let response = get_agent_channels(&state, "claude", admin_headers(&state)).await;
+        assert_eq!(response["agent"], json!({"id":"claude","name":"Claude","live":true}));
+    }
+
+    #[tokio::test]
+    async fn agent_channels_appends_the_callers_agent_dm() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.upsert_agent("claude", "Claude", "pairing:test", false, false, 0);
+        let dm = store.open_agent_dm("ana", "claude", "Claude");
+
+        let response = get_agent_channels(&state, "claude", session_headers(&state, "ana")).await;
+        assert_eq!(response["channels"], json!([{
+            "id": dm["id"],
+            "name": "Claude",
+            "group_id": crate::store::DM_GROUP_ID,
+            "group": crate::store::DM_GROUP_NAME,
+            "kind": "agent_dm",
+            "member": true,
+        }]));
     }
 
     #[tokio::test]
