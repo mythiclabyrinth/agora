@@ -157,6 +157,15 @@ and backfilled into legacy config at boot. Going offline does not revoke DM
 access or make a conversation read-only: users may keep posting, and the agent
 can catch up from history when its transport reconnects.
 
+`GET /api/agents/{agent_id}/channels` gives an authenticated client the visible,
+non-hidden channels it may target and whether the named agent belongs to each.
+It accepts a user session or admin key through `Authorization: Bearer` or
+`?token=` and returns `agent: {id, name, live}` plus
+`channels: [{id, name, group_id, group, kind, member}]`. Group-wide agent rows
+mark every channel in that group as a member; the caller's agent DM, when one
+exists and they may still post to it, is appended with group id `__dms`, kind
+`agent_dm`, and `member: true`.
+
 **Presentation state is per-user, never shared.** Hiding and reordering
 groups/channels live in the `user_prefs` table and are overlaid onto payloads
 (`overlay_prefs` in `server.rs`); any member may write their own. The legacy

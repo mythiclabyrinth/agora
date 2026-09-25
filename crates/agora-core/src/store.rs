@@ -1589,6 +1589,23 @@ impl Store {
             .collect()
     }
 
+    /// Group and channel membership rows for an agent. An empty channel id
+    /// grants the whole group; DM membership is implied by the DM channel's
+    /// `dm_agent_id` and is handled by callers separately.
+    pub fn channels_for_agent(&self, agent_id: &str) -> Vec<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT group_id, channel_id FROM memberships \
+                 WHERE member_type = 'agent' AND member_id = ?1",
+            )
+            .unwrap();
+        stmt.query_map(params![agent_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
+    }
+
     /// Whether one agent is a member of a channel, either through a
     /// group-wide membership or a row scoped to that exact channel.
     pub fn agent_in_channel(&self, agent_id: &str, channel_id: &str) -> bool {
