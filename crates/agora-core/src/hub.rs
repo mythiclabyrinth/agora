@@ -9,7 +9,7 @@
 //! Ported from Pantheo's `engine/agora/hub.py`; the wire events pushed to UI
 //! sockets are shape-identical so the ported web UI works unchanged.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -53,6 +53,15 @@ fn parse_bot_loop_max(raw: Option<&str>) -> i64 {
     raw.and_then(|raw| raw.trim().parse::<i64>().ok())
         .filter(|n| *n >= 1)
         .unwrap_or(DEFAULT_BOT_LOOP_MAX)
+}
+
+fn parse_streak_reset_agents(raw: Option<&str>) -> HashSet<String> {
+    raw.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Parse a connection-scoped client preference. Invalid and non-positive
@@ -513,6 +522,8 @@ pub struct Hub {
     /// it empty so posting never touches the network).
     unfurl_tx: Mutex<Option<UnboundedSender<i64>>>,
     max_attachment_bytes: usize,
+    /// Agents trusted to mark cron-originated posts as a new unattended run.
+    streak_reset_agents: HashSet<String>,
 }
 
 impl Hub {
@@ -524,6 +535,17 @@ impl Hub {
     }
 
     pub fn new_with_attachment_limit(store: Arc<Store>, max_attachment_bytes: usize) -> Self {
+        let streak_reset_agents = parse_streak_reset_agents(
+            std::env::var("AGORA_STREAK_RESET_AGENTS").ok().as_deref(),
+        );
+        Self::new_with_options(store, max_attachment_bytes, streak_reset_agents)
+    }
+
+    fn new_with_options(
+        store: Arc<Store>,
+        max_attachment_bytes: usize,
+        streak_reset_agents: HashSet<String>,
+    ) -> Self {
         Self {
             store,
             state: Mutex::new(HubState::default()),
@@ -532,6 +554,7 @@ impl Hub {
             read_notifier: Mutex::new(None),
             unfurl_tx: Mutex::new(None),
             max_attachment_bytes,
+            streak_reset_agents,
         }
     }
 
@@ -1217,6 +1240,48 @@ impl Hub {
         attachments: Vec<NewAttachment>,
         reply_in_thread: bool,
     ) -> Value {
+        self.post_agent_message_with_options_inner(
+            agent_id,
+            agent_name,
+            channel_id,
+            text,
+            thread_id,
+            options,
+            options_id,
+            tldr,
+            sources,
+            form,
+            form_id,
+            table,
+            table_id,
+            artifacts,
+            attachments,
+            reply_in_thread,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn post_agent_message_with_options_inner(
+        &self,
+        agent_id: &str,
+        agent_name: &str,
+        channel_id: &str,
+        text: &str,
+        thread_id: Option<i64>,
+        options: Option<&Value>,
+        options_id: Option<&str>,
+        tldr: Option<&str>,
+        sources: Option<&Value>,
+        form: Option<&Value>,
+        form_id: Option<&str>,
+        table: Option<&Value>,
+        table_id: Option<&str>,
+        artifacts: Option<&Value>,
+        attachments: Vec<NewAttachment>,
+        reply_in_thread: bool,
+        scheduled: bool,
+    ) -> Value {
         let mut meta_obj = serde_json::Map::new();
         // Same "reply in thread" ask as a user's composer toggle: peers see
         // the top-level post as a thread root, so an agent that kicks off a
@@ -1306,6 +1371,9 @@ impl Hub {
         let streak = {
             let mut st = self.state.lock().unwrap();
             let key = (channel_id.to_string(), thread_id.unwrap_or(0));
+            if scheduled && self.streak_reset_agents.contains(agent_id) {
+                st.bot_streak.insert(key.clone(), 0);
+            }
             let v = st.bot_streak.entry(key).or_insert(0);
             *v += 1;
             let streak = *v;
@@ -2109,7 +2177,7 @@ impl Hub {
                             && t.chars().count() <= MAX_TLDR_CHARS
                             && t.chars().count() < text.chars().count()
                     });
-                    let message = self.post_agent_message_with_options(
+                    let message = self.post_agent_message_with_options_inner(
                         &agent_id,
                         &agent_name,
                         &channel_id,
@@ -2126,6 +2194,7 @@ impl Hub {
                         frame.get("artifacts"),
                         attachments,
                         frame["reply_thread"].as_bool().unwrap_or(false),
+                        frame["scheduled"].as_bool().unwrap_or(false),
                     );
                     // A correlated post learns its new message id so it can
                     // address the message later (e.g. post into the thread it
@@ -2445,6 +2514,14 @@ mod tests {
 
     fn hub() -> Hub {
         Hub::new(Arc::new(Store::open_in_memory().unwrap()))
+    }
+
+    fn hub_with_streak_reset_agents(ids: &[&str]) -> Hub {
+        Hub::new_with_options(
+            Arc::new(Store::open_in_memory().unwrap()),
+            10 * 1024 * 1024,
+            ids.iter().map(|id| (*id).to_owned()).collect(),
+        )
     }
 
     fn add_agent(
@@ -3369,6 +3446,15 @@ mod tests {
     }
 
     #[test]
+    fn streak_reset_agent_env_is_trimmed_and_deduplicated() {
+        assert!(parse_streak_reset_agents(None).is_empty());
+        assert_eq!(
+            parse_streak_reset_agents(Some(" athena, scheduler ,,athena ")),
+            HashSet::from(["athena".to_owned(), "scheduler".to_owned()]),
+        );
+    }
+
+    #[test]
     fn agent_relay_caps_are_per_recipient_and_human_reset_is_shared() {
         let h = hub();
         let _rx_a = add_agent(&h, "bot-a", "Bot A", false);
@@ -3815,6 +3901,50 @@ mod tests {
         assert_eq!(st.bot_streak.get(&(cid.clone(), mid)), Some(&2));
         drop(st);
         let _ = last_frame(&mut rx_b, "inbound");
+    }
+
+    #[test]
+    fn trusted_scheduled_post_resets_channel_and_new_thread_streak() {
+        let h = hub_with_streak_reset_agents(&["athena"]);
+        let _rx_a = add_agent(&h, "athena", "Athena", false);
+        let _rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["athena", "bot-b"]);
+
+        for scheduled in [false, false, false] {
+            h.handle_agent_frame(&json!({
+                "type": "post", "agent_id": "athena", "channel_id": cid,
+                "text": "@bot-b tick", "scheduled": scheduled,
+            }));
+        }
+        assert_eq!(h.state.lock().unwrap().bot_streak.get(&(cid.clone(), 0)), Some(&3));
+
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "athena", "channel_id": cid,
+            "text": "@bot-b scheduled tick", "scheduled": true,
+            "reply_thread": true,
+        }));
+        let root = h.store.messages(&cid, None, None, 10).pop().unwrap();
+        let thread_id = root["id"].as_i64().unwrap();
+        let state = h.state.lock().unwrap();
+        assert_eq!(state.bot_streak.get(&(cid.clone(), 0)), Some(&1));
+        assert_eq!(state.bot_streak.get(&(cid, thread_id)), Some(&1));
+    }
+
+    #[test]
+    fn scheduled_flag_from_untrusted_agent_does_not_reset_streak() {
+        let h = hub_with_streak_reset_agents(&["athena"]);
+        let _rx_a = add_agent(&h, "athena", "Athena", false);
+        let _rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["athena", "bot-b"]);
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "athena", "channel_id": cid,
+            "text": "first",
+        }));
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-b", "channel_id": cid,
+            "text": "scheduled but unauthorized", "scheduled": true,
+        }));
+        assert_eq!(h.state.lock().unwrap().bot_streak.get(&(cid, 0)), Some(&2));
     }
 
     #[test]
