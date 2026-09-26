@@ -7,7 +7,9 @@
 # GitHub operations authenticate via the Claude GitHub App
 # (https://github.com/apps/claude), which must be installed on this repo: the
 # action exchanges the workflow's OIDC token for an app installation token.
-# Don't pass `github_token`: review comments should post as claude[bot].
+# Don't pass `github_token` — comments would post as github-actions[bot],
+# which the sticky-comment lookup can't recognize, so every push would create
+# a new review comment instead of updating the existing one.
 #
 # Fork PRs and PRs from untrusted authors are intentionally excluded. GitHub does
 # not expose repository secrets to forked pull_request workflows, and running an
@@ -72,30 +74,32 @@ jobs:
               core.notice(`${workflowPath} changed; skipping Claude review until the workflow is on the default branch.`);
             }
 
-      # Runs Claude Code's built-in code-review skill directly (agent mode).
-      # Tag mode (track_progress) is avoided on purpose: it copies any text
-      # after "@claude" in the PR body into the session as a user request, so
-      # a body quoting "/new ..." reset the session before any review; and it
-      # left the skill call to the model, whose forked review never posted.
       - name: Run Claude Code review
         if: steps.self-change.outputs.changed != 'true'
-        uses: anthropics/claude-code-action@9171db3e57d6a3140a37ddc2ba92788584e0ead6 # v1.0.234
-        env:
-          # Keep any helper agents in the foreground; the action stops at the
-          # first result (anthropics/claude-code-action#1499).
-          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: https://github.com/anthropics/claude-code.git
+          plugins: code-review@claude-code-plugins
+          # Tag mode copies any text after the trigger phrase in the PR body
+          # into the session as a user request, so a body quoting e.g.
+          # "@claude /new ..." ran /new (= /clear) and ended the review
+          # before it started. The `prompt` input always triggers, so an
+          # unused phrase only switches that extraction off.
+          trigger_phrase: "@claude-review-unused-trigger"
+          track_progress: true
+          use_sticky_comment: true
           show_full_output: false
-          # The skill posts one inline comment per finding through the
-          # action's inline-comment tool, which only starts when allowed here.
           claude_args: >-
-            --model claude-opus-5-5
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
-          # Must be exactly the command: any text after the level becomes the
-          # review target, and without the PR number the detached merge
-          # checkout isn't recognised as a PR, so --comment is ignored.
-          prompt: /code-review high --comment ${{ github.event.pull_request.number }}
+            --model claude-opus-5
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
+          prompt: >-
+            /code-review --comment. Review only: do not edit files, create commits,
+            or push changes. Prioritize correctness, security, regressions,
+            reliability, and missing tests. Keep findings concrete and actionable;
+            include file and line references, and avoid low-value style comments.
+            Report at most 5 minor nits; after the first review, focus on
+            blocking issues and don't repeat points already addressed.
 
       - name: Explain self-change skip
         if: steps.self-change.outputs.changed == 'true'
