@@ -98,6 +98,8 @@ jobs:
             or push changes. Prioritize correctness, security, regressions,
             reliability, and missing tests. Keep findings concrete and actionable;
             include file and line references, and avoid low-value style comments.
+            Report at most 5 minor nits; after the first review, focus on
+            blocking issues and don't repeat points already addressed.
 
       - name: Explain self-change skip
         if: steps.self-change.outputs.changed == 'true'
