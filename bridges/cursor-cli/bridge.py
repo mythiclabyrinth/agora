@@ -120,13 +120,10 @@ LEADING_MENTIONS = re.compile(r"^(?:@[\w.-]+[,:]?\s*)+")
 MENTION = re.compile(r"@([\w.-]+)")
 # The hub prefixes the first reply in a thread with the thread's root
 # ('[thread on: "<root>" — by <author>]' + newline) so a fresh per-thread
-# session knows what it's about.
-THREAD_HEADER = re.compile(r'^\[thread on: ".*?" — by [^\n]*\]\n', re.DOTALL)
-
-
-def strip_leading_mentions(text: str) -> str:
-    """Drop every leading @tag ("@a @b /new x", "@a, @b, /new x")."""
-    return LEADING_MENTIONS.sub("", text.strip())
+# session knows what it's about. The root text is unescaped, so match up to
+# the *last* closer: a lazy match would end at a fake closer planted in the
+# root and hand the root's author a command in someone else's reply.
+THREAD_HEADER = re.compile(r'^\[thread on: ".*" — by [^\n]*\]\n', re.DOTALL)
 
 
 def command_text(text: str, own: set[str]) -> str | None:
