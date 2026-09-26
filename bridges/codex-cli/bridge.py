@@ -224,11 +224,32 @@ def parse_peer_commands(raw: str) -> frozenset[str]:
 
 
 LEADING_MENTIONS = re.compile(r"^(?:@[\w.-]+[,:]?\s*)+")
+MENTION = re.compile(r"@([\w.-]+)")
+# The hub prefixes the first reply in a thread with the thread's root
+# ('[thread on: "<root>" — by <author>]' + newline) so a fresh per-thread
+# session knows what it's about.
+THREAD_HEADER = re.compile(r'^\[thread on: ".*?" — by [^\n]*\]\n', re.DOTALL)
 
 
 def strip_leading_mentions(text: str) -> str:
     """Drop every leading @tag ("@a @b /new x", "@a, @b, /new x")."""
     return LEADING_MENTIONS.sub("", text.strip())
+
+
+def command_text(text: str, own: set[str]) -> str | None:
+    """The text a bridge command is parsed from, or None when the leading
+    tags address only others.
+
+    The first-reply thread header is dropped, then a leading run of tags only
+    when it includes this bridge (``own``: its id and name slug), so
+    "@a @b /new x" is a command for a and b while "@bob /stop ..." and
+    "@a /stop (cc @b)" stay chat for everyone else."""
+    text = THREAD_HEADER.sub("", text.strip(), count=1).strip()
+    m = LEADING_MENTIONS.match(text)
+    if not m:
+        return text
+    tags = {t.lower().rstrip(".") for t in MENTION.findall(m.group(0))}
+    return text[m.end():] if tags & own else None
 
 
 # Family names stay unresolved in channel state. Each run asks the installed
@@ -1143,6 +1164,10 @@ class Bridge:
         cid = frame["channel_id"]
         return f"{cid}:{tid}" if tid else cid
 
+    def _own_handles(self) -> set[str]:
+        slug = re.sub(r"[^a-z0-9]+", "-", self.agent_name.lower()).strip("-")
+        return {self.agent_id.lower(), slug}
+
     def _strip_mention(self, text: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", self.agent_name.lower()).strip("-")
         return re.sub(
@@ -1375,14 +1400,14 @@ class Bridge:
             if not text and not (frame.get("attachments") or []):
                 self.clear_reaction(frame)
                 return
-            cmd_text = strip_leading_mentions(text)
-            cmd, _, rest = cmd_text.partition(" ")
+            cmd_text = command_text(frame.get("text") or "", self._own_handles())
+            cmd, _, rest = (cmd_text or "").partition(" ")
             cmd, rest = cmd.lower(), rest.strip()
             # Operator-allowlisted commands (--peer-commands) run through the
             # same table humans use, so /new keeps its allowed-roots checks.
             # Everything else stays on the relay-note chat path.
             if cmd in self.peer_commands:
-                await self._run_command(key, frame, cmd, rest, cmd_text, from_peer=True)
+                await self._run_command(key, frame, cmd, rest, text, from_peer=True)
                 return
             await self.forward_to_codex(
                 key, frame, self._peer_prompt(frame, text), from_peer=True)
@@ -1402,14 +1427,15 @@ class Bridge:
             self.clear_reaction(frame)
             return
         # Tags for other agents ("@claude @codex /new ~/x") must not hide a
-        # command; plain chat keeps them, since they are part of the ask.
-        cmd_text = strip_leading_mentions(text)
-        cmd, _, rest = cmd_text.partition(" ")
+        # command addressed to us too; plain chat keeps them, since they are
+        # part of the ask, and tags for others only never make a command.
+        cmd_text = command_text(frame.get("text") or "", self._own_handles())
+        cmd, _, rest = (cmd_text or "").partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
         if not cmd.startswith("/"):
             await self.forward_to_codex(key, frame, text)
             return
-        await self._run_command(key, frame, cmd, rest, cmd_text)
+        await self._run_command(key, frame, cmd, rest, text)
 
     async def _run_command(
         self, key: str, frame: dict, cmd: str, rest: str, text: str,

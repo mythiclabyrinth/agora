@@ -332,6 +332,43 @@ class PeerCommandTests(unittest.TestCase):
         self.assertEqual(instance.forward_to_claude.await_args.args[2], "@codex compare notes")
 
 
+    def test_first_thread_reply_header_does_not_hide_peer_command(self):
+        instance = self._bridge()
+        text = '[thread on: "@codex /new ~/X" — by Hermes]\n@claude /new ~/X'
+        asyncio.run(instance.handle_inbound(peer_frame(text=text, thread_id=7)))
+        instance._cmd_new.assert_called_once_with("c1:7", "~/X")
+        instance.forward_to_claude.assert_not_called()
+
+    def test_leading_tags_for_others_only_stay_chat(self):
+        human = {"type": "user", "id": "tom", "name": "Tom"}
+        for text, mentioned in (
+            ("@bob /stop is how you cancel it", False),
+            ("@codex /new ~/X (cc @claude)", True),
+        ):
+            instance = self._bridge(peer_agents="", peer_commands="")
+            frame = peer_frame(author=human, text=text, mentioned=mentioned,
+                               any_mention=mentioned)
+            asyncio.run(instance.handle_inbound(frame))
+            instance._cmd_new.assert_not_called()
+            instance.forward_to_claude.assert_awaited_once()
+            self.assertIn("/", instance.forward_to_claude.await_args.args[2])
+
+    def test_peer_command_tagged_to_another_agent_stays_chat(self):
+        instance = self._bridge()
+        asyncio.run(instance.handle_inbound(peer_frame(text="@codex /new ~/X @claude fyi")))
+        instance._cmd_new.assert_not_called()
+        instance.forward_to_claude.assert_awaited_once()
+        self.assertTrue(instance.forward_to_claude.await_args.args[2].startswith("[Relay note"))
+
+    def test_unknown_slash_text_keeps_other_tags(self):
+        instance = self._bridge(peer_agents="", peer_commands="")
+        frame = peer_frame(author={"type": "user", "id": "tom", "name": "Tom"},
+                           text="@claude @codex /tmp/foo is full again")
+        asyncio.run(instance.handle_inbound(frame))
+        instance.forward_to_claude.assert_awaited_once()
+        self.assertEqual(instance.forward_to_claude.await_args.args[2],
+                         "@codex /tmp/foo is full again")
+
 class PeerPromptTests(unittest.TestCase):
     def test_budget_tiers(self):
         instance = make_bridge(peer_agents="codex-cli")
