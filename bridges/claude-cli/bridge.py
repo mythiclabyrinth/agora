@@ -399,41 +399,22 @@ def parse_peer_commands(raw: str) -> frozenset[str]:
 
 LEADING_MENTIONS = re.compile(r"^(?:@[\w.-]+[,:]?\s*)+")
 MENTION = re.compile(r"@([\w.-]+)")
-# The hub prefixes the first reply in a thread with the thread's root
-# ('[thread on: "<root>" — by <author>]' + newline) so a fresh per-thread
-# session knows what it's about.
-THREAD_HEADER_OPEN = '[thread on: "'
-THREAD_HEADER_BY = '" — by '
-# The hub's root snippet cap (ROOT_CONTEXT_MAX_CHARS) plus room for the
-# author's name: the real closer always sits inside this prefix.
-THREAD_HEADER_SCAN = 500 + 512
 
 
-def drop_thread_header(text: str) -> str:
-    """Remove the hub's first-reply thread header, if present.
-
-    The root text is unescaped, so the header ends at the *last* closer in
-    the bounded prefix: stopping at the first would let a fake closer planted
-    in the root hand its author a command in someone else's reply. Plain
-    string scans keep this linear (a backtracking regex was quadratic)."""
-    if not text.startswith(THREAD_HEADER_OPEN):
-        return text
-    by = text.rfind(THREAD_HEADER_BY, 0, THREAD_HEADER_SCAN)
-    end = text.find("]\n", by) if by >= 0 else -1
-    if end < 0 or "\n" in text[by:end]:
-        return text
-    return text[end + 2:]
-
-
-def command_text(text: str, own: set[str]) -> str | None:
+def command_text(text: str, own: set[str], header_chars: object = 0) -> str | None:
     """The text a bridge command is parsed from, or None when the leading
     tags address only others.
 
-    The first-reply thread header is dropped, then a leading run of tags only
-    when it includes this bridge (``own``: its id and name slug), so
-    "@a @b /new x" is a command for a and b while "@bob /stop ..." and
-    "@a /stop (cc @b)" stay chat for everyone else."""
-    text = drop_thread_header(text.strip()).strip()
+    ``header_chars`` is the hub's ``thread_context_chars``: the length of the
+    '[thread on: "<root>" — by <author>]' header it prefixes to a thread's
+    first reply. That header quotes the root unescaped, so it is cut by
+    length, never parsed. Then a leading run of tags is dropped only when it
+    includes this bridge (``own``: its id and name slug), so "@a @b /new x"
+    is a command for a and b while "@bob /stop ..." and "@a /stop (cc @b)"
+    stay chat for everyone else."""
+    if isinstance(header_chars, int) and 0 < header_chars <= len(text):
+        text = text[header_chars:]
+    text = text.strip()
     m = LEADING_MENTIONS.match(text)
     if not m:
         return text
@@ -1522,7 +1503,8 @@ class Bridge:
             if not text and not (frame.get("attachments") or []):
                 self.clear_reaction(frame)
                 return
-            cmd_text = command_text(frame.get("text") or "", self._own_handles())
+            cmd_text = command_text(
+                frame.get("text") or "", self._own_handles(), frame.get("thread_context_chars"))
             cmd, _, rest = (cmd_text or "").partition(" ")
             cmd, rest = cmd.lower(), rest.strip()
             # Operator-allowlisted commands (--peer-commands) run through the
@@ -1550,7 +1532,8 @@ class Bridge:
         # Tags for other agents ("@claude @codex /new ~/x") must not hide a
         # command addressed to us too; plain chat keeps them, since they are
         # part of the ask, and tags for others only never make a command.
-        cmd_text = command_text(frame.get("text") or "", self._own_handles())
+        cmd_text = command_text(
+            frame.get("text") or "", self._own_handles(), frame.get("thread_context_chars"))
         cmd, _, rest = (cmd_text or "").partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
         if not cmd.startswith("/"):

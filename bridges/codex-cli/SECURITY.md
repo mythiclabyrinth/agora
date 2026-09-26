@@ -58,7 +58,7 @@ ordered by decreasing severity.
      only when the author is in `AGORA_PEER_AGENTS` *and* explicitly
      `@mentions` this agent *and* the command is listed; the command keeps its
      own checks (`/new` must resolve under `CODEX_ALLOWED_ROOTS`). Unlisted commands
-     (`/model`, `/permissions`, `/worktree`, …) stay on the relay-note chat
+     (`/model`, `/sandbox`, `/worktree`, …) stay on the relay-note chat
      path. **Residual risk:** an injected peer can start sessions in any
      directory under the allowed roots; keep the list minimal.
    - *Still open:* any *human* the hub admits to the channel is fully trusted.
