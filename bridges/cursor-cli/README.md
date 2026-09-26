@@ -95,9 +95,14 @@ All options are available through `--help`. Common environment variables:
 `AGENT_AVATAR`, `CURSOR_BIN`, `CURSOR_MODEL`,
 `CURSOR_MODE`, `CURSOR_ARGS`, `CURSOR_ALLOWED_ROOTS`,
 `CURSOR_AUTO_WORKTREE`, `CURSOR_ALLOW_FORCE`, `CURSOR_DISABLE_SANDBOX`,
-`CURSOR_TIMEOUT`, `STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`, and
-`AGORA_PEER_AGENTS`. The optional loop limit requests this agent's relay cap;
-when unset it inherits the server default and is clamped by the server.
+`CURSOR_TIMEOUT`, `STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`,
+`AGORA_PEER_AGENTS`, and `AGORA_PEER_COMMANDS`. The optional loop limit requests
+this agent's relay cap; when unset it inherits the server default and is clamped
+by the server. `AGORA_PEER_COMMANDS` (empty by default) lists bridge commands,
+such as `/new`, that an allowlisted peer may run by explicitly `@mentioning`
+Cursor; `/new` still enforces `CURSOR_ALLOWED_ROOTS`, and every other command
+stays blocked for peers. Commands are recognized after any run of leading
+`@mentions` (`@claude @codex @cursor /new ~/code/app`).
 
 `AGENT_AVATAR` accepts PNG, JPEG, GIF, or WebP up to 2 MB. Relative paths are
 resolved beside the selected `.env` file; the template uses the bundled

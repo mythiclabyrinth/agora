@@ -389,6 +389,39 @@ def parse_peer_agents(raw: str) -> frozenset[str]:
     return frozenset(t.strip().lower() for t in (raw or "").split(",") if t.strip())
 
 
+def parse_peer_commands(raw: str) -> frozenset[str]:
+    """Normalize --peer-commands ("new, /STATUS") into {"/new", "/status"}."""
+    return frozenset(
+        "/" + t.strip().lstrip("/").lower()
+        for t in (raw or "").split(",") if t.strip().lstrip("/")
+    )
+
+
+LEADING_MENTIONS = re.compile(r"^(?:@[\w.-]+[,:]?\s*)+")
+MENTION = re.compile(r"@([\w.-]+)")
+
+
+def command_text(text: str, own: set[str], header_chars: object = 0) -> str | None:
+    """The text a bridge command is parsed from, or None when the leading
+    tags address only others.
+
+    ``header_chars`` is the hub's ``thread_context_chars``: the length of the
+    '[thread on: "<root>" — by <author>]' header it prefixes to a thread's
+    first reply. That header quotes the root unescaped, so it is cut by
+    length, never parsed. Then a leading run of tags is dropped only when it
+    includes this bridge (``own``: its id and name slug), so "@a @b /new x"
+    is a command for a and b while "@bob /stop ..." and "@a /stop (cc @b)"
+    stay chat for everyone else."""
+    if isinstance(header_chars, int) and 0 < header_chars <= len(text):
+        text = text[header_chars:]
+    text = text.strip()
+    m = LEADING_MENTIONS.match(text)
+    if not m:
+        return text
+    tags = {t.lower().rstrip(".") for t in MENTION.findall(m.group(0))}
+    return text[m.end():] if tags & own else None
+
+
 def parse_accounts(raw: str) -> dict[str, Path]:
     """Parse CLAUDE_ACCOUNTS name:path pairs, preserving configured order."""
     accounts: dict[str, Path] = {}
@@ -925,6 +958,7 @@ class Bridge:
         # Agent ids whose @mentions may drive Claude (see handle_inbound).
         # Empty (the default) keeps the humans-only posture.
         self.peer_agents = parse_peer_agents(args.peer_agents)
+        self.peer_commands = parse_peer_commands(args.peer_commands)
 
     @staticmethod
     def _normalize_url(url: str, token: str) -> str:
@@ -1249,6 +1283,10 @@ class Bridge:
         cid = frame["channel_id"]
         return f"{cid}:{tid}" if tid else cid
 
+    def _own_handles(self) -> set[str]:
+        slug = re.sub(r"[^a-z0-9]+", "-", self.agent_name.lower()).strip("-")
+        return {self.agent_id.lower(), slug}
+
     def _strip_mention(self, text: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", self.agent_name.lower()).strip("-")
         return re.sub(
@@ -1448,8 +1486,9 @@ class Bridge:
         # the same channel must never be able to run code on this machine. We do
         # keep their text as context for a later @mention. The one exception is
         # an explicit @mention from an allowlisted peer (--peer-agents): those
-        # run the CLI, but through _peer_prompt only — never the command table —
-        # and under the server's agent-to-agent relay cap.
+        # run the CLI, but through _peer_prompt only — never the command table,
+        # save the commands the operator allowlists with --peer-commands — and
+        # under the server's agent-to-agent relay cap.
         author = frame.get("author") or {}
         from_peer = (
             author.get("type") == "agent"
@@ -1463,6 +1502,16 @@ class Bridge:
             text = self._strip_mention(frame.get("text") or "")
             if not text and not (frame.get("attachments") or []):
                 self.clear_reaction(frame)
+                return
+            cmd_text = command_text(
+                frame.get("text") or "", self._own_handles(), frame.get("thread_context_chars"))
+            cmd, _, rest = (cmd_text or "").partition(" ")
+            cmd, rest = cmd.lower(), rest.strip()
+            # Operator-allowlisted commands (--peer-commands) run through the
+            # same table humans use, so /new keeps its allowed-roots checks.
+            # Everything else stays on the relay-note chat path.
+            if cmd in self.peer_commands:
+                await self._run_command(key, frame, cmd, rest, text, from_peer=True)
                 return
             await self.forward_to_claude(key, frame, self._peer_prompt(frame, text), from_peer=True)
             return
@@ -1480,11 +1529,23 @@ class Bridge:
         if not text and not (frame.get("attachments") or []):
             self.clear_reaction(frame)
             return
-        cmd, _, rest = text.partition(" ")
+        # Tags for other agents ("@claude @codex /new ~/x") must not hide a
+        # command addressed to us too; plain chat keeps them, since they are
+        # part of the ask, and tags for others only never make a command.
+        cmd_text = command_text(
+            frame.get("text") or "", self._own_handles(), frame.get("thread_context_chars"))
+        cmd, _, rest = (cmd_text or "").partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
         if not cmd.startswith("/"):
             await self.forward_to_claude(key, frame, text)
             return
+        await self._run_command(key, frame, cmd, rest, text)
+
+    async def _run_command(
+        self, key: str, frame: dict, cmd: str, rest: str, text: str,
+        from_peer: bool = False,
+    ) -> None:
+        """Run a slash command from a human or an allowlisted peer."""
         self.set_reaction(frame, "👀")
         if cmd == "/commands":
             self.post(frame, HELP)
@@ -1521,7 +1582,9 @@ class Bridge:
             self.post(frame, self._cmd_status(key))
         else:
             # Claude CLI slash commands (/compact, /usage, …) are real turns.
-            await self.forward_to_claude(key, frame, text)
+            await self.forward_to_claude(
+                key, frame, self._peer_prompt(frame, text) if from_peer else text,
+                from_peer=from_peer)
             return
         if cmd in REBINDING_COMMANDS:
             # Retire a held child *now*, not when the next message happens to
@@ -3653,6 +3716,11 @@ def main() -> None:
                          "Claude (e.g. codex-cli). Empty (the default) keeps "
                          "the humans-only posture; other agents' messages are "
                          "context only")
+    ap.add_argument("--peer-commands", default=os.environ.get("AGORA_PEER_COMMANDS", ""),
+                    help="comma-separated bridge commands (e.g. /new) an "
+                         "allowlisted peer (--peer-agents) may run by "
+                         "@mentioning Claude. Empty (the default) keeps peers "
+                         "on the chat path only")
     args = ap.parse_args()
     if args.max_file_mb <= 0:
         ap.error("--max-file-mb must be positive")

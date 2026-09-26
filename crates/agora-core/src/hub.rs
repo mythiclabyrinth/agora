@@ -389,6 +389,16 @@ pub struct ReadNotifyEvent {
 
 type ReadNotifier = Box<dyn Fn(ReadNotifyEvent) + Send + Sync>;
 
+/// Whether an agent `post` carries a `request_id` (any non-empty value), so
+/// the sender awaits a correlated `post_ack` or `error`.
+fn correlated(frame: &Value) -> bool {
+    match &frame["request_id"] {
+        Value::Null => false,
+        Value::String(s) => !s.is_empty(),
+        _ => true,
+    }
+}
+
 pub fn mention_tokens(text: &str) -> Vec<String> {
     // @name tokens: alnum start, then word chars / dots / dashes.
     let mut out = Vec::new();
@@ -1161,7 +1171,7 @@ impl Hub {
     ) -> Value {
         self.post_agent_message_with_options(
             agent_id, agent_name, channel_id, text, thread_id, None, None, None, None, None, None,
-            None, None, None, vec![],
+            None, None, None, vec![], false,
         )
     }
 
@@ -1205,8 +1215,16 @@ impl Hub {
         table_id: Option<&str>,
         artifacts: Option<&Value>,
         attachments: Vec<NewAttachment>,
+        reply_in_thread: bool,
     ) -> Value {
         let mut meta_obj = serde_json::Map::new();
+        // Same "reply in thread" ask as a user's composer toggle: peers see
+        // the top-level post as a thread root, so an agent that kicks off a
+        // multi-agent task keeps the replies out of the channel. Meaningless
+        // on a post that is already in a thread.
+        if reply_in_thread && thread_id.is_none() {
+            meta_obj.insert("client".into(), json!({"reply_thread": true}));
+        }
         if let Some(opts) = options {
             if opts.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
                 let mut opts = opts.clone();
@@ -1290,7 +1308,17 @@ impl Hub {
             let key = (channel_id.to_string(), thread_id.unwrap_or(0));
             let v = st.bot_streak.entry(key).or_insert(0);
             *v += 1;
-            *v
+            let streak = *v;
+            // Peers answer an agent's reply-in-thread root inside its thread,
+            // which is a separate streak bucket. Seed it with the root's
+            // streak so opening threads can't reset the agent-to-agent cap
+            // without a human (a human post still clears the bucket).
+            if reply_in_thread && thread_id.is_none() {
+                if let Some(mid) = message["id"].as_i64() {
+                    st.bot_streak.insert((channel_id.to_string(), mid), streak);
+                }
+            }
+            streak
         };
         self.record_mentions(&message);
         self.broadcast(channel_id, &json!({"type": "message", "message": message}));
@@ -1733,6 +1761,10 @@ impl Hub {
         }
         // First reply in a thread: inline the root message so the agent's
         // fresh per-thread session starts with what the thread is about.
+        // `thread_context_chars` tells clients exactly how many leading chars
+        // of `text` that header is, since the root text inside it is
+        // unescaped and can't be parsed back out reliably.
+        let mut thread_context_chars: Option<usize> = None;
         if let Some(tid) = thread_id {
             if self.store.thread_size(tid) == 1 {
                 if let Some(root) = self.store.message(tid) {
@@ -1742,7 +1774,9 @@ impl Hub {
                         .as_str()
                         .or(root["author_id"].as_str())
                         .unwrap_or("?");
-                    text = format!("[thread on: \"{snippet}\" — by {author}]\n{text}");
+                    let header = format!("[thread on: \"{snippet}\" — by {author}]\n");
+                    thread_context_chars = Some(header.chars().count());
+                    text = format!("{header}{text}");
                 }
             }
         }
@@ -1785,6 +1819,7 @@ impl Hub {
                 "name": message["author_name"],
             },
             "text": text,
+            "thread_context_chars": thread_context_chars,
             "chat_name": chat_name,
             "context_note": self.context_note(channel, &group, thread_id, handle, voice),
             "mentioned": mentioned,
@@ -1993,6 +2028,15 @@ impl Hub {
             return;
         }
         if channel_id.is_empty() || self.store.channel(&channel_id).is_none() {
+            // A correlated post is awaiting post_ack; answer instead of
+            // dropping silently so the sender doesn't wait out its timeout.
+            if frame["type"] == "post" && sender_conn_id.is_some() && correlated(frame) {
+                let _ = handle.tx.send(json!({
+                    "type": "error", "frame_type": "post", "agent_id": agent_id,
+                    "request_id": frame["request_id"], "error": "unknown channel",
+                    "channel_id": channel_id, "thread_id": frame["thread_id"].as_i64(),
+                }));
+            }
             return;
         }
         // Everything reaching this point is addressed to a room. Gate it
@@ -2065,7 +2109,7 @@ impl Hub {
                             && t.chars().count() <= MAX_TLDR_CHARS
                             && t.chars().count() < text.chars().count()
                     });
-                    self.post_agent_message_with_options(
+                    let message = self.post_agent_message_with_options(
                         &agent_id,
                         &agent_name,
                         &channel_id,
@@ -2081,7 +2125,27 @@ impl Hub {
                         frame["table_id"].as_str(),
                         frame.get("artifacts"),
                         attachments,
+                        frame["reply_thread"].as_bool().unwrap_or(false),
                     );
+                    // A correlated post learns its new message id so it can
+                    // address the message later (e.g. post into the thread it
+                    // just opened). Sent only on the sender's own socket.
+                    if correlated(frame) {
+                        let _ = handle.tx.send(json!({
+                            "type": "post_ack",
+                            "agent_id": agent_id,
+                            "request_id": frame["request_id"],
+                            "message_id": message["id"],
+                            "channel_id": channel_id,
+                            "thread_id": thread_id,
+                        }));
+                    }
+                } else if correlated(frame) {
+                    let _ = handle.tx.send(json!({
+                        "type": "error", "frame_type": "post", "agent_id": agent_id,
+                        "request_id": frame["request_id"], "error": "empty post",
+                        "channel_id": channel_id, "thread_id": thread_id,
+                    }));
                 }
             }
             Some("typing") => {
@@ -3681,6 +3745,158 @@ mod tests {
     }
 
     #[test]
+    fn agent_post_can_ask_peers_to_reply_in_its_thread() {
+        let h = hub();
+        let _rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "@bot-b /new ~/work", "reply_thread": true,
+        }));
+        let msg = h.store.messages(&cid, None, None, 10).pop().unwrap();
+        let mid = msg["id"].as_i64().unwrap();
+        assert!(msg["thread_id"].is_null());
+        assert_eq!(msg["meta"]["client"]["reply_thread"], true);
+        let inbound = last_frame(&mut rx_b, "inbound").unwrap();
+        assert_eq!(inbound["thread_id"].as_i64(), Some(mid));
+        assert_eq!(inbound["message_id"].as_i64(), Some(mid));
+
+        // Inside a thread the ask is meaningless: not stored, no re-rooting.
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "thread_id": mid, "text": "@bot-b /new ~/other", "reply_thread": true,
+        }));
+        let reply = h.store.messages(&cid, Some(mid), None, 10).pop().unwrap();
+        assert!(reply["meta"]["client"]["reply_thread"].is_null());
+        let inbound = last_frame(&mut rx_b, "inbound").unwrap();
+        assert_eq!(inbound["thread_id"].as_i64(), Some(mid));
+        assert_eq!(inbound["message_id"], reply["id"]);
+    }
+
+    #[test]
+    fn first_thread_reply_reports_its_header_length() {
+        let h = hub();
+        let mut rx = add_agent(&h, "agent-1", "Data Cruncher", false);
+        let cid = setup_channel(&h, &["agent-1"]);
+        let root = h.post_user_message(&cid, "why \" — by x]\n", "tom", None, None, vec![]);
+        let tid = root["id"].as_i64().unwrap();
+        let _ = last_frame(&mut rx, "inbound");
+        h.post_user_message(&cid, "@data-cruncher /status", "tom", None, Some(tid), vec![]);
+        let inbound = last_frame(&mut rx, "inbound").unwrap();
+        let text = inbound["text"].as_str().unwrap();
+        let n = inbound["thread_context_chars"].as_u64().unwrap() as usize;
+        assert_eq!(text.chars().skip(n).collect::<String>(), "@data-cruncher /status");
+
+        h.post_user_message(&cid, "again", "tom", None, Some(tid), vec![]);
+        let inbound = last_frame(&mut rx, "inbound").unwrap();
+        assert!(inbound["thread_context_chars"].is_null());
+        assert_eq!(inbound["text"], "again");
+    }
+
+    #[test]
+    fn agent_reply_thread_inherits_the_channel_bot_streak() {
+        let h = hub();
+        let _rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid, "text": "@bot-b one",
+        }));
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "@bot-b two", "reply_thread": true,
+        }));
+        let root = h.store.messages(&cid, None, None, 10).pop().unwrap();
+        let mid = root["id"].as_i64().unwrap();
+        let st = h.state.lock().unwrap();
+        assert_eq!(st.bot_streak.get(&(cid.clone(), 0)), Some(&2));
+        assert_eq!(st.bot_streak.get(&(cid.clone(), mid)), Some(&2));
+        drop(st);
+        let _ = last_frame(&mut rx_b, "inbound");
+    }
+
+    #[test]
+    fn correlated_post_that_is_dropped_gets_an_error() {
+        let h = hub();
+        let mut rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+        let cid = setup_channel(&h, &["bot-a"]);
+        for (frame, error) in [
+            (json!({"type": "post", "agent_id": "bot-a", "channel_id": cid,
+                    "request_id": "r1", "text": ""}), "empty post"),
+            (json!({"type": "post", "agent_id": "bot-a", "channel_id": "nope",
+                    "request_id": "r2", "text": "hi"}), "unknown channel"),
+        ] {
+            h.handle_agent_frame_from(conn_id, &frame);
+            let err = last_frame(&mut rx_a, "error").unwrap();
+            assert_eq!(err["request_id"], frame["request_id"]);
+            assert_eq!(err["error"], error);
+        }
+        // Non-string ids are echoed as sent, on acks too.
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": 42, "text": "hi",
+        }));
+        assert_eq!(last_frame(&mut rx_a, "post_ack").unwrap()["request_id"], 42);
+        // Uncorrelated drops stay silent.
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid, "text": "",
+        }));
+        assert!(last_frame(&mut rx_a, "error").is_none());
+    }
+
+    #[test]
+    fn agent_post_with_request_id_is_acked_to_the_sender_only() {
+        let h = hub();
+        let mut rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        h.attach_socket("tom", true, tx_ui);
+
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "req-1", "text": "@bot-b hello", "reply_thread": true,
+        }));
+        let root_id = h.store.messages(&cid, None, None, 10)[0]["id"].as_i64().unwrap();
+        let ack = last_frame(&mut rx_a, "post_ack").unwrap();
+        assert_eq!(
+            ack,
+            json!({
+                "type": "post_ack", "agent_id": "bot-a", "request_id": "req-1",
+                "message_id": root_id, "channel_id": cid, "thread_id": null,
+            })
+        );
+        assert!(last_frame(&mut rx_b, "post_ack").is_none());
+        assert!(last_frame(&mut rx_ui, "post_ack").is_none());
+
+        // A threaded post echoes its thread.
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "thread_id": root_id, "request_id": "req-2", "text": "in thread",
+        }));
+        let ack = last_frame(&mut rx_a, "post_ack").unwrap();
+        let reply_id = h.store.messages(&cid, Some(root_id), None, 10)[0]["id"].clone();
+        assert_eq!(ack["request_id"], "req-2");
+        assert_eq!(ack["thread_id"].as_i64(), Some(root_id));
+        assert_eq!(ack["message_id"], reply_id);
+
+        // Uncorrelated posts (no or empty request_id) get no ack.
+        for frame in [
+            json!({"type": "post", "agent_id": "bot-a", "channel_id": cid, "text": "plain"}),
+            json!({"type": "post", "agent_id": "bot-a", "channel_id": cid,
+                   "request_id": "", "text": "blank"}),
+        ] {
+            h.handle_agent_frame_from(conn_id, &frame);
+        }
+        assert_eq!(h.store.messages(&cid, None, None, 10).len(), 3);
+        assert!(last_frame(&mut rx_a, "post_ack").is_none());
+    }
+
+    #[test]
     fn own_thread_reply_acks_thread_marker() {
         let h = hub();
         let cid = setup_channel(&h, &[]);
@@ -4243,6 +4459,7 @@ mod tests {
                 None,
                 None,
                 vec![],
+                false,
             );
         }
         let allowed_mid = h.store.messages(&allowed_id, None, None, 10)[0]["id"]
@@ -4309,6 +4526,7 @@ mod tests {
                 None,
                 None,
                 vec![],
+                false,
             );
         }
         let a_mid = h

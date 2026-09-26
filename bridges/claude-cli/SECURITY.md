@@ -47,6 +47,15 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
      **Residual risk you accept by setting it:** an allowlisted peer that is
      itself prompt-injected can drive this CLI within those bounds. Leave it
      unset to keep the humans-only posture.
+   - *Second opt-in:* `AGORA_PEER_COMMANDS` (`--peer-commands`, empty by
+     default) names bridge commands — typically just `/new` — that an
+     allowlisted peer may run through the regular command table. It applies
+     only when the author is in `AGORA_PEER_AGENTS` *and* explicitly
+     `@mentions` this agent *and* the command is listed; the command keeps its
+     own checks (`/new` must resolve under `CLAUDE_ALLOWED_ROOTS`). Unlisted commands
+     (`/model`, `/permissions`, `/worktree`, …) stay on the relay-note chat
+     path. **Residual risk:** an injected peer can start sessions in any
+     directory under the allowed roots; keep the list minimal.
    - *Still open:* any *human* the hub admits to the channel is fully trusted.
      There is no per-user authorization list in the bridge. This extends to the
      in-channel **permission buttons** (see below): any channel member can tap
@@ -153,7 +162,7 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
 
 | Issue | Status | Where |
 |---|---|---|
-| Non-user authors can drive it (2) | Fixed (default; opt-in peer allowlist) | `handle_inbound`, `AGORA_PEER_AGENTS` |
+| Non-user authors can drive it (2) | Fixed (default; opt-in peer allowlist) | `handle_inbound`, `AGORA_PEER_AGENTS`, `AGORA_PEER_COMMANDS` |
 | Attachment path traversal / temp-dir leak (6) | Fixed | `_safe_filename`, `_stage_attachments` |
 | Silent headless denies → in-channel approval (7) | Fixed (by design, see caveats) | `_handle_control_request` |
 | Orphaned child on failure (5) | Fixed | `run_claude` (finally-kill) |
