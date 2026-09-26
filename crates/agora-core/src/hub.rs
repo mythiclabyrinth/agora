@@ -1161,7 +1161,7 @@ impl Hub {
     ) -> Value {
         self.post_agent_message_with_options(
             agent_id, agent_name, channel_id, text, thread_id, None, None, None, None, None, None,
-            None, None, None, vec![],
+            None, None, None, vec![], false,
         )
     }
 
@@ -1205,8 +1205,16 @@ impl Hub {
         table_id: Option<&str>,
         artifacts: Option<&Value>,
         attachments: Vec<NewAttachment>,
+        reply_in_thread: bool,
     ) -> Value {
         let mut meta_obj = serde_json::Map::new();
+        // Same "reply in thread" ask as a user's composer toggle: peers see
+        // the top-level post as a thread root, so an agent that kicks off a
+        // multi-agent task keeps the replies out of the channel. Meaningless
+        // on a post that is already in a thread.
+        if reply_in_thread && thread_id.is_none() {
+            meta_obj.insert("client".into(), json!({"reply_thread": true}));
+        }
         if let Some(opts) = options {
             if opts.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
                 let mut opts = opts.clone();
@@ -2065,7 +2073,7 @@ impl Hub {
                             && t.chars().count() <= MAX_TLDR_CHARS
                             && t.chars().count() < text.chars().count()
                     });
-                    self.post_agent_message_with_options(
+                    let message = self.post_agent_message_with_options(
                         &agent_id,
                         &agent_name,
                         &channel_id,
@@ -2081,7 +2089,23 @@ impl Hub {
                         frame["table_id"].as_str(),
                         frame.get("artifacts"),
                         attachments,
+                        frame["reply_thread"].as_bool().unwrap_or(false),
                     );
+                    // A correlated post learns its new message id so it can
+                    // address the message later (e.g. post into the thread it
+                    // just opened). Sent only on the sender's own socket.
+                    if let Some(request_id) =
+                        frame["request_id"].as_str().filter(|r| !r.is_empty())
+                    {
+                        let _ = handle.tx.send(json!({
+                            "type": "post_ack",
+                            "agent_id": agent_id,
+                            "request_id": request_id,
+                            "message_id": message["id"],
+                            "channel_id": channel_id,
+                            "thread_id": thread_id,
+                        }));
+                    }
                 }
             }
             Some("typing") => {
@@ -3681,6 +3705,86 @@ mod tests {
     }
 
     #[test]
+    fn agent_post_can_ask_peers_to_reply_in_its_thread() {
+        let h = hub();
+        let _rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "@bot-b /new ~/work", "reply_thread": true,
+        }));
+        let msg = h.store.messages(&cid, None, None, 10).pop().unwrap();
+        let mid = msg["id"].as_i64().unwrap();
+        assert!(msg["thread_id"].is_null());
+        assert_eq!(msg["meta"]["client"]["reply_thread"], true);
+        let inbound = last_frame(&mut rx_b, "inbound").unwrap();
+        assert_eq!(inbound["thread_id"].as_i64(), Some(mid));
+        assert_eq!(inbound["message_id"].as_i64(), Some(mid));
+
+        // Inside a thread the ask is meaningless: not stored, no re-rooting.
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "thread_id": mid, "text": "@bot-b /new ~/other", "reply_thread": true,
+        }));
+        let reply = h.store.messages(&cid, Some(mid), None, 10).pop().unwrap();
+        assert!(reply["meta"]["client"]["reply_thread"].is_null());
+        let inbound = last_frame(&mut rx_b, "inbound").unwrap();
+        assert_eq!(inbound["thread_id"].as_i64(), Some(mid));
+        assert_eq!(inbound["message_id"], reply["id"]);
+    }
+
+    #[test]
+    fn agent_post_with_request_id_is_acked_to_the_sender_only() {
+        let h = hub();
+        let mut rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        h.attach_socket("tom", true, tx_ui);
+
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "req-1", "text": "@bot-b hello", "reply_thread": true,
+        }));
+        let root_id = h.store.messages(&cid, None, None, 10)[0]["id"].as_i64().unwrap();
+        let ack = last_frame(&mut rx_a, "post_ack").unwrap();
+        assert_eq!(
+            ack,
+            json!({
+                "type": "post_ack", "agent_id": "bot-a", "request_id": "req-1",
+                "message_id": root_id, "channel_id": cid, "thread_id": null,
+            })
+        );
+        assert!(last_frame(&mut rx_b, "post_ack").is_none());
+        assert!(last_frame(&mut rx_ui, "post_ack").is_none());
+
+        // A threaded post echoes its thread.
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "thread_id": root_id, "request_id": "req-2", "text": "in thread",
+        }));
+        let ack = last_frame(&mut rx_a, "post_ack").unwrap();
+        let reply_id = h.store.messages(&cid, Some(root_id), None, 10)[0]["id"].clone();
+        assert_eq!(ack["request_id"], "req-2");
+        assert_eq!(ack["thread_id"].as_i64(), Some(root_id));
+        assert_eq!(ack["message_id"], reply_id);
+
+        // Uncorrelated posts (no or empty request_id) get no ack.
+        for frame in [
+            json!({"type": "post", "agent_id": "bot-a", "channel_id": cid, "text": "plain"}),
+            json!({"type": "post", "agent_id": "bot-a", "channel_id": cid,
+                   "request_id": "", "text": "blank"}),
+        ] {
+            h.handle_agent_frame_from(conn_id, &frame);
+        }
+        assert_eq!(h.store.messages(&cid, None, None, 10).len(), 3);
+        assert!(last_frame(&mut rx_a, "post_ack").is_none());
+    }
+
+    #[test]
     fn own_thread_reply_acks_thread_marker() {
         let h = hub();
         let cid = setup_channel(&h, &[]);
@@ -4243,6 +4347,7 @@ mod tests {
                 None,
                 None,
                 vec![],
+                false,
             );
         }
         let allowed_mid = h.store.messages(&allowed_id, None, None, 10)[0]["id"]
@@ -4309,6 +4414,7 @@ mod tests {
                 None,
                 None,
                 vec![],
+                false,
             );
         }
         let a_mid = h

@@ -8097,6 +8097,7 @@ mod tests {
             None,
             None,
             vec![],
+            false,
         );
         let mid = m["id"].as_i64().unwrap();
         let q = || Query(HashMap::new());
@@ -8222,6 +8223,7 @@ mod tests {
             Some("order-1"),
             None,
             vec![],
+            false,
         );
         let mid = m["id"].as_i64().unwrap();
         let q = || Query(HashMap::new());
