@@ -3,6 +3,7 @@ import json
 import importlib.util
 import io
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -350,6 +351,12 @@ class PeerCommandTests(unittest.TestCase):
         instance._cmd_stop.assert_not_called()
         instance.forward_to_claude.assert_awaited_once()
 
+    def test_thread_header_scan_is_linear(self):
+        text = '[thread on: "' + '" — by ' * 5000 + "x"
+        started = time.perf_counter()
+        self.assertEqual(bridge.drop_thread_header(text), text)
+        self.assertLess(time.perf_counter() - started, 0.1)
+
     def test_leading_tags_for_others_only_stay_chat(self):
         human = {"type": "user", "id": "tom", "name": "Tom"}
         for text, mentioned in (
@@ -362,7 +369,7 @@ class PeerCommandTests(unittest.TestCase):
             asyncio.run(instance.handle_inbound(frame))
             instance._cmd_new.assert_not_called()
             instance.forward_to_claude.assert_awaited_once()
-            self.assertIn("/", instance.forward_to_claude.await_args.args[2])
+            self.assertEqual(instance.forward_to_claude.await_args.args[2], text)
 
     def test_peer_command_tagged_to_another_agent_stays_chat(self):
         instance = self._bridge()

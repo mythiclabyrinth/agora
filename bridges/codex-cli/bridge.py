@@ -227,10 +227,28 @@ LEADING_MENTIONS = re.compile(r"^(?:@[\w.-]+[,:]?\s*)+")
 MENTION = re.compile(r"@([\w.-]+)")
 # The hub prefixes the first reply in a thread with the thread's root
 # ('[thread on: "<root>" — by <author>]' + newline) so a fresh per-thread
-# session knows what it's about. The root text is unescaped, so match up to
-# the *last* closer: a lazy match would end at a fake closer planted in the
-# root and hand the root's author a command in someone else's reply.
-THREAD_HEADER = re.compile(r'^\[thread on: ".*" — by [^\n]*\]\n', re.DOTALL)
+# session knows what it's about.
+THREAD_HEADER_OPEN = '[thread on: "'
+THREAD_HEADER_BY = '" — by '
+# The hub's root snippet cap (ROOT_CONTEXT_MAX_CHARS) plus room for the
+# author's name: the real closer always sits inside this prefix.
+THREAD_HEADER_SCAN = 500 + 512
+
+
+def drop_thread_header(text: str) -> str:
+    """Remove the hub's first-reply thread header, if present.
+
+    The root text is unescaped, so the header ends at the *last* closer in
+    the bounded prefix: stopping at the first would let a fake closer planted
+    in the root hand its author a command in someone else's reply. Plain
+    string scans keep this linear (a backtracking regex was quadratic)."""
+    if not text.startswith(THREAD_HEADER_OPEN):
+        return text
+    by = text.rfind(THREAD_HEADER_BY, 0, THREAD_HEADER_SCAN)
+    end = text.find("]\n", by) if by >= 0 else -1
+    if end < 0 or "\n" in text[by:end]:
+        return text
+    return text[end + 2:]
 
 
 def command_text(text: str, own: set[str]) -> str | None:
@@ -241,7 +259,7 @@ def command_text(text: str, own: set[str]) -> str | None:
     when it includes this bridge (``own``: its id and name slug), so
     "@a @b /new x" is a command for a and b while "@bob /stop ..." and
     "@a /stop (cc @b)" stay chat for everyone else."""
-    text = THREAD_HEADER.sub("", text.strip(), count=1).strip()
+    text = drop_thread_header(text.strip()).strip()
     m = LEADING_MENTIONS.match(text)
     if not m:
         return text
