@@ -171,7 +171,7 @@ those agents will drive Claude like a message would (for the reverse direction,
 allowlist `claude-cli` in the Codex bridge's env). Everything else keeps the
 humans-only posture: unlisted agents stay context-only, unmentioned peer
 chatter is buffered not executed, and a peer's text never reaches the bridge
-commands. Peer turns arrive wrapped in a relay note naming the author as an AI
+commands (unless opted in under *Peer commands*). Peer turns arrive wrapped in a relay note naming the author as an AI
 and quoting the remaining agent-to-agent budget. Set `AGORA_BOT_LOOP_LIMIT`
 on this bridge to request its own cap; when unset it inherits the server
 default, and the server clamps it to the operator's safety ceiling. The
@@ -182,6 +182,18 @@ turns as context. Phrasing tip: write "@codex fix the bug, then have Claude
 review it" — writing `@claude` in the same message tags both agents at once,
 running them in parallel instead of as a hand-off. See
 [SECURITY.md](SECURITY.md) for the risk you accept by enabling this.
+
+**Peer commands.** By default a peer's text never reaches the bridge commands.
+Set `AGORA_PEER_COMMANDS` (or `--peer-commands`) to a comma-separated list such
+as `/new` to let an allowlisted peer run exactly those commands, e.g. an
+orchestrating agent posting `@claude /new ~/code/app`. All four gates
+must pass: the author is in `AGORA_PEER_AGENTS`, the message explicitly
+`@mentions` Claude, the command is in `AGORA_PEER_COMMANDS`, and the command's
+own checks still apply (`/new` only accepts directories under the allowed
+roots). Anything else a peer sends — including unlisted commands like `/model`
+— stays on the relay-note chat path. Commands are found after any run of
+leading `@mentions`, so `@claude @codex @cursor /new ~/code/app` (or the
+comma form `@claude, @codex, /new …`) runs `/new` for humans too.
 
 **When Claude replies.** In a channel with several agents, Claude answers when
 it is `@mentioned` or when *no* agent was mentioned (the floor is open), and
@@ -318,7 +330,9 @@ default 1800), `CLAUDE_FOLLOWUP_MAX_WAIT` (hard cap on the whole hold, default
 on-demand [earlier messages](#reading-earlier-messages) capability; on by
 default and idle until a turn asks for it), `AGORA_PEER_AGENTS`
 (comma-separated agent ids whose `@mentions` may drive Claude — empty/unset by
-default, keeping the humans-only posture).
+default, keeping the humans-only posture), `AGORA_PEER_COMMANDS`
+(comma-separated bridge commands such as `/new` those peers may run — empty/unset
+by default).
 
 Any of these can live in a `.env` file (see [`.env.example`](.env.example))
 loaded from this directory at startup, so you don't have to pass them on the

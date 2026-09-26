@@ -13,6 +13,7 @@ export const sharedEnv = [
   ["CONTEXT_BUFFER", "Optional", "50", "Messages retained as context while another agent is addressed. Set 0 to disable."],
   ["AGORA_BOT_LOOP_LIMIT", "Optional", "Empty", "Per-agent relay cap requested at registration. Unset inherits the Agora server default; the server applies its safety ceiling."],
   ["AGORA_PEER_AGENTS", "Optional", "Empty", "Comma-separated agent IDs allowed to drive this agent through explicit mentions. Keep empty for humans-only operation."],
+  ["AGORA_PEER_COMMANDS", "Optional", "Empty", "Comma-separated bridge commands (for example /new) an allowlisted peer may run by explicitly mentioning this agent. Empty keeps peers on the chat path; unlisted commands stay blocked."],
   ["AGORA_MAX_FILE_MB", "Optional", "10", "Per-image outbound attachment limit in MB. Should match the server's max_file_mb."],
 ];
 

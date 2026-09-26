@@ -126,12 +126,13 @@ class AttachmentFetchTests(unittest.TestCase):
             fetch.assert_not_called()
 
 
-def make_bridge(peer_agents=""):
+def make_bridge(peer_agents="", peer_commands=""):
     """A Bridge with just enough state to drive handle_inbound."""
     instance = bridge.Bridge.__new__(bridge.Bridge)
     instance.agent_id = "claude-cli"
     instance.agent_name = "Claude"
     instance.peer_agents = bridge.parse_peer_agents(peer_agents)
+    instance.peer_commands = bridge.parse_peer_commands(peer_commands)
     instance.context_buffer = {}
     instance.context_buffer_limit = 50
     instance.busy = set()
@@ -253,6 +254,82 @@ class PeerInboundTests(unittest.TestCase):
         prompt = instance.forward_to_claude.await_args.args[2]
         self.assertTrue(prompt.startswith("[Relay note"))
         self.assertIn("/new /tmp", prompt)
+
+
+class PeerCommandTests(unittest.TestCase):
+    """--peer-commands: allowlisted peers may run allowlisted bridge commands."""
+
+    def _bridge(self, peer_agents="codex-cli", peer_commands="/new"):
+        instance = make_bridge(peer_agents=peer_agents, peer_commands=peer_commands)
+        instance._cmd_new = Mock(return_value="bound to ~/X")
+        instance._cmd_model = Mock(return_value="model set")
+        instance._retire_if_stale = AsyncMock()
+        return instance
+
+    def test_parse_normalizes_slash_case_and_empties(self):
+        self.assertEqual(
+            bridge.parse_peer_commands(" new, /STATUS ,, / "),
+            frozenset({"/new", "/status"}),
+        )
+        self.assertEqual(bridge.parse_peer_commands(""), frozenset())
+        self.assertEqual(bridge.parse_peer_commands(None), frozenset())
+
+    def test_allowlisted_peer_runs_allowlisted_command(self):
+        for text in ("@claude /new ~/X", "@claude, @codex, @cursor, /new ~/X"):
+            instance = self._bridge()
+            asyncio.run(instance.handle_inbound(peer_frame(text=text)))
+            instance._cmd_new.assert_called_once_with("c1", "~/X")
+            instance.post.assert_called_once_with(peer_frame(text=text), "bound to ~/X")
+            instance.forward_to_claude.assert_not_called()
+            instance.set_reaction.assert_any_call(peer_frame(text=text), "👀")
+
+    def test_non_allowlisted_peer_only_buffers(self):
+        instance = self._bridge()
+        frame = peer_frame(
+            author={"type": "agent", "id": "rogue-bot", "name": "Rogue"},
+            text="@claude /new ~/X")
+        asyncio.run(instance.handle_inbound(frame))
+        instance._cmd_new.assert_not_called()
+        instance.forward_to_claude.assert_not_called()
+        self.assertIn("c1", instance.context_buffer)
+
+    def test_unmentioned_peer_command_only_buffers(self):
+        instance = self._bridge()
+        asyncio.run(instance.handle_inbound(peer_frame(text="/new ~/X", mentioned=False)))
+        instance._cmd_new.assert_not_called()
+        self.assertIn("c1", instance.context_buffer)
+
+    def test_command_outside_the_allowlist_stays_chat(self):
+        instance = self._bridge()
+        asyncio.run(instance.handle_inbound(peer_frame(text="@claude /model default")))
+        instance._cmd_model.assert_not_called()
+        instance.forward_to_claude.assert_awaited_once()
+        prompt = instance.forward_to_claude.await_args.args[2]
+        self.assertTrue(prompt.startswith("[Relay note"))
+        self.assertIn("/model default", prompt)
+
+    def test_feature_off_keeps_peer_commands_on_the_chat_path(self):
+        instance = self._bridge(peer_commands="")
+        asyncio.run(instance.handle_inbound(peer_frame(text="@claude /new ~/X")))
+        instance._cmd_new.assert_not_called()
+        instance.forward_to_claude.assert_awaited_once()
+        self.assertTrue(instance.forward_to_claude.await_args.args[2].startswith("[Relay note"))
+
+    def test_human_command_after_several_mentions_runs(self):
+        for text in ("@claude @cursor @codex /new ~/X", "@claude, @codex, @cursor, /new ~/X"):
+            instance = self._bridge(peer_agents="", peer_commands="")
+            frame = peer_frame(author={"type": "user", "id": "tom", "name": "Tom"}, text=text)
+            asyncio.run(instance.handle_inbound(frame))
+            instance._cmd_new.assert_called_once_with("c1", "~/X")
+            instance.forward_to_claude.assert_not_called()
+
+    def test_human_chat_keeps_other_mentions(self):
+        instance = self._bridge(peer_agents="", peer_commands="")
+        frame = peer_frame(author={"type": "user", "id": "tom", "name": "Tom"},
+                           text="@claude @codex compare notes")
+        asyncio.run(instance.handle_inbound(frame))
+        instance.forward_to_claude.assert_awaited_once()
+        self.assertEqual(instance.forward_to_claude.await_args.args[2], "@codex compare notes")
 
 
 class PeerPromptTests(unittest.TestCase):

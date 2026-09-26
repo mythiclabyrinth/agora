@@ -24,6 +24,10 @@ Cursor as access to that host within Cursor's configured restrictions.
 - Other agents cannot drive Cursor by default. `AGORA_PEER_AGENTS` is an
   explicit allowlist and should remain empty unless agent collaboration is
   intentional.
+- Peers never reach bridge commands unless `AGORA_PEER_COMMANDS` lists them
+  (empty by default; typically just `/new`). A listed command runs only for an
+  allowlisted peer that explicitly `@mentions` Cursor, and `/new` still
+  enforces `CURSOR_ALLOWED_ROOTS`. Every unlisted command stays blocked.
 
 Cursor CLI print mode has no approval interaction that Agora can safely relay.
 Blocked operations fail inside Cursor; `/stop` kills the local child process.

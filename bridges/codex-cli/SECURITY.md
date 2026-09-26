@@ -52,6 +52,15 @@ ordered by decreasing severity.
      that is itself prompt-injected can
      drive this CLI within those bounds. Leave it unset to keep the
      humans-only posture.
+   - *Second opt-in:* `AGORA_PEER_COMMANDS` (`--peer-commands`, empty by
+     default) names bridge commands — typically just `/new` — that an
+     allowlisted peer may run through the regular command table. It applies
+     only when the author is in `AGORA_PEER_AGENTS` *and* explicitly
+     `@mentions` this agent *and* the command is listed; the command keeps its
+     own checks (`/new` must resolve under `CODEX_ALLOWED_ROOTS`). Unlisted commands
+     (`/model`, `/permissions`, `/worktree`, …) stay on the relay-note chat
+     path. **Residual risk:** an injected peer can start sessions in any
+     directory under the allowed roots; keep the list minimal.
    - *Still open:* any *human* the hub admits to the channel is fully trusted.
 
 3. **The pairing token is an unscoped master key.**
