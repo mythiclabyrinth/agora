@@ -1221,6 +1221,7 @@ class Bridge:
                         original = (self._strip_mention(entry["frame"].get("text") or "")
                                     if entry.get("from_peer") else entry["text"])
                         edited = self._edited_text(original, frame.get("text"))
+                        # Defensive: agent edits are rejected today; retain the peer relay note.
                         entry["text"] = (self._peer_prompt(entry["frame"], edited)
                                          if entry.get("from_peer") else edited)
                         found = True
@@ -1296,6 +1297,7 @@ class Bridge:
             if edited is not None:
                 original = self._strip_mention(frame.get("text") or "") if from_peer else text
                 new_text = self._edited_text(original, edited)
+                # Defensive: agent edits are rejected today; retain the peer relay note.
                 text = self._peer_prompt(frame, new_text) if from_peer else new_text
         return {"frame": frame, "text": text, "from_peer": from_peer}
 
@@ -1968,6 +1970,9 @@ class Bridge:
                 return False
             if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
                 self.set_reaction(frame, "🚫", remember=False)
+                if from_peer:
+                    self._buffer_context(key, frame)
+                    return False
                 if key not in self.queue_full_notified:
                     self.queue_full_notified.add(key)
                     self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). This message was not accepted; resend it after queued work starts.")
@@ -1978,7 +1983,7 @@ class Bridge:
             self.pending_turns.setdefault(key, []).append(entry)
             entry["queued"] = True
             self.set_reaction(frame, "⏳")
-            if from_peer:
+            if from_peer and frame.get("scheduled") is True:
                 log(f"queued scheduled peer turn for {key}")
             return False
         entry = self._pending_entry(frame, text, from_peer=from_peer)
@@ -2000,7 +2005,8 @@ class Bridge:
                 binding = self.bindings.get(key)
                 batch_frame, batch_text = self._coalesce_turns(entries)
                 for entry in entries:
-                    if entry.get("queued"):
+                    # The hub only reorders human messages.
+                    if entry.get("queued") and not entry.get("from_peer"):
                         self.claim(entry["frame"])
                     self.set_reaction(entry["frame"], "👀")
                 if not binding:

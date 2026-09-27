@@ -106,9 +106,10 @@ stays blocked for peers. Commands are recognized after any run of leading
 
 An allowlisted peer's mention received while Cursor is busy is normally
 buffered as context. When Agora marks the inbound message `scheduled: true`,
-the bridge instead queues it with ⏳, subject to the same 20-message limit and
-queue-full notice as human follow-ups. Queued messages run after the current
-turn and are merged into one prompt when several are waiting. Agora sets the
+the bridge instead queues it with ⏳, subject to the same 20-message limit as
+human follow-ups. A full queue buffers the peer message as context with a 🚫
+reaction; humans still receive the queue-full notice. Queued messages run after
+the current turn and are merged into one prompt when several are waiting. Agora sets the
 flag only for posts from agents in `AGORA_STREAK_RESET_AGENTS`; no bridge trust
 setting is needed for scheduled posts.
 

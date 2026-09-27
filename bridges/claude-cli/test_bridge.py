@@ -440,6 +440,64 @@ class PeerForwardTests(unittest.TestCase):
         self.assertTrue(instance.forward_to_claude.await_args.kwargs["from_peer"])
         self.assertIn("[Relay note", instance.forward_to_claude.await_args.args[2])
 
+    def test_unlisted_scheduled_agent_stays_context_only(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        instance.busy = {"c1"}
+        frame = peer_frame(scheduled=True, author={"type": "agent", "id": "rogue-bot", "name": "Rogue"})
+        asyncio.run(instance.handle_inbound(frame))
+        instance.forward_to_claude.assert_not_called()
+        self.assertIn("c1", instance.context_buffer)
+        self.assertNotIn("c1", instance.pending_turns)
+
+    def test_full_queue_buffers_scheduled_peer_without_notice(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": i}, "text": str(i)}
+            for i in range(bridge.MAX_QUEUED_TURNS)
+        ]}
+        frame = peer_frame(message_id=42, scheduled=True)
+        asyncio.run(instance.handle_inbound(frame))
+        self.assertEqual(len(instance.pending_turns["c1"]), bridge.MAX_QUEUED_TURNS)
+        self.assertIn("c1", instance.context_buffer)
+        instance.set_reaction.assert_called_with(frame, "🚫", remember=False)
+        instance.post.assert_not_called()
+        self.assertNotIn("c1", instance.queue_full_notified)
+
+    def test_scheduled_peer_drains_after_active_turn(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.typing = Mock()
+        instance.send = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        prompts = []
+
+        async def run(_key, _frame, _binding, prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                await instance.handle_inbound(peer_frame(message_id=42, scheduled=True))
+            return "done"
+
+        instance.run_claude = run
+        human = {"channel_id": "c1", "message_id": 40,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_claude("c1", human, "first"))
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("[Relay note", prompts[1])
+        self.assertIn("please review the diff", prompts[1])
+        self.assertNotIn("c1", instance.pending_turns)
+        self.assertNotIn("c1", instance.busy)
+        self.assertFalse(any(
+            call.args[0].get("type") == "claim" and call.args[0].get("message_id") == 42
+            for call in instance.send.call_args_list
+        ))
+
     def test_busy_scheduled_peer_is_queued_with_relay_note(self):
         instance = make_bridge(peer_agents="codex-cli")
         del instance.forward_to_claude
