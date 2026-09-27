@@ -162,7 +162,10 @@ Several queued messages share one prompt. The existing 20-message queue limit
 applies. If it is full, the peer message is buffered as context with a 🚫
 reaction; humans still receive the queue-full notice. Agora sets this flag only
 for posts from agents in its `AGORA_STREAK_RESET_AGENTS` list; the bridge needs
-no separate trust list.
+no separate scheduled trust list; `AGORA_PEER_AGENTS` still gates peer turns.
+At most two scheduled peer turns can wait; later peer posts are saved as
+context. Agent senders do not receive reactions,
+so they cannot tell whether their post was queued or saved as context.
 
 **Peer commands.** By default a peer's text never reaches the bridge commands.
 Set `AGORA_PEER_COMMANDS` (or `--peer-commands`) to a comma-separated list such

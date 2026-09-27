@@ -47,6 +47,12 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
      **Residual risk you accept by setting it:** an allowlisted peer that is
      itself prompt-injected can drive this CLI within those bounds. Leave it
      unset to keep the humans-only posture.
+   - *Scheduled peer turns:* a server-marked `scheduled` post can queue a
+     turn while this bridge is busy, up to `MAX_QUEUED_PEER_TURNS` (2);
+     later posts become context. The server controls
+     `AGORA_STREAK_RESET_AGENTS`, which the bridge operator may not control.
+     The author must also be in this bridge's local `AGORA_PEER_AGENTS`
+     allowlist and explicitly @mention this agent.
    - *Second opt-in:* `AGORA_PEER_COMMANDS` (`--peer-commands`, empty by
      default) names bridge commands — typically just `/new` — that an
      allowlisted peer may run through the regular command table. It applies

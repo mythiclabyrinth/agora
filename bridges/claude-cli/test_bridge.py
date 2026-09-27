@@ -498,6 +498,75 @@ class PeerForwardTests(unittest.TestCase):
             for call in instance.send.call_args_list
         ))
 
+    def test_scheduled_peer_cap_leaves_room_for_human(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": peer_frame(message_id=i, scheduled=True), "text": "waiting",
+             "from_peer": True, "queued": True}
+            for i in range(2)
+        ]}
+        third = peer_frame(message_id=42, scheduled=True)
+        asyncio.run(instance.handle_inbound(third))
+        self.assertEqual(len(instance.pending_turns["c1"]), bridge.MAX_QUEUED_PEER_TURNS)
+        self.assertIn("c1", instance.context_buffer)
+        instance.clear_reaction.assert_called_with(third)
+        instance.post.assert_not_called()
+
+        human = {"channel_id": "c1", "message_id": 43,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_claude("c1", human, "human follow-up"))
+        self.assertEqual(len(instance.pending_turns["c1"]), 3)
+        self.assertEqual(instance.pending_turns["c1"][-1]["text"], "human follow-up")
+        instance.set_reaction.assert_called_with(human, "⏳")
+
+    def test_pending_peer_edit_retains_relay_note(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_updates[42] = "revised request"
+        asyncio.run(instance.handle_inbound(peer_frame(message_id=42, scheduled=True)))
+        prompt = instance.pending_turns["c1"][0]["text"]
+        self.assertIn("[Relay note", prompt)
+        self.assertIn("revised request", prompt)
+        self.assertNotIn("please review the diff", prompt)
+
+    def test_mixed_batch_drains_and_claims_only_human(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.typing = Mock()
+        instance.send = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        prompts = []
+
+        async def run(_key, _frame, _binding, prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                human = {"channel_id": "c1", "message_id": 41,
+                         "author": {"type": "user", "name": "Tom"}}
+                await instance.forward_to_claude("c1", human, "human follow-up")
+                await instance.handle_inbound(peer_frame(message_id=42, scheduled=True))
+            return "done"
+
+        instance.run_claude = run
+        first = {"channel_id": "c1", "message_id": 40,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_claude("c1", first, "first"))
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("human follow-up", prompts[1])
+        self.assertIn("[Relay note", prompts[1])
+        self.assertIn("please review the diff", prompts[1])
+        claims = [call.args[0]["message_id"] for call in instance.send.call_args_list
+                  if call.args[0].get("type") == "claim"]
+        self.assertEqual(claims, [41])
+
     def test_busy_scheduled_peer_is_queued_with_relay_note(self):
         instance = make_bridge(peer_agents="codex-cli")
         del instance.forward_to_claude

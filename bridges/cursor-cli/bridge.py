@@ -54,6 +54,7 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
 MAX_QUEUED_TURNS = 20
+MAX_QUEUED_PEER_TURNS = 2
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -1408,6 +1409,13 @@ class Bridge:
             if from_peer and frame.get("scheduled") is not True:
                 # Don't burn a turn of the agent-to-agent relay budget on a
                 # notice post; the peer's ask still lands as context next turn.
+                self._buffer_context(key, frame)
+                self.clear_reaction(frame)
+                return False
+            if from_peer and sum(
+                1 for entry in self.pending_turns.get(key, [])
+                if entry.get("from_peer")
+            ) >= MAX_QUEUED_PEER_TURNS:
                 self._buffer_context(key, frame)
                 self.clear_reaction(frame)
                 return False
