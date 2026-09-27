@@ -828,13 +828,13 @@ class Bridge:
         queue = self.pending_turns.pop(key, [])
         if not queue:
             return []
-        if queue[0]["text"].lstrip().startswith("/"):
+        if queue[0].get("from_peer") or queue[0]["text"].lstrip().startswith("/"):
             batch, rest = queue[:1], queue[1:]
         else:
             batch = []
             attachment_count = 0
             for entry in queue:
-                if entry["text"].lstrip().startswith("/"):
+                if entry.get("from_peer") or entry["text"].lstrip().startswith("/"):
                     break
                 entry_attachments = len(entry["frame"].get("attachments") or [])
                 if batch and attachment_count + entry_attachments > MAX_ATTACHMENTS:
@@ -1418,12 +1418,15 @@ class Bridge:
             ) >= MAX_QUEUED_PEER_TURNS:
                 self._buffer_context(key, frame)
                 self.clear_reaction(frame)
+                log(f"scheduled peer turn for {key} saved as context (peer cap)")
                 return False
             if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
-                self.set_reaction(frame, "🚫", remember=False)
                 if from_peer:
                     self._buffer_context(key, frame)
+                    self.clear_reaction(frame)
+                    log(f"scheduled peer turn for {key} saved as context (queue full)")
                     return False
+                self.set_reaction(frame, "🚫", remember=False)
                 if key not in self.queue_full_notified:
                     self.queue_full_notified.add(key)
                     self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). This message was not accepted; resend it after queued work starts.")

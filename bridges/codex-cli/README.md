@@ -158,9 +158,10 @@ agents at once, running them in parallel instead of as a hand-off. See
 While a turn is running, an allowlisted peer's mention is normally buffered as
 context. If Agora marks that inbound message `scheduled: true`, the bridge
 queues it like a human follow-up, reacts ⏳, and runs it after the current turn.
-Several queued messages share one prompt. The existing 20-message queue limit
-applies. If it is full, the peer message is buffered as context with a 🚫
-reaction; humans still receive the queue-full notice. Agora sets this flag only
+Human messages queued together share one prompt. Each scheduled peer turn runs
+as its own prompt after earlier queued messages. The existing 20-message queue
+limit applies. If it is full, the peer message is buffered as context without
+a reaction; humans still receive 🚫 and the queue-full notice. Agora sets this flag only
 for posts from agents in its `AGORA_STREAK_RESET_AGENTS` list; the bridge needs
 no separate scheduled trust list; `AGORA_PEER_AGENTS` still gates peer turns.
 At most two scheduled peer turns can wait; later peer posts are saved as
