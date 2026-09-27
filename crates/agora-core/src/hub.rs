@@ -111,7 +111,13 @@ pub const MAX_THREAD_ALIAS_CHARS: usize = 140;
 /// Normalize the display name shared by the HTTP and agent protocol paths.
 /// An empty result means "clear" for renames and "do nothing" for new posts.
 pub fn normalize_thread_alias(raw: &str) -> Option<String> {
-    let alias: String = raw.trim().chars().take(MAX_THREAD_ALIAS_CHARS).collect();
+    let alias: String = raw
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_THREAD_ALIAS_CHARS)
+        .collect();
+    let alias = alias.trim_end().to_string();
     (!alias.is_empty()).then_some(alias)
 }
 
@@ -2292,10 +2298,10 @@ impl Hub {
                     }
                     return;
                 };
-                let error = if root["thread_id"].is_number() {
-                    Some("not a thread root")
-                } else if root["channel_id"].as_str() != Some(channel_id.as_str()) {
+                let error = if root["channel_id"].as_str() != Some(channel_id.as_str()) {
                     Some("unknown thread")
+                } else if root["thread_id"].is_number() {
+                    Some("not a thread root")
                 } else if root["author_type"].as_str() != Some("agent")
                     || root["author_id"].as_str() != Some(agent_id.as_str())
                 {
@@ -3801,6 +3807,14 @@ mod tests {
             "request_id": "revoked", "text": "must not land",
         }));
         assert_eq!(last_frame(&mut agent_rx, "error").unwrap()["error"], "agent DM access has been revoked");
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "rename-revoked", "thread_id": 1, "thread_name": "nope",
+        }));
+        let error = last_frame(&mut agent_rx, "error").unwrap();
+        assert_eq!(error["frame_type"], "rename_thread");
+        assert_eq!(error["error"], "agent DM access has been revoked");
         assert_eq!(h.store.messages(&cid, None, None, 50).len(), 1);
     }
 
@@ -4013,6 +4027,15 @@ mod tests {
     }
 
     #[test]
+    fn thread_alias_normalization_removes_controls_and_trims_after_truncation() {
+        let raw = format!("  A\nB{}   ignored", "x".repeat(137));
+        let alias = normalize_thread_alias(&raw).unwrap();
+        assert!(!alias.chars().any(char::is_control));
+        assert_eq!(alias.chars().count(), 139);
+        assert!(alias.chars().last().is_some_and(|c| !c.is_whitespace()));
+    }
+
+    #[test]
     fn agent_can_rename_only_its_own_thread() {
         let h = hub();
         let mut rx_a = add_agent(&h, "bot-a", "Bot A", false);
@@ -4036,6 +4059,23 @@ mod tests {
         let denied = last_frame(&mut rx_b, "error").unwrap();
         assert_eq!(denied["frame_type"], "rename_thread");
         assert_eq!(denied["error"], "not thread owner");
+
+        let other = setup_channel(&h, &[]);
+        let other_root = h.post_user_message(&other, "private", "tom", None, None, vec![]);
+        let other_reply = h.post_user_message(
+            &other,
+            "private reply",
+            "tom",
+            None,
+            other_root["id"].as_i64(),
+            vec![],
+        );
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "other-channel", "thread_id": other_reply["id"],
+            "thread_name": "probe",
+        }));
+        assert_eq!(last_frame(&mut rx_a, "error").unwrap()["error"], "unknown thread");
 
         let reply = h.post_agent_message(
             "bot-a",
@@ -4658,6 +4698,10 @@ mod tests {
                 "type": "post", "agent_id": "bot-b", "channel_id": cid,
                 "request_id": "post-denied", "text": "should not be stored",
             }),
+            json!({
+                "type": "rename_thread", "agent_id": "bot-b", "channel_id": cid,
+                "request_id": "rename-denied", "thread_id": 1, "thread_name": "nope",
+            }),
         ] {
             h.handle_agent_frame_from(outsider_conn_id, &frame);
         }
@@ -4669,14 +4713,35 @@ mod tests {
         let errors: Vec<_> = std::iter::from_fn(|| outsider_rx.try_recv().ok())
             .filter(|frame| frame["type"] == "error")
             .collect();
-        assert_eq!(errors.len(), 1);
-        let error = &errors[0];
+        assert_eq!(errors.len(), 2);
+        let error = errors.iter().find(|e| e["frame_type"] == "post").unwrap();
         assert_eq!(error["frame_type"], "post");
         assert_eq!(error["agent_id"], "bot-b");
         assert_eq!(error["request_id"], "post-denied");
         assert_eq!(error["channel_id"], cid);
         assert!(error["thread_id"].is_null());
         assert_eq!(error["error"], "agent is not a member of this channel");
+        let rename_error = errors
+            .iter()
+            .find(|e| e["frame_type"] == "rename_thread")
+            .unwrap();
+        assert_eq!(rename_error["request_id"], "rename-denied");
+        assert_eq!(rename_error["error"], "agent is not a member of this channel");
+    }
+
+    #[test]
+    fn correlated_rename_to_unknown_channel_returns_an_error() {
+        let h = hub();
+        let mut rx = add_agent(&h, "bot-a", "Bot A", false);
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": "missing",
+            "request_id": "rename-missing-channel", "thread_id": 1,
+            "thread_name": "nope",
+        }));
+        let error = last_frame(&mut rx, "error").unwrap();
+        assert_eq!(error["frame_type"], "rename_thread");
+        assert_eq!(error["error"], "unknown channel");
     }
 
     #[test]

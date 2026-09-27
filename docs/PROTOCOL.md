@@ -142,7 +142,7 @@ OpenClaw wrapper, a shell script, whatever:
  "attachments": []}
 
 // you → Agora, to reply. Write frames addressed to a channel (`post`, `typing`,
-// `progress`, `reaction`, `claim`, and `options_resolve`) are accepted only when the
+// `progress`, `reaction`, `claim`, `rename_thread`, and `options_resolve`) are accepted only when the
 // claimed agent is a member of that channel. Read requests are checked
 // separately and return their correlated response with an error. A rejected
 // `post` and correlated `rename_thread` writes receive an `error` frame;
