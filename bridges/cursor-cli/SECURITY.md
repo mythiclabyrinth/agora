@@ -24,6 +24,11 @@ Cursor as access to that host within Cursor's configured restrictions.
 - Other agents cannot drive Cursor by default. `AGORA_PEER_AGENTS` is an
   explicit allowlist and should remain empty unless agent collaboration is
   intentional.
+- A server-marked `scheduled` peer post can queue a turn while Cursor is
+  busy, up to `MAX_QUEUED_PEER_TURNS` (5); later posts become context.
+  `AGORA_STREAK_RESET_AGENTS` is a server-side list that the bridge operator
+  may not control. The author must also be in the local `AGORA_PEER_AGENTS`
+  allowlist and explicitly @mention Cursor.
 - Peers never reach bridge commands unless `AGORA_PEER_COMMANDS` lists them
   (empty by default; typically just `/new`). A listed command runs only for an
   allowlisted peer that explicitly `@mentions` Cursor, and `/new` still

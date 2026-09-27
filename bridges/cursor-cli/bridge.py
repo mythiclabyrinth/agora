@@ -54,6 +54,7 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
 MAX_QUEUED_TURNS = 20
+MAX_QUEUED_PEER_TURNS = 5
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -791,7 +792,12 @@ class Bridge:
             if kind == "inbound_update":
                 for entry in entries:
                     if entry["frame"].get("message_id") == message_id:
-                        entry["text"] = self._edited_text(entry["text"], frame.get("text"))
+                        original = (self._strip_mention(entry["frame"].get("text") or "")
+                                    if entry.get("from_peer") else entry["text"])
+                        edited = self._edited_text(original, frame.get("text"))
+                        # Defensive: agent edits are rejected today; retain the peer relay note.
+                        entry["text"] = (self._peer_prompt(entry["frame"], edited)
+                                         if entry.get("from_peer") else edited)
                         found = True
             elif kind == "inbound_delete":
                 found = found or any(e["frame"].get("message_id") == message_id for e in entries)
@@ -822,13 +828,13 @@ class Bridge:
         queue = self.pending_turns.pop(key, [])
         if not queue:
             return []
-        if queue[0]["text"].lstrip().startswith("/"):
+        if queue[0].get("from_peer") or queue[0]["text"].lstrip().startswith("/"):
             batch, rest = queue[:1], queue[1:]
         else:
             batch = []
             attachment_count = 0
             for entry in queue:
-                if entry["text"].lstrip().startswith("/"):
+                if entry.get("from_peer") or entry["text"].lstrip().startswith("/"):
                     break
                 entry_attachments = len(entry["frame"].get("attachments") or [])
                 if batch and attachment_count + entry_attachments > MAX_ATTACHMENTS:
@@ -848,7 +854,7 @@ class Bridge:
             return original.split("\n", 1)[0] + "\n" + text
         return text
 
-    def _pending_entry(self, frame: dict, text: str) -> dict | None:
+    def _pending_entry(self, frame: dict, text: str, from_peer: bool = False) -> dict | None:
         message_id, thread_id = frame.get("message_id"), frame.get("thread_id")
         if message_id in self.pending_deletes or thread_id in self.deleted_thread_roots:
             self.clear_reaction(frame)
@@ -856,8 +862,11 @@ class Bridge:
         if isinstance(message_id, int):
             edited = self.pending_updates.pop(message_id, None)
             if edited is not None:
-                text = self._edited_text(text, edited)
-        return {"frame": frame, "text": text}
+                original = self._strip_mention(frame.get("text") or "") if from_peer else text
+                new_text = self._edited_text(original, edited)
+                # Defensive: agent edits are rejected today; retain the peer relay note.
+                text = self._peer_prompt(frame, new_text) if from_peer else new_text
+        return {"frame": frame, "text": text, "from_peer": from_peer}
 
     @staticmethod
     def _coalesce_turns(entries: list[dict]) -> tuple[dict, str]:
@@ -1397,26 +1406,41 @@ class Bridge:
             self.set_reaction(frame, "✅", remember=False)
             return True
         if key in self.busy:
-            if from_peer:
+            if from_peer and frame.get("scheduled") is not True:
                 # Don't burn a turn of the agent-to-agent relay budget on a
                 # notice post; the peer's ask still lands as context next turn.
                 self._buffer_context(key, frame)
                 self.clear_reaction(frame)
                 return False
+            if from_peer and sum(
+                1 for entry in self.pending_turns.get(key, [])
+                if entry.get("from_peer")
+            ) >= MAX_QUEUED_PEER_TURNS:
+                self._buffer_context(key, frame)
+                self.clear_reaction(frame)
+                log(f"scheduled peer turn for {key} saved as context (peer cap)")
+                return False
             if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
+                if from_peer:
+                    self._buffer_context(key, frame)
+                    self.clear_reaction(frame)
+                    log(f"scheduled peer turn for {key} saved as context (queue full)")
+                    return False
                 self.set_reaction(frame, "🚫", remember=False)
                 if key not in self.queue_full_notified:
                     self.queue_full_notified.add(key)
                     self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). This message was not accepted; resend it after queued work starts.")
                 return False
-            entry = self._pending_entry(frame, text)
+            entry = self._pending_entry(frame, text, from_peer=from_peer)
             if entry is None:
                 return False
             self.pending_turns.setdefault(key, []).append(entry)
             entry["queued"] = True
             self.set_reaction(frame, "⏳")
+            if from_peer and frame.get("scheduled") is True:
+                log(f"queued scheduled peer turn for {key}")
             return False
-        entry = self._pending_entry(frame, text)
+        entry = self._pending_entry(frame, text, from_peer=from_peer)
         if entry is None:
             return False
         self.pending_turns.setdefault(key, []).append(entry)
@@ -1435,7 +1459,8 @@ class Bridge:
                 binding = self.bindings.get(key)
                 batch_frame, batch_text = self._coalesce_turns(entries)
                 for queued in entries:
-                    if queued.get("queued"):
+                    # The hub only reorders human messages.
+                    if queued.get("queued") and not queued.get("from_peer"):
                         self.claim(queued["frame"])
                     self.set_reaction(queued["frame"], "👀")
                 if not binding:
