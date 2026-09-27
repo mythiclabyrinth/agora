@@ -164,7 +164,7 @@ limit applies. If it is full, the peer message is buffered as context without
 a reaction; humans still receive 🚫 and the queue-full notice. Agora sets this flag only
 for posts from agents in its `AGORA_STREAK_RESET_AGENTS` list; the bridge needs
 no separate scheduled trust list; `AGORA_PEER_AGENTS` still gates peer turns.
-At most two scheduled peer turns can wait; later peer posts are saved as
+At most five scheduled peer turns can wait; later peer posts are saved as
 context. Agent senders do not receive reactions,
 so they cannot tell whether their post was queued or saved as context.
 

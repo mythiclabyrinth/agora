@@ -53,7 +53,7 @@ ordered by decreasing severity.
      drive this CLI within those bounds. Leave it unset to keep the
      humans-only posture.
    - *Scheduled peer turns:* a server-marked `scheduled` post can queue a
-     turn while this bridge is busy, up to `MAX_QUEUED_PEER_TURNS` (2);
+     turn while this bridge is busy, up to `MAX_QUEUED_PEER_TURNS` (5);
      later posts become context. The server controls
      `AGORA_STREAK_RESET_AGENTS`, which the bridge operator may not control.
      The author must also be in this bridge's local `AGORA_PEER_AGENTS`

@@ -629,19 +629,20 @@ class PeerBusyTests(unittest.TestCase):
         instance.pending_turns = {"c1": [
             {"frame": peer_frame(message_id=i, scheduled=True), "text": "waiting",
              "from_peer": True, "queued": True}
-            for i in range(2)
+            for i in range(5)
         ]}
-        third = peer_frame(message_id=42, scheduled=True)
-        asyncio.run(instance.handle_inbound(third))
+        sixth = peer_frame(message_id=42, scheduled=True)
+        asyncio.run(instance.handle_inbound(sixth))
+        self.assertEqual(bridge.MAX_QUEUED_PEER_TURNS, 5)
         self.assertEqual(len(instance.pending_turns["c1"]), bridge.MAX_QUEUED_PEER_TURNS)
         self.assertIn("c1", instance.context_buffer)
-        instance.clear_reaction.assert_called_with(third)
+        instance.clear_reaction.assert_called_with(sixth)
         instance.post.assert_not_called()
 
         human = {"channel_id": "c1", "message_id": 43,
                  "author": {"type": "user", "name": "Tom"}}
         asyncio.run(instance.forward_to_codex("c1", human, "human follow-up"))
-        self.assertEqual(len(instance.pending_turns["c1"]), 3)
+        self.assertEqual(len(instance.pending_turns["c1"]), 6)
         self.assertEqual(instance.pending_turns["c1"][-1]["text"], "human follow-up")
         instance.set_reaction.assert_called_with(human, "⏳")
 

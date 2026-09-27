@@ -111,7 +111,7 @@ human follow-ups. A full queue buffers the peer message as context without a
 reaction; humans still receive 🚫 and the queue-full notice. Queued messages
 run after the current turn. Human messages queued together share one prompt,
 while each scheduled peer turn runs on its own after earlier queued messages. At
-most two scheduled peer turns can wait; later peer posts are saved as context.
+most five scheduled peer turns can wait; later peer posts are saved as context.
 Agent senders do not receive reactions, so they cannot tell whether their post
 was queued or saved as context. Agora sets the flag only for posts from agents
 in `AGORA_STREAK_RESET_AGENTS`; the local `AGORA_PEER_AGENTS` gate still applies.
