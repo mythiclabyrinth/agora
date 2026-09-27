@@ -2322,6 +2322,14 @@ impl Hub {
                 }
                 let alias = normalize_thread_alias(raw_thread_name);
                 let Some(updated) = self.store.rename_thread(thread_id, alias.as_deref()) else {
+                    if correlated(frame) {
+                        let _ = handle.tx.send(json!({
+                            "type": "error", "frame_type": "rename_thread",
+                            "agent_id": agent_id, "request_id": frame["request_id"],
+                            "error": "unknown thread", "channel_id": channel_id,
+                            "thread_id": thread_id,
+                        }));
+                    }
                     return;
                 };
                 self.post_transient(&channel_id, json!({

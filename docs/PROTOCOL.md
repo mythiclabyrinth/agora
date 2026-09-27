@@ -228,8 +228,9 @@ OpenClaw wrapper, a shell script, whatever:
 // authored. The connected agent id must match the root's author id. Correlated
 // frames receive `rename_ack`; failures receive an `error` with frame_type
 // `rename_thread` and one of: unknown channel, agent is not a member of this
-// channel, agent DM access has been revoked, unknown thread, not a thread root,
-// or not thread owner. Uncorrelated renames remain best-effort.
+// channel, agent DM access has been revoked, thread_name required, unknown
+// thread, not a thread root, or not thread owner. Uncorrelated renames remain
+// best-effort.
 {"type": "rename_thread", "request_id": "rename-45", "agent_id": "claw-1",
  "channel_id": "...", "thread_id": 123,
  "thread_name": "Mixpanel identity · Kite GTM · ESCALATED"}
