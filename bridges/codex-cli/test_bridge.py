@@ -555,6 +555,57 @@ class PeerBusyTests(unittest.TestCase):
         self.assertEqual(instance.pending_turns["c1:1"][0]["text"],
                          '[thread on: "root" — by Tom]\nnew')
 
+    def test_idle_scheduled_peer_starts_turn(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        asyncio.run(instance.handle_inbound(peer_frame(scheduled=True)))
+        instance.forward_to_codex.assert_awaited_once()
+        self.assertTrue(instance.forward_to_codex.await_args.kwargs["from_peer"])
+        self.assertIn("[Relay note", instance.forward_to_codex.await_args.args[2])
+
+    def test_busy_scheduled_peer_is_queued_with_relay_note(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        frame = peer_frame(message_id=42, scheduled=True)
+        asyncio.run(instance.handle_inbound(frame))
+        entry = instance.pending_turns["c1"][0]
+        self.assertTrue(entry["queued"])
+        self.assertTrue(entry["from_peer"])
+        self.assertIn("[Relay note", entry["text"])
+        self.assertIn("please review the diff", entry["text"])
+        instance.set_reaction.assert_called_with(frame, "⏳")
+        self.assertNotIn("c1", instance.context_buffer)
+
+    def test_edited_scheduled_peer_keeps_relay_note(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        frame = peer_frame(message_id=42, scheduled=True)
+        asyncio.run(instance.handle_inbound(frame))
+        instance.handle_inbound_control({
+            "type": "inbound_update", "channel_id": "c1", "message_id": 42,
+            "text": "@codex-cli revised request",
+        })
+        prompt = instance.pending_turns["c1"][0]["text"]
+        self.assertIn("[Relay note", prompt)
+        self.assertIn("revised request", prompt)
+        self.assertNotIn("please review the diff", prompt)
+
+    def test_queued_human_and_scheduled_peer_merge_with_relay_note(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        human = {"channel_id": "c1", "message_id": 40,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_codex("c1", human, "human follow-up"))
+        asyncio.run(instance.handle_inbound(peer_frame(message_id=42, scheduled=True)))
+        _, prompt = instance._coalesce_turns(instance.pending_turns["c1"])
+        self.assertLess(prompt.index("human follow-up"), prompt.index("[Relay note"))
+        self.assertIn("please review the diff", prompt)
+
     def test_busy_peer_turn_buffers_instead_of_noise_post(self):
         instance = make_bridge(peer_agents="claude-cli")
         del instance.forward_to_codex  # exercise the real method

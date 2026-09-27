@@ -1299,6 +1299,10 @@ impl Hub {
         thread_name: Option<&str>,
     ) -> Value {
         let mut meta_obj = serde_json::Map::new();
+        let trusted_scheduled = scheduled && self.streak_reset_agents.contains(agent_id);
+        if trusted_scheduled {
+            meta_obj.insert("scheduled".into(), json!(true));
+        }
         // Same "reply in thread" ask as a user's composer toggle: peers see
         // the top-level post as a thread root, so an agent that kicks off a
         // multi-agent task keeps the replies out of the channel. Meaningless
@@ -1400,7 +1404,7 @@ impl Hub {
         let streak = {
             let mut st = self.state.lock().unwrap();
             let key = (channel_id.to_string(), thread_id.unwrap_or(0));
-            if scheduled && self.streak_reset_agents.contains(agent_id) {
+            if trusted_scheduled {
                 st.bot_streak.insert(key.clone(), 0);
             }
             let v = st.bot_streak.entry(key).or_insert(0);
@@ -1952,6 +1956,9 @@ impl Hub {
         // humans only.
         if let Some(n) = bot_turns_left {
             frame["bot_turns_left"] = json!(n);
+        }
+        if message["meta"]["scheduled"] == true {
+            frame["scheduled"] = json!(true);
         }
         frame
     }
@@ -4215,6 +4222,42 @@ mod tests {
             "text": "scheduled but unauthorized", "scheduled": true,
         }));
         assert_eq!(h.state.lock().unwrap().bot_streak.get(&(cid, 0)), Some(&2));
+    }
+
+    #[test]
+    fn inbound_scheduled_flag_only_marks_trusted_scheduled_posts() {
+        let h = hub_with_streak_reset_agents(&["athena"]);
+        let _rx_a = add_agent(&h, "athena", "Athena", false);
+        let _rx_u = add_agent(&h, "unlisted", "Unlisted", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["athena", "unlisted", "bot-b"]);
+
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "athena", "channel_id": cid,
+            "text": "@bot-b scheduled root", "scheduled": true,
+        }));
+        let root = last_frame(&mut rx_b, "inbound").unwrap();
+        assert_eq!(root["scheduled"], true);
+        let root_id = root["message_id"].as_i64().unwrap();
+        assert_eq!(h.store.message(root_id).unwrap()["meta"]["scheduled"], true);
+
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "athena", "channel_id": cid,
+            "thread_id": root_id, "text": "@bot-b regular reply",
+        }));
+        let reply = last_frame(&mut rx_b, "inbound").unwrap();
+        assert!(reply.get("scheduled").is_none());
+        assert!(h.store.message(reply["message_id"].as_i64().unwrap()).unwrap()["meta"]
+            .get("scheduled").is_none());
+
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "unlisted", "channel_id": cid,
+            "thread_id": root_id, "text": "@bot-b untrusted scheduled", "scheduled": true,
+        }));
+        let untrusted = last_frame(&mut rx_b, "inbound").unwrap();
+        assert!(untrusted.get("scheduled").is_none());
+        assert!(h.store.message(untrusted["message_id"].as_i64().unwrap()).unwrap()["meta"]
+            .get("scheduled").is_none());
     }
 
     #[test]

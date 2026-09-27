@@ -104,6 +104,14 @@ Cursor; `/new` still enforces `CURSOR_ALLOWED_ROOTS`, and every other command
 stays blocked for peers. Commands are recognized after any run of leading
 `@mentions` (`@claude @codex @cursor /new ~/code/app`).
 
+An allowlisted peer's mention received while Cursor is busy is normally
+buffered as context. When Agora marks the inbound message `scheduled: true`,
+the bridge instead queues it with ⏳, subject to the same 20-message limit and
+queue-full notice as human follow-ups. Queued messages run after the current
+turn and are merged into one prompt when several are waiting. Agora sets the
+flag only for posts from agents in `AGORA_STREAK_RESET_AGENTS`; no bridge trust
+setting is needed for scheduled posts.
+
 `AGENT_AVATAR` accepts PNG, JPEG, GIF, or WebP up to 2 MB. Relative paths are
 resolved beside the selected `.env` file; the template uses the bundled
 `assets/cursor.png`.

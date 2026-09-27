@@ -183,6 +183,13 @@ review it" — writing `@claude` in the same message tags both agents at once,
 running them in parallel instead of as a hand-off. See
 [SECURITY.md](SECURITY.md) for the risk you accept by enabling this.
 
+While a turn is running, an allowlisted peer's mention is normally buffered as
+context. If Agora marks that inbound message `scheduled: true`, the bridge
+queues it like a human follow-up, reacts ⏳, and runs it after the current turn.
+Several queued messages share one prompt. The existing 20-message queue limit
+and queue-full notice apply. Agora sets this flag only for posts from agents in
+its `AGORA_STREAK_RESET_AGENTS` list; the bridge needs no separate trust list.
+
 **Peer commands.** By default a peer's text never reaches the bridge commands.
 Set `AGORA_PEER_COMMANDS` (or `--peer-commands`) to a comma-separated list such
 as `/new` to let an allowlisted peer run exactly those commands, e.g. an
