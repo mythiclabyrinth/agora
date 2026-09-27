@@ -32,7 +32,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::config::{Config, Connection, PairingToken};
 use crate::connections::ConnectionManager;
-use crate::hub::{AgentHandle, Hub};
+use crate::hub::{normalize_thread_alias, AgentHandle, Hub};
 use crate::store::{new_token, now, NewAttachment};
 use crate::attachments::{agent_wire_limit, attachment_mime, safe_filename, sniff_video_mime};
 
@@ -2656,11 +2656,10 @@ async fn update_thread(
     require_channel_member(&state, &user, root["channel_id"].as_str().unwrap_or_default())?;
     // Empty/whitespace clears the alias back to the first message; cap the
     // length at the 140 chars the UIs already truncate snippets to.
-    let alias: Option<String> = payload
+    let alias = payload
         .get("alias")
         .and_then(Value::as_str)
-        .map(|a| a.trim().chars().take(140).collect::<String>())
-        .filter(|a| !a.is_empty());
+        .and_then(normalize_thread_alias);
     let updated = state
         .hub
         .store
