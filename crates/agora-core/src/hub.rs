@@ -106,6 +106,20 @@ const MAX_REACTION_KINDS_PER_MESSAGE: usize = 20;
 /// strictly shorter than the message text) is dropped — the full text always
 /// stands on its own.
 pub const MAX_TLDR_CHARS: usize = 2_000;
+pub const MAX_THREAD_ALIAS_CHARS: usize = 140;
+
+/// Normalize the display name shared by the HTTP and agent protocol paths.
+/// An empty result means "clear" for renames and "do nothing" for new posts.
+pub fn normalize_thread_alias(raw: &str) -> Option<String> {
+    let alias: String = raw
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_THREAD_ALIAS_CHARS)
+        .collect();
+    let alias = alias.trim_end().to_string();
+    (!alias.is_empty()).then_some(alias)
+}
 
 /// Guardrails for agent-supplied interactive forms on a `post` frame. Caps
 /// are applied while sanitizing (extra fields/buttons dropped, long labels
@@ -1258,6 +1272,7 @@ impl Hub {
             attachments,
             reply_in_thread,
             false,
+            None,
         )
     }
 
@@ -1281,6 +1296,7 @@ impl Hub {
         attachments: Vec<NewAttachment>,
         reply_in_thread: bool,
         scheduled: bool,
+        thread_name: Option<&str>,
     ) -> Value {
         let mut meta_obj = serde_json::Map::new();
         // Same "reply in thread" ask as a user's composer toggle: peers see
@@ -1358,7 +1374,7 @@ impl Hub {
             meta_obj.insert("sources".into(), list);
         }
         let meta = (!meta_obj.is_empty()).then(|| Value::Object(meta_obj));
-        let message = self.store.add_message_with_meta(
+        let mut message = self.store.add_message_with_meta(
             channel_id,
             text,
             "agent",
@@ -1368,6 +1384,19 @@ impl Hub {
             &attachments,
             meta.as_ref(),
         );
+        let applied_thread_name = if thread_id.is_none() {
+            thread_name
+                .and_then(normalize_thread_alias)
+                .and_then(|alias| self.store.rename_thread(message["id"].as_i64()?, Some(&alias)))
+        } else {
+            if thread_name.is_some() {
+                tracing::debug!(agent_id, thread_id, "ignoring thread_name on an agent reply");
+            }
+            None
+        };
+        if let Some(updated) = applied_thread_name.as_ref() {
+            message = updated.clone();
+        }
         let streak = {
             let mut st = self.state.lock().unwrap();
             let key = (channel_id.to_string(), thread_id.unwrap_or(0));
@@ -1390,6 +1419,12 @@ impl Hub {
         };
         self.record_mentions(&message);
         self.broadcast(channel_id, &json!({"type": "message", "message": message}));
+        if let Some(updated) = applied_thread_name {
+            self.post_transient(channel_id, json!({
+                "type": "thread_renamed", "thread_id": updated["id"],
+                "channel_id": channel_id, "alias": updated["alias"],
+            }));
+        }
         self.maybe_unfurl(&message);
         self.maybe_notify(&message);
         let highest_eligible_cap =
@@ -2098,9 +2133,11 @@ impl Hub {
         if channel_id.is_empty() || self.store.channel(&channel_id).is_none() {
             // A correlated post is awaiting post_ack; answer instead of
             // dropping silently so the sender doesn't wait out its timeout.
-            if frame["type"] == "post" && sender_conn_id.is_some() && correlated(frame) {
+            if matches!(frame["type"].as_str(), Some("post" | "rename_thread"))
+                && sender_conn_id.is_some() && correlated(frame)
+            {
                 let _ = handle.tx.send(json!({
-                    "type": "error", "frame_type": "post", "agent_id": agent_id,
+                    "type": "error", "frame_type": frame["type"], "agent_id": agent_id,
                     "request_id": frame["request_id"], "error": "unknown channel",
                     "channel_id": channel_id, "thread_id": frame["thread_id"].as_i64(),
                 }));
@@ -2120,13 +2157,15 @@ impl Hub {
                 frame_type,
                 "dropping agent frame outside channel membership"
             );
-            // Posts have a durable side effect the sender expects. Tell the
-            // live agent that the write was rejected instead of letting it
-            // assume the message landed. Activity frames remain best-effort.
-            if frame_type == "post" && sender_conn_id.is_some() {
+            // Durable writes tell a correlated sender they were rejected;
+            // activity frames remain best-effort.
+            if sender_conn_id.is_some()
+                && (frame_type == "post"
+                    || (frame_type == "rename_thread" && correlated(frame)))
+            {
                 let _ = handle.tx.send(json!({
                     "type": "error",
-                    "frame_type": "post",
+                    "frame_type": frame_type,
                     "agent_id": agent_id,
                     "request_id": frame["request_id"],
                     "error": "agent is not a member of this channel",
@@ -2137,7 +2176,13 @@ impl Hub {
             return;
         }
         if !self.store.agent_dm_route_allowed(&channel_id, &agent_id) {
-            if frame["type"] == "post" { let _=handle.tx.send(json!({"type":"error","frame_type":"post","agent_id":agent_id,"request_id":frame["request_id"],"error":"agent DM access has been revoked","channel_id":channel_id})); }
+            if frame["type"] == "post"
+                || (frame["type"] == "rename_thread"
+                    && sender_conn_id.is_some()
+                    && correlated(frame))
+            {
+                let _ = handle.tx.send(json!({"type":"error","frame_type":frame["type"],"agent_id":agent_id,"request_id":frame["request_id"],"error":"agent DM access has been revoked","channel_id":channel_id,"thread_id":frame["thread_id"].as_i64()}));
+            }
             return;
         }
         let thread_id = frame["thread_id"].as_i64();
@@ -2195,6 +2240,7 @@ impl Hub {
                         attachments,
                         frame["reply_thread"].as_bool().unwrap_or(false),
                         frame["scheduled"].as_bool().unwrap_or(false),
+                        frame["thread_name"].as_str(),
                     );
                     // A correlated post learns its new message id so it can
                     // address the message later (e.g. post into the thread it
@@ -2207,6 +2253,7 @@ impl Hub {
                             "message_id": message["id"],
                             "channel_id": channel_id,
                             "thread_id": thread_id,
+                            "thread_name": message["alias"],
                         }));
                     }
                 } else if correlated(frame) {
@@ -2214,6 +2261,86 @@ impl Hub {
                         "type": "error", "frame_type": "post", "agent_id": agent_id,
                         "request_id": frame["request_id"], "error": "empty post",
                         "channel_id": channel_id, "thread_id": thread_id,
+                    }));
+                }
+            }
+            Some("rename_thread") => {
+                let Some(raw_thread_name) = frame["thread_name"].as_str() else {
+                    if correlated(frame) {
+                        let _ = handle.tx.send(json!({
+                            "type": "error", "frame_type": "rename_thread",
+                            "agent_id": agent_id, "request_id": frame["request_id"],
+                            "error": "thread_name required", "channel_id": channel_id,
+                            "thread_id": thread_id,
+                        }));
+                    }
+                    return;
+                };
+                let Some(thread_id) = thread_id else {
+                    if correlated(frame) {
+                        let _ = handle.tx.send(json!({
+                            "type": "error", "frame_type": "rename_thread",
+                            "agent_id": agent_id, "request_id": frame["request_id"],
+                            "error": "unknown thread", "channel_id": channel_id,
+                            "thread_id": null,
+                        }));
+                    }
+                    return;
+                };
+                let Some(root) = self.store.message(thread_id) else {
+                    if correlated(frame) {
+                        let _ = handle.tx.send(json!({
+                            "type": "error", "frame_type": "rename_thread",
+                            "agent_id": agent_id, "request_id": frame["request_id"],
+                            "error": "unknown thread", "channel_id": channel_id,
+                            "thread_id": thread_id,
+                        }));
+                    }
+                    return;
+                };
+                let error = if root["channel_id"].as_str() != Some(channel_id.as_str()) {
+                    Some("unknown thread")
+                } else if root["thread_id"].is_number() {
+                    Some("not a thread root")
+                } else if root["author_type"].as_str() != Some("agent")
+                    || root["author_id"].as_str() != Some(agent_id.as_str())
+                {
+                    Some("not thread owner")
+                } else {
+                    None
+                };
+                if let Some(error) = error {
+                    if correlated(frame) {
+                        let _ = handle.tx.send(json!({
+                            "type": "error", "frame_type": "rename_thread",
+                            "agent_id": agent_id, "request_id": frame["request_id"],
+                            "error": error, "channel_id": channel_id,
+                            "thread_id": thread_id,
+                        }));
+                    }
+                    return;
+                }
+                let alias = normalize_thread_alias(raw_thread_name);
+                let Some(updated) = self.store.rename_thread(thread_id, alias.as_deref()) else {
+                    if correlated(frame) {
+                        let _ = handle.tx.send(json!({
+                            "type": "error", "frame_type": "rename_thread",
+                            "agent_id": agent_id, "request_id": frame["request_id"],
+                            "error": "unknown thread", "channel_id": channel_id,
+                            "thread_id": thread_id,
+                        }));
+                    }
+                    return;
+                };
+                self.post_transient(&channel_id, json!({
+                    "type": "thread_renamed", "thread_id": thread_id,
+                    "channel_id": channel_id, "alias": updated["alias"],
+                }));
+                if correlated(frame) {
+                    let _ = handle.tx.send(json!({
+                        "type": "rename_ack", "agent_id": agent_id,
+                        "request_id": frame["request_id"], "channel_id": channel_id,
+                        "thread_id": thread_id, "alias": updated["alias"],
                     }));
                 }
             }
@@ -3688,6 +3815,14 @@ mod tests {
             "request_id": "revoked", "text": "must not land",
         }));
         assert_eq!(last_frame(&mut agent_rx, "error").unwrap()["error"], "agent DM access has been revoked");
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "rename-revoked", "thread_id": 1, "thread_name": "nope",
+        }));
+        let error = last_frame(&mut agent_rx, "error").unwrap();
+        assert_eq!(error["frame_type"], "rename_thread");
+        assert_eq!(error["error"], "agent DM access has been revoked");
         assert_eq!(h.store.messages(&cid, None, None, 50).len(), 1);
     }
 
@@ -3862,6 +3997,141 @@ mod tests {
     }
 
     #[test]
+    fn agent_post_can_name_a_new_thread_before_broadcast() {
+        let h = hub();
+        let mut rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        let (tx_ui, mut rx_ui) = unbounded_channel();
+        let (tx_event, mut rx_event) = unbounded_channel();
+        h.attach_socket("tom", true, tx_ui);
+        h.attach_socket("tom", true, tx_event);
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "named-root", "text": "starting work",
+            "reply_thread": true, "thread_name": format!("  {}  ", "x".repeat(150)),
+        }));
+
+        let message = last_frame(&mut rx_ui, "message").unwrap()["message"].clone();
+        let thread_id = message["id"].as_i64().unwrap();
+        assert_eq!(message["alias"].as_str().unwrap().chars().count(), 140);
+        let renamed = last_frame(&mut rx_event, "thread_renamed").unwrap();
+        assert_eq!(renamed["thread_id"], thread_id);
+        assert_eq!(renamed["alias"], message["alias"]);
+        let ack = last_frame(&mut rx_a, "post_ack").unwrap();
+        assert_eq!(ack["thread_name"], message["alias"]);
+
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "named-reply", "thread_id": thread_id,
+            "text": "follow-up", "thread_name": "ignored",
+        }));
+        assert_eq!(
+            last_frame(&mut rx_a, "post_ack").unwrap()["thread_name"],
+            Value::Null
+        );
+        assert_eq!(h.store.message(thread_id).unwrap()["alias"], message["alias"]);
+    }
+
+    #[test]
+    fn thread_alias_normalization_removes_controls_and_trims_after_truncation() {
+        let raw = format!("  A\nB{}   ignored", "x".repeat(137));
+        let alias = normalize_thread_alias(&raw).unwrap();
+        assert!(!alias.chars().any(char::is_control));
+        assert_eq!(alias.chars().count(), 139);
+        assert!(alias.chars().last().is_some_and(|c| !c.is_whitespace()));
+    }
+
+    #[test]
+    fn agent_can_rename_only_its_own_thread() {
+        let h = hub();
+        let mut rx_a = add_agent(&h, "bot-a", "Bot A", false);
+        let mut rx_b = add_agent(&h, "bot-b", "Bot B", false);
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+        let conn_a = h.agent_handle("bot-a").unwrap().conn_id;
+        let conn_b = h.agent_handle("bot-b").unwrap().conn_id;
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "root", "text": "root",
+        }));
+        let thread_id = last_frame(&mut rx_a, "post_ack").unwrap()["message_id"]
+            .as_i64()
+            .unwrap();
+
+        h.handle_agent_frame_from(conn_b, &json!({
+            "type": "rename_thread", "agent_id": "bot-b", "channel_id": cid,
+            "request_id": "denied", "thread_id": thread_id,
+            "thread_name": "stolen",
+        }));
+        let denied = last_frame(&mut rx_b, "error").unwrap();
+        assert_eq!(denied["frame_type"], "rename_thread");
+        assert_eq!(denied["error"], "not thread owner");
+
+        let other = setup_channel(&h, &[]);
+        let other_root = h.post_user_message(&other, "private", "tom", None, None, vec![]);
+        let other_reply = h.post_user_message(
+            &other,
+            "private reply",
+            "tom",
+            None,
+            other_root["id"].as_i64(),
+            vec![],
+        );
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "other-channel", "thread_id": other_reply["id"],
+            "thread_name": "probe",
+        }));
+        assert_eq!(last_frame(&mut rx_a, "error").unwrap()["error"], "unknown thread");
+
+        let reply = h.post_agent_message(
+            "bot-a",
+            "Bot A",
+            &cid,
+            "reply",
+            Some(thread_id),
+        );
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "not-root", "thread_id": reply["id"],
+            "thread_name": "invalid",
+        }));
+        assert_eq!(last_frame(&mut rx_a, "error").unwrap()["error"], "not a thread root");
+
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "missing", "thread_id": 999_999,
+            "thread_name": "invalid",
+        }));
+        assert_eq!(last_frame(&mut rx_a, "error").unwrap()["error"], "unknown thread");
+
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "rename", "thread_id": thread_id,
+            "thread_name": "  Delivery status  ",
+        }));
+        let ack = last_frame(&mut rx_a, "rename_ack").unwrap();
+        assert_eq!(ack["alias"], "Delivery status");
+        assert_eq!(h.store.message(thread_id).unwrap()["alias"], "Delivery status");
+
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "missing-name", "thread_id": thread_id,
+        }));
+        let missing_name = last_frame(&mut rx_a, "error").unwrap();
+        assert_eq!(missing_name["error"], "thread_name required");
+        assert_eq!(h.store.message(thread_id).unwrap()["alias"], "Delivery status");
+
+        h.handle_agent_frame_from(conn_a, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": cid,
+            "request_id": "clear", "thread_id": thread_id, "thread_name": "   ",
+        }));
+        assert!(last_frame(&mut rx_a, "rename_ack").unwrap()["alias"].is_null());
+        assert!(h.store.message(thread_id).unwrap()["alias"].is_null());
+    }
+
+    #[test]
     fn first_thread_reply_reports_its_header_length() {
         let h = hub();
         let mut rx = add_agent(&h, "agent-1", "Data Cruncher", false);
@@ -3998,6 +4268,7 @@ mod tests {
             json!({
                 "type": "post_ack", "agent_id": "bot-a", "request_id": "req-1",
                 "message_id": root_id, "channel_id": cid, "thread_id": null,
+                "thread_name": null,
             })
         );
         assert!(last_frame(&mut rx_b, "post_ack").is_none());
@@ -4435,6 +4706,10 @@ mod tests {
                 "type": "post", "agent_id": "bot-b", "channel_id": cid,
                 "request_id": "post-denied", "text": "should not be stored",
             }),
+            json!({
+                "type": "rename_thread", "agent_id": "bot-b", "channel_id": cid,
+                "request_id": "rename-denied", "thread_id": 1, "thread_name": "nope",
+            }),
         ] {
             h.handle_agent_frame_from(outsider_conn_id, &frame);
         }
@@ -4446,14 +4721,35 @@ mod tests {
         let errors: Vec<_> = std::iter::from_fn(|| outsider_rx.try_recv().ok())
             .filter(|frame| frame["type"] == "error")
             .collect();
-        assert_eq!(errors.len(), 1);
-        let error = &errors[0];
+        assert_eq!(errors.len(), 2);
+        let error = errors.iter().find(|e| e["frame_type"] == "post").unwrap();
         assert_eq!(error["frame_type"], "post");
         assert_eq!(error["agent_id"], "bot-b");
         assert_eq!(error["request_id"], "post-denied");
         assert_eq!(error["channel_id"], cid);
         assert!(error["thread_id"].is_null());
         assert_eq!(error["error"], "agent is not a member of this channel");
+        let rename_error = errors
+            .iter()
+            .find(|e| e["frame_type"] == "rename_thread")
+            .unwrap();
+        assert_eq!(rename_error["request_id"], "rename-denied");
+        assert_eq!(rename_error["error"], "agent is not a member of this channel");
+    }
+
+    #[test]
+    fn correlated_rename_to_unknown_channel_returns_an_error() {
+        let h = hub();
+        let mut rx = add_agent(&h, "bot-a", "Bot A", false);
+        let conn_id = h.agent_handle("bot-a").unwrap().conn_id;
+        h.handle_agent_frame_from(conn_id, &json!({
+            "type": "rename_thread", "agent_id": "bot-a", "channel_id": "missing",
+            "request_id": "rename-missing-channel", "thread_id": 1,
+            "thread_name": "nope",
+        }));
+        let error = last_frame(&mut rx, "error").unwrap();
+        assert_eq!(error["frame_type"], "rename_thread");
+        assert_eq!(error["error"], "unknown channel");
     }
 
     #[test]
