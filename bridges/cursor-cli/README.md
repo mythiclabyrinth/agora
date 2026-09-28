@@ -69,6 +69,16 @@ metadata. Cursor does not document that on-disk format. Sessions created or
 observed by the bridge remain bound in `state.json` even if Cursor changes its
 listing format.
 
+The first ordinary reply in an unbound thread copies the channel's current
+session in Cursor's local chat store. The thread keeps its folder, model,
+mode, TL;DR setting, and worktree path, then continues independently. It sees
+main-chat turns completed before the copy, including turns after the thread
+root; a busy main session finishes first. Cursor does not publish a session
+copy command or storage format. If the copy fails, the bridge starts a fresh
+session with recent main-chat messages from Agora. Both conversations share
+project files. Use `/worktree <repo>` in the thread for a separate folder and
+a fresh session there. `/use` and `/new` in the thread replace its binding.
+
 ## Execution safety
 
 The default `agent` mode runs Cursor print mode with Cursor's workspace sandbox

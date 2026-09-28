@@ -2,8 +2,10 @@ import asyncio
 import importlib.util
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1080,6 +1082,84 @@ class PartialStreamTests(unittest.TestCase):
         reply, _ = run_cursor_stream([_assistant("partial answer"),
                                       _cursor_result("")])
         self.assertEqual(reply, "partial answer")
+
+
+class ThreadForkTests(unittest.TestCase):
+    def test_shared_worktree_cannot_be_removed_from_either_binding(self):
+        b = make_bridge()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {"c1": {"worktree": worktree},
+                      "c1:42": {"worktree": dict(worktree)}}
+        with patch.object(bridge, "_run_git") as git:
+            self.assertIn("shared", b._remove_worktree("c1:42", True))
+            self.assertIn("shared", b._remove_worktree("c1", True))
+        git.assert_not_called()
+
+    def test_sqlite_copy_changes_only_the_copied_agent_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "chats"
+            source_id = str(uuid.uuid4())
+            source = root / "workspace-hash" / source_id
+            source.mkdir(parents=True)
+            (source / "meta.json").write_text(json.dumps({"cwd": "/tmp/project"}))
+            db = sqlite3.connect(source / "store.db")
+            db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            db.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
+            db.execute("INSERT INTO meta VALUES ('0', ?)",
+                       (json.dumps({"agentId": source_id, "latestRootBlobId": "blob"}).encode().hex(),))
+            db.execute("INSERT INTO blobs VALUES ('blob', ?)", (b"context",))
+            db.commit()
+            db.close()
+            with patch.object(bridge, "CURSOR_SESSIONS", root):
+                copied_id = bridge.copy_cursor_session(source_id)
+            copied = source.parent / copied_id
+            with sqlite3.connect(copied / "store.db") as result:
+                metadata = json.loads(bytes.fromhex(result.execute(
+                    "SELECT value FROM meta WHERE key='0'").fetchone()[0]).decode())
+                self.assertEqual(metadata["agentId"], copied_id)
+                self.assertEqual(result.execute("SELECT data FROM blobs").fetchone()[0], b"context")
+            with sqlite3.connect(source / "store.db") as original:
+                metadata = json.loads(bytes.fromhex(original.execute(
+                    "SELECT value FROM meta WHERE key='0'").fetchone()[0]).decode())
+                self.assertEqual(metadata["agentId"], source_id)
+
+    def test_copy_failure_seeds_recent_channel_history(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.timeout = 1
+        b._save_state = Mock()
+        b._recent_main_history = AsyncMock(return_value="Tom: earlier request")
+        b.bindings["c1"] = {"session_id": str(uuid.uuid4()), "cwd": "/tmp/project",
+                            "mode": "plan", "tldr": True}
+        frame = {"channel_id": "c1", "thread_id": 42, "author": {"type": "user"}}
+        with patch.object(bridge, "copy_cursor_session", side_effect=RuntimeError("format changed")):
+            self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+        child = b.bindings["c1:42"]
+        self.assertIsNone(child["session_id"])
+        self.assertEqual(child["_fork_context"], "Tom: earlier request")
+        self.assertEqual(child["mode"], "plan")
+        b._save_state.assert_not_called()
+        with tempfile.TemporaryDirectory() as tmp:
+            b.state_file = Path(tmp) / "state.json"
+            bridge.Bridge._save_state(b)
+            self.assertNotIn("c1:42", json.loads(b.state_file.read_text()))
+
+    def test_copy_success_persists_a_distinct_thread_binding(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.timeout = 1
+        source_id, copied_id = str(uuid.uuid4()), str(uuid.uuid4())
+        b.bindings["c1"] = {"session_id": source_id, "cwd": "/tmp/project",
+                            "mode": "ask", "tldr": True}
+        frame = {"channel_id": "c1", "thread_id": 42, "author": {"type": "agent"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            b.state_file = Path(tmp) / "state.json"
+            with patch.object(bridge, "copy_cursor_session", return_value=copied_id):
+                self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+            saved = json.loads(b.state_file.read_text())
+        self.assertEqual(b.bindings["c1:42"]["session_id"], copied_id)
+        self.assertEqual(b.bindings["c1"]["session_id"], source_id)
+        self.assertEqual(saved["c1:42"]["session_id"], copied_id)
 
 
 if __name__ == "__main__":

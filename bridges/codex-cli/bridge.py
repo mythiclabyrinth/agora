@@ -891,6 +891,7 @@ class Bridge:
         # account has to release sessions just as /switch does.
         self._release_sessions_from_a_previous_account()
         self.busy: set[str] = set()
+        self.thread_fork_locks: dict[str, asyncio.Lock] = {}
         self.pending_turns: dict[str, list[dict]] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
@@ -1010,7 +1011,9 @@ class Bridge:
     def _save_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(json.dumps(
-            {"_v": 2, "account": self.account, "bindings": self.bindings}, indent=2))
+            {"_v": 2, "account": self.account,
+             "bindings": {key: value for key, value in self.bindings.items()
+                          if not value.get("_fork_source")}}, indent=2))
 
     # ---------------------------------------------------------- accounts
 
@@ -1664,6 +1667,9 @@ class Bridge:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
+        if any(other != key and (binding.get("worktree") or {}).get("path") == wt["path"]
+               for other, binding in self.bindings.items()):
+            return "This worktree is shared with another conversation; move that conversation before removing it."
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
@@ -1952,10 +1958,48 @@ class Bridge:
 
     # ------------------------------------------------------------- codex
 
+    async def _ensure_thread_fork(self, key: str, frame: dict) -> bool:
+        thread_id = frame.get("thread_id")
+        if not thread_id or key in self.bindings:
+            return True
+        main_key = frame["channel_id"]
+        if not (self.bindings.get(main_key) or {}).get("session_id"):
+            return True
+        lock = self.thread_fork_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key in self.bindings:
+                return True
+            self.set_reaction(frame, "👀")
+            deadline = time.monotonic() + max(30, self.timeout)
+            while main_key in self.busy:
+                if thread_id in self.deleted_thread_roots:
+                    self.clear_reaction(frame)
+                    return False
+                if time.monotonic() >= deadline:
+                    if (frame.get("author") or {}).get("type") == "user":
+                        self.post(frame, "The main session is still working. Reply again after it finishes to copy it.")
+                    self.clear_reaction(frame)
+                    return False
+                await asyncio.sleep(0.2)
+            if thread_id in self.deleted_thread_roots:
+                self.clear_reaction(frame)
+                return False
+            if key in self.bindings:
+                return True
+            source = self.bindings.get(main_key) or {}
+            if not source.get("session_id"):
+                return True
+            binding = json.loads(json.dumps(source))
+            binding["_fork_source"] = source["session_id"]
+            self.bindings[key] = binding
+            return True
+
     async def forward_to_codex(
         self, key: str, frame: dict, text: str, from_peer: bool = False
     ) -> bool:
         """Run now or enqueue behind the active turn for this conversation."""
+        if not await self._ensure_thread_fork(key, frame):
+            return False
         binding = self.bindings.get(key)
         if not binding:
             self.set_reaction(frame, "👀")
@@ -2030,9 +2074,25 @@ class Bridge:
                 try:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
+                    is_fork = bool(binding.get("_fork_source"))
+                    if is_fork:
+                        batch_text += ("\n\n[This is a new thread about the root message above. "
+                                       "Focus on that message; the copied session also knows later main-chat turns.]")
                     reply = await self.run_codex(key, batch_frame, binding, batch_text)
+                    if is_fork and self.bindings.get(key) is not binding:
+                        for entry in entries:
+                            self.clear_reaction(entry["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
+                    if is_fork and binding.get("_fork_source"):
+                        if self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
+                        raise RuntimeError("Codex did not return a new fork session ID")
                     reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(codex error)"):
+                        if is_fork and self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
                         self.post(batch_frame, reply)
                         for entry in entries:
                             self.clear_reaction(entry["frame"])
@@ -2051,14 +2111,20 @@ class Bridge:
                         body = (body + "\n\n" if body else "") + "\n".join(notices)
                     if not body and not attachments:
                         body = "(empty response)"
+                    if is_fork and not entries[0].get("from_peer"):
+                        body += "\n\nThe thread and main chat share project files. Use /worktree <repo> here for a separate copy."
                     self.post(batch_frame, body, tldr if body else None, attachments)
                     for entry in entries:
                         self.set_reaction(entry["frame"], "✅", remember=False)
                 except RunStopped:
+                    if binding.get("_fork_source") and self.bindings.get(key) is binding:
+                        self.bindings.pop(key, None)
                     self.post(batch_frame, "Stopped.")
                     for entry in entries:
                         self.clear_reaction(entry["frame"])
                 except Exception as e:  # degrade to a chat message, never crash the drain
+                    if binding.get("_fork_source") and self.bindings.get(key) is binding:
+                        self.bindings.pop(key, None)
                     log(f"codex run failed: {e!r}")
                     self.post(batch_frame, f"Codex run failed: {e}")
                     for entry in entries:
@@ -2378,7 +2444,9 @@ class Bridge:
         prompt += self._prompt_suffixes(binding)
         try:
             cmd = [self.codex_bin, "exec"]
-            if binding.get("session_id"):
+            if binding.get("_fork_source"):
+                cmd += ["fork", binding["_fork_source"]]
+            elif binding.get("session_id"):
                 cmd += ["resume", binding["session_id"]]
             cmd += [
                 "--json",
@@ -2479,6 +2547,7 @@ class Bridge:
             if (new_session_id and new_session_id != binding.get("session_id")
                     and (key not in self.bindings or self.bindings.get(key) is binding)):
                 binding["session_id"] = new_session_id
+                binding.pop("_fork_source", None)
                 self.bindings[key] = binding
                 self._save_state()
             return "\n\n".join(reply_parts)

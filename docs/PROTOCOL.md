@@ -556,18 +556,26 @@ toggle), Agora presents their top-level message as its own thread root — the
 `inbound` frame's `thread_id` equals its `message_id` — so a well-behaved
 agent's reply lands in a thread under the message that prompted it. No
 agent-side changes are needed; agents that already echo `thread_id` get the
-behavior for free. As with any thread, treat it as a fresh conversation (use
-`history_request` for wider channel context).
+behavior for free. The bundled Claude, Codex, and Cursor CLI bridges copy a
+bound main-channel CLI session when the first ordinary reply reaches an unbound
+thread. The copy has the main session's context at that time, including turns
+after the thread root, and subsequent turns diverge. If the main session is
+busy, the bridge waits for its turn to finish before copying. Other agents
+should use `history_request` for wider channel context.
 
 **History is pulled, never pushed.** A CLI bridge's model session is separate
-from the channel's own memory: `/switch`, `/new` and a bridge restart all start
-a session that has never seen the conversation. The bundled bridges do not
-pre-load a transcript into such a session — most turns do not need one — but
+from the channel's own memory: `/switch` and `/new` can start
+a session that has never seen the conversation. The bundled bridges usually do
+not pre-load a transcript into such a session — most turns do not need one — but
 they tell the model the transcript is available and fetch a page with
 `history_request` when it asks for one (in the Claude and Codex bridges the ask
 is a sentinel line the bridge intercepts instead of posting; `--no-history`
 removes the capability). So a human who wants the older context after a switch
 just says so in the channel, and one who does not gets a clean session.
+Cursor also requests recent main-channel history if its local session copy
+cannot be opened. The copied or fresh thread binding is persisted, so a bridge
+restart resumes it. Both conversations use the same project files until the
+thread is moved to its own worktree.
 
 **One inbound may produce several posts.** A `post` frame stands on its own —
 it carries its own `channel_id`/`thread_id` and is not correlated to any

@@ -911,6 +911,7 @@ class Bridge:
         self._account_state_valid = True
         self.account_auth_problem: str | None = None
         self.busy: set[str] = set()
+        self.thread_fork_locks: dict[str, asyncio.Lock] = {}
         self.pending_turns: dict[str, list[dict]] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
@@ -1011,7 +1012,8 @@ class Bridge:
         self.state_file.write_text(json.dumps({
             "_v": 2, "account": account,
             "config_dir": str(config_dir) if config_dir is not None else None,
-            "bindings": self.bindings,
+            "bindings": {key: value for key, value in self.bindings.items()
+                         if not value.get("_fork_source")},
         }, indent=2))
 
     def _resolve_account(self, name: object, saved_dir: Path | None) -> str:
@@ -1771,6 +1773,9 @@ class Bridge:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
+        if any(other != key and (binding.get("worktree") or {}).get("path") == wt["path"]
+               for other, binding in self.bindings.items()):
+            return "This worktree is shared with another conversation; move that conversation before removing it."
         # `busy` used to mean "a child is running here", but a child held for
         # background work has no in-flight turn — and this worktree is still its
         # cwd. Removing it would delete the tree from under a live writer.
@@ -2085,6 +2090,45 @@ class Bridge:
 
     # ------------------------------------------------------------ claude
 
+    async def _ensure_thread_fork(self, key: str, frame: dict) -> bool:
+        thread_id = frame.get("thread_id")
+        if not thread_id or key in self.bindings:
+            return True
+        main_key = frame["channel_id"]
+        if not (self.bindings.get(main_key) or {}).get("session_id"):
+            return True
+        lock = self.thread_fork_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key in self.bindings:
+                return True
+            self.set_reaction(frame, "👀")
+            deadline = time.monotonic() + max(30, self.timeout)
+            while main_key in self.busy or (
+                (live := self.live.get(main_key)) is not None and live.alive
+            ):
+                if thread_id in self.deleted_thread_roots:
+                    self.clear_reaction(frame)
+                    return False
+                if time.monotonic() >= deadline:
+                    if (frame.get("author") or {}).get("type") == "user":
+                        self.post(frame, "The main session is still working. Reply again after it finishes to copy it.")
+                    self.clear_reaction(frame)
+                    return False
+                await asyncio.sleep(0.2)
+            if thread_id in self.deleted_thread_roots:
+                self.clear_reaction(frame)
+                return False
+            if key in self.bindings:
+                return True
+            source = self.bindings.get(main_key) or {}
+            if not source.get("session_id"):
+                return True
+            binding = json.loads(json.dumps(source))
+            binding["_fork_source"] = source["session_id"]
+            binding["_fork_message_id"] = frame.get("message_id")
+            self.bindings[key] = binding
+            return True
+
     async def forward_to_claude(
         self, key: str, frame: dict, text: str, from_peer: bool = False
     ) -> bool:
@@ -2098,6 +2142,8 @@ class Bridge:
         if not from_peer and self._answer_pending_question(key, frame, text):
             self.set_reaction(frame, "✅", remember=False)
             return True
+        if not await self._ensure_thread_fork(key, frame):
+            return False
         binding = self.bindings.get(key)
         if not binding:
             self.set_reaction(frame, "👀")
@@ -2172,23 +2218,45 @@ class Bridge:
                 try:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
+                    is_fork = bool(binding.get("_fork_source"))
+                    if is_fork:
+                        batch_text += ("\n\n[This is a new thread about the root message above. "
+                                       "Focus on that message; the copied session also knows later main-chat turns.]")
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
+                    if is_fork and self.bindings.get(key) is not binding:
+                        for queued in entries:
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
+                    if is_fork and binding.get("_fork_source"):
+                        if self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
+                        raise RuntimeError("Claude did not return a new fork session ID")
                     reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(claude error)"):
+                        if is_fork and self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
                         self.post(batch_frame, reply)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    self._post_reply(batch_frame, binding, reply)
+                    notice = ("The thread and main chat share project files. Use /worktree <repo> here for a separate copy."
+                              if is_fork and not entries[0].get("from_peer") else None)
+                    self._post_reply(batch_frame, binding, reply, notice=notice)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped as stopped:
+                    if binding.get("_fork_source") and self.bindings.get(key) is binding:
+                        self.bindings.pop(key, None)
                     self.post(batch_frame, str(stopped) or "Stopped.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
+                    if binding.get("_fork_source") and self.bindings.get(key) is binding:
+                        self.bindings.pop(key, None)
                     log(f"claude run failed: {e!r}")
                     self.post(batch_frame, f"Claude run failed: {e}")
                     for queued in entries:
@@ -2555,6 +2623,8 @@ class Bridge:
                 cmd += ["--model", model]
             if binding.get("session_id"):
                 cmd += ["--resume", binding["session_id"]]
+            if binding.get("_fork_source"):
+                cmd += ["--fork-session"]
             log(
                 f"run: session={binding.get('session_id')} cwd={binding['cwd']} "
                 f"model={model or 'default'} mode={mode}"
@@ -2660,6 +2730,8 @@ class Bridge:
                             if (new_sid and new_sid != binding.get("session_id")
                                     and (key not in self.bindings or self.bindings.get(key) is binding)):
                                 binding["session_id"] = new_sid
+                                binding.pop("_fork_source", None)
+                                binding.pop("_fork_message_id", None)
                                 self.bindings[key] = binding
                                 self._save_state()
                             if not text.strip():
@@ -3090,7 +3162,8 @@ class Bridge:
             "pick it back up."
         ))
 
-    def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:
+    def _post_reply(self, frame: dict, binding: dict, reply: str,
+                    notice: str | None = None) -> None:
         """Format a model reply the channel's way and post it."""
         # Last line of defence: a turn asking for history is served by
         # _serve_history_asks and never reaches here, but a backgrounded
@@ -3108,6 +3181,8 @@ class Bridge:
             body = (body + "\n\n" if body else "") + "\n".join(notices)
         if not body and not attachments:
             body = "(no reply — the run ended without any text)"
+        if notice:
+            body += "\n\n" + notice
         self.post(frame, body, tldr if body else None, attachments)
 
     @staticmethod

@@ -801,7 +801,7 @@ def _result(text, **extra):
     return json.dumps(frame)
 
 
-def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0):
+def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
     """Drive the real run_claude() against a scripted stdout stream."""
     b = make_bridge()
     b.claude_bin = "claude"
@@ -832,7 +832,7 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0):
         asyncio.create_subprocess_exec = fake_exec
         try:
             return await b.run_claude(
-                "k", {"channel_id": "c1"}, {"cwd": "/tmp"}, "hi")
+                "k", {"channel_id": "c1"}, binding or {"cwd": "/tmp"}, "hi")
         finally:
             asyncio.create_subprocess_exec = original_exec
 
@@ -2368,6 +2368,69 @@ class HistoryAskTests(unittest.TestCase):
             b.send.assert_not_called()
 
         asyncio.run(run())
+
+
+class ThreadForkTests(unittest.TestCase):
+    def test_shared_worktree_cannot_be_removed_from_either_binding(self):
+        b = make_bridge()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {"c1": {"worktree": worktree},
+                      "c1:42": {"worktree": dict(worktree)}}
+        with patch.object(bridge, "_run_git") as git:
+            self.assertIn("shared", b._remove_worktree("c1:42", True))
+            self.assertIn("shared", b._remove_worktree("c1", True))
+        git.assert_not_called()
+
+    def test_first_cli_turn_uses_fork_flag_and_records_new_id(self):
+        binding = {"cwd": "/tmp", "session_id": "old-id", "_fork_source": "old-id"}
+        reply, b = run_bridge([_result("copied")], binding=binding)
+        self.assertEqual(reply, "copied")
+        argv, opts = b.spawn_calls[0]
+        self.assertIn("--fork-session", argv)
+        self.assertEqual(argv[argv.index("--resume") + 1], "old-id")
+        self.assertEqual(opts["cwd"], "/tmp")
+        self.assertEqual(binding["session_id"], "sess-1")
+        self.assertNotIn("_fork_source", binding)
+
+    def test_fork_inherits_settings_without_persisting_provisional_binding(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.timeout = 1
+        b.bindings["c1"] = {"session_id": "main-id", "cwd": "/tmp/project",
+                            "model": "opus", "permission_mode": "plan", "tldr": True,
+                            "worktree": {"path": "/tmp/project", "branch": "feature", "base": "/tmp"}}
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 100,
+                 "author": {"type": "user"}}
+        self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+        child = b.bindings["c1:42"]
+        self.assertEqual(child["_fork_source"], "main-id")
+        self.assertEqual(child["cwd"], "/tmp/project")
+        self.assertEqual(child["permission_mode"], "plan")
+        child["worktree"]["branch"] = "other"
+        self.assertEqual(b.bindings["c1"]["worktree"]["branch"], "feature")
+        with tempfile.TemporaryDirectory() as tmp:
+            b.state_file = Path(tmp) / "state.json"
+            b.account = b._saved_account = "default"
+            b._account_state_valid = True
+            b.accounts = {"default": Path(tmp)}
+            b._previous_config_dir = Path(tmp)
+            b._save_state()
+            self.assertNotIn("c1:42", json.loads(b.state_file.read_text())["bindings"])
+
+    def test_deleted_root_cancels_fork_while_main_is_busy(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.timeout = 1
+        b.bindings["c1"] = {"session_id": "main-id", "cwd": "/tmp"}
+        b.busy.add("c1")
+        frame = {"channel_id": "c1", "thread_id": 42, "author": {"type": "user"}}
+
+        async def delete_root(_delay):
+            b.deleted_thread_roots[42] = None
+
+        with patch.object(bridge.asyncio, "sleep", new=delete_root):
+            self.assertFalse(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+        self.assertNotIn("c1:42", b.bindings)
 
 
 if __name__ == "__main__":
