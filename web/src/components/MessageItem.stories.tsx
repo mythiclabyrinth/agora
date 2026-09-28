@@ -218,7 +218,8 @@ export const OldReply: Story = {
     const replyTime = canvasElement.querySelector(".ago-last-reply");
     expect(replyTime?.querySelector('[aria-hidden="true"]')).toBeVisible();
     expect(replyTime?.querySelector(".ago-sr-only")).toHaveTextContent(String(new Date().getFullYear() - 1));
-    expect(replyTime?.getAttribute("title")).toContain(String(new Date().getFullYear() - 1));
+    expect(replyTime?.querySelector('[aria-hidden="true"]')?.getAttribute("title"))
+      .toContain(String(new Date().getFullYear() - 1));
   },
 };
 
@@ -226,6 +227,14 @@ export const MissingReplyTime: Story = {
   args: { message: { ...message, reply_count: 2, alias: "Older server", last_reply_ts: undefined } },
   play: async ({ canvasElement }) => {
     expect(within(canvasElement).queryByText(/Last reply at/)).not.toBeInTheDocument();
+  },
+};
+
+export const InvalidReplyTime: Story = {
+  args: { message: { ...message, reply_count: 2, alias: "Invalid timestamp", last_reply_ts: Number.POSITIVE_INFINITY } },
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.querySelector(".ago-last-reply")).toBeNull();
+    expect(within(canvasElement).getByText("2 replies →")).toBeVisible();
   },
 };
 

@@ -2372,10 +2372,10 @@ async fn get_message(
     let user = require_user(&state, &headers, &q)?;
     let mut message = require_message_visible(&state, &user, message_id)?;
     if message["thread_id"].is_null() {
-        if let Some((count, last_reply_ts)) = state.hub.store.thread_reply_stats(message_id) {
-            message["reply_count"] = json!(count);
-            if let Some(ts) = last_reply_ts { message["last_reply_ts"] = json!(ts); }
-        }
+        let (count, last_reply_ts) = state.hub.store.thread_reply_stats(message_id)
+            .unwrap_or((0, None));
+        message["reply_count"] = json!(count);
+        if let Some(ts) = last_reply_ts { message["last_reply_ts"] = json!(ts); }
     }
     Ok(Json(message))
 }

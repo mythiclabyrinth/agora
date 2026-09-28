@@ -100,6 +100,10 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   const me = useMe().data;
   const mine = m.author_type === "user" && !!me && m.author_id === me.username;
   const cls = m.author_type === "agent" ? "assistant" : (mine ? "user" : "assistant peer");
+  const lastReplyTs = typeof m.last_reply_ts === "number"
+    && Number.isFinite(m.last_reply_ts) && m.last_reply_ts !== 0
+    && Math.abs(m.last_reply_ts) <= 8.64e12
+    ? m.last_reply_ts : undefined;
 
   const pins = usePins(m.channel_id).data || [];
   const stars = useStars(m.channel_id).data || [];
@@ -294,13 +298,12 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
         )}
         {/* The name distinguishes roots with identical text, while the latest
             reply stays directly below it. Both occupy the right footer slot. */}
-        {!inThread && !!m.reply_count && (!!m.alias?.trim() || !!m.last_reply_ts) && (
+        {!inThread && !!m.reply_count && (!!m.alias?.trim() || lastReplyTs !== undefined) && (
           <span className="ago-thread-meta">
             {!!m.alias?.trim() && <span className="ago-thread-alias" title={m.alias.trim()}>{m.alias.trim()}</span>}
-            {!!m.last_reply_ts && <time className="ago-last-reply" dateTime={new Date(m.last_reply_ts * 1000).toISOString()}
-              title={fmtLastReplyFull(m.last_reply_ts)}>
-              <span aria-hidden="true">Last reply at {fmtLastReply(m.last_reply_ts)}</span>
-              <span className="ago-sr-only">Last reply at {fmtLastReplyFull(m.last_reply_ts)}</span>
+            {lastReplyTs !== undefined && <time className="ago-last-reply" dateTime={new Date(lastReplyTs * 1000).toISOString()}>
+              <span aria-hidden="true" title={fmtLastReplyFull(lastReplyTs)}>Last reply at {fmtLastReply(lastReplyTs)}</span>
+              <span className="ago-sr-only">Last reply at {fmtLastReplyFull(lastReplyTs)}</span>
             </time>}
           </span>
         )}
