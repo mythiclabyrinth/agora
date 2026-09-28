@@ -10,6 +10,27 @@ export function fmtTs(ts: number | null | undefined): string {
   });
 }
 
+/** Compact, local-time label for a thread's latest reply. */
+export function fmtLastReply(ts: number, now = Date.now()): string {
+  const reply = new Date(ts * 1000);
+  const today = new Date(now);
+  const sameDay = reply.getFullYear() === today.getFullYear()
+    && reply.getMonth() === today.getMonth()
+    && reply.getDate() === today.getDate();
+  if (sameDay) return reply.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (reply.getFullYear() === today.getFullYear()) {
+    return reply.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+  return reply.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** Full local date and time for tooltips and accessibility labels. */
+export function fmtLastReplyFull(ts: number): string {
+  return new Date(ts * 1000).toLocaleString([], {
+    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 export function slugify(name: string): string {
   return String(name || "")
     .toLowerCase()

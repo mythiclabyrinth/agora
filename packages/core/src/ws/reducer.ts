@@ -111,18 +111,30 @@ export function removeMessage(
   return { ...data, pages: data.pages.map((p) => p.filter((m) => m.id !== messageId)) };
 }
 
-/** A reply was deleted: drop reply_count on its root in the top-level set. */
+/** Count a deletion once; use the server's next-latest timestamp because the
+    remaining replies may not be loaded in this client's thread pages. */
 export function dropReplyCount(
   data: MessagePages | undefined,
-  rootId: number,
+  ev: MessageDeleteEvent,
 ): MessagePages | undefined {
   if (!data) return undefined;
+  if (!data.pages.some((p) => p.some((m) => m.id === ev.thread_id))) return data;
   return {
     ...data,
     pages: data.pages.map((p) =>
-      p.map((m) =>
-        m.id === rootId ? { ...m, reply_count: Math.max(0, (m.reply_count ?? 0) - 1) } : m,
-      ),
+      p.map((m) => {
+        if (m.id !== ev.thread_id) return m;
+        const nextCount = Math.max(0, (m.reply_count ?? 0) - 1);
+        return {
+          ...m,
+          reply_count: nextCount,
+          // Use the count as a gate only. An absolute snapshot may include a
+          // reply still in flight, or be stale-high after another delete.
+          last_reply_ts: ev.reply_count != null && nextCount <= ev.reply_count
+            ? (ev.last_reply_ts ?? undefined)
+            : m.last_reply_ts,
+        };
+      }),
     ),
   };
 }
@@ -130,14 +142,19 @@ export function dropReplyCount(
 /** A reply arrived: bump reply_count on its root in the top-level page set. */
 export function bumpReplyCount(
   data: MessagePages | undefined,
-  rootId: number,
+  reply: Message,
 ): MessagePages | undefined {
   if (!data) return undefined;
+  if (!data.pages.some((p) => p.some((m) => m.id === reply.thread_id))) return data;
   return {
     ...data,
     pages: data.pages.map((p) =>
       p.map((m) =>
-        m.id === rootId ? { ...m, reply_count: (m.reply_count ?? 0) + 1 } : m,
+        m.id === reply.thread_id ? {
+          ...m,
+          reply_count: (m.reply_count ?? 0) + 1,
+          last_reply_ts: Math.max(m.last_reply_ts ?? 0, reply.ts),
+        } : m,
       ),
     ),
   };
@@ -262,22 +279,29 @@ export function applyAliasToPages(
 
 /** Scrub a deleted message from every cache that may hold it. Shared by the
     WS case and useDeleteMessage's onSuccess. removeMessage / removeQueries /
-    invalidateQueries are safe to repeat; only dropReplyCount is gated so the
-    mutation + WS echo don't double-decrement, while the echo can still
-    re-invalidate threads/stars/pins. A root takes its whole thread with it
-    server-side, so its reply page set and single-message cache go too. */
+    invalidateQueries are safe to repeat; the count and timestamp update is
+    gated so a late HTTP response cannot undo a newer reply. A root takes its
+    whole thread with it server-side, so its reply page and cache go too. */
 export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): void {
   qc.setQueryData<MessagePages>(
     keys.messages(ev.channel_id, ev.thread_id),
     (data) => removeMessage(data, ev.message_id),
   );
   if (ev.thread_id != null) {
-    // dropReplyCount is the only non-idempotent step — claim just around it.
-    if (claimId(deletedMessageIds, qc, ev.message_id)) {
-      qc.setQueryData<MessagePages>(
+    // The HTTP response and WS echo describe the same deletion. Apply only
+    // the first to keep later reply events intact.
+    const firstDelete = claimId(deletedMessageIds, qc, ev.message_id);
+    if (firstDelete) {
+      const next = qc.setQueryData<MessagePages>(
         keys.messages(ev.channel_id, null),
-        (data) => dropReplyCount(data, ev.thread_id!),
+        (data) => dropReplyCount(data, ev),
       );
+      const root = next?.pages.flat().find((m) => m.id === ev.thread_id);
+      // A divergent server snapshot can be older or newer than the cached
+      // event stream; refetch to resolve concurrent replies and deletes.
+      if (root && ev.reply_count != null && root.reply_count !== ev.reply_count) {
+        void qc.invalidateQueries({ queryKey: keys.messages(ev.channel_id, null) });
+      }
     }
   } else {
     qc.removeQueries({ queryKey: keys.messages(ev.channel_id, ev.message_id) });
@@ -313,15 +337,16 @@ export function applyMessageClear(qc: QueryClient, ev: MessageClearEvent): void 
       return {
         ...data,
         pages: data.pages.map(page => page.map(message =>
-          message.id === ev.thread_id ? { ...message, reply_count: 0 } : message)),
+          message.id === ev.thread_id ? { ...message, reply_count: 0, last_reply_ts: undefined } : message)),
       };
     });
     qc.setQueryData<Message>(keys.message(ev.thread_id), root =>
-      root ? { ...root, reply_count: 0 } : root,
+      root ? { ...root, reply_count: 0, last_reply_ts: undefined } : root,
     );
     qc.setQueryData<ThreadRow[]>(keys.threads, rows => rows?.map(row =>
       row.root.id === ev.thread_id
-        ? { ...row, reply_count: 0, unread: 0, root: { ...row.root, reply_count: 0 } }
+        ? { ...row, reply_count: 0, last_reply_ts: 0, unread: 0,
+          root: { ...row.root, reply_count: 0, last_reply_ts: undefined } }
         : row),
     );
   }
@@ -406,7 +431,7 @@ export function applyWsEvent(
       if (message.thread_id != null) {
         qc.setQueryData<MessagePages>(
           keys.messages(message.channel_id, null),
-          (data) => bumpReplyCount(data, message.thread_id!),
+          (data) => bumpReplyCount(data, message),
         );
       }
       qc.setQueryData<Group[]>(keys.groups, (groups) =>

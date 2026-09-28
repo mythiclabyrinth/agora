@@ -8,7 +8,7 @@ import { Pin, Star } from "lucide-react-native";
 import type { Session } from "@agora/core";
 import { FEATURES, useSelectOption } from "@agora/core";
 import type { Message } from "@agora/core";
-import { fmtTs } from "@agora/core";
+import { fmtLastReply, fmtLastReplyFull, fmtTs } from "@agora/core";
 import { colors } from "../lib/theme";
 import { useSession } from "../state/session";
 import { tldrOf, useTldrView } from "@agora/core";
@@ -135,17 +135,26 @@ export function MessageItem({
       </Pressable>
     ) : null;
 
-  /* A named thread tells its roots apart when the text cannot — a channel of
-     identical "/new ~/project" roots is otherwise unreadable. Sits opposite the
-     reply count and takes the space left by the message-sized bubble. */
+  /* A name distinguishes otherwise identical roots. The right column takes
+     only the space left by the reply count and keeps the time below the name. */
   const threadName = (message.alias || "").trim();
   const threadFoot = replies ? (
     <View style={styles.threadFoot}>
       {replies}
-      {threadName ? (
-        <Text style={styles.threadAlias} numberOfLines={1}>
-          {threadName}
-        </Text>
+      {threadName || message.last_reply_ts ? (
+        <View style={styles.threadMeta}>
+          {threadName ? (
+            <Text style={styles.threadAlias} numberOfLines={1} maxFontSizeMultiplier={1.2}>
+              {threadName}
+            </Text>
+          ) : null}
+          {message.last_reply_ts ? (
+            <Text style={styles.lastReply} numberOfLines={1} maxFontSizeMultiplier={1.2}
+              accessibilityLabel={`Last reply at ${fmtLastReplyFull(message.last_reply_ts)}`}>
+              Last reply at {fmtLastReply(message.last_reply_ts)}
+            </Text>
+          ) : null}
+        </View>
       ) : null}
     </View>
   ) : null;
@@ -312,25 +321,32 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     marginTop: 4,
   },
-  /* Reply count left, thread name right. The bubble is sized by its message, so
-     the room for a name varies per row: `flex: 1` gives the name whatever is
-     left beside the count and truncates only at that limit, rather than
-     reserving one width for every bubble and clipping names that had space to
-     spare. RN defaults flexShrink to 0, so the count keeps its full size and
-     the name is what yields — which also keeps this safe on a 320pt device,
-     where a fixed width could overflow instead of truncating. */
+  /* RN defaults flexShrink to 0: the count keeps its width, while the meta
+     column yields on 320pt screens instead of widening the bubble. */
   threadFoot: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  threadAlias: {
+  threadMeta: {
     flex: 1,
+    minWidth: 0,
     marginTop: 4,
+    alignItems: "flex-end",
+  },
+  threadAlias: {
     color: colors.faint,
     fontSize: 10.5,
     fontWeight: "600",
     textAlign: "right",
+    alignSelf: "stretch",
+  },
+  lastReply: {
+    color: colors.faint,
+    fontSize: 9.5,
+    lineHeight: 11.5,
+    textAlign: "right",
+    alignSelf: "stretch",
   },
   options: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   optionBtn: {

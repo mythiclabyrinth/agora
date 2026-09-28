@@ -2579,15 +2579,15 @@ impl Store {
         if thread_id.is_none() && !out.is_empty() {
             let ids: Vec<i64> = out.iter().filter_map(|m| m["id"].as_i64()).collect();
             let placeholders = vec!["?"; ids.len()].join(",");
-            let counts: std::collections::HashMap<i64, i64> = {
+            let counts: std::collections::HashMap<i64, (i64, f64)> = {
                 let conn = self.conn.lock().unwrap();
                 let mut stmt = conn
                     .prepare(&format!(
-                        "SELECT thread_id, COUNT(*) FROM messages WHERE thread_id IN ({placeholders}) GROUP BY thread_id"
+                        "SELECT thread_id, COUNT(*), MAX(ts) FROM messages WHERE thread_id IN ({placeholders}) GROUP BY thread_id"
                     ))
                     .unwrap();
                 stmt.query_map(params_from_iter(ids.iter()), |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                    Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, f64>(2)?)))
                 })
                 .unwrap()
                 .filter_map(Result::ok)
@@ -2595,7 +2595,9 @@ impl Store {
             };
             for m in &mut out {
                 let id = m["id"].as_i64().unwrap_or_default();
-                m["reply_count"] = json!(counts.get(&id).copied().unwrap_or(0));
+                let stats = counts.get(&id).copied();
+                m["reply_count"] = json!(stats.map(|(count, _)| count).unwrap_or(0));
+                if let Some((_, ts)) = stats { m["last_reply_ts"] = json!(ts); }
             }
         }
         out
@@ -2609,6 +2611,15 @@ impl Store {
             |r| r.get(0),
         )
         .unwrap_or(0)
+    }
+
+    pub fn thread_reply_stats(&self, thread_id: i64) -> Option<(i64, Option<f64>)> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*), MAX(ts) FROM messages WHERE thread_id = ?1",
+            params![thread_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).ok()
     }
 
     // ------------------------------------------------------------- search
@@ -3437,7 +3448,8 @@ impl Store {
                 .prepare(
                     "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
                      m.author_name, m.text, m.ts, m.meta, p.pinned_by, p.pinned_at, \
-                     (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) \
+                     (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id), \
+                     (SELECT MAX(ts) FROM messages r WHERE r.thread_id = m.id) \
                      FROM pins p JOIN messages m ON m.id = p.message_id \
                      WHERE p.channel_id = ?1 ORDER BY p.pinned_at DESC",
                 )
@@ -3447,6 +3459,7 @@ impl Store {
                 msg["pinned_by"] = json!(r.get::<_, Option<String>>(10)?);
                 msg["pinned_at"] = json!(r.get::<_, f64>(11)?);
                 msg["reply_count"] = json!(r.get::<_, i64>(12)?);
+                if let Some(ts) = r.get::<_, Option<f64>>(13)? { msg["last_reply_ts"] = json!(ts); }
                 Ok(msg)
             })
             .unwrap()
@@ -4344,14 +4357,24 @@ mod tests {
         let cid = c["id"].as_str().unwrap();
         let root = s.add_message(cid, "root", "user", "tom", None, None, &[]);
         let root_id = root["id"].as_i64().unwrap();
-        s.add_message(cid, "reply1", "agent", "bot", Some("Bot"), Some(root_id), &[]);
-        s.add_message(cid, "reply2", "user", "tom", None, Some(root_id), &[]);
+        assert_eq!(s.thread_reply_stats(root_id), Some((0, None)));
+        assert!(s.messages(cid, None, None, 50)[0].get("last_reply_ts").is_none());
+        let first = s.add_message(cid, "reply1", "agent", "bot", Some("Bot"), Some(root_id), &[]);
+        let second = s.add_message(cid, "reply2", "user", "tom", None, Some(root_id), &[]);
         let top = s.messages(cid, None, None, 50);
         assert_eq!(top.len(), 1);
         assert_eq!(top[0]["reply_count"], 2);
+        assert_eq!(top[0]["last_reply_ts"], json!(first["ts"].as_f64().unwrap().max(second["ts"].as_f64().unwrap())));
+        assert_eq!(s.thread_reply_stats(root_id), Some((2, top[0]["last_reply_ts"].as_f64())));
+        s.pin_message(cid, root_id, Some("tom"));
+        assert_eq!(s.channel_pins(cid)[0]["last_reply_ts"], top[0]["last_reply_ts"]);
+        s.delete_message(second["id"].as_i64().unwrap());
+        assert_eq!(s.thread_reply_stats(root_id), Some((1, first["ts"].as_f64())));
         let thread = s.messages(cid, Some(root_id), None, 50);
-        assert_eq!(thread.len(), 2);
-        assert_eq!(s.thread_size(root_id), 2);
+        assert_eq!(thread.len(), 1);
+        assert_eq!(s.thread_size(root_id), 1);
+        s.delete_message(first["id"].as_i64().unwrap());
+        assert_eq!(s.thread_reply_stats(root_id), Some((0, None)));
     }
 
     #[test]

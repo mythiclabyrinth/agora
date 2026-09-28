@@ -626,15 +626,17 @@ export function useDeleteMessage() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: { message: Message }) =>
-      api.delete(
+      api.delete<{ ok: boolean; reply_count?: number | null; last_reply_ts?: number | null }>(
         `/api/channels/${encodeURIComponent(v.message.channel_id)}/messages/${v.message.id}`,
       ),
-    onSuccess: (_res, v) =>
+    onSuccess: (res, v) =>
       applyMessageDelete(qc, {
         type: "message_delete",
         channel_id: v.message.channel_id,
         message_id: v.message.id,
         thread_id: v.message.thread_id,
+        reply_count: res.reply_count,
+        last_reply_ts: res.last_reply_ts,
       }),
   });
 }

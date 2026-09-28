@@ -51,8 +51,8 @@ const baseRoutes = {
 const meta = {
   title: "Web/Messages/Message item",
   component: MessageItem,
-  decorators: [(Story) => (
-    <div className="ago-log" style={{ width: "min(760px, 100%)" }}>
+  decorators: [(Story, context) => (
+    <div className="ago-log" style={{ width: context.parameters.widePane ? "min(1300px, 100%)" : "min(760px, 100%)" }}>
       <Story />
     </div>
   )],
@@ -135,6 +135,7 @@ export const NamedThreadRoot: Story = {
       text: "/new ~/Coding/Projects/agora",
       reactions: [],
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: "A deliberately long thread name that has to be truncated",
     },
   },
@@ -142,6 +143,7 @@ export const NamedThreadRoot: Story = {
     const canvas = within(canvasElement);
     const label = await canvas.findByTitle("A deliberately long thread name that has to be truncated");
     await expect(label).toBeVisible();
+    await expect(canvasElement.querySelector('.ago-last-reply > [aria-hidden="true"]')).toBeVisible();
     // The label belongs to the affordance row, never the message body.
     await expect(label.closest(".ago-bubble-foot")).not.toBeNull();
     await expect(canvas.getByText("83 replies →")).toBeVisible();
@@ -160,11 +162,7 @@ export const NamedThreadRoot: Story = {
 /* Row width follows the pane, so the same alias fits on a wide canvas. */
 export const NamedThreadRootWidensWithMessage: Story = {
   name: "Named thread root in wide pane",
-  decorators: [(Story) => (
-    <div className="ago-log" style={{ width: 1300 }}>
-      <Story />
-    </div>
-  )],
+  parameters: { widePane: true },
   args: {
     message: {
       ...message,
@@ -174,6 +172,7 @@ export const NamedThreadRootWidensWithMessage: Story = {
       text: "/new ~/Coding/Projects/agora --resume --model opus --permission-mode acceptEdits",
       reactions: [],
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: "A deliberately long thread name that has to be truncated",
     },
   },
@@ -185,6 +184,8 @@ export const NamedThreadRootWidensWithMessage: Story = {
     // of it. Both cases stay anchored to the row’s right edge.
     await expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
     const bubble = label.closest(".ago-bubble")!.getBoundingClientRect();
+    const meta = label.closest(".ago-thread-meta")!.getBoundingClientRect();
+    await expect(meta.width).toBeLessThanOrEqual(bubble.width * 0.56);
     await expect(bubble.right - label.getBoundingClientRect().right).toBeLessThan(20);
   },
 };
@@ -199,6 +200,7 @@ export const UnnamedThreadRoot: Story = {
       text: "/new ~/Coding/Projects/agora",
       reactions: [],
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: null,
     },
   },
@@ -206,6 +208,33 @@ export const UnnamedThreadRoot: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("83 replies →")).resolves.toBeVisible();
     expect(canvasElement.querySelector(".ago-thread-alias")).toBeNull();
+    await expect(canvasElement.querySelector('.ago-last-reply > [aria-hidden="true"]')).toBeVisible();
+  },
+};
+
+export const OldReply: Story = {
+  args: { message: { ...message, reply_count: 2, alias: "Archive", last_reply_ts: new Date(new Date().getFullYear() - 1, 8, 28, 14, 15).getTime() / 1000 } },
+  play: async ({ canvasElement }) => {
+    const replyTime = canvasElement.querySelector(".ago-last-reply");
+    expect(replyTime?.querySelector('[aria-hidden="true"]')).toBeVisible();
+    expect(replyTime?.querySelector(".ago-sr-only")).toHaveTextContent(String(new Date().getFullYear() - 1));
+    expect(replyTime?.querySelector('[aria-hidden="true"]')?.getAttribute("title"))
+      .toContain(String(new Date().getFullYear() - 1));
+  },
+};
+
+export const MissingReplyTime: Story = {
+  args: { message: { ...message, reply_count: 2, alias: "Older server", last_reply_ts: undefined } },
+  play: async ({ canvasElement }) => {
+    expect(within(canvasElement).queryByText(/Last reply at/)).not.toBeInTheDocument();
+  },
+};
+
+export const InvalidReplyTime: Story = {
+  args: { message: { ...message, reply_count: 2, alias: "Invalid timestamp", last_reply_ts: Number.POSITIVE_INFINITY } },
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.querySelector(".ago-last-reply")).toBeNull();
+    expect(within(canvasElement).getByText("2 replies →")).toBeVisible();
   },
 };
 

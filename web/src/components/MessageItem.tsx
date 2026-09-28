@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { create } from "zustand";
 import {
-  fmtTs, tldrOf, useAgents, useDeleteMessage, useEditMessage, useMe, usePinMessage, usePins,
+  fmtLastReply, fmtLastReplyFull, fmtTs, tldrOf, useAgents, useDeleteMessage, useEditMessage, useMe, usePinMessage, usePins,
   FEATURES, useStarMessage, useStars, useTldrView, type LinkPreview, type Message,
 } from "@agora/core";
 import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
@@ -100,6 +100,10 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   const me = useMe().data;
   const mine = m.author_type === "user" && !!me && m.author_id === me.username;
   const cls = m.author_type === "agent" ? "assistant" : (mine ? "user" : "assistant peer");
+  const lastReplyTs = typeof m.last_reply_ts === "number"
+    && Number.isFinite(m.last_reply_ts) && m.last_reply_ts !== 0
+    && Math.abs(m.last_reply_ts) <= 8.64e12
+    ? m.last_reply_ts : undefined;
 
   const pins = usePins(m.channel_id).data || [];
   const stars = useStars(m.channel_id).data || [];
@@ -292,12 +296,16 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
             {m.reply_count} repl{m.reply_count === 1 ? "y" : "ies"} →
           </button>
         )}
-        {/* A named thread tells its roots apart when the text cannot — a channel
-            of identical "/new ~/project" roots is otherwise unreadable. Last in
-            the foot and pushed right by margin-left:auto, so it lands in the
-            bubble's bottom-right corner and never crowds the message body. */}
-        {!inThread && !!m.reply_count && !!m.alias?.trim() && (
-          <span className="ago-thread-alias" title={m.alias.trim()}>{m.alias.trim()}</span>
+        {/* The name distinguishes roots with identical text, while the latest
+            reply stays directly below it. Both occupy the right footer slot. */}
+        {!inThread && !!m.reply_count && (!!m.alias?.trim() || lastReplyTs !== undefined) && (
+          <span className="ago-thread-meta">
+            {!!m.alias?.trim() && <span className="ago-thread-alias" title={m.alias.trim()}>{m.alias.trim()}</span>}
+            {lastReplyTs !== undefined && <time className="ago-last-reply" dateTime={new Date(lastReplyTs * 1000).toISOString()}>
+              <span aria-hidden="true" title={fmtLastReplyFull(lastReplyTs)}>Last reply at {fmtLastReply(lastReplyTs)}</span>
+              <span className="ago-sr-only">Last reply at {fmtLastReplyFull(lastReplyTs)}</span>
+            </time>}
+          </span>
         )}
       </div>
     </div>

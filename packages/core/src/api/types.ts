@@ -355,6 +355,8 @@ export interface Message {
   meta?: MessageMeta | null;
   /* Top-level pages only. */
   reply_count?: number;
+  /* Top-level pages, root fetches, and pins when the thread has replies. */
+  last_reply_ts?: number;
   /* Thread roots only: a user-chosen display name, else null. */
   alias?: string | null;
 }
@@ -595,6 +597,9 @@ export interface MessageDeleteEvent {
   channel_id: string;
   message_id: number;
   thread_id: number | null;
+  /** Authoritative remaining reply stats on newer servers. */
+  reply_count?: number | null;
+  last_reply_ts?: number | null;
 }
 
 /** Shared history was cleared. A null thread_id clears the whole channel;

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
+import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, bumpReplyCount, dropReplyCount, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
 import { flattenMessages } from "../src/api/queries";
 import { keys } from "../src/api/keys";
 import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
@@ -15,6 +15,18 @@ const msg = (id: number, text = `m${id}`): Message =>
 
 const pages = (...ids: number[][]): MessagePages =>
   ({ pages: ids.map(p => p.map(id => msg(id))), pageParams: ids.map(() => undefined) });
+
+it("keeps a page set's identity when a deleted reply's root is absent", () => {
+  const data = pages([1, 2]);
+  expect(dropReplyCount(data, {
+    type: "message_delete", channel_id: "c1", message_id: 9, thread_id: 5,
+  })).toBe(data);
+});
+
+it("keeps a page set's identity when a new reply's root is absent", () => {
+  const data = pages([1, 2]);
+  expect(bumpReplyCount(data, { ...msg(9), thread_id: 5 })).toBe(data);
+});
 
 describe("appendMessage", () => {
   it("appends to the newest page (pages[0], newest-last)", () => {
@@ -174,23 +186,28 @@ describe("applyMessageClear", () => {
     expect(qc.getQueryData<ThreadRow[]>(keys.threads)?.map(row => row.channel_id)).toEqual(["c2"]);
   });
 
-  it("clears replies and resets the surviving root's reply count", () => {
+  it("clears replies and resets the surviving root's reply stats in every cache", () => {
     const qc = new QueryClient();
-    const root = { ...msg(5), reply_count: 2 };
+    const root = { ...msg(5), reply_count: 2, last_reply_ts: 80 };
     qc.setQueryData(keys.messages("c1", null), {
       pages: [[root, msg(6)]], pageParams: [undefined],
     });
+    qc.setQueryData(keys.message(5), root);
     qc.setQueryData(keys.messages("c1", 5), {
       pages: [[{ ...msg(7), thread_id: 5 }, { ...msg(8), thread_id: 5 }]],
       pageParams: [undefined],
     });
     qc.setQueryData<ThreadRow[]>(keys.threads, [{
-      root, channel_id: "c1", reply_count: 2, unread: 2,
+      root, channel_id: "c1", reply_count: 2, last_reply_ts: 80, unread: 2,
     } as ThreadRow]);
     applyWsEvent(qc, { type: "message_clear", channel_id: "c1", thread_id: 5 }, { username: "me" });
     expect(flattenMessages(qc.getQueryData(keys.messages("c1", 5)))).toEqual([]);
     expect(flattenMessages(qc.getQueryData(keys.messages("c1", null)))[0].reply_count).toBe(0);
-    expect(qc.getQueryData<ThreadRow[]>(keys.threads)?.[0]).toMatchObject({ reply_count: 0, unread: 0 });
+    expect(flattenMessages(qc.getQueryData(keys.messages("c1", null)))[0].last_reply_ts).toBeUndefined();
+    expect(qc.getQueryData<Message>(keys.message(5))).toMatchObject({ reply_count: 0 });
+    expect(qc.getQueryData<Message>(keys.message(5))?.last_reply_ts).toBeUndefined();
+    expect(qc.getQueryData<ThreadRow[]>(keys.threads)?.[0]).toMatchObject({ reply_count: 0, last_reply_ts: 0, unread: 0 });
+    expect(qc.getQueryData<ThreadRow[]>(keys.threads)?.[0].root.last_reply_ts).toBeUndefined();
   });
 });
 
@@ -257,12 +274,111 @@ describe("applyWsEvent message dedupe", () => {
       channel_id: "c1",
       message_id: 7,
       thread_id: 5,
+      reply_count: 1,
+      last_reply_ts: 8,
     };
     // Mutation onSuccess, then the hub broadcast echo.
     applyMessageDelete(qc, ev);
     applyWsEvent(qc, ev, { username: "me" });
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    expect(qc.getQueryState(keys.messages("c1", null))?.isInvalidated).toBe(false);
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", 5))!.pages[0].map(m => m.id)).toEqual([8]);
+  });
+
+  it("updates the latest reply time on a new reply and accepts authoritative delete stats", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 1, last_reply_ts: 50 }]],
+      pageParams: [undefined],
+    });
+    const reply = { ...msg(11), thread_id: 5, ts: 80 };
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    const root = () => qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0];
+    expect(root()).toMatchObject({ reply_count: 2, last_reply_ts: 80 });
+    const localDelete = { type: "message_delete" as const, channel_id: "c1", message_id: 11,
+      thread_id: 5, reply_count: 1, last_reply_ts: 50 };
+    applyMessageDelete(qc, localDelete);
+    expect(root()).toMatchObject({ reply_count: 1, last_reply_ts: 50 });
+    expect(qc.getQueryState(keys.messages("c1", null))?.isInvalidated).toBe(false);
+    applyWsEvent(qc, localDelete, { username: "me" });
+    expect(root()).toMatchObject({ reply_count: 1, last_reply_ts: 50 });
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", message_id: 10,
+      thread_id: 5, reply_count: 0, last_reply_ts: null }, { username: "me" });
+    expect(root().reply_count).toBe(0);
+    expect(root().last_reply_ts).toBeUndefined();
+  });
+
+  it("ignores a late HTTP delete response after the echo and a newer reply", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2, last_reply_ts: 80 }]], pageParams: [undefined],
+    });
+    const deleted = { type: "message_delete" as const, channel_id: "c1", message_id: 8,
+      thread_id: 5, reply_count: 1, last_reply_ts: 50 };
+    applyWsEvent(qc, deleted, { username: "me" });
+    const newer = { ...msg(9), thread_id: 5, ts: 100 };
+    applyWsEvent(qc, { type: "message", message: newer }, { username: "me" });
+    applyMessageDelete(qc, deleted);
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0])
+      .toMatchObject({ reply_count: 2, last_reply_ts: 100 });
+  });
+
+  it("keeps a newer reply time when its event arrives before an older delete", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2, last_reply_ts: 80 }]], pageParams: [undefined],
+    });
+    applyWsEvent(qc, { type: "message", message: { ...msg(9), thread_id: 5, ts: 100 } }, { username: "me" });
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", message_id: 8,
+      thread_id: 5, reply_count: 1, last_reply_ts: 50 }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0])
+      .toMatchObject({ reply_count: 2, last_reply_ts: 100 });
+  });
+
+  it("keeps the cached timestamp for an old-server delete without stats", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2, last_reply_ts: 80 }]], pageParams: [undefined],
+    });
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", message_id: 8, thread_id: 5 }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0])
+      .toMatchObject({ reply_count: 1, last_reply_ts: 80 });
+  });
+
+  it("reconciles overlapping deletes when their server snapshots arrive out of order", async () => {
+    const qc = new QueryClient();
+    const key = keys.messages("c1", null);
+    qc.setQueryData(key, { pages: [[{ ...msg(5), reply_count: 3, last_reply_ts: 150 }]], pageParams: [undefined] });
+
+    // B is deleted first on the server, but C's WebSocket event arrives first.
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", message_id: 8,
+      thread_id: 5, reply_count: 1, last_reply_ts: 50 }, { username: "me" });
+    applyMessageDelete(qc, { type: "message_delete", channel_id: "c1", message_id: 7,
+      thread_id: 5, reply_count: 2, last_reply_ts: 150 });
+
+    expect(qc.getQueryData<MessagePages>(key)!.pages[0][0])
+      .toMatchObject({ reply_count: 1, last_reply_ts: 150 });
+    expect(qc.getQueryState(key)?.isInvalidated).toBe(true);
+
+    await qc.fetchQuery({ queryKey: key, queryFn: async (): Promise<MessagePages> => ({
+      pages: [[{ ...msg(5), reply_count: 1, last_reply_ts: 50 }]], pageParams: [undefined],
+    }) });
+    expect(qc.getQueryData<MessagePages>(key)!.pages[0][0])
+      .toMatchObject({ reply_count: 1, last_reply_ts: 50 });
+  });
+
+  it("counts a reply event once when it follows an HTTP delete snapshot", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 1, last_reply_ts: 80 }]], pageParams: [undefined],
+    });
+    const deleted = { type: "message_delete" as const, channel_id: "c1", message_id: 8,
+      thread_id: 5, reply_count: 1, last_reply_ts: 100 };
+    applyMessageDelete(qc, deleted);
+    applyWsEvent(qc, { type: "message", message: { ...msg(9), thread_id: 5, ts: 100 } }, { username: "me" });
+    applyWsEvent(qc, deleted, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0])
+      .toMatchObject({ reply_count: 1, last_reply_ts: 100 });
   });
 
   it("separate QueryClients each apply the same message id independently", () => {
