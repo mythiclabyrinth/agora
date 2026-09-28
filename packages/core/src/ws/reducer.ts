@@ -121,15 +121,17 @@ export function dropReplyCount(
   return {
     ...data,
     pages: data.pages.map((p) =>
-      p.map((m) =>
-        m.id === ev.thread_id ? {
+      p.map((m) => {
+        if (m.id !== ev.thread_id) return m;
+        const nextCount = Math.max(0, (m.reply_count ?? 0) - 1);
+        return {
           ...m,
-          reply_count: Math.max(0, (m.reply_count ?? 0) - 1),
-          last_reply_ts: ev.reply_count != null
+          reply_count: nextCount,
+          last_reply_ts: ev.reply_count != null && nextCount <= ev.reply_count
             ? (ev.last_reply_ts ?? undefined)
             : m.last_reply_ts,
-        } : m,
-      ),
+        };
+      }),
     ),
   };
 }

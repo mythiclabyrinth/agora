@@ -311,6 +311,28 @@ describe("applyWsEvent message dedupe", () => {
       .toMatchObject({ reply_count: 2, last_reply_ts: 100 });
   });
 
+  it("keeps a newer reply time when its event arrives before an older delete", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2, last_reply_ts: 80 }]], pageParams: [undefined],
+    });
+    applyWsEvent(qc, { type: "message", message: { ...msg(9), thread_id: 5, ts: 100 } }, { username: "me" });
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", message_id: 8,
+      thread_id: 5, reply_count: 1, last_reply_ts: 50 }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0])
+      .toMatchObject({ reply_count: 2, last_reply_ts: 100 });
+  });
+
+  it("keeps the cached timestamp for an old-server delete without stats", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 2, last_reply_ts: 80 }]], pageParams: [undefined],
+    });
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", message_id: 8, thread_id: 5 }, { username: "me" });
+    expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0])
+      .toMatchObject({ reply_count: 1, last_reply_ts: 80 });
+  });
+
   it("counts a reply event once when it follows an HTTP delete snapshot", () => {
     const qc = new QueryClient();
     qc.setQueryData(keys.messages("c1", null), {
