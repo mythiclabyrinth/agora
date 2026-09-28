@@ -144,6 +144,7 @@ export function bumpReplyCount(
   reply: Message,
 ): MessagePages | undefined {
   if (!data) return undefined;
+  if (!data.pages.some((p) => p.some((m) => m.id === reply.thread_id))) return data;
   return {
     ...data,
     pages: data.pages.map((p) =>
@@ -290,10 +291,16 @@ export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): voi
     // the first to keep later reply events intact.
     const firstDelete = claimId(deletedMessageIds, qc, ev.message_id);
     if (firstDelete) {
-      qc.setQueryData<MessagePages>(
+      const next = qc.setQueryData<MessagePages>(
         keys.messages(ev.channel_id, null),
         (data) => dropReplyCount(data, ev),
       );
+      const root = next?.pages.flat().find((m) => m.id === ev.thread_id);
+      // A divergent server snapshot can be older or newer than the cached
+      // event stream; refetch to resolve concurrent replies and deletes.
+      if (root && ev.reply_count != null && root.reply_count !== ev.reply_count) {
+        void qc.invalidateQueries({ queryKey: keys.messages(ev.channel_id, null) });
+      }
     }
   } else {
     qc.removeQueries({ queryKey: keys.messages(ev.channel_id, ev.message_id) });
