@@ -208,7 +208,8 @@ session. The thread keeps its folder, model, sandbox, TL;DR setting, and
 worktree path, then continues independently. This requires Codex CLI 0.157 or
 newer for `codex exec fork`. It sees main-chat turns completed
 before the fork, including turns after the thread root; a busy main session
-finishes first. Both conversations share project files. Use `/worktree <repo>`
+finishes first. Each arriving message waits up to 90 seconds, capped at 180 seconds
+from the first message in that thread. Both conversations share project files. Use `/worktree <repo>`
 in the thread for a separate folder while keeping the forked session after the
 thread's first turn finishes. During that first turn, `/worktree` starts a fresh
 session in the new folder. `/use` and

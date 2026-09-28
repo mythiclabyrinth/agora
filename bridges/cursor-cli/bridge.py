@@ -246,7 +246,7 @@ HELP = """Bridge commands (anything else is sent to the bound Cursor session):
 /use <n | session-id> - bind this channel/thread to a session
 /new <dir> - bind to a fresh session in a directory (must be under an allowed root)
 /worktree <repo> [branch] - isolate this thread in a fresh git worktree + branch
-/worktree [show] - show this thread's worktree; /worktree remove [force] - delete it
+/worktree [show] - show this thread's worktree; /worktree remove [shared|force] - delete it
 /worktrees - list every tracked worktree
 /models - list models available to your Cursor account
 /model <alias|id|default> - set the model for this channel (aliases: grok, opus, sonnet, fable, sol, luna, terra, composer, kimi)
@@ -1278,7 +1278,7 @@ class Bridge:
         others = [other for other, binding in self.bindings.items()
                   if other != key and isinstance(binding, dict)
                   and (binding.get("worktree") or {}).get("path") == wt["path"]]
-        if others and not (force or shared):
+        if others:
             channel = key.split(":", 1)[0]
             same_threads = sum(other.split(":", 1)[0] == channel and other != channel
                                for other in others)
@@ -1292,8 +1292,10 @@ class Bridge:
             if other_channels:
                 names.append("another channel" if other_channels == 1
                              else f"{other_channels} conversations in other channels")
-            return (f"This worktree is shared with {', '.join(names)}; "
-                    "move those conversations with /worktree or /new, or use /worktree remove shared to move them back safely.")
+            moved_names = ", ".join(names)
+            if not (force or shared):
+                return (f"This worktree is shared with {moved_names}; "
+                        "move those conversations with /worktree or /new, or use /worktree remove shared to move them back safely.")
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
         if any(other in self.busy for other in others):
@@ -1329,8 +1331,9 @@ class Bridge:
             self._set_binding(other, None, str(base))
         self._set_binding(key, None, str(base))  # rebind to the base repo, fresh session
         log(f"worktree remove: {path} (branch {branch})")
+        moved = f"\nAlso moved {moved_names} back to {base} with fresh sessions." if others else ""
         warning = "\nForce removal may have discarded uncommitted changes and an unmerged branch." if force else ""
-        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}.{warning}"
+        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}.{moved}{warning}"
 
     def _cmd_worktree(self, key: str, arg: str) -> str:
         sub, _, rest = arg.partition(" ")
@@ -1570,10 +1573,13 @@ class Bridge:
         main_key = frame["channel_id"]
         if not (self.bindings.get(main_key) or {}).get("session_id"):
             return True
+        now = time.monotonic()
         wait = self.thread_fork_locks.setdefault(
-            key, {"lock": asyncio.Lock(), "deadline": None, "waiting": 0})
-        arrival_deadline = time.monotonic() + FORK_WAIT_SECONDS
-        wait["deadline"] = max(wait["deadline"] or arrival_deadline, arrival_deadline)
+            key, {"lock": asyncio.Lock(), "deadline": None, "started": now, "waiting": 0})
+        arrival_deadline = now + FORK_WAIT_SECONDS
+        wait["deadline"] = min(
+            wait["started"] + FORK_WAIT_SECONDS * 2,
+            max(wait["deadline"] or arrival_deadline, arrival_deadline))
         wait["waiting"] += 1
         lock = wait["lock"]
         self.set_reaction(frame, "👀")
@@ -1740,7 +1746,7 @@ class Bridge:
                         batch_text = self._flush_context(key, batch_text)
                     is_fork = bool(binding.get("_cursor_copy") or "_fork_context" in binding)
                     original_text = batch_text
-                    if is_fork:
+                    if is_fork and not original_text.lstrip().startswith("/"):
                         history = binding.get("_fork_context")
                         if history:
                             batch_text = _main_history_context(history) + batch_text
@@ -1766,9 +1772,11 @@ class Bridge:
                             copied_session_id = None  # _seed_thread_from_history removed that copy
                             if self.bindings.get(key) is not binding:
                                 raise RuntimeError("thread binding changed while fetching history")
-                            retry_text = (_main_history_context(history)
-                                          + original_text
-                                          + "\n\n[This is a new thread about the root message above.]")
+                            retry_text = original_text
+                            if not original_text.lstrip().startswith("/"):
+                                retry_text = (_main_history_context(history)
+                                              + original_text
+                                              + "\n\n[This is a new thread about the root message above.]")
                             reply = await self.run_agent(key, batch_frame, binding, retry_text)
                         except RunStopped:
                             raise

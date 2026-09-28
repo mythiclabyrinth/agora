@@ -555,7 +555,7 @@ HELP = """Bridge commands (plain text + other Claude slash cmds are forwarded):
 /use <n | session-id> - bind this channel/thread to a session
 /new <dir> - bind to a fresh session in a directory (must be under an allowed root)
 /worktree <repo> [branch] - isolate this thread in a fresh git worktree + branch
-/worktree [show] - show this thread's worktree; /worktree remove [force] - delete it
+/worktree [show] - show this thread's worktree; /worktree remove [shared|force] - delete it
 /worktrees - list every tracked worktree
 /model <opus|sonnet|haiku|fable|…|default> - set the model for this channel
 /permissions <plan|acceptEdits|bypass|default|reset> - set the permission mode
@@ -1777,7 +1777,7 @@ class Bridge:
         others = [other for other, binding in self.bindings.items()
                   if other != key and isinstance(binding, dict)
                   and (binding.get("worktree") or {}).get("path") == wt["path"]]
-        if others and not (force or shared):
+        if others:
             channel = key.split(":", 1)[0]
             same_threads = sum(other.split(":", 1)[0] == channel and other != channel
                                for other in others)
@@ -1791,8 +1791,10 @@ class Bridge:
             if other_channels:
                 names.append("another channel" if other_channels == 1
                              else f"{other_channels} conversations in other channels")
-            return (f"This worktree is shared with {', '.join(names)}; "
-                    "move those conversations with /worktree or /new, or use /worktree remove shared to move them back safely.")
+            moved_names = ", ".join(names)
+            if not (force or shared):
+                return (f"This worktree is shared with {moved_names}; "
+                        "move those conversations with /worktree or /new, or use /worktree remove shared to move them back safely.")
         # `busy` used to mean "a child is running here", but a child held for
         # background work has no in-flight turn — and this worktree is still its
         # cwd. Removing it would delete the tree from under a live writer.
@@ -1834,8 +1836,9 @@ class Bridge:
             self._set_binding(other, None, str(base))
         self._set_binding(key, None, str(base))  # rebind to the base repo, fresh session
         log(f"worktree remove: {path} (branch {branch})")
+        moved = f"\nAlso moved {moved_names} back to {base} with fresh sessions." if others else ""
         warning = "\nForce removal may have discarded uncommitted changes and an unmerged branch." if force else ""
-        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}.{warning}"
+        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}.{moved}{warning}"
 
     def _cmd_worktree(self, key: str, arg: str) -> str:
         sub, _, rest = arg.partition(" ")
@@ -2148,10 +2151,13 @@ class Bridge:
         main_key = frame["channel_id"]
         if not (self.bindings.get(main_key) or {}).get("session_id"):
             return True
+        now = time.monotonic()
         wait = self.thread_fork_locks.setdefault(
-            key, {"lock": asyncio.Lock(), "deadline": None, "waiting": 0})
-        arrival_deadline = time.monotonic() + FORK_WAIT_SECONDS
-        wait["deadline"] = max(wait["deadline"] or arrival_deadline, arrival_deadline)
+            key, {"lock": asyncio.Lock(), "deadline": None, "started": now, "waiting": 0})
+        arrival_deadline = now + FORK_WAIT_SECONDS
+        wait["deadline"] = min(
+            wait["started"] + FORK_WAIT_SECONDS * 2,
+            max(wait["deadline"] or arrival_deadline, arrival_deadline))
         wait["waiting"] += 1
         lock = wait["lock"]
         self.set_reaction(frame, "👀")
@@ -2299,7 +2305,7 @@ class Bridge:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
                     is_fork = bool(binding.get("_fork_source"))
-                    if is_fork:
+                    if is_fork and not batch_text.lstrip().startswith("/"):
                         batch_text += ("\n\n[This is a new thread about the root message above. "
                                        "Focus on that message; the copied session also knows later main-chat turns.]")
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)

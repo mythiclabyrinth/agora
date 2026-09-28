@@ -1609,6 +1609,95 @@ class HistoryAskTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_run_codex_marks_fork_when_cli_returns_source_id(self):
+        b = make_bridge()
+        b.codex_bin = "codex"
+        b.timeout = 30
+        b.default_sandbox = "read-only"
+        b.base_codex_args = []
+        b._resolved_model = Mock(return_value=None)
+        b._stage_attachments = Mock(return_value=("prompt", [], None))
+        b._prompt_suffixes = Mock(return_value="")
+        b.child_env = Mock(return_value={})
+        b.refresh_usage = AsyncMock()
+        b._save_state = Mock()
+        binding = {"cwd": "/tmp", "session_id": "source-id",
+                   "_fork_source": "source-id", "sandbox": "read-only"}
+        async def events():
+            yield b'{"type":"thread.started","thread_id":"source-id"}\n'
+            yield b'{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}\n'
+            yield b'{"type":"turn.completed"}\n'
+        proc = Mock(returncode=0, stdout=events(), stdin=Mock())
+        proc.wait = AsyncMock()
+        proc.stderr.read = AsyncMock(return_value=b"")
+        with patch.object(bridge.asyncio, "create_subprocess_exec",
+                          AsyncMock(return_value=proc)):
+            reply = asyncio.run(b.run_codex("c1:42", {"channel_id": "c1", "thread_id": 42},
+                                           binding, "prompt"))
+        self.assertEqual(reply, "answer")
+        self.assertTrue(binding["_fork_reused_source"])
+        self.assertEqual(binding["session_id"], "source-id")
+
+    def test_same_session_id_reports_unsupported_fork(self):
+        b = make_bridge()
+        del b.forward_to_codex
+        b.typing = Mock()
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old-id",
+                               "_fork_source": "old-id"}
+        async def answer(key, frame, binding, text):
+            binding["_fork_reused_source"] = True
+            return "answer"
+        b.run_codex = AsyncMock(side_effect=answer)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(b.forward_to_codex("c1:42", frame, "hello"))
+        self.assertNotIn("c1:42", b.bindings)
+        self.assertIn("didn't create a separate copy", b.post.call_args.args[1])
+        self.assertIn("reply was added to the main session", b.post.call_args.args[1])
+
+    def test_first_thread_slash_command_is_not_wrapped(self):
+        b = make_bridge()
+        del b.forward_to_codex
+        b.typing = Mock()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "main-id", "_fork_source": "main-id"}
+        async def answer(key, frame, binding, text):
+            binding["session_id"] = "copy-id"
+            binding.pop("_fork_source", None)
+            return "done"
+        b.run_codex = AsyncMock(side_effect=answer)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(b.forward_to_codex("c1:42", frame, "/compact"))
+        self.assertEqual(b.run_codex.await_args.args[3], "/compact")
+        self.assertIn("done", b.post.call_args.args[1])
+
+    def test_late_arrival_cannot_extend_wait_beyond_twice_the_limit(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        b.busy.add("c1")
+        def frame(number):
+            return {"channel_id": "c1", "thread_id": 42, "message_id": number,
+                    "text": "wait", "author": {"type": "user", "name": "Tom"}}
+        async def run():
+            first = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(1)))
+            await asyncio.sleep(0.07)
+            second = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(2)))
+            await asyncio.sleep(0.07)
+            third = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(3)))
+            await asyncio.sleep(0)
+            wait = b.thread_fork_locks["c1:42"]
+            self.assertAlmostEqual(wait["deadline"] - wait["started"], 0.2, places=2)
+            await asyncio.gather(first, second, third)
+        with patch.object(bridge, "FORK_WAIT_SECONDS", 0.1):
+            asyncio.run(run())
+        self.assertEqual(b.post.call_count, 3)
+        self.assertNotIn("c1:42", b.thread_fork_locks)
+
     def test_late_thread_reply_gets_its_own_full_wait(self):
         b = make_bridge()
         b.thread_fork_locks = {}
@@ -1673,6 +1762,7 @@ class ThreadForkTests(unittest.TestCase):
             self.assertTrue(all("--force" not in args.args and "-D" not in args.args
                                 for args in git.call_args_list))
             if calls == 4:
+                self.assertIn("Also moved a thread in this channel back to /tmp", message)
                 self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp")
                 self.assertNotIn("worktree", b.bindings["c1:42"])
             else:
@@ -1844,7 +1934,8 @@ class ThreadForkTests(unittest.TestCase):
                       "c2:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
         with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
             self.assertIn("another channel", b._remove_worktree("c1", False))
-            self.assertIn("Removed worktree", b._remove_worktree("c1", True))
+            self.assertIn("Also moved another channel back to /tmp",
+                          b._remove_worktree("c1", True))
         self.assertEqual(b.bindings["c2:42"]["cwd"], "/tmp")
         self.assertNotIn("worktree", b.bindings["c2:42"])
 

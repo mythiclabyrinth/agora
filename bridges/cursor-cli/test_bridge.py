@@ -1092,6 +1092,49 @@ class PartialStreamTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_first_thread_slash_command_is_not_wrapped(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": None, "_fork_context": "prior chat"}
+        b._save_state = Mock()
+        async def answer(key, frame, binding, text, activity=None):
+            binding["session_id"] = "new-id"
+            return "done"
+        b.run_agent = AsyncMock(side_effect=answer)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(b.forward_to_agent("c1:42", frame, "/compact"))
+        self.assertEqual(b.run_agent.await_args.args[3], "/compact")
+        self.assertIn("done", b.post.call_args.args[1])
+
+    def test_late_arrival_cannot_extend_wait_beyond_twice_the_limit(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        b.busy.add("c1")
+        def frame(number):
+            return {"channel_id": "c1", "thread_id": 42, "message_id": number,
+                    "text": "wait", "author": {"type": "user", "name": "Tom"}}
+        async def run():
+            first = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(1)))
+            await asyncio.sleep(0.07)
+            second = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(2)))
+            await asyncio.sleep(0.07)
+            third = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(3)))
+            await asyncio.sleep(0)
+            wait = b.thread_fork_locks["c1:42"]
+            self.assertAlmostEqual(wait["deadline"] - wait["started"], 0.2, places=2)
+            await asyncio.gather(first, second, third)
+        with patch.object(bridge, "FORK_WAIT_SECONDS", 0.1):
+            asyncio.run(run())
+        self.assertEqual(b.post.call_count, 3)
+        self.assertNotIn("c1:42", b.thread_fork_locks)
+
     def test_late_thread_reply_gets_its_own_full_wait(self):
         b = make_bridge()
         b.thread_fork_locks = {}
@@ -1156,6 +1199,7 @@ class ThreadForkTests(unittest.TestCase):
             self.assertTrue(all("--force" not in args.args and "-D" not in args.args
                                 for args in git.call_args_list))
             if calls == 4:
+                self.assertIn("Also moved a thread in this channel back to /tmp", message)
                 self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp")
                 self.assertNotIn("worktree", b.bindings["c1:42"])
             else:
@@ -1524,7 +1568,8 @@ class ThreadForkTests(unittest.TestCase):
                       "c2:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
         with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
             self.assertIn("another channel", b._remove_worktree("c1", False))
-            self.assertIn("Removed worktree", b._remove_worktree("c1", True))
+            self.assertIn("Also moved another channel back to /tmp",
+                          b._remove_worktree("c1", True))
         self.assertEqual(b.bindings["c2:42"]["cwd"], "/tmp")
         self.assertNotIn("worktree", b.bindings["c2:42"])
 

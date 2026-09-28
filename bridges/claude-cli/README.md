@@ -260,7 +260,8 @@ session. The thread keeps its folder, model, permissions, TL;DR setting, and
 worktree path, then continues independently. This requires a Claude CLI version
 that supports `--fork-session`. It sees main-chat turns completed
 before the fork, including turns after the thread root; a busy main session
-finishes first. Both conversations share project files. Use `/worktree <repo>`
+finishes first. Each arriving message waits up to 90 seconds, capped at 180 seconds
+from the first message in that thread. Both conversations share project files. Use `/worktree <repo>`
 in the thread for a separate folder and a fresh session there. `/use` and
 `/new` in the thread replace its binding.
 
