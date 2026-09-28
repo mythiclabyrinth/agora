@@ -2372,9 +2372,10 @@ async fn get_message(
     let user = require_user(&state, &headers, &q)?;
     let mut message = require_message_visible(&state, &user, message_id)?;
     if message["thread_id"].is_null() {
-        let (count, last_reply_ts) = state.hub.store.thread_reply_stats(message_id);
-        message["reply_count"] = json!(count);
-        if let Some(ts) = last_reply_ts { message["last_reply_ts"] = json!(ts); }
+        if let Some((count, last_reply_ts)) = state.hub.store.thread_reply_stats(message_id) {
+            message["reply_count"] = json!(count);
+            if let Some(ts) = last_reply_ts { message["last_reply_ts"] = json!(ts); }
+        }
     }
     Ok(Json(message))
 }
@@ -2953,7 +2954,7 @@ async fn delete_message(
     }
     state.hub.store.delete_message(message_id);
     let reply_stats = message["thread_id"].as_i64()
-        .map(|root_id| state.hub.store.thread_reply_stats(root_id));
+        .and_then(|root_id| state.hub.store.thread_reply_stats(root_id));
     state.hub.notify_inbound_control(
         &channel_id,
         &message,
@@ -2964,22 +2965,21 @@ async fn delete_message(
             "thread_id": message["thread_id"],
         }),
     );
-    state.hub.post_transient(
-        &channel_id,
-        json!({
-            "type": "message_delete",
-            "channel_id": channel_id,
-            "message_id": message_id,
-            "thread_id": message["thread_id"],
-            "reply_count": reply_stats.map(|(count, _)| count),
-            "last_reply_ts": reply_stats.and_then(|(_, ts)| ts),
-        }),
-    );
-    Ok(Json(json!({
-        "ok": true,
-        "reply_count": reply_stats.map(|(count, _)| count),
-        "last_reply_ts": reply_stats.and_then(|(_, ts)| ts),
-    })))
+    let mut event = json!({
+        "type": "message_delete",
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "thread_id": message["thread_id"],
+    });
+    let mut response = json!({"ok": true});
+    if let Some((count, last_reply_ts)) = reply_stats {
+        event["reply_count"] = json!(count);
+        event["last_reply_ts"] = json!(last_reply_ts);
+        response["reply_count"] = json!(count);
+        response["last_reply_ts"] = json!(last_reply_ts);
+    }
+    state.hub.post_transient(&channel_id, event);
+    Ok(Json(response))
 }
 
 /// Clear shared history without deleting its container. Agent DMs remain
@@ -7735,8 +7735,16 @@ mod tests {
         // The local mutation receives the same authoritative reply stats as
         // the broadcast, including a null timestamp after the final reply.
         let timed_root = store.add_message(&cid, "timed", "user", "ana", None, None, &[]);
+        let empty_root = get_message(State(state.clone()), Path(mid(&timed_root)), q(),
+            session_headers(&state, "ana")).await.unwrap();
+        assert_eq!(empty_root.0["reply_count"], 0);
+        assert!(empty_root.0.get("last_reply_ts").is_none());
         let early = store.add_message(&cid, "early", "user", "ana", None, Some(mid(&timed_root)), &[]);
         let late = store.add_message(&cid, "late", "user", "ana", None, Some(mid(&timed_root)), &[]);
+        let populated_root = get_message(State(state.clone()), Path(mid(&timed_root)), q(),
+            session_headers(&state, "ana")).await.unwrap();
+        assert_eq!(populated_root.0["reply_count"], 2);
+        assert_eq!(populated_root.0["last_reply_ts"], json!(early["ts"].as_f64().unwrap().max(late["ts"].as_f64().unwrap())));
         let first_delete = delete_message(State(state.clone()), Path((cid.clone(), mid(&late))),
             q(), session_headers(&state, "ana")).await.unwrap();
         assert_eq!(first_delete.0["reply_count"], 1);

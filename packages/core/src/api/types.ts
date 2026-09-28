@@ -355,7 +355,7 @@ export interface Message {
   meta?: MessageMeta | null;
   /* Top-level pages only. */
   reply_count?: number;
-  /* Top-level pages and root fetches when the thread has replies. */
+  /* Top-level pages, root fetches, and pins when the thread has replies. */
   last_reply_ts?: number;
   /* Thread roots only: a user-chosen display name, else null. */
   alias?: string | null;

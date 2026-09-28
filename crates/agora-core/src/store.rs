@@ -2613,13 +2613,13 @@ impl Store {
         .unwrap_or(0)
     }
 
-    pub fn thread_reply_stats(&self, thread_id: i64) -> (i64, Option<f64>) {
+    pub fn thread_reply_stats(&self, thread_id: i64) -> Option<(i64, Option<f64>)> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT COUNT(*), MAX(ts) FROM messages WHERE thread_id = ?1",
             params![thread_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap_or((0, None))
+        ).ok()
     }
 
     // ------------------------------------------------------------- search
@@ -4357,7 +4357,7 @@ mod tests {
         let cid = c["id"].as_str().unwrap();
         let root = s.add_message(cid, "root", "user", "tom", None, None, &[]);
         let root_id = root["id"].as_i64().unwrap();
-        assert_eq!(s.thread_reply_stats(root_id), (0, None));
+        assert_eq!(s.thread_reply_stats(root_id), Some((0, None)));
         assert!(s.messages(cid, None, None, 50)[0].get("last_reply_ts").is_none());
         let first = s.add_message(cid, "reply1", "agent", "bot", Some("Bot"), Some(root_id), &[]);
         let second = s.add_message(cid, "reply2", "user", "tom", None, Some(root_id), &[]);
@@ -4365,16 +4365,16 @@ mod tests {
         assert_eq!(top.len(), 1);
         assert_eq!(top[0]["reply_count"], 2);
         assert_eq!(top[0]["last_reply_ts"], json!(first["ts"].as_f64().unwrap().max(second["ts"].as_f64().unwrap())));
-        assert_eq!(s.thread_reply_stats(root_id), (2, top[0]["last_reply_ts"].as_f64()));
+        assert_eq!(s.thread_reply_stats(root_id), Some((2, top[0]["last_reply_ts"].as_f64())));
         s.pin_message(cid, root_id, Some("tom"));
         assert_eq!(s.channel_pins(cid)[0]["last_reply_ts"], top[0]["last_reply_ts"]);
         s.delete_message(second["id"].as_i64().unwrap());
-        assert_eq!(s.thread_reply_stats(root_id), (1, first["ts"].as_f64()));
+        assert_eq!(s.thread_reply_stats(root_id), Some((1, first["ts"].as_f64())));
         let thread = s.messages(cid, Some(root_id), None, 50);
         assert_eq!(thread.len(), 1);
         assert_eq!(s.thread_size(root_id), 1);
         s.delete_message(first["id"].as_i64().unwrap());
-        assert_eq!(s.thread_reply_stats(root_id), (0, None));
+        assert_eq!(s.thread_reply_stats(root_id), Some((0, None)));
     }
 
     #[test]

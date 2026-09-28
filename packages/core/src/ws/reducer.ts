@@ -111,8 +111,8 @@ export function removeMessage(
   return { ...data, pages: data.pages.map((p) => p.filter((m) => m.id !== messageId)) };
 }
 
-/** A reply was deleted: use server stats when available, since the remaining
-    newest reply may not be loaded in this client's thread pages. */
+/** Count a deletion once; use the server's next-latest timestamp because the
+    remaining replies may not be loaded in this client's thread pages. */
 export function dropReplyCount(
   data: MessagePages | undefined,
   ev: MessageDeleteEvent,
@@ -124,7 +124,7 @@ export function dropReplyCount(
       p.map((m) =>
         m.id === ev.thread_id ? {
           ...m,
-          reply_count: ev.reply_count ?? Math.max(0, (m.reply_count ?? 0) - 1),
+          reply_count: Math.max(0, (m.reply_count ?? 0) - 1),
           last_reply_ts: ev.reply_count != null
             ? (ev.last_reply_ts ?? undefined)
             : m.last_reply_ts,
@@ -273,20 +273,19 @@ export function applyAliasToPages(
 
 /** Scrub a deleted message from every cache that may hold it. Shared by the
     WS case and useDeleteMessage's onSuccess. removeMessage / removeQueries /
-    invalidateQueries are safe to repeat; fallback decrement is gated so the
-    mutation + WS echo don't double-decrement, while authoritative server
-    stats can still replace it. A root takes its whole thread with it
-    server-side, so its reply page set and single-message cache go too. */
+    invalidateQueries are safe to repeat; the count and timestamp update is
+    gated so a late HTTP response cannot undo a newer reply. A root takes its
+    whole thread with it server-side, so its reply page and cache go too. */
 export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): void {
   qc.setQueryData<MessagePages>(
     keys.messages(ev.channel_id, ev.thread_id),
     (data) => removeMessage(data, ev.message_id),
   );
   if (ev.thread_id != null) {
-    // An authoritative WS echo may arrive after the local mutation applied a
-    // fallback decrement, so always allow its server stats to replace that.
+    // The HTTP response and WS echo describe the same deletion. Apply only
+    // the first to keep later reply events intact.
     const firstDelete = claimId(deletedMessageIds, qc, ev.message_id);
-    if (ev.reply_count != null || firstDelete) {
+    if (firstDelete) {
       qc.setQueryData<MessagePages>(
         keys.messages(ev.channel_id, null),
         (data) => dropReplyCount(data, ev),
@@ -326,15 +325,16 @@ export function applyMessageClear(qc: QueryClient, ev: MessageClearEvent): void 
       return {
         ...data,
         pages: data.pages.map(page => page.map(message =>
-          message.id === ev.thread_id ? { ...message, reply_count: 0 } : message)),
+          message.id === ev.thread_id ? { ...message, reply_count: 0, last_reply_ts: undefined } : message)),
       };
     });
     qc.setQueryData<Message>(keys.message(ev.thread_id), root =>
-      root ? { ...root, reply_count: 0 } : root,
+      root ? { ...root, reply_count: 0, last_reply_ts: undefined } : root,
     );
     qc.setQueryData<ThreadRow[]>(keys.threads, rows => rows?.map(row =>
       row.root.id === ev.thread_id
-        ? { ...row, reply_count: 0, unread: 0, root: { ...row.root, reply_count: 0 } }
+        ? { ...row, reply_count: 0, last_reply_ts: 0, unread: 0,
+          root: { ...row.root, reply_count: 0, last_reply_ts: undefined } }
         : row),
     );
   }
