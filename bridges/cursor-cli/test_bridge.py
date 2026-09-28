@@ -1085,6 +1085,44 @@ class PartialStreamTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_stop_on_first_copied_turn_keeps_copy_without_history_retry(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b.run_agent = AsyncMock(side_effect=bridge.RunStopped())
+        b._recent_main_history = AsyncMock()
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True}
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        b.run_agent.assert_awaited_once()
+        b._recent_main_history.assert_not_awaited()
+        remove.assert_not_called()
+        self.assertEqual(b.bindings["c1:42"]["session_id"], copied_id)
+        self.assertEqual(b.post.call_args.args[1], "Stopped.")
+
+    def test_timeout_on_first_copied_turn_does_not_retry_history(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b.run_agent = AsyncMock(side_effect=RuntimeError("timed out after 30s"))
+        b._recent_main_history = AsyncMock()
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True}
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        b._recent_main_history.assert_not_awaited()
+        remove.assert_not_called()
+        self.assertEqual(b.bindings["c1:42"]["session_id"], copied_id)
+        self.assertIn("timed out", b.post.call_args.args[1])
+
     def test_disabled_history_is_not_requested(self):
         b = make_bridge()
         b.history_enabled = False
@@ -1152,8 +1190,8 @@ class ThreadForkTests(unittest.TestCase):
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("c1", b._remove_worktree("c1:42", True))
-            self.assertIn("c1:42", b._remove_worktree("c1", True))
+            self.assertIn("the main chat", b._remove_worktree("c1:42", True))
+            self.assertIn("a thread in this channel", b._remove_worktree("c1", True))
         git.assert_not_called()
 
     def test_sqlite_copy_changes_only_the_copied_agent_id(self):
@@ -1164,15 +1202,16 @@ class ThreadForkTests(unittest.TestCase):
             source.mkdir(parents=True)
             (source / "meta.json").write_text(json.dumps({"cwd": "/tmp/project"}))
             db = sqlite3.connect(source / "store.db")
+            self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
             db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
             db.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
             db.execute("INSERT INTO meta VALUES ('0', ?)",
                        (json.dumps({"agentId": source_id, "latestRootBlobId": "blob"}).encode().hex(),))
             db.execute("INSERT INTO blobs VALUES ('blob', ?)", (b"context",))
             db.commit()
-            db.close()
             with patch.object(bridge, "CURSOR_SESSIONS", root):
                 copied_id = bridge.copy_cursor_session(source_id)
+            db.close()
             copied = source.parent / copied_id
             with sqlite3.connect(copied / "store.db") as result:
                 metadata = json.loads(bytes.fromhex(result.execute(

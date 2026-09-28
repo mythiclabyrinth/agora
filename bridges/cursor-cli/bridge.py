@@ -89,6 +89,17 @@ def remove_cursor_copy(session_id: str) -> None:
     copied_id = str(uuid.UUID(session_id))
     for path in CURSOR_SESSIONS.glob(f"*/{copied_id}"):
         shutil.rmtree(path, ignore_errors=True)
+
+
+def _cursor_session_unavailable(message: str) -> bool:
+    """Retry from channel history only when Cursor cannot open the copied chat."""
+    detail = message.lower()
+    return ("session" in detail or "chat" in detail) and any(
+        phrase in detail for phrase in
+        ("not found", "no such", "invalid", "cannot resume", "could not resume",
+         "can't resume", "does not exist", "unable to load"))
+
+
 MAX_POST_CHARS = 8000
 MAX_TLDR_CHARS = 2000  # hub drops a longer tldr; pre-truncate so ours always lands
 PROGRESS_THROTTLE = 2.0  # seconds between progress frames
@@ -1256,7 +1267,9 @@ class Bridge:
         others = [other for other, binding in self.bindings.items()
                   if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
         if others:
-            return (f"This worktree is shared with {', '.join(others)}; "
+            names = ["the main chat" if other == key.split(":", 1)[0]
+                     else "a thread in this channel" for other in others]
+            return (f"This worktree is shared with {', '.join(names)}; "
                     "move those conversations with /worktree or /new before removing it.")
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
@@ -1477,7 +1490,9 @@ class Bridge:
                 author = message.get("author") or {}
                 name = author.get("name") if isinstance(author, dict) else str(author)
                 rows.append(f"{name or 'someone'}: {str(message.get('text') or '')[:1000]}")
-        return "\n".join(rows)[-12000:]
+        while rows and len("\n".join(rows)) > 12000:
+            rows.pop(0)
+        return "\n".join(rows)
 
     async def _seed_thread_from_history(self, key: str, frame: dict, binding: dict) -> str:
         history = await self._recent_main_history(frame["channel_id"])
@@ -1528,6 +1543,8 @@ class Bridge:
                 copied_id = await asyncio.to_thread(copy_cursor_session, source["session_id"])
                 if key in self.bindings or thread_id in self.deleted_thread_roots:
                     await asyncio.to_thread(remove_cursor_copy, copied_id)
+                    if thread_id in self.deleted_thread_roots:
+                        self.clear_reaction(frame)
                     return key in self.bindings
                 binding["session_id"] = copied_id
                 binding["_cursor_copy"] = True
@@ -1542,6 +1559,8 @@ class Bridge:
                     self.clear_reaction(frame)
                     return False
                 if key in self.bindings or thread_id in self.deleted_thread_roots:
+                    if thread_id in self.deleted_thread_roots:
+                        self.clear_reaction(frame)
                     return key in self.bindings
                 binding["session_id"] = None
                 binding["_fork_context"] = history
@@ -1640,12 +1659,15 @@ class Bridge:
                     copy_error = None
                     try:
                         reply = await self.run_agent(key, batch_frame, binding, batch_text)
+                    except RunStopped:
+                        raise
                     except Exception as error:
-                        if not binding.get("_cursor_copy"):
+                        if not binding.get("_cursor_copy") or not _cursor_session_unavailable(str(error)):
                             raise
                         copy_error = error
                         reply = "(agent error) copied Cursor session could not resume"
-                    if reply.startswith("(agent error)") and binding.get("_cursor_copy"):
+                    if (reply.startswith("(agent error)") and binding.get("_cursor_copy")
+                            and _cursor_session_unavailable(reply)):
                         try:
                             history = await self._seed_thread_from_history(key, batch_frame, binding)
                             if self.bindings.get(key) is not binding:
@@ -1654,12 +1676,15 @@ class Bridge:
                                           + original_text
                                           + "\n\n[This is a new thread about the root message above.]")
                             reply = await self.run_agent(key, batch_frame, binding, retry_text)
+                        except RunStopped:
+                            raise
                         except Exception as fallback_error:
                             log(f"Cursor history fallback failed after {copy_error!r}: {fallback_error!r}")
                             reply = f"(agent error) Cursor copy and history fallback failed: {fallback_error}"
                     if is_fork and self.bindings.get(key) is not binding:
                         if binding.get("_cursor_copy") and binding.get("session_id"):
                             await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+                        self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -1700,16 +1725,15 @@ class Bridge:
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped:
-                    if is_fork and self.bindings.get(key) is binding:
-                        if binding.get("_cursor_copy") and binding.get("session_id"):
-                            await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+                    if is_fork and not binding.get("_cursor_copy") and self.bindings.get(key) is binding:
                         self.bindings.pop(key, None)
                         self._save_state()
                     self.post(batch_frame, "Stopped.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
-                    if is_fork and self.bindings.get(key) is binding:
+                    if (is_fork and self.bindings.get(key) is binding
+                            and not (binding.get("_cursor_copy") and "timed out" in str(e).lower())):
                         if binding.get("_cursor_copy") and binding.get("session_id"):
                             await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
                         self.bindings.pop(key, None)

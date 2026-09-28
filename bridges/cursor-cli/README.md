@@ -106,7 +106,8 @@ All options are available through `--help`. Common environment variables:
 `AGENT_AVATAR`, `CURSOR_BIN`, `CURSOR_MODEL`,
 `CURSOR_MODE`, `CURSOR_ARGS`, `CURSOR_ALLOWED_ROOTS`,
 `CURSOR_AUTO_WORKTREE`, `CURSOR_ALLOW_FORCE`, `CURSOR_DISABLE_SANDBOX`,
-`CURSOR_TIMEOUT`, `STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`,
+`CURSOR_TIMEOUT`, `CURSOR_HISTORY` (default `1`; set to `0` or use
+`--no-history` to disable history fetches), `STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`,
 `AGORA_PEER_AGENTS`, and `AGORA_PEER_COMMANDS`. The optional loop limit requests
 this agent's relay cap; when unset it inherits the server default and is clamped
 by the server. `AGORA_PEER_COMMANDS` (empty by default) lists bridge commands,

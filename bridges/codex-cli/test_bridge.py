@@ -1698,8 +1698,8 @@ class ThreadForkTests(unittest.TestCase):
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("c1", b._remove_worktree("c1:42", True))
-            self.assertIn("c1:42", b._remove_worktree("c1", True))
+            self.assertIn("the main chat", b._remove_worktree("c1:42", True))
+            self.assertIn("a thread in this channel", b._remove_worktree("c1", True))
         git.assert_not_called()
 
     def test_fork_cli_uses_bound_folder_and_active_account_home(self):

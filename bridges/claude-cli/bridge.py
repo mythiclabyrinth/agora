@@ -1777,7 +1777,9 @@ class Bridge:
         others = [other for other, binding in self.bindings.items()
                   if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
         if others:
-            return (f"This worktree is shared with {', '.join(others)}; "
+            names = ["the main chat" if other == key.split(":", 1)[0]
+                     else "a thread in this channel" for other in others]
+            return (f"This worktree is shared with {', '.join(names)}; "
                     "move those conversations with /worktree or /new before removing it.")
         # `busy` used to mean "a child is running here", but a child held for
         # background work has no in-flight turn — and this worktree is still its
@@ -2106,9 +2108,7 @@ class Bridge:
                 return True
             self.set_reaction(frame, "👀")
             deadline = time.monotonic() + FORK_WAIT_SECONDS
-            while main_key in self.busy or (
-                (live := self.live.get(main_key)) is not None and live.alive
-            ):
+            while main_key in self.busy:
                 if thread_id in self.deleted_thread_roots:
                     self.clear_reaction(frame)
                     return False
@@ -2228,6 +2228,7 @@ class Bridge:
                                        "Focus on that message; the copied session also knows later main-chat turns.]")
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
                     if is_fork and self.bindings.get(key) is not binding:
+                        self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)

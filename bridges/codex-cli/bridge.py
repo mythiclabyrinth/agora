@@ -1673,7 +1673,9 @@ class Bridge:
         others = [other for other, binding in self.bindings.items()
                   if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
         if others:
-            return (f"This worktree is shared with {', '.join(others)}; "
+            names = ["the main chat" if other == key.split(":", 1)[0]
+                     else "a thread in this channel" for other in others]
+            return (f"This worktree is shared with {', '.join(names)}; "
                     "move those conversations with /worktree or /new before removing it.")
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
@@ -2087,6 +2089,7 @@ class Bridge:
                                        "Focus on that message; the copied session also knows later main-chat turns.]")
                     reply = await self.run_codex(key, batch_frame, binding, batch_text)
                     if is_fork and self.bindings.get(key) is not binding:
+                        self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
                         for entry in entries:
                             self.clear_reaction(entry["frame"])
                         self.active_message_ids.difference_update(active_ids)

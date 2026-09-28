@@ -2420,6 +2420,16 @@ class ThreadForkTests(unittest.TestCase):
                 b.post.assert_not_called()
                 self.assertIn("c1:42", b.context_buffer)
 
+    def test_held_background_child_does_not_delay_thread_copy(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.live["c1"] = Mock(alive=True)
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        frame = {"channel_id": "c1", "thread_id": 42,
+                 "author": {"type": "user"}}
+        self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+        self.assertEqual(b.bindings["c1:42"]["_fork_source"], "main")
+
     def test_cli_error_is_reported_before_missing_fork_id(self):
         b = make_bridge()
         del b.forward_to_claude
@@ -2456,8 +2466,8 @@ class ThreadForkTests(unittest.TestCase):
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("c1", b._remove_worktree("c1:42", True))
-            self.assertIn("c1:42", b._remove_worktree("c1", True))
+            self.assertIn("the main chat", b._remove_worktree("c1:42", True))
+            self.assertIn("a thread in this channel", b._remove_worktree("c1", True))
         git.assert_not_called()
 
     def test_first_cli_turn_uses_fork_flag_and_records_new_id(self):

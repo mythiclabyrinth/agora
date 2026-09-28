@@ -576,7 +576,8 @@ Cursor also requests recent main-channel history if its local session copy
 cannot be opened (unless `--no-history` is set). A copied thread binding is
 saved after its first successful turn, so a bridge restart can resume it.
 Both conversations use the same project files until the
-thread is moved to its own worktree. Codex keeps its session when moving;
+thread is moved to its own worktree. Codex keeps its session when moving after
+the thread's first turn finishes; moving during that turn starts a fresh session.
 Claude and Cursor start fresh sessions in the new folder.
 
 **One inbound may produce several posts.** A `post` frame stands on its own —

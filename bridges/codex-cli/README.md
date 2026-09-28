@@ -208,7 +208,9 @@ session. The thread keeps its folder, model, sandbox, TL;DR setting, and
 worktree path, then continues independently. It sees main-chat turns completed
 before the fork, including turns after the thread root; a busy main session
 finishes first. Both conversations share project files. Use `/worktree <repo>`
-in the thread for a separate folder while keeping the forked session. `/use` and
+in the thread for a separate folder while keeping the forked session after the
+thread's first turn finishes. During that first turn, `/worktree` starts a fresh
+session in the new folder. `/use` and
 `/new` in the thread replace its binding.
 
 ## Multiple accounts
