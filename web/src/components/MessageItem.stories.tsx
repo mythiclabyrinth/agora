@@ -143,7 +143,7 @@ export const NamedThreadRoot: Story = {
     const canvas = within(canvasElement);
     const label = await canvas.findByTitle("A deliberately long thread name that has to be truncated");
     await expect(label).toBeVisible();
-    await expect(canvas.findByText(/Last reply at/)).resolves.toBeVisible();
+    await expect(canvasElement.querySelector('.ago-last-reply > [aria-hidden="true"]')).toBeVisible();
     // The label belongs to the affordance row, never the message body.
     await expect(label.closest(".ago-bubble-foot")).not.toBeNull();
     await expect(canvas.getByText("83 replies →")).toBeVisible();
@@ -208,16 +208,18 @@ export const UnnamedThreadRoot: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("83 replies →")).resolves.toBeVisible();
     expect(canvasElement.querySelector(".ago-thread-alias")).toBeNull();
-    await expect(canvas.findByText(/Last reply at/)).resolves.toBeVisible();
+    await expect(canvasElement.querySelector('.ago-last-reply > [aria-hidden="true"]')).toBeVisible();
   },
 };
 
 export const OldReply: Story = {
   args: { message: { ...message, reply_count: 2, alias: "Archive", last_reply_ts: new Date(new Date().getFullYear() - 1, 8, 28, 14, 15).getTime() / 1000 } },
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).findByText(new RegExp(`Last reply at .*${new Date().getFullYear() - 1}`))).resolves.toBeVisible();
-    expect(canvasElement.querySelector(".ago-last-reply")?.getAttribute("title"))
-      .toContain(String(new Date().getFullYear() - 1));
+    const replyTime = canvasElement.querySelector(".ago-last-reply");
+    expect(replyTime?.querySelector('[aria-hidden="true"]')).toBeVisible();
+    expect(replyTime?.querySelector(".ago-sr-only")).toHaveTextContent(String(new Date().getFullYear() - 1));
+    expect(replyTime?.querySelector(".ago-sr-only")).not.toBeVisible();
+    expect(replyTime?.getAttribute("title")).toContain(String(new Date().getFullYear() - 1));
   },
 };
 

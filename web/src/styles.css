@@ -892,6 +892,10 @@ select {
   white-space: nowrap; text-align: right; color: var(--faint);
   font-size: 10px; line-height: 1.15;
 }
+.ago-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap;
+}
 /* "Load earlier messages", at the top of a log that has more history. Both
    states are one line tall so the row never changes height mid-scroll. */
 .ago-log-older {

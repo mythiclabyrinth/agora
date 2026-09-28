@@ -298,8 +298,10 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
           <span className="ago-thread-meta">
             {!!m.alias?.trim() && <span className="ago-thread-alias" title={m.alias.trim()}>{m.alias.trim()}</span>}
             {!!m.last_reply_ts && <time className="ago-last-reply" dateTime={new Date(m.last_reply_ts * 1000).toISOString()}
-              title={fmtLastReplyFull(m.last_reply_ts)}
-              aria-label={`Last reply at ${fmtLastReplyFull(m.last_reply_ts)}`}>Last reply at {fmtLastReply(m.last_reply_ts)}</time>}
+              title={fmtLastReplyFull(m.last_reply_ts)}>
+              <span aria-hidden="true">Last reply at {fmtLastReply(m.last_reply_ts)}</span>
+              <span className="ago-sr-only">Last reply at {fmtLastReplyFull(m.last_reply_ts)}</span>
+            </time>}
           </span>
         )}
       </div>
