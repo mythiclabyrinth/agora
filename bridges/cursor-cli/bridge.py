@@ -82,6 +82,13 @@ def copy_cursor_session(session_id: str) -> str:
     except Exception:
         shutil.rmtree(target, ignore_errors=True)
         raise
+
+
+def remove_cursor_copy(session_id: str) -> None:
+    """Remove only the copied session directory identified by its UUID."""
+    copied_id = str(uuid.UUID(session_id))
+    for path in CURSOR_SESSIONS.glob(f"*/{copied_id}"):
+        shutil.rmtree(path, ignore_errors=True)
 MAX_POST_CHARS = 8000
 MAX_TLDR_CHARS = 2000  # hub drops a longer tldr; pre-truncate so ours always lands
 PROGRESS_THROTTLE = 2.0  # seconds between progress frames
@@ -669,8 +676,10 @@ class Bridge:
 
     def _save_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self.state_file.write_text(json.dumps({key: value for key, value in self.bindings.items()
-                                              if "_fork_context" not in value}, indent=2))
+        self.state_file.write_text(json.dumps({
+            key: {field: item for field, item in value.items() if field != "_cursor_copy"}
+            for key, value in self.bindings.items() if "_fork_context" not in value
+        }, indent=2))
 
     # ------------------------------------------------------------ frames
 
@@ -1467,6 +1476,8 @@ class Bridge:
     async def _seed_thread_from_history(self, key: str, frame: dict, binding: dict) -> str:
         history = await self._recent_main_history(frame["channel_id"])
         if self.bindings.get(key) is binding:
+            if binding.get("_cursor_copy") and binding.get("session_id"):
+                await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
             binding["session_id"] = None
             binding.pop("_cursor_copy", None)
             binding["_fork_context"] = history
@@ -1508,8 +1519,7 @@ class Bridge:
             try:
                 copied_id = await asyncio.to_thread(copy_cursor_session, source["session_id"])
                 if key in self.bindings or thread_id in self.deleted_thread_roots:
-                    for path in CURSOR_SESSIONS.glob(f"*/{copied_id}"):
-                        shutil.rmtree(path, ignore_errors=True)
+                    await asyncio.to_thread(remove_cursor_copy, copied_id)
                     return key in self.bindings
                 binding["session_id"] = copied_id
                 binding["_cursor_copy"] = True
@@ -1608,6 +1618,7 @@ class Bridge:
                     self.active_message_ids.difference_update(active_ids)
                     entries = self._claim_pending_turns(key)
                     continue
+                is_fork = False
                 try:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
@@ -1640,6 +1651,8 @@ class Bridge:
                             log(f"Cursor history fallback failed after {copy_error!r}: {fallback_error!r}")
                             reply = f"(agent error) Cursor copy and history fallback failed: {fallback_error}"
                     if is_fork and self.bindings.get(key) is not binding:
+                        if binding.get("_cursor_copy") and binding.get("session_id"):
+                            await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -1647,6 +1660,8 @@ class Bridge:
                         continue
                     if reply.startswith("(agent error)"):
                         if is_fork and self.bindings.get(key) is binding:
+                            if binding.get("_cursor_copy") and binding.get("session_id"):
+                                await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
                             self.bindings.pop(key, None)
                             self._save_state()
                         self.post(batch_frame, reply)
@@ -1663,7 +1678,7 @@ class Bridge:
                     if not body and not attachments:
                         body = "(empty response)"
                     if is_fork and not entries[0].get("from_peer"):
-                        body += "\n\nThe thread and main chat share project files. Use /worktree <repo> here for a separate copy."
+                        body += "\n\nThe thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Cursor session there."
                     if "_fork_context" in binding and not binding.get("session_id"):
                         if self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
@@ -1676,10 +1691,20 @@ class Bridge:
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped:
+                    if is_fork and self.bindings.get(key) is binding:
+                        if binding.get("_cursor_copy") and binding.get("session_id"):
+                            await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+                        self.bindings.pop(key, None)
+                        self._save_state()
                     self.post(batch_frame, "Stopped.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
+                    if is_fork and self.bindings.get(key) is binding:
+                        if binding.get("_cursor_copy") and binding.get("session_id"):
+                            await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+                        self.bindings.pop(key, None)
+                        self._save_state()
                     log(f"agent run failed: {e!r}")
                     self.post(batch_frame, f"Cursor run failed: {e}")
                     for queued in entries:

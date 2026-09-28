@@ -2125,7 +2125,6 @@ class Bridge:
                 return True
             binding = json.loads(json.dumps(source))
             binding["_fork_source"] = source["session_id"]
-            binding["_fork_message_id"] = frame.get("message_id")
             self.bindings[key] = binding
             return True
 
@@ -2229,11 +2228,6 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    if is_fork and binding.get("_fork_source"):
-                        if self.bindings.get(key) is binding:
-                            self.bindings.pop(key, None)
-                        raise RuntimeError("Claude did not return a new fork session ID")
-                    reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(claude error)"):
                         if is_fork and self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
@@ -2243,7 +2237,19 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    notice = ("The thread and main chat share project files. Use /worktree <repo> here for a separate copy."
+                    if is_fork and binding.get("_fork_source"):
+                        if self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
+                        raise RuntimeError("Claude did not return a new fork session ID")
+                    reply = await self._serve_history_asks(key, batch_frame, binding, reply)
+                    if reply.startswith("(claude error)"):
+                        self.post(batch_frame, reply)
+                        for queued in entries:
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
+                    notice = ("The thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Claude session there."
                               if is_fork and not entries[0].get("from_peer") else None)
                     self._post_reply(batch_frame, binding, reply, notice=notice)
                     for queued in entries:
@@ -2731,7 +2737,6 @@ class Bridge:
                                     and (key not in self.bindings or self.bindings.get(key) is binding)):
                                 binding["session_id"] = new_sid
                                 binding.pop("_fork_source", None)
-                                binding.pop("_fork_message_id", None)
                                 self.bindings[key] = binding
                                 self._save_state()
                             if not text.strip():

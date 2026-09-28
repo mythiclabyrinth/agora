@@ -575,7 +575,8 @@ just says so in the channel, and one who does not gets a clean session.
 Cursor also requests recent main-channel history if its local session copy
 cannot be opened. The copied or fresh thread binding is persisted, so a bridge
 restart resumes it. Both conversations use the same project files until the
-thread is moved to its own worktree.
+thread is moved to its own worktree. Codex keeps its session when moving;
+Claude and Cursor start fresh sessions in the new folder.
 
 **One inbound may produce several posts.** A `post` frame stands on its own —
 it carries its own `channel_id`/`thread_id` and is not correlated to any

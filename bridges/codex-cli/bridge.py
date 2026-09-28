@@ -1616,7 +1616,7 @@ class Bridge:
             )
         if path.exists():
             # Idempotent: a thread re-running /worktree just rebinds to its own dir.
-            self._set_binding(key, None, str(path))
+            self._set_binding(key, (self.bindings.get(key) or {}).get("session_id"), str(path))
             self._attach_worktree(key, path, branch, repo_root)
             return f"Reusing worktree {path} (branch {branch}). Just type to start."
         try:
@@ -1631,7 +1631,7 @@ class Bridge:
             return f"git worktree add failed:\n{(r.stderr or r.stdout).strip()[:600]}"
         if path.is_relative_to(repo_root):
             _ensure_git_excluded(repo_root, ".worktrees/")
-        self._set_binding(key, None, str(path))
+        self._set_binding(key, (self.bindings.get(key) or {}).get("session_id"), str(path))
         self._attach_worktree(key, path, branch, repo_root)
         log(f"worktree add: {path} (branch {branch}) off {repo_root}")
         return (
@@ -2085,14 +2085,21 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
+                    if reply.startswith("(codex error)"):
+                        if is_fork and self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
+                        self.post(batch_frame, reply)
+                        for entry in entries:
+                            self.clear_reaction(entry["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
                     if is_fork and binding.get("_fork_source"):
                         if self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
                         raise RuntimeError("Codex did not return a new fork session ID")
                     reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(codex error)"):
-                        if is_fork and self.bindings.get(key) is binding:
-                            self.bindings.pop(key, None)
                         self.post(batch_frame, reply)
                         for entry in entries:
                             self.clear_reaction(entry["frame"])

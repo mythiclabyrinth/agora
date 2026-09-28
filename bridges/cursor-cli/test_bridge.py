@@ -1085,6 +1085,22 @@ class PartialStreamTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_worktree_starts_fresh_cursor_session(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.bindings["c1:42"] = {"cwd": "/tmp/repo", "session_id": "forked"}
+        with tempfile.TemporaryDirectory() as tmp:
+            b.allowed_roots = [Path(tmp).resolve()]
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            target = Path(tmp) / "worktree"
+            b._worktree_dir = Mock(return_value=target)
+            with patch.object(bridge, "_git_repo_root", return_value=repo), \
+                 patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+                reply = b._create_worktree("c1:42", str(repo), "branch")
+        self.assertIn("Worktree ready", reply)
+        self.assertIsNone(b.bindings["c1:42"]["session_id"])
+
     def test_shared_worktree_cannot_be_removed_from_either_binding(self):
         b = make_bridge()
         worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
@@ -1122,6 +1138,10 @@ class ThreadForkTests(unittest.TestCase):
                 metadata = json.loads(bytes.fromhex(original.execute(
                     "SELECT value FROM meta WHERE key='0'").fetchone()[0]).decode())
                 self.assertEqual(metadata["agentId"], source_id)
+            with patch.object(bridge, "CURSOR_SESSIONS", root):
+                bridge.remove_cursor_copy(copied_id)
+            self.assertFalse(copied.exists())
+            self.assertTrue(source.exists())
 
     def test_copy_failure_seeds_recent_channel_history(self):
         b = make_bridge()
@@ -1160,6 +1180,30 @@ class ThreadForkTests(unittest.TestCase):
         self.assertEqual(b.bindings["c1:42"]["session_id"], copied_id)
         self.assertEqual(b.bindings["c1"]["session_id"], source_id)
         self.assertEqual(saved["c1:42"]["session_id"], copied_id)
+        self.assertNotIn("_cursor_copy", saved["c1:42"])
+
+    def test_failed_copy_is_removed_and_error_is_posted(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b._save_state = Mock()
+        b.run_agent = AsyncMock(return_value="(agent error) invalid copied session")
+        b._recent_main_history = AsyncMock(side_effect=RuntimeError("history unavailable"))
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True}
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "chats"
+            copied = root / "workspace-hash" / copied_id
+            copied.mkdir(parents=True)
+            with patch.object(bridge, "CURSOR_SESSIONS", root):
+                asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+            self.assertFalse(copied.exists())
+        self.assertNotIn("c1:42", b.bindings)
+        self.assertIn("history unavailable", b.post.call_args.args[1])
+        b._save_state.assert_called_once()
 
 
 if __name__ == "__main__":
