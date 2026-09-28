@@ -801,7 +801,7 @@ def _result(text, **extra):
     return json.dumps(frame)
 
 
-def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0):
+def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
     """Drive the real run_claude() against a scripted stdout stream."""
     b = make_bridge()
     b.claude_bin = "claude"
@@ -832,7 +832,7 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0):
         asyncio.create_subprocess_exec = fake_exec
         try:
             return await b.run_claude(
-                "k", {"channel_id": "c1"}, {"cwd": "/tmp"}, "hi")
+                "k", {"channel_id": "c1"}, binding or {"cwd": "/tmp"}, "hi")
         finally:
             asyncio.create_subprocess_exec = original_exec
 
@@ -2368,6 +2368,370 @@ class HistoryAskTests(unittest.TestCase):
             b.send.assert_not_called()
 
         asyncio.run(run())
+
+
+class ThreadForkTests(unittest.TestCase):
+    def test_first_thread_slash_command_is_not_wrapped(self):
+        b = make_bridge()
+        del b.forward_to_claude
+        b.typing = Mock()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "main-id", "_fork_source": "main-id"}
+        async def answer(key, frame, binding, text):
+            binding["session_id"] = "copy-id"
+            binding.pop("_fork_source", None)
+            return "done"
+        b.run_claude = AsyncMock(side_effect=answer)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(b.forward_to_claude("c1:42", frame, "/compact"))
+        self.assertEqual(b.run_claude.await_args.args[3], "/compact")
+        self.assertIn("done", b.post.call_args.args[1])
+
+    def test_late_arrival_cannot_extend_wait_beyond_twice_the_limit(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        b.busy.add("c1")
+        def frame(number):
+            return {"channel_id": "c1", "thread_id": 42, "message_id": number,
+                    "text": "wait", "author": {"type": "user", "name": "Tom"}}
+        async def run():
+            first = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(1)))
+            await asyncio.sleep(0.07)
+            second = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(2)))
+            await asyncio.sleep(0.07)
+            third = asyncio.create_task(b._ensure_thread_fork("c1:42", frame(3)))
+            await asyncio.sleep(0)
+            wait = b.thread_fork_locks["c1:42"]
+            self.assertAlmostEqual(wait["deadline"] - wait["started"], 0.2, places=2)
+            await asyncio.gather(first, second, third)
+        with patch.object(bridge, "FORK_WAIT_SECONDS", 0.1):
+            asyncio.run(run())
+        self.assertEqual(b.post.call_count, 3)
+        self.assertNotIn("c1:42", b.thread_fork_locks)
+
+    def test_same_session_id_reports_unsupported_fork(self):
+        binding = {"cwd": "/tmp", "session_id": "old-id", "_fork_source": "old-id"}
+        reply, _ = run_bridge([_result("answer", session_id="old-id")], binding=binding)
+        self.assertEqual(reply, "answer")
+        self.assertTrue(binding["_fork_reused_source"])
+        self.assertEqual(binding["_fork_source"], "old-id")
+
+        b = make_bridge()
+        del b.forward_to_claude
+        b.typing = Mock()
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old-id",
+                               "_fork_source": "old-id"}
+        async def run(key, frame, current, text):
+            current["_fork_reused_source"] = True
+            return "answer"
+        b.run_claude = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(b.forward_to_claude("c1:42", frame, "hello"))
+        self.assertNotIn("c1:42", b.bindings)
+        self.assertIn("didn't create a separate copy", b.post.call_args.args[1])
+        self.assertIn("reply was added to the main session", b.post.call_args.args[1])
+        self.assertNotIn("no new session ID", b.post.call_args.args[1])
+
+    def test_late_thread_reply_gets_its_own_full_wait(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        b.busy.add("c1")
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 1,
+                 "text": "first", "author": {"type": "user", "name": "Tom"}}
+        second = {"channel_id": "c1", "thread_id": 42, "message_id": 2,
+                  "text": "second", "author": {"type": "user", "name": "Tom"}}
+        async def run():
+            first_task = asyncio.create_task(b._ensure_thread_fork("c1:42", first))
+            await asyncio.sleep(0.05)
+            second_task = asyncio.create_task(b._ensure_thread_fork("c1:42", second))
+            await asyncio.sleep(0)
+            remaining = b.thread_fork_locks["c1:42"]["deadline"] - bridge.time.monotonic()
+            self.assertGreater(remaining, 0.08)
+            return await asyncio.gather(first_task, second_task)
+        with patch.object(bridge, "FORK_WAIT_SECONDS", 0.1):
+            self.assertEqual(asyncio.run(run()), [False, False])
+        self.assertEqual(b.post.call_count, 2)
+        self.assertNotIn("c1:42", b.thread_fork_locks)
+
+    def test_concurrent_thread_replies_share_one_wait_deadline(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        b.busy.add("c1")
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 1,
+                 "text": "first", "author": {"type": "user", "name": "Tom"}}
+        second = {"channel_id": "c1", "thread_id": 42, "message_id": 2,
+                  "text": "second", "author": {"type": "user", "name": "Tom"}}
+        async def run():
+            return await asyncio.gather(
+                b._ensure_thread_fork("c1:42", first),
+                b._ensure_thread_fork("c1:42", second))
+        with patch.object(bridge, "FORK_WAIT_SECONDS", 0.01):
+            self.assertEqual(asyncio.run(run()), [False, False])
+        self.assertEqual(b.post.call_count, 2)
+        self.assertTrue(all("was not sent" in call.args[1]
+                            for call in b.post.call_args_list))
+        self.assertNotIn("c1:42", b.context_buffer)
+        self.assertNotIn("c1:42", b.thread_fork_locks)
+
+    def test_shared_removal_is_safe_and_rebinds_only_after_success(self):
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        ok = Mock(returncode=0, stdout="", stderr="")
+        for result, expected, calls in (
+            (Mock(returncode=0, stdout=" M changed.py", stderr=""), "uncommitted", 1),
+            (Mock(returncode=1, stdout="", stderr=""), "not merged", 2),
+            (ok, "Removed worktree", 4),
+        ):
+            b = make_bridge()
+            b._save_state = Mock()
+            b.bindings = {"c1": {"worktree": dict(worktree), "cwd": "/tmp/shared"},
+                          "c1:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
+            results = ([result] if calls == 1 else
+                       [ok, result] if calls == 2 else [ok, ok, ok, ok])
+            with patch.object(bridge, "_run_git", side_effect=results) as git:
+                message = b._cmd_worktree("c1", "remove shared")
+            self.assertIn(expected, message)
+            self.assertEqual(git.call_count, calls)
+            self.assertTrue(all("--force" not in args.args and "-D" not in args.args
+                                for args in git.call_args_list))
+            if calls == 4:
+                self.assertIn("Also moved a thread in this channel back to /tmp", message)
+                self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp")
+                self.assertNotIn("worktree", b.bindings["c1:42"])
+            else:
+                self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp/shared")
+
+    def test_force_removal_reply_warns_about_discarded_changes(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.bindings["c1"] = {"worktree": {"path": "/tmp/worktree",
+                                        "branch": "feature", "base": "/tmp"},
+                             "cwd": "/tmp/worktree"}
+        with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+            message = b._cmd_worktree("c1", "remove force")
+        self.assertIn("discarded uncommitted changes", message)
+
+    def test_empty_reply_fallback_precedes_fork_notice(self):
+        b = make_bridge()
+        b.tldr_min_chars = 1500
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b._split_outbound_attachments = Mock(return_value=("", [], []))
+        b._split_tldr = Mock(return_value=("", None))
+        b.tldr_default = False
+        b._post_reply({"channel_id": "c1"}, {"cwd": "/tmp"}, "",
+                      notice="shared folder")
+        self.assertEqual(b.post.call_args.args[1],
+                         "(no reply — the run ended without any text)\n\nshared folder")
+
+    def test_failed_first_copy_buffers_remaining_queue(self):
+        b = make_bridge()
+        b.claim = Mock()
+        del b.forward_to_claude
+        b.typing = Mock()
+        key = "c1:42"
+        b.bindings[key] = {"cwd": "/tmp", "session_id": "main",
+                           "_fork_source": "main"}
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}, "text": "start"}
+        later = {"channel_id": "c1", "thread_id": 42, "message_id": 8,
+                 "author": {"type": "user", "name": "Tom"}, "text": "follow-up"}
+        peer = {"channel_id": "c1", "thread_id": 42, "message_id": 9,
+                "author": {"type": "agent", "name": "Peer"}, "text": "peer detail"}
+        async def run(*args):
+            b.pending_turns[key] = [
+                {"frame": later, "text": "follow-up", "from_peer": False, "queued": True},
+                {"frame": peer, "text": "peer detail", "from_peer": True, "queued": True},
+            ]
+            return "(claude error) copy unavailable"
+        b.run_claude = AsyncMock(side_effect=run)
+        asyncio.run(b.forward_to_claude(key, first, "start"))
+        self.assertEqual(b.post.call_count, 1)
+        self.assertIn("Resend", b.post.call_args.args[1])
+        self.assertNotIn("No session bound", b.post.call_args.args[1])
+        self.assertIn("Tom: follow-up", b.context_buffer[key])
+        self.assertIn("Peer: peer detail", b.context_buffer[key])
+        self.assertNotIn(key, b.pending_turns)
+
+    def test_attachment_only_notice_does_not_create_tldr(self):
+        b = make_bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b._split_outbound_attachments = Mock(return_value=("", [{"path": "/tmp/file"}], []))
+        b._split_tldr = Mock(return_value=("", "summary"))
+        b.tldr_default = True
+        b.tldr_min_chars = 0
+        b._post_reply({"channel_id": "c1"}, {"cwd": "/tmp"}, "attached",
+                      notice="shared folder")
+        self.assertEqual(b.post.call_args.args[1], "shared folder")
+        self.assertIsNone(b.post.call_args.args[2])
+
+    def test_answer_without_new_id_is_posted_with_warning(self):
+        b = make_bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        del b.forward_to_claude
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old",
+                               "_fork_source": "old"}
+        b.typing = Mock()
+        b.run_claude = AsyncMock(return_value="useful answer")
+        b._split_outbound_attachments = Mock(return_value=("useful answer", [], []))
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        asyncio.run(b.forward_to_claude("c1:42", frame, "hello"))
+        self.assertIn("useful answer", b.post.call_args.args[1])
+        self.assertIn("was not saved", b.post.call_args.args[1])
+        self.assertNotIn("c1:42", b.bindings)
+
+    def test_busy_main_timeout_reports_unsent_human_and_buffers_peer(self):
+        for author_type in ("user", "agent"):
+            b = make_bridge()
+            b.thread_fork_locks = {}
+            b.timeout = 1800
+            b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+            b.busy.add("c1")
+            frame = {"channel_id": "c1", "thread_id": 42, "text": "hello",
+                     "author": {"type": author_type, "name": "Sender"}}
+            with patch.object(bridge, "FORK_WAIT_SECONDS", 0):
+                self.assertFalse(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+            if author_type == "user":
+                self.assertIn("was not sent", b.post.call_args.args[1])
+            else:
+                b.post.assert_not_called()
+                self.assertIn("c1:42", b.context_buffer)
+
+    def test_held_background_child_does_not_delay_thread_copy(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.live["c1"] = Mock(alive=True)
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        frame = {"channel_id": "c1", "thread_id": 42,
+                 "author": {"type": "user"}}
+        self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+        self.assertEqual(b.bindings["c1:42"]["_fork_source"], "main")
+
+    def test_account_switch_clears_pending_fork_source(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.listings = {}
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old-session",
+                               "_fork_source": "old-session"}
+        self.assertEqual(b._drop_bound_sessions(), 1)
+        self.assertIsNone(b.bindings["c1:42"]["session_id"])
+        self.assertNotIn("_fork_source", b.bindings["c1:42"])
+
+    def test_cli_error_is_reported_before_missing_fork_id(self):
+        b = make_bridge()
+        del b.forward_to_claude
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old",
+                               "_fork_source": "old"}
+        b.typing = Mock()
+        b.run_claude = AsyncMock(return_value="(claude error) Not logged in")
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        asyncio.run(b.forward_to_claude("c1:42", frame, "hello"))
+        self.assertIn("Not logged in", b.post.call_args.args[1])
+        self.assertNotIn("did not return", b.post.call_args.args[1])
+        self.assertNotIn("c1:42", b.bindings)
+
+    def test_worktree_starts_fresh_claude_session(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.bindings["c1:42"] = {"cwd": "/tmp/repo", "session_id": "forked"}
+        with tempfile.TemporaryDirectory() as tmp:
+            b.allowed_roots = [Path(tmp).resolve()]
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            target = Path(tmp) / "worktree"
+            b._worktree_dir = Mock(return_value=target)
+            with patch.object(bridge, "_git_repo_root", return_value=repo), \
+                 patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+                reply = b._create_worktree("c1:42", str(repo), "branch")
+        self.assertIn("Worktree ready", reply)
+        self.assertIsNone(b.bindings["c1:42"]["session_id"])
+
+    def test_shared_worktree_cannot_be_removed_from_either_binding(self):
+        b = make_bridge()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {"c1": {"worktree": worktree},
+                      "c1:42": {"worktree": dict(worktree)}}
+        with patch.object(bridge, "_run_git") as git:
+            self.assertIn("the main chat", b._remove_worktree("c1:42", False))
+            self.assertIn("a thread in this channel", b._remove_worktree("c1", False))
+        git.assert_not_called()
+
+    def test_force_removal_rebinds_other_conversations(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {"c1": {"worktree": worktree, "cwd": "/tmp/shared"},
+                      "c2:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
+        with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+            self.assertIn("another channel", b._remove_worktree("c1", False))
+            self.assertIn("Also moved another channel back to /tmp",
+                          b._remove_worktree("c1", True))
+        self.assertEqual(b.bindings["c2:42"]["cwd"], "/tmp")
+        self.assertNotIn("worktree", b.bindings["c2:42"])
+
+    def test_first_cli_turn_uses_fork_flag_and_records_new_id(self):
+        binding = {"cwd": "/tmp", "session_id": "old-id", "_fork_source": "old-id"}
+        reply, b = run_bridge([_result("copied")], binding=binding)
+        self.assertEqual(reply, "copied")
+        argv, opts = b.spawn_calls[0]
+        self.assertIn("--fork-session", argv)
+        self.assertEqual(argv[argv.index("--resume") + 1], "old-id")
+        self.assertEqual(opts["cwd"], "/tmp")
+        self.assertEqual(binding["session_id"], "sess-1")
+        self.assertNotIn("_fork_source", binding)
+
+    def test_fork_inherits_settings_without_persisting_provisional_binding(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.timeout = 1
+        b.bindings["c1"] = {"session_id": "main-id", "cwd": "/tmp/project",
+                            "model": "opus", "permission_mode": "plan", "tldr": True,
+                            "worktree": {"path": "/tmp/project", "branch": "feature", "base": "/tmp"}}
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 100,
+                 "author": {"type": "user"}}
+        self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+        child = b.bindings["c1:42"]
+        self.assertEqual(child["_fork_source"], "main-id")
+        self.assertEqual(child["cwd"], "/tmp/project")
+        self.assertEqual(child["permission_mode"], "plan")
+        child["worktree"]["branch"] = "other"
+        self.assertEqual(b.bindings["c1"]["worktree"]["branch"], "feature")
+        with tempfile.TemporaryDirectory() as tmp:
+            b.state_file = Path(tmp) / "state.json"
+            b.account = b._saved_account = "default"
+            b._account_state_valid = True
+            b.accounts = {"default": Path(tmp)}
+            b._previous_config_dir = Path(tmp)
+            b._save_state()
+            self.assertNotIn("c1:42", json.loads(b.state_file.read_text())["bindings"])
+
+    def test_deleted_root_cancels_fork_while_main_is_busy(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.timeout = 1
+        b.bindings["c1"] = {"session_id": "main-id", "cwd": "/tmp"}
+        b.busy.add("c1")
+        frame = {"channel_id": "c1", "thread_id": 42, "author": {"type": "user"}}
+
+        async def delete_root(_delay):
+            b.deleted_thread_roots[42] = None
+
+        with patch.object(bridge.asyncio, "sleep", new=delete_root):
+            self.assertFalse(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+        self.assertNotIn("c1:42", b.bindings)
 
 
 if __name__ == "__main__":

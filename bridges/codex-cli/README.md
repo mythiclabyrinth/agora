@@ -61,7 +61,7 @@ one shows at a time. Messages addressed to another agent have the
 | `/sessions [n]` | list your most recent Codex CLI sessions (from `~/.codex/sessions/`) |
 | `/use <n \| session-id>` | bind this channel/thread to a session |
 | `/new <dir>` | bind to a fresh session started in `<dir>` — **`<dir>` must be under an allowed root** (see below); disabled entirely when no roots are configured |
-| `/worktree <repo> [branch]` | isolate this thread in a fresh git worktree + branch; `/worktree [show]`, `/worktree remove [force]`, `/worktrees` work like the Claude bridge |
+| `/worktree <repo> [branch]` | isolate this conversation in a fresh git worktree + branch. It keeps the existing Codex session in the main chat or after a thread's first turn finishes; during that first turn, it starts a fresh session. `/worktree remove shared` safely moves other conversations off a shared worktree and refuses dirty or unmerged work. `/worktree remove force` discards uncommitted changes and can delete an unmerged branch. |
 | `/model <astra\|sol\|terra\|luna\|model-id\|default>` | switch this channel's model (`default` resets it to the bridge default, `sol` unless configured otherwise). A family name is resolved to the newest id of that family in the installed Codex CLI on every run, so `codex update` moves `sol` and `luna` forward. A full id such as `gpt-5.6-sol` stays pinned. Passed as `codex -m`. Astra requires Codex CLI 0.153.0 or newer. |
 | `/sandbox <read-only\|workspace-write\|workspace-git\|full\|bypass\|reset>` | set the sandbox mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CODEX_ALLOW_SANDBOX_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override) |
@@ -202,6 +202,18 @@ Bindings are per channel (and per thread), persisted in `state.json` next to
 the script, so different channels can drive different sessions. While Codex
 works, the bridge streams typing + progress lines (commands run, files edited,
 reasoning snippets) to the channel.
+
+The first ordinary reply in an unbound thread forks the channel's current
+session. The thread keeps its folder, model, sandbox, TL;DR setting, and
+worktree path, then continues independently. This requires Codex CLI 0.157 or
+newer for `codex exec fork`. It sees main-chat turns completed
+before the fork, including turns after the thread root; a busy main session
+finishes first. Each arriving message waits up to 90 seconds, capped at 180 seconds
+from the first message in that thread. Both conversations share project files. Use `/worktree <repo>`
+in the thread for a separate folder while keeping the forked session after the
+thread's first turn finishes. During that first turn, `/worktree` starts a fresh
+session in the new folder. `/use` and
+`/new` in the thread replace its binding.
 
 ## Multiple accounts
 

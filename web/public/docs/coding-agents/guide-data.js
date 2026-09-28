@@ -95,6 +95,7 @@ export const guides = {
       ["CURSOR_TLDR", "Optional", "0", "Enable short summaries by default; /tldr overrides per conversation."],
       ["CURSOR_TLDR_MIN_CHARS", "Optional", "1500", "Minimum reply length eligible for a summary."],
       ["CURSOR_TIMEOUT", "Optional", "1800", "Maximum seconds for one Cursor run."],
+      ["CURSOR_HISTORY", "Optional", "1", "Allow history fetches for a thread when its copied session cannot be opened. --no-history disables them."],
     ],
   },
   claude: {

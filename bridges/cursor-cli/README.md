@@ -50,7 +50,7 @@ computer. Keep the computer awake and the bridge running for remote access.
 | `/use <n \| session-id>` | Bind the Agora channel/thread to a session |
 | `/new <dir>` | Start a fresh session under an allowed root |
 | `/worktree <repo> [branch]` | Create and bind an isolated Git worktree |
-| `/worktree show` / `/worktree remove [force]` | Inspect or remove the thread's worktree |
+| `/worktree show` / `/worktree remove [shared\|force]` | Inspect or remove the thread's worktree. `shared` safely moves other conversations back to the base repo and refuses dirty or unmerged work; `force` discards uncommitted changes and can delete an unmerged branch. |
 | `/worktrees` | List worktrees managed by this bridge |
 | `/models` | Query the installed CLI for models available to the account |
 | `/model <alias \| id \| default>` | Store a model override; aliases: `grok`, `opus`, `sonnet`, `fable`, `sol`, `luna`, `terra`, `composer`, `kimi` |
@@ -68,6 +68,18 @@ paths are included in the prompt.
 metadata. Cursor does not document that on-disk format. Sessions created or
 observed by the bridge remain bound in `state.json` even if Cursor changes its
 listing format.
+
+The first ordinary reply in an unbound thread copies the channel's current
+session in Cursor's local chat store. The thread keeps its folder, model,
+mode, TL;DR setting, and worktree path, then continues independently. It sees
+main-chat turns completed before the copy, including turns after the thread
+root; a busy main session finishes first. Each arriving message waits up to 90
+seconds, capped at 180 seconds from the first message in that thread. Cursor does not publish a session
+copy command or storage format. If the copy fails, the bridge starts a fresh
+session with recent main-chat messages from Agora. Both conversations share
+project files. Use `/worktree <repo>` in the thread for a separate folder and
+a fresh session there. `/use` and `/new` in the thread replace its binding.
+`--no-history` disables the fallback history fetch.
 
 ## Execution safety
 
@@ -95,7 +107,8 @@ All options are available through `--help`. Common environment variables:
 `AGENT_AVATAR`, `CURSOR_BIN`, `CURSOR_MODEL`,
 `CURSOR_MODE`, `CURSOR_ARGS`, `CURSOR_ALLOWED_ROOTS`,
 `CURSOR_AUTO_WORKTREE`, `CURSOR_ALLOW_FORCE`, `CURSOR_DISABLE_SANDBOX`,
-`CURSOR_TIMEOUT`, `STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`,
+`CURSOR_TIMEOUT`, `CURSOR_HISTORY` (default `1`; set to `0` or use
+`--no-history` to disable history fetches), `STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`,
 `AGORA_PEER_AGENTS`, and `AGORA_PEER_COMMANDS`. The optional loop limit requests
 this agent's relay cap; when unset it inherits the server default and is clamped
 by the server. `AGORA_PEER_COMMANDS` (empty by default) lists bridge commands,

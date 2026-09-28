@@ -225,6 +225,7 @@ MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
 MAX_QUEUED_TURNS = 20
 MAX_QUEUED_PEER_TURNS = 5
+FORK_WAIT_SECONDS = 90
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -554,7 +555,7 @@ HELP = """Bridge commands (plain text + other Claude slash cmds are forwarded):
 /use <n | session-id> - bind this channel/thread to a session
 /new <dir> - bind to a fresh session in a directory (must be under an allowed root)
 /worktree <repo> [branch] - isolate this thread in a fresh git worktree + branch
-/worktree [show] - show this thread's worktree; /worktree remove [force] - delete it
+/worktree [show] - show this thread's worktree; /worktree remove [shared|force] - delete it
 /worktrees - list every tracked worktree
 /model <opus|sonnet|haiku|fable|…|default> - set the model for this channel
 /permissions <plan|acceptEdits|bypass|default|reset> - set the permission mode
@@ -911,6 +912,7 @@ class Bridge:
         self._account_state_valid = True
         self.account_auth_problem: str | None = None
         self.busy: set[str] = set()
+        self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
@@ -1011,7 +1013,8 @@ class Bridge:
         self.state_file.write_text(json.dumps({
             "_v": 2, "account": account,
             "config_dir": str(config_dir) if config_dir is not None else None,
-            "bindings": self.bindings,
+            "bindings": {key: value for key, value in self.bindings.items()
+                         if isinstance(value, dict) and not value.get("_fork_source")},
         }, indent=2))
 
     def _resolve_account(self, name: object, saved_dir: Path | None) -> str:
@@ -1767,17 +1770,51 @@ class Bridge:
             lines.append(f"• [{k}] {wt['branch']} → {wt['path']}{missing}")
         return "\n".join(lines)
 
-    def _remove_worktree(self, key: str, force: bool) -> str:
+    def _remove_worktree(self, key: str, force: bool, shared: bool = False) -> str:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
+        others = [other for other, binding in self.bindings.items()
+                  if other != key and isinstance(binding, dict)
+                  and (binding.get("worktree") or {}).get("path") == wt["path"]]
+        if others:
+            channel = key.split(":", 1)[0]
+            same_threads = sum(other.split(":", 1)[0] == channel and other != channel
+                               for other in others)
+            other_channels = sum(other.split(":", 1)[0] != channel for other in others)
+            names = []
+            if channel in others:
+                names.append("the main chat")
+            if same_threads:
+                names.append("a thread in this channel" if same_threads == 1
+                             else f"{same_threads} threads in this channel")
+            if other_channels:
+                names.append("another channel" if other_channels == 1
+                             else f"{other_channels} conversations in other channels")
+            moved_names = ", ".join(names)
+            if not (force or shared):
+                return (f"This worktree is shared with {moved_names}; "
+                        "move those conversations with /worktree or /new, or use /worktree remove shared to move them back safely.")
         # `busy` used to mean "a child is running here", but a child held for
         # background work has no in-flight turn — and this worktree is still its
         # cwd. Removing it would delete the tree from under a live writer.
         held = self.live.get(key)
         if key in self.busy or (held is not None and held.alive):
             return "A run is in flight here — /stop it before removing the worktree."
+        if any(other in self.busy or
+               ((live := self.live.get(other)) is not None and live.alive)
+               for other in others):
+            return "Another conversation is using this worktree; stop its run before removing it."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
+        if shared and not force:
+            status = _run_git(Path(path), "status", "--porcelain")
+            if status.returncode != 0:
+                return f"Could not check worktree changes: {(status.stderr or status.stdout).strip()[:400]}"
+            if (status.stdout or "").strip():
+                return "This worktree has uncommitted changes. Commit them before /worktree remove shared."
+            merged = _run_git(base, "merge-base", "--is-ancestor", branch, "HEAD")
+            if merged.returncode != 0:
+                return "This branch is not merged into the base repo. Merge it before /worktree remove shared."
         args = ["worktree", "remove", path] + (["--force"] if force else [])
         r = _run_git(base, *args)
         if r.returncode != 0:
@@ -1795,9 +1832,13 @@ class Bridge:
             if br.returncode == 0
             else f"Kept branch {branch} — {(br.stderr or '').strip()[:140]}"
         )
+        for other in others:
+            self._set_binding(other, None, str(base))
         self._set_binding(key, None, str(base))  # rebind to the base repo, fresh session
         log(f"worktree remove: {path} (branch {branch})")
-        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}."
+        moved = f"\nAlso moved {moved_names} back to {base} with fresh sessions." if others else ""
+        warning = "\nForce removal may have discarded uncommitted changes and an unmerged branch." if force else ""
+        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}.{moved}{warning}"
 
     def _cmd_worktree(self, key: str, arg: str) -> str:
         sub, _, rest = arg.partition(" ")
@@ -1807,8 +1848,12 @@ class Bridge:
         if sub == "list":
             return self._worktree_list()
         if sub == "remove":
-            return self._remove_worktree(key, force=("force" in rest.split()
-                                                     or "--force" in rest.split()))
+            options = set(rest.split())
+            force = bool(options & {"force", "--force"})
+            shared = bool(options & {"shared", "--shared"})
+            if force and shared:
+                return "Choose /worktree remove shared or /worktree remove force, not both."
+            return self._remove_worktree(key, force=force, shared=shared)
         # Anything else is a repo path: /worktree <repo> [branch]
         repo_arg, _, branch_arg = arg.partition(" ")
         return self._create_worktree(key, repo_arg.strip(), branch_arg.strip())
@@ -1990,9 +2035,12 @@ class Bridge:
     def _drop_bound_sessions(self) -> int:
         dropped = 0
         for binding in self.bindings.values():
-            if isinstance(binding, dict) and binding.get("session_id"):
+            if not isinstance(binding, dict):
+                continue
+            if binding.get("session_id"):
                 binding["session_id"] = None
                 dropped += 1
+            binding.pop("_fork_source", None)
         self.listings.clear()
         self._save_state()
         return dropped
@@ -2085,6 +2133,79 @@ class Bridge:
 
     # ------------------------------------------------------------ claude
 
+    def _thread_fork_wait_expired(self, key: str, frame: dict, wait: dict) -> bool:
+        if frame.get("thread_id") in self.deleted_thread_roots:
+            self.clear_reaction(frame)
+            return False
+        if (frame.get("author") or {}).get("type") == "user":
+            self.post(frame, "The main session is still working. This message was not sent; resend it after the main reply finishes.")
+        else:
+            self._buffer_context(key, frame)
+        self.clear_reaction(frame)
+        return False
+
+    async def _ensure_thread_fork(self, key: str, frame: dict) -> bool:
+        thread_id = frame.get("thread_id")
+        if not thread_id or key in self.bindings:
+            return True
+        main_key = frame["channel_id"]
+        if not (self.bindings.get(main_key) or {}).get("session_id"):
+            return True
+        now = time.monotonic()
+        wait = self.thread_fork_locks.setdefault(
+            key, {"lock": asyncio.Lock(), "deadline": None, "started": now, "waiting": 0})
+        arrival_deadline = now + FORK_WAIT_SECONDS
+        wait["deadline"] = min(
+            wait["started"] + FORK_WAIT_SECONDS * 2,
+            max(wait["deadline"] or arrival_deadline, arrival_deadline))
+        wait["waiting"] += 1
+        lock = wait["lock"]
+        self.set_reaction(frame, "👀")
+        try:
+            if lock.locked():
+                await asyncio.wait_for(lock.acquire(), max(0, wait["deadline"] - time.monotonic()))
+            else:
+                await lock.acquire()
+        except TimeoutError:
+            result = self._thread_fork_wait_expired(key, frame, wait)
+            wait["waiting"] -= 1
+            if not wait["waiting"]:
+                self.thread_fork_locks.pop(key, None)
+            return result
+        except BaseException:
+            wait["waiting"] -= 1
+            if not wait["waiting"]:
+                self.thread_fork_locks.pop(key, None)
+            self.clear_reaction(frame)
+            raise
+        try:
+            if key in self.bindings:
+                return True
+            while main_key in self.busy:
+                if thread_id in self.deleted_thread_roots:
+                    self.clear_reaction(frame)
+                    return False
+                if time.monotonic() >= wait["deadline"]:
+                    return self._thread_fork_wait_expired(key, frame, wait)
+                await asyncio.sleep(0.2)
+            if thread_id in self.deleted_thread_roots:
+                self.clear_reaction(frame)
+                return False
+            if key in self.bindings:
+                return True
+            source = self.bindings.get(main_key) or {}
+            if not source.get("session_id"):
+                return True
+            binding = json.loads(json.dumps(source))
+            binding["_fork_source"] = source["session_id"]
+            self.bindings[key] = binding
+            return True
+        finally:
+            lock.release()
+            wait["waiting"] -= 1
+            if not wait["waiting"]:
+                self.thread_fork_locks.pop(key, None)
+
     async def forward_to_claude(
         self, key: str, frame: dict, text: str, from_peer: bool = False
     ) -> bool:
@@ -2098,6 +2219,8 @@ class Bridge:
         if not from_peer and self._answer_pending_question(key, frame, text):
             self.set_reaction(frame, "✅", remember=False)
             return True
+        if not await self._ensure_thread_fork(key, frame):
+            return False
         binding = self.bindings.get(key)
         if not binding:
             self.set_reaction(frame, "👀")
@@ -2146,6 +2269,7 @@ class Bridge:
         self.busy.add(key)
         self.typing(frame, True)
         entries = self._claim_pending_turns(key)
+        fork_failed = False
         try:
             while entries:
                 if key in self.stop_requested:
@@ -2156,13 +2280,21 @@ class Bridge:
                 active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}
                 self.active_message_ids.update(active_ids)
                 binding = self.bindings.get(key)
+                if binding:
+                    fork_failed = False
                 batch_frame, batch_text = self._coalesce_turns(entries)
                 for queued in entries:
                     # The hub only reorders human messages.
-                    if queued.get("queued") and not queued.get("from_peer"):
+                    if queued.get("queued") and not queued.get("from_peer") and not fork_failed:
                         self.claim(queued["frame"])
                     self.set_reaction(queued["frame"], "👀")
                 if not binding:
+                    if fork_failed:
+                        for queued in entries + self.pending_turns.pop(key, []):
+                            self._buffer_context(key, queued["frame"])
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        break
                     self.post(batch_frame, "No session bound here. Run /sessions then /use <n>.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
@@ -2172,8 +2304,45 @@ class Bridge:
                 try:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
+                    is_fork = bool(binding.get("_fork_source"))
+                    if is_fork and not batch_text.lstrip().startswith("/"):
+                        batch_text += ("\n\n[This is a new thread about the root message above. "
+                                       "Focus on that message; the copied session also knows later main-chat turns.]")
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
-                    reply = await self._serve_history_asks(key, batch_frame, binding, reply)
+                    if is_fork and self.bindings.get(key) is not binding:
+                        self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
+                        for queued in entries:
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
+                    if reply.startswith("(claude error)"):
+                        if is_fork and self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
+                            fork_failed = True
+                        self.post(batch_frame, reply + ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
+                        for queued in entries:
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
+                    if is_fork and binding.get("_fork_reused_source"):
+                        if self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
+                            fork_failed = True
+                        self.post(batch_frame, "This Claude CLI didn't create a separate copy (`--fork-session` unsupported?); the reply was added to the main session. Update the Claude CLI.")
+                        for queued in entries:
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        entries = self._claim_pending_turns(key)
+                        continue
+                    missing_fork_id = is_fork and bool(binding.get("_fork_source"))
+                    if missing_fork_id:
+                        if self.bindings.get(key) is binding:
+                            self.bindings.pop(key, None)
+                            fork_failed = True
+                    else:
+                        reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(claude error)"):
                         self.post(batch_frame, reply)
                         for queued in entries:
@@ -2181,16 +2350,28 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    self._post_reply(batch_frame, binding, reply)
+                    notice = ("Claude answered, but returned no new session ID; this thread was not saved. Resend your next message to retry the copy."
+                              if missing_fork_id else
+                              "The thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Claude session there."
+                              if is_fork and any(not entry.get("from_peer") for entry in entries) else None)
+                    self._post_reply(batch_frame, binding, reply, notice=notice)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped as stopped:
-                    self.post(batch_frame, str(stopped) or "Stopped.")
+                    if binding.get("_fork_source") and self.bindings.get(key) is binding:
+                        self.bindings.pop(key, None)
+                        fork_failed = True
+                    self.post(batch_frame, (str(stopped) or "Stopped.") +
+                              (" Thread copy failed. Resend your message to retry." if fork_failed else ""))
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
+                    if binding.get("_fork_source") and self.bindings.get(key) is binding:
+                        self.bindings.pop(key, None)
+                        fork_failed = True
                     log(f"claude run failed: {e!r}")
-                    self.post(batch_frame, f"Claude run failed: {e}")
+                    self.post(batch_frame, f"Claude run failed: {e}" +
+                              ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 self.active_message_ids.difference_update(active_ids)
@@ -2555,6 +2736,8 @@ class Bridge:
                 cmd += ["--model", model]
             if binding.get("session_id"):
                 cmd += ["--resume", binding["session_id"]]
+            if binding.get("_fork_source"):
+                cmd += ["--fork-session"]
             log(
                 f"run: session={binding.get('session_id')} cwd={binding['cwd']} "
                 f"model={model or 'default'} mode={mode}"
@@ -2657,9 +2840,13 @@ class Bridge:
                             # track it (successful runs only) so follow-ups
                             # keep continuing the same conversation.
                             new_sid = event.get("session_id")
+                            if new_sid and new_sid == binding.get("_fork_source"):
+                                binding["_fork_reused_source"] = True
                             if (new_sid and new_sid != binding.get("session_id")
                                     and (key not in self.bindings or self.bindings.get(key) is binding)):
                                 binding["session_id"] = new_sid
+                                binding.pop("_fork_source", None)
+                                binding.pop("_fork_reused_source", None)
                                 self.bindings[key] = binding
                                 self._save_state()
                             if not text.strip():
@@ -3090,7 +3277,8 @@ class Bridge:
             "pick it back up."
         ))
 
-    def _post_reply(self, frame: dict, binding: dict, reply: str) -> None:
+    def _post_reply(self, frame: dict, binding: dict, reply: str,
+                    notice: str | None = None) -> None:
         """Format a model reply the channel's way and post it."""
         # Last line of defence: a turn asking for history is served by
         # _serve_history_asks and never reaches here, but a backgrounded
@@ -3106,9 +3294,12 @@ class Bridge:
         body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
         if notices:
             body = (body + "\n\n" if body else "") + "\n".join(notices)
+        has_reply_body = bool(body)
         if not body and not attachments:
             body = "(no reply — the run ended without any text)"
-        self.post(frame, body, tldr if body else None, attachments)
+        if notice:
+            body = (body + "\n\n" if body else "") + notice
+        self.post(frame, body, tldr if has_reply_body else None, attachments)
 
     @staticmethod
     def _annotate_slash_failure(prompt: str, result: str, slash_commands: list[str]) -> str:
