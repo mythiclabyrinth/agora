@@ -216,6 +216,8 @@ export const OldReply: Story = {
   args: { message: { ...message, reply_count: 2, alias: "Archive", last_reply_ts: new Date(new Date().getFullYear() - 1, 8, 28, 14, 15).getTime() / 1000 } },
   play: async ({ canvasElement }) => {
     await expect(within(canvasElement).findByText(new RegExp(`Last reply at .*${new Date().getFullYear() - 1}`))).resolves.toBeVisible();
+    expect(canvasElement.querySelector(".ago-last-reply")?.getAttribute("title"))
+      .toContain(String(new Date().getFullYear() - 1));
   },
 };
 

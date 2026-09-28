@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
+import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, dropReplyCount, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
 import { flattenMessages } from "../src/api/queries";
 import { keys } from "../src/api/keys";
 import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
@@ -15,6 +15,13 @@ const msg = (id: number, text = `m${id}`): Message =>
 
 const pages = (...ids: number[][]): MessagePages =>
   ({ pages: ids.map(p => p.map(id => msg(id))), pageParams: ids.map(() => undefined) });
+
+it("keeps a page set's identity when a deleted reply's root is absent", () => {
+  const data = pages([1, 2]);
+  expect(dropReplyCount(data, {
+    type: "message_delete", channel_id: "c1", message_id: 9, thread_id: 5,
+  })).toBe(data);
+});
 
 describe("appendMessage", () => {
   it("appends to the newest page (pages[0], newest-last)", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtLastReply, mentionPrefix, slugify } from "../src/lib/format";
+import { fmtLastReply, fmtLastReplyFull, mentionPrefix, slugify } from "../src/lib/format";
 
 describe("fmtLastReply", () => {
   const local = (year: number, month: number, day: number, hour: number, minute: number) =>
@@ -20,6 +20,14 @@ describe("fmtLastReply", () => {
         month: "short", day: "numeric", year: "numeric",
       }),
     );
+  });
+
+  it("includes the year and time in the full accessible date", () => {
+    const ts = local(2025, 9, 28, 14, 15) / 1000;
+    expect(fmtLastReplyFull(ts)).toBe(new Date(ts * 1000).toLocaleString([], {
+      year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    }));
+    expect(fmtLastReplyFull(ts)).toContain("2025");
   });
 });
 

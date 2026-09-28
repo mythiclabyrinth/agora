@@ -118,6 +118,7 @@ export function dropReplyCount(
   ev: MessageDeleteEvent,
 ): MessagePages | undefined {
   if (!data) return undefined;
+  if (!data.pages.some((p) => p.some((m) => m.id === ev.thread_id))) return data;
   return {
     ...data,
     pages: data.pages.map((p) =>
@@ -127,6 +128,7 @@ export function dropReplyCount(
         return {
           ...m,
           reply_count: nextCount,
+          // The count is a gate only: an absolute snapshot may include a reply still in flight.
           last_reply_ts: ev.reply_count != null && nextCount <= ev.reply_count
             ? (ev.last_reply_ts ?? undefined)
             : m.last_reply_ts,

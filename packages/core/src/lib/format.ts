@@ -24,6 +24,13 @@ export function fmtLastReply(ts: number, now = Date.now()): string {
   return reply.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** Full local date and time for tooltips and accessibility labels. */
+export function fmtLastReplyFull(ts: number): string {
+  return new Date(ts * 1000).toLocaleString([], {
+    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 export function slugify(name: string): string {
   return String(name || "")
     .toLowerCase()
