@@ -1609,6 +1609,35 @@ class HistoryAskTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_failed_first_copy_buffers_remaining_queue(self):
+        b = make_bridge()
+        b.claim = Mock()
+        del b.forward_to_codex
+        b.typing = Mock()
+        key = "c1:42"
+        b.bindings[key] = {"cwd": "/tmp", "session_id": "main",
+                           "_fork_source": "main"}
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}, "text": "start"}
+        later = {"channel_id": "c1", "thread_id": 42, "message_id": 8,
+                 "author": {"type": "user", "name": "Tom"}, "text": "follow-up"}
+        peer = {"channel_id": "c1", "thread_id": 42, "message_id": 9,
+                "author": {"type": "agent", "name": "Peer"}, "text": "peer detail"}
+        async def run(*args):
+            b.pending_turns[key] = [
+                {"frame": later, "text": "follow-up", "from_peer": False, "queued": True},
+                {"frame": peer, "text": "peer detail", "from_peer": True, "queued": True},
+            ]
+            return "(codex error) copy unavailable"
+        b.run_codex = AsyncMock(side_effect=run)
+        asyncio.run(b.forward_to_codex(key, first, "start"))
+        self.assertEqual(b.post.call_count, 1)
+        self.assertIn("Resend", b.post.call_args.args[1])
+        self.assertNotIn("No session bound", b.post.call_args.args[1])
+        self.assertIn("Tom: follow-up", b.context_buffer[key])
+        self.assertIn("Peer: peer detail", b.context_buffer[key])
+        self.assertNotIn(key, b.pending_turns)
+
     def test_answer_without_new_id_is_posted_with_warning(self):
         b = make_bridge()
         b.allowed_roots = []

@@ -691,7 +691,8 @@ class Bridge:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(json.dumps({
             key: value for key, value in self.bindings.items()
-            if "_fork_context" not in value and not value.get("_cursor_copy")
+            if isinstance(value, dict) and "_fork_context" not in value
+            and not value.get("_cursor_copy")
         }, indent=2))
 
     # ------------------------------------------------------------ frames
@@ -1109,7 +1110,7 @@ class Bridge:
         """Write session/cwd while keeping per-channel execution overrides."""
         prev = self.bindings.get(key) or {}
         copied_id = prev.get("_cursor_copy_id") or prev.get("session_id")
-        if (prev.get("_cursor_copy") and copied_id and
+        if (key not in self.busy and prev.get("_cursor_copy") and copied_id and
                 (session_id != copied_id or cwd != prev.get("cwd"))):
             remove_cursor_copy(copied_id)
         binding: dict = {"session_id": session_id, "cwd": cwd}
@@ -1273,9 +1274,18 @@ class Bridge:
                   and (binding.get("worktree") or {}).get("path") == wt["path"]]
         if others and not force:
             channel = key.split(":", 1)[0]
-            names = ["another channel" if other.split(":", 1)[0] != channel
-                     else "the main chat" if other == channel
-                     else "a thread in this channel" for other in others]
+            same_threads = sum(other.split(":", 1)[0] == channel and other != channel
+                               for other in others)
+            other_channels = sum(other.split(":", 1)[0] != channel for other in others)
+            names = []
+            if channel in others:
+                names.append("the main chat")
+            if same_threads:
+                names.append("a thread in this channel" if same_threads == 1
+                             else f"{same_threads} threads in this channel")
+            if other_channels:
+                names.append("another channel" if other_channels == 1
+                             else f"{other_channels} conversations in other channels")
             return (f"This worktree is shared with {', '.join(names)}; "
                     "move those conversations with /worktree or /new, or use /worktree remove force to move them back to the base repo.")
         if key in self.busy:
@@ -1639,6 +1649,7 @@ class Bridge:
         self.busy.add(key)
         self.typing(frame, True)
         entries = self._claim_pending_turns(key)
+        fork_failed = False
         try:
             while entries:
                 if key in self.stop_requested:
@@ -1649,13 +1660,21 @@ class Bridge:
                 active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}
                 self.active_message_ids.update(active_ids)
                 binding = self.bindings.get(key)
+                if binding:
+                    fork_failed = False
                 batch_frame, batch_text = self._coalesce_turns(entries)
                 for queued in entries:
                     # The hub only reorders human messages.
-                    if queued.get("queued") and not queued.get("from_peer"):
+                    if queued.get("queued") and not queued.get("from_peer") and not fork_failed:
                         self.claim(queued["frame"])
                     self.set_reaction(queued["frame"], "👀")
                 if not binding:
+                    if fork_failed:
+                        for queued in entries + self.pending_turns.pop(key, []):
+                            self._buffer_context(key, queued["frame"])
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        break
                     self.post(batch_frame, "No session bound here. Run /sessions then /use <n>.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
@@ -1676,17 +1695,19 @@ class Bridge:
                         batch_text += ("\n\n[This is a new thread about the root message above. "
                                        "Focus on that message; the copied session also knows later main-chat turns.]")
                     copy_error = None
+                    activity = {"seen": False}
                     try:
-                        reply = await self.run_agent(key, batch_frame, binding, batch_text)
+                        reply = await self.run_agent(key, batch_frame, binding, batch_text, activity)
                     except RunStopped:
                         raise
                     except Exception as error:
-                        if not binding.get("_cursor_copy") or not _cursor_session_unavailable(str(error)):
+                        if (not binding.get("_cursor_copy") or activity["seen"]
+                                or not _cursor_session_unavailable(str(error))):
                             raise
                         copy_error = error
                         reply = "(agent error) copied Cursor session could not resume"
                     if (reply.startswith("(agent error)") and binding.get("_cursor_copy")
-                            and _cursor_session_unavailable(reply)):
+                            and not activity["seen"] and _cursor_session_unavailable(reply)):
                         try:
                             history = await self._seed_thread_from_history(
                                 key, batch_frame, binding, copied_session_id)
@@ -1716,7 +1737,8 @@ class Bridge:
                                 await asyncio.to_thread(remove_cursor_copy, copied_session_id)
                             self.bindings.pop(key, None)
                             self._save_state()
-                        self.post(batch_frame, reply)
+                            fork_failed = True
+                        self.post(batch_frame, reply + ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -1734,6 +1756,7 @@ class Bridge:
                         if self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
                             self._save_state()
+                            fork_failed = True
                         body += "\n\nCursor answered, but returned no session ID; this thread was not saved. Resend your next message to retry the copy."
                     elif is_fork:
                         if any(not entry.get("from_peer") for entry in entries):
@@ -1746,21 +1769,36 @@ class Bridge:
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped:
-                    if is_fork and not binding.get("_cursor_copy") and self.bindings.get(key) is binding:
+                    if is_fork and self.bindings.get(key) is not binding:
+                        if copied_session_id:
+                            await asyncio.to_thread(remove_cursor_copy, copied_session_id)
+                        self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
+                    elif is_fork and not binding.get("_cursor_copy") and self.bindings.get(key) is binding:
                         self.bindings.pop(key, None)
                         self._save_state()
-                    self.post(batch_frame, "Stopped.")
+                        fork_failed = True
+                        self.post(batch_frame, "Stopped. Thread copy failed. Resend your message to retry.")
+                    else:
+                        self.post(batch_frame, "Stopped.")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
-                    if (is_fork and self.bindings.get(key) is binding
+                    if is_fork and self.bindings.get(key) is not binding:
+                        if copied_session_id:
+                            await asyncio.to_thread(remove_cursor_copy, copied_session_id)
+                        self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
+                    elif (is_fork and self.bindings.get(key) is binding
                             and not (binding.get("_cursor_copy") and "timed out" in str(e).lower())):
                         if copied_session_id:
                             await asyncio.to_thread(remove_cursor_copy, copied_session_id)
                         self.bindings.pop(key, None)
                         self._save_state()
-                    log(f"agent run failed: {e!r}")
-                    self.post(batch_frame, f"Cursor run failed: {e}")
+                        fork_failed = True
+                        log(f"agent run failed: {e!r}")
+                        self.post(batch_frame, f"Cursor run failed: {e}\n\nThread copy failed. Resend your message to retry.")
+                    else:
+                        log(f"agent run failed: {e!r}")
+                        self.post(batch_frame, f"Cursor run failed: {e}")
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 self.active_message_ids.difference_update(active_ids)
@@ -1868,7 +1906,10 @@ class Bridge:
             tmpdir = None
         return prompt, extra_args, tmpdir
 
-    async def run_agent(self, key: str, frame: dict, binding: dict, text: str) -> str:
+    async def run_agent(self, key: str, frame: dict, binding: dict, text: str,
+                        activity: dict | None = None) -> str:
+        if activity is not None:
+            activity["seen"] = False
         if not self.agent_bin:
             raise RuntimeError(CURSOR_NOT_FOUND)
         prompt, extra_args, tmpdir = await asyncio.to_thread(self._stage_attachments, frame, text)
@@ -1934,6 +1975,8 @@ class Bridge:
                         except json.JSONDecodeError:
                             continue
                         kind = event.get("type")
+                        if kind in ("assistant", "tool_call") and activity is not None:
+                            activity["seen"] = True
                         new_session_id = event.get("session_id") or new_session_id
                         if kind == "assistant":
                             # `--stream-partial-output` emits every message

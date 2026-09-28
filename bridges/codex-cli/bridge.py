@@ -1014,7 +1014,7 @@ class Bridge:
         self.state_file.write_text(json.dumps(
             {"_v": 2, "account": self.account,
              "bindings": {key: value for key, value in self.bindings.items()
-                          if not value.get("_fork_source")}}, indent=2))
+                          if isinstance(value, dict) and not value.get("_fork_source")}}, indent=2))
 
     # ---------------------------------------------------------- accounts
 
@@ -1678,9 +1678,18 @@ class Bridge:
                   and (binding.get("worktree") or {}).get("path") == wt["path"]]
         if others and not force:
             channel = key.split(":", 1)[0]
-            names = ["another channel" if other.split(":", 1)[0] != channel
-                     else "the main chat" if other == channel
-                     else "a thread in this channel" for other in others]
+            same_threads = sum(other.split(":", 1)[0] == channel and other != channel
+                               for other in others)
+            other_channels = sum(other.split(":", 1)[0] != channel for other in others)
+            names = []
+            if channel in others:
+                names.append("the main chat")
+            if same_threads:
+                names.append("a thread in this channel" if same_threads == 1
+                             else f"{same_threads} threads in this channel")
+            if other_channels:
+                names.append("another channel" if other_channels == 1
+                             else f"{other_channels} conversations in other channels")
             return (f"This worktree is shared with {', '.join(names)}; "
                     "move those conversations with /worktree or /new, or use /worktree remove force to move them back to the base repo.")
         if key in self.busy:
@@ -2070,6 +2079,7 @@ class Bridge:
         self.busy.add(key)
         self.typing(frame, True)
         entries = self._claim_pending_turns(key)
+        fork_failed = False
         try:
             while entries:
                 if key in self.stop_requested:
@@ -2080,13 +2090,21 @@ class Bridge:
                 active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}
                 self.active_message_ids.update(active_ids)
                 binding = self.bindings.get(key)
+                if binding:
+                    fork_failed = False
                 batch_frame, batch_text = self._coalesce_turns(entries)
                 for entry in entries:
                     # The hub only reorders human messages.
-                    if entry.get("queued") and not entry.get("from_peer"):
+                    if entry.get("queued") and not entry.get("from_peer") and not fork_failed:
                         self.claim(entry["frame"])
                     self.set_reaction(entry["frame"], "👀")
                 if not binding:
+                    if fork_failed:
+                        for queued in entries + self.pending_turns.pop(key, []):
+                            self._buffer_context(key, queued["frame"])
+                            self.clear_reaction(queued["frame"])
+                        self.active_message_ids.difference_update(active_ids)
+                        break
                     self.post(batch_frame, "No session bound here. Run /sessions then /use <n>.")
                     for entry in entries:
                         self.clear_reaction(entry["frame"])
@@ -2111,7 +2129,8 @@ class Bridge:
                     if reply.startswith("(codex error)"):
                         if is_fork and self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
-                        self.post(batch_frame, reply)
+                            fork_failed = True
+                        self.post(batch_frame, reply + ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
                         for entry in entries:
                             self.clear_reaction(entry["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2121,6 +2140,7 @@ class Bridge:
                     if missing_fork_id:
                         if self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
+                            fork_failed = True
                     else:
                         reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(codex error)"):
@@ -2152,14 +2172,18 @@ class Bridge:
                 except RunStopped:
                     if binding.get("_fork_source") and self.bindings.get(key) is binding:
                         self.bindings.pop(key, None)
-                    self.post(batch_frame, "Stopped.")
+                        fork_failed = True
+                    self.post(batch_frame, "Stopped." +
+                              (" Thread copy failed. Resend your message to retry." if fork_failed else ""))
                     for entry in entries:
                         self.clear_reaction(entry["frame"])
                 except Exception as e:  # degrade to a chat message, never crash the drain
                     if binding.get("_fork_source") and self.bindings.get(key) is binding:
                         self.bindings.pop(key, None)
+                        fork_failed = True
                     log(f"codex run failed: {e!r}")
-                    self.post(batch_frame, f"Codex run failed: {e}")
+                    self.post(batch_frame, f"Codex run failed: {e}" +
+                              ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
                     for entry in entries:
                         self.clear_reaction(entry["frame"])
                 self.active_message_ids.difference_update(active_ids)

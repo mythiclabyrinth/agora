@@ -257,7 +257,8 @@ works, the bridge streams typing + progress lines to the channel.
 
 The first ordinary reply in an unbound thread forks the channel's current
 session. The thread keeps its folder, model, permissions, TL;DR setting, and
-worktree path, then continues independently. It sees main-chat turns completed
+worktree path, then continues independently. This requires a Claude CLI version
+that supports `--fork-session`. It sees main-chat turns completed
 before the fork, including turns after the thread root; a busy main session
 finishes first. Both conversations share project files. Use `/worktree <repo>`
 in the thread for a separate folder and a fresh session there. `/use` and

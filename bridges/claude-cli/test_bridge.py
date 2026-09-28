@@ -2371,6 +2371,48 @@ class HistoryAskTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_empty_reply_fallback_precedes_fork_notice(self):
+        b = make_bridge()
+        b.tldr_min_chars = 1500
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b._split_outbound_attachments = Mock(return_value=("", [], []))
+        b._split_tldr = Mock(return_value=("", None))
+        b.tldr_default = False
+        b._post_reply({"channel_id": "c1"}, {"cwd": "/tmp"}, "",
+                      notice="shared folder")
+        self.assertEqual(b.post.call_args.args[1],
+                         "(no reply — the run ended without any text)\n\nshared folder")
+
+    def test_failed_first_copy_buffers_remaining_queue(self):
+        b = make_bridge()
+        b.claim = Mock()
+        del b.forward_to_claude
+        b.typing = Mock()
+        key = "c1:42"
+        b.bindings[key] = {"cwd": "/tmp", "session_id": "main",
+                           "_fork_source": "main"}
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}, "text": "start"}
+        later = {"channel_id": "c1", "thread_id": 42, "message_id": 8,
+                 "author": {"type": "user", "name": "Tom"}, "text": "follow-up"}
+        peer = {"channel_id": "c1", "thread_id": 42, "message_id": 9,
+                "author": {"type": "agent", "name": "Peer"}, "text": "peer detail"}
+        async def run(*args):
+            b.pending_turns[key] = [
+                {"frame": later, "text": "follow-up", "from_peer": False, "queued": True},
+                {"frame": peer, "text": "peer detail", "from_peer": True, "queued": True},
+            ]
+            return "(claude error) copy unavailable"
+        b.run_claude = AsyncMock(side_effect=run)
+        asyncio.run(b.forward_to_claude(key, first, "start"))
+        self.assertEqual(b.post.call_count, 1)
+        self.assertIn("Resend", b.post.call_args.args[1])
+        self.assertNotIn("No session bound", b.post.call_args.args[1])
+        self.assertIn("Tom: follow-up", b.context_buffer[key])
+        self.assertIn("Peer: peer detail", b.context_buffer[key])
+        self.assertNotIn(key, b.pending_turns)
+
     def test_attachment_only_notice_does_not_create_tldr(self):
         b = make_bridge()
         b.allowed_roots = []

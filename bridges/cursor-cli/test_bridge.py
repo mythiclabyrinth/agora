@@ -577,7 +577,7 @@ class PeerBusyTests(unittest.TestCase):
         instance.max_attachment_bytes = 1024
         prompts = []
 
-        async def run(_key, _frame, _binding, prompt):
+        async def run(_key, _frame, _binding, prompt, activity=None):
             prompts.append(prompt)
             if len(prompts) == 1:
                 await instance.handle_inbound(peer_frame(message_id=42, scheduled=True))
@@ -646,7 +646,7 @@ class PeerBusyTests(unittest.TestCase):
         instance.max_attachment_bytes = 1024
         prompts = []
 
-        async def run(_key, _frame, _binding, prompt):
+        async def run(_key, _frame, _binding, prompt, activity=None):
             prompts.append(prompt)
             if len(prompts) == 1:
                 human = {"channel_id": "c1", "message_id": 41,
@@ -817,7 +817,7 @@ class PeerBusyTests(unittest.TestCase):
         instance.allowed_roots = []
         instance.max_attachment_bytes = 1024
         prompts = []
-        async def run(_key, _frame, _binding, prompt):
+        async def run(_key, _frame, _binding, prompt, activity=None):
             prompts.append(prompt)
             return "done"
         instance.run_agent = run
@@ -912,7 +912,7 @@ class OutboundAttachmentTests(unittest.TestCase):
         instance.allowed_roots = []
         instance.max_attachment_bytes = 1024
         calls = 0
-        async def run(_key, _frame, _binding, prompt):
+        async def run(_key, _frame, _binding, prompt, activity=None):
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -1019,7 +1019,7 @@ def _cursor_result(text, **extra):
     return json.dumps(frame)
 
 
-def run_cursor_stream(lines):
+def run_cursor_stream(lines, activity=None):
     """Drive the real run_agent() against a scripted stdout stream."""
     b = make_bridge()
     b.agent_bin = "agent"
@@ -1045,7 +1045,7 @@ def run_cursor_stream(lines):
         asyncio.create_subprocess_exec = fake_exec
         try:
             return await b.run_agent(
-                "k", {"channel_id": "c1"}, {"cwd": "/tmp"}, "hi")
+                "k", {"channel_id": "c1"}, {"cwd": "/tmp"}, "hi", activity)
         finally:
             asyncio.create_subprocess_exec = original_exec
 
@@ -1063,6 +1063,13 @@ class PartialStreamTests(unittest.TestCase):
             _cursor_result("hello world"),
         ])
         self.assertEqual(reply, "hello world")
+
+    def test_assistant_and_tool_events_mark_the_run_as_active(self):
+        for event in (_assistant("working"), json.dumps({"type": "tool_call"})):
+            activity = {}
+            reply, _ = run_cursor_stream([event, _cursor_result("done")], activity)
+            self.assertEqual(reply, "done")
+            self.assertTrue(activity["seen"])
 
     def test_multi_message_turn_keeps_result_ordering(self):
         reply, _ = run_cursor_stream([
@@ -1085,6 +1092,99 @@ class PartialStreamTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_cursor_error_after_agent_activity_does_not_retry_from_history(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True}
+        b._recent_main_history = AsyncMock()
+        async def run(key, frame, binding, text, activity):
+            activity["seen"] = True
+            return "(agent error) invalid copied session"
+        b.run_agent = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        with patch.object(bridge, "remove_cursor_copy"):
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        b.run_agent.assert_awaited_once()
+        b._recent_main_history.assert_not_awaited()
+        self.assertIn("invalid copied session", b.post.call_args.args[1])
+
+    def test_rebinding_during_run_defers_copy_cleanup_to_drain(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True, "_cursor_copy_id": copied_id}
+        async def run(key, frame, binding, text, activity):
+            b._set_binding(key, None, "/tmp/new")
+            return "answer from old copy"
+        b.run_agent = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        remove.assert_called_once_with(copied_id)
+        self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp/new")
+        self.assertIn("discarded", b.post.call_args.args[1])
+
+    def test_rebinding_during_failed_run_still_removes_copy(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True, "_cursor_copy_id": copied_id}
+        async def run(key, frame, binding, text, activity):
+            b._set_binding(key, None, "/tmp/new")
+            raise RuntimeError("agent failed")
+        b.run_agent = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        remove.assert_called_once_with(copied_id)
+        self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp/new")
+        self.assertIn("discarded", b.post.call_args.args[1])
+
+    def test_failed_first_copy_buffers_remaining_queue(self):
+        b = make_bridge()
+        b.claim = Mock()
+        del b.forward_to_agent
+        b.typing = Mock()
+        key = "c1:42"
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        b.bindings[key] = {"cwd": "/tmp", "session_id": copied_id,
+                           "_cursor_copy": True}
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}, "text": "start"}
+        later = {"channel_id": "c1", "thread_id": 42, "message_id": 8,
+                 "author": {"type": "user", "name": "Tom"}, "text": "follow-up"}
+        peer = {"channel_id": "c1", "thread_id": 42, "message_id": 9,
+                "author": {"type": "agent", "name": "Peer"}, "text": "peer detail"}
+        async def run(*args):
+            b.pending_turns[key] = [
+                {"frame": later, "text": "follow-up", "from_peer": False, "queued": True},
+                {"frame": peer, "text": "peer detail", "from_peer": True, "queued": True},
+            ]
+            return "(agent error) copy unavailable"
+        b.run_agent = AsyncMock(side_effect=run)
+        with patch.object(bridge, "remove_cursor_copy"):
+            asyncio.run(b.forward_to_agent(key, first, "start"))
+        self.assertEqual(b.post.call_count, 1)
+        self.assertIn("Resend", b.post.call_args.args[1])
+        self.assertNotIn("No session bound", b.post.call_args.args[1])
+        self.assertIn("Tom: follow-up", b.context_buffer[key])
+        self.assertIn("Peer: peer detail", b.context_buffer[key])
+        self.assertNotIn(key, b.pending_turns)
+
     def test_replacing_pending_copy_removes_old_session(self):
         b = make_bridge()
         b._save_state = Mock()
@@ -1116,7 +1216,7 @@ class ThreadForkTests(unittest.TestCase):
         replacement_id = str(uuid.uuid4())
         b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
                                "_cursor_copy": True}
-        async def run(key, frame, binding, prompt):
+        async def run(key, frame, binding, prompt, activity=None):
             binding["session_id"] = replacement_id
             return "(agent error) access denied"
         b.run_agent = AsyncMock(side_effect=run)
@@ -1141,7 +1241,7 @@ class ThreadForkTests(unittest.TestCase):
         copied_id = str(uuid.uuid4())
         b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
                                "_cursor_copy": True}
-        async def run(key, frame, binding, prompt):
+        async def run(key, frame, binding, prompt, activity=None):
             if binding.get("_cursor_copy"):
                 return "(agent error) invalid copied session"
             binding["session_id"] = "new-session"
@@ -1264,6 +1364,15 @@ class ThreadForkTests(unittest.TestCase):
             self.assertIn("the main chat", b._remove_worktree("c1:42", False))
             self.assertIn("a thread in this channel", b._remove_worktree("c1", False))
         git.assert_not_called()
+
+    def test_shared_worktree_message_counts_threads(self):
+        b = make_bridge()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {key: {"worktree": dict(worktree)}
+                      for key in ("c1", "c1:42", "c1:43", "c2")}
+        message = b._remove_worktree("c1", False)
+        self.assertIn("2 threads in this channel", message)
+        self.assertIn("another channel", message)
 
     def test_force_removal_rebinds_other_conversations(self):
         b = make_bridge()
