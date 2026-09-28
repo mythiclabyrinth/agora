@@ -128,7 +128,8 @@ export function dropReplyCount(
         return {
           ...m,
           reply_count: nextCount,
-          // The count is a gate only: an absolute snapshot may include a reply still in flight.
+          // Use the count as a gate only. An absolute snapshot may include a
+          // reply still in flight, or be stale-high after another delete.
           last_reply_ts: ev.reply_count != null && nextCount <= ev.reply_count
             ? (ev.last_reply_ts ?? undefined)
             : m.last_reply_ts,

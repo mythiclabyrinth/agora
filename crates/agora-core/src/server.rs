@@ -7734,6 +7734,8 @@ mod tests {
 
         // The local mutation receives the same authoritative reply stats as
         // the broadcast, including a null timestamp after the final reply.
+        let (ui_tx, mut ui_rx) = unbounded_channel();
+        state.hub.attach_socket("ana", false, ui_tx);
         let timed_root = store.add_message(&cid, "timed", "user", "ana", None, None, &[]);
         let empty_root = get_message(State(state.clone()), Path(mid(&timed_root)), q(),
             session_headers(&state, "ana")).await.unwrap();
@@ -7749,10 +7751,20 @@ mod tests {
             q(), session_headers(&state, "ana")).await.unwrap();
         assert_eq!(first_delete.0["reply_count"], 1);
         assert_eq!(first_delete.0["last_reply_ts"], early["ts"]);
+        let first_event = ui_rx.try_recv().expect("reply delete reaches UI sockets");
+        assert_eq!(first_event["type"], "message_delete");
+        assert_eq!(first_event["message_id"], late["id"]);
+        assert_eq!(first_event["reply_count"], first_delete.0["reply_count"]);
+        assert_eq!(first_event["last_reply_ts"], first_delete.0["last_reply_ts"]);
         let final_delete = delete_message(State(state.clone()), Path((cid.clone(), mid(&early))),
             q(), session_headers(&state, "ana")).await.unwrap();
         assert_eq!(final_delete.0["reply_count"], 0);
         assert!(final_delete.0["last_reply_ts"].is_null());
+        let final_event = ui_rx.try_recv().expect("final reply delete reaches UI sockets");
+        assert_eq!(final_event["type"], "message_delete");
+        assert_eq!(final_event["message_id"], early["id"]);
+        assert_eq!(final_event["reply_count"], final_delete.0["reply_count"]);
+        assert!(final_event["last_reply_ts"].is_null());
     }
 
     #[tokio::test]
