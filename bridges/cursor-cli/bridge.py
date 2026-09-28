@@ -98,6 +98,7 @@ MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
 MAX_QUEUED_TURNS = 20
 MAX_QUEUED_PEER_TURNS = 5
+FORK_WAIT_SECONDS = 90
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -612,6 +613,7 @@ class Bridge:
         self.tldr_default = args.tldr
         self.tldr_min_chars = max(0, args.tldr_min_chars)
         self.timeout = args.timeout
+        self.history_enabled = args.history
         self.sessions_limit = args.sessions
         self.allowed_roots = parse_allowed_roots(args.allowed_roots)
         self.max_attachment_bytes = args.max_file_mb * 1024 * 1024
@@ -677,8 +679,8 @@ class Bridge:
     def _save_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(json.dumps({
-            key: {field: item for field, item in value.items() if field != "_cursor_copy"}
-            for key, value in self.bindings.items() if "_fork_context" not in value
+            key: value for key, value in self.bindings.items()
+            if "_fork_context" not in value and not value.get("_cursor_copy")
         }, indent=2))
 
     # ------------------------------------------------------------ frames
@@ -1251,9 +1253,11 @@ class Bridge:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
-        if any(other != key and (binding.get("worktree") or {}).get("path") == wt["path"]
-               for other, binding in self.bindings.items()):
-            return "This worktree is shared with another conversation; move that conversation before removing it."
+        others = [other for other, binding in self.bindings.items()
+                  if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
+        if others:
+            return (f"This worktree is shared with {', '.join(others)}; "
+                    "move those conversations with /worktree or /new before removing it.")
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
@@ -1452,6 +1456,8 @@ class Bridge:
             future.set_result(frame)
 
     async def _recent_main_history(self, channel_id: str) -> str:
+        if not getattr(self, "history_enabled", True):
+            raise RuntimeError("history is disabled for this bridge")
         request_id = f"fork-hist-{time.time_ns()}"
         future = asyncio.get_running_loop().create_future()
         self.pending_history[request_id] = future
@@ -1496,14 +1502,16 @@ class Bridge:
             if key in self.bindings:
                 return True
             self.set_reaction(frame, "👀")
-            deadline = time.monotonic() + max(30, self.timeout)
+            deadline = time.monotonic() + FORK_WAIT_SECONDS
             while main_key in self.busy:
                 if thread_id in self.deleted_thread_roots:
                     self.clear_reaction(frame)
                     return False
                 if time.monotonic() >= deadline:
                     if (frame.get("author") or {}).get("type") == "user":
-                        self.post(frame, "The main session is still working. Reply again after it finishes to copy it.")
+                        self.post(frame, "The main session is still working. This message was not sent; resend it after the main reply finishes.")
+                    else:
+                        self._buffer_context(key, frame)
                     self.clear_reaction(frame)
                     return False
                 await asyncio.sleep(0.2)
@@ -1524,7 +1532,6 @@ class Bridge:
                 binding["session_id"] = copied_id
                 binding["_cursor_copy"] = True
                 self.bindings[key] = binding
-                self._save_state()
             except Exception as error:
                 log(f"Cursor session copy failed; using recent history: {error!r}")
                 try:
@@ -1677,13 +1684,15 @@ class Bridge:
                         body = (body + "\n\n" if body else "") + "\n".join(notices)
                     if not body and not attachments:
                         body = "(empty response)"
-                    if is_fork and not entries[0].get("from_peer"):
-                        body += "\n\nThe thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Cursor session there."
-                    if "_fork_context" in binding and not binding.get("session_id"):
+                    missing_fork_id = "_fork_context" in binding and not binding.get("session_id")
+                    if missing_fork_id:
                         if self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
-                        raise RuntimeError("Cursor did not return a new session ID")
-                    if is_fork:
+                            self._save_state()
+                        body += "\n\nCursor answered, but returned no session ID; this thread was not saved. Resend your next message to retry the copy."
+                    elif is_fork:
+                        if any(not entry.get("from_peer") for entry in entries):
+                            body += "\n\nThe thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Cursor session there."
                         binding.pop("_cursor_copy", None)
                         binding.pop("_fork_context", None)
                         self._save_state()
@@ -2200,6 +2209,9 @@ def main() -> None:
                     help="only summarize replies at least this many chars long")
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("CURSOR_TIMEOUT", "1800")),
                     help="per-run timeout in seconds")
+    ap.add_argument("--history", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("CURSOR_HISTORY", "1").lower() not in ("0", "false", "no"),
+                    help="allow recent main-chat history if a session copy fails")
     ap.add_argument("--sessions", type=int, default=int(os.environ.get("SESSIONS_LIMIT", "10")),
                     help="how many sessions /sessions lists")
     ap.add_argument("--state-file", default=os.environ.get("STATE_FILE", str(default_state)))

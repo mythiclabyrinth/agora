@@ -573,8 +573,9 @@ is a sentinel line the bridge intercepts instead of posting; `--no-history`
 removes the capability). So a human who wants the older context after a switch
 just says so in the channel, and one who does not gets a clean session.
 Cursor also requests recent main-channel history if its local session copy
-cannot be opened. The copied or fresh thread binding is persisted, so a bridge
-restart resumes it. Both conversations use the same project files until the
+cannot be opened (unless `--no-history` is set). A copied thread binding is
+saved after its first successful turn, so a bridge restart can resume it.
+Both conversations use the same project files until the
 thread is moved to its own worktree. Codex keeps its session when moving;
 Claude and Cursor start fresh sessions in the new folder.
 

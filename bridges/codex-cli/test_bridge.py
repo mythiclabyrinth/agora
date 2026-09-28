@@ -1609,6 +1609,42 @@ class HistoryAskTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_answer_without_new_id_is_posted_with_warning(self):
+        b = make_bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        del b.forward_to_codex
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old",
+                               "_fork_source": "old"}
+        b.typing = Mock()
+        b.run_codex = AsyncMock(return_value="useful answer")
+        b._split_outbound_attachments = Mock(return_value=("useful answer", [], []))
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        asyncio.run(b.forward_to_codex("c1:42", frame, "hello"))
+        self.assertIn("useful answer", b.post.call_args.args[1])
+        self.assertIn("was not saved", b.post.call_args.args[1])
+        self.assertNotIn("c1:42", b.bindings)
+
+    def test_busy_main_timeout_reports_unsent_human_and_buffers_peer(self):
+        for author_type in ("user", "agent"):
+            b = make_bridge()
+            b.thread_fork_locks = {}
+            b.timeout = 1800
+            b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+            b.busy.add("c1")
+            frame = {"channel_id": "c1", "thread_id": 42, "text": "hello",
+                     "author": {"type": author_type, "name": "Sender"}}
+            with patch.object(bridge, "FORK_WAIT_SECONDS", 0):
+                self.assertFalse(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+            if author_type == "user":
+                self.assertIn("was not sent", b.post.call_args.args[1])
+            else:
+                b.post.assert_not_called()
+                self.assertIn("c1:42", b.context_buffer)
+
     def test_cli_error_is_reported_before_missing_fork_id(self):
         b = make_bridge()
         del b.forward_to_codex
@@ -1639,14 +1675,31 @@ class ThreadForkTests(unittest.TestCase):
         self.assertIn("Worktree ready", reply)
         self.assertEqual(b.bindings["c1:42"]["session_id"], "forked")
 
+    def test_worktree_does_not_resume_main_during_pending_fork(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.bindings["c1:42"] = {"cwd": "/tmp/repo", "session_id": "main",
+                               "_fork_source": "main"}
+        with tempfile.TemporaryDirectory() as tmp:
+            b.allowed_roots = [Path(tmp).resolve()]
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            target = Path(tmp) / "worktree"
+            b._worktree_dir = Mock(return_value=target)
+            with patch.object(bridge, "_git_repo_root", return_value=repo), \
+                 patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+                b._create_worktree("c1:42", str(repo), "branch")
+        self.assertIsNone(b.bindings["c1:42"]["session_id"])
+        self.assertNotIn("_fork_source", b.bindings["c1:42"])
+
     def test_shared_worktree_cannot_be_removed_from_either_binding(self):
         b = make_bridge()
         worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("shared", b._remove_worktree("c1:42", True))
-            self.assertIn("shared", b._remove_worktree("c1", True))
+            self.assertIn("c1", b._remove_worktree("c1:42", True))
+            self.assertIn("c1:42", b._remove_worktree("c1", True))
         git.assert_not_called()
 
     def test_fork_cli_uses_bound_folder_and_active_account_home(self):

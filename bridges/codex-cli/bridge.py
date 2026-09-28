@@ -69,6 +69,7 @@ MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
 MAX_QUEUED_TURNS = 20
 MAX_QUEUED_PEER_TURNS = 5
+FORK_WAIT_SECONDS = 90
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -1616,7 +1617,8 @@ class Bridge:
             )
         if path.exists():
             # Idempotent: a thread re-running /worktree just rebinds to its own dir.
-            self._set_binding(key, (self.bindings.get(key) or {}).get("session_id"), str(path))
+            current = self.bindings.get(key) or {}
+            self._set_binding(key, None if current.get("_fork_source") else current.get("session_id"), str(path))
             self._attach_worktree(key, path, branch, repo_root)
             return f"Reusing worktree {path} (branch {branch}). Just type to start."
         try:
@@ -1631,7 +1633,8 @@ class Bridge:
             return f"git worktree add failed:\n{(r.stderr or r.stdout).strip()[:600]}"
         if path.is_relative_to(repo_root):
             _ensure_git_excluded(repo_root, ".worktrees/")
-        self._set_binding(key, (self.bindings.get(key) or {}).get("session_id"), str(path))
+        current = self.bindings.get(key) or {}
+        self._set_binding(key, None if current.get("_fork_source") else current.get("session_id"), str(path))
         self._attach_worktree(key, path, branch, repo_root)
         log(f"worktree add: {path} (branch {branch}) off {repo_root}")
         return (
@@ -1667,9 +1670,11 @@ class Bridge:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
-        if any(other != key and (binding.get("worktree") or {}).get("path") == wt["path"]
-               for other, binding in self.bindings.items()):
-            return "This worktree is shared with another conversation; move that conversation before removing it."
+        others = [other for other, binding in self.bindings.items()
+                  if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
+        if others:
+            return (f"This worktree is shared with {', '.join(others)}; "
+                    "move those conversations with /worktree or /new before removing it.")
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
@@ -1970,14 +1975,16 @@ class Bridge:
             if key in self.bindings:
                 return True
             self.set_reaction(frame, "👀")
-            deadline = time.monotonic() + max(30, self.timeout)
+            deadline = time.monotonic() + FORK_WAIT_SECONDS
             while main_key in self.busy:
                 if thread_id in self.deleted_thread_roots:
                     self.clear_reaction(frame)
                     return False
                 if time.monotonic() >= deadline:
                     if (frame.get("author") or {}).get("type") == "user":
-                        self.post(frame, "The main session is still working. Reply again after it finishes to copy it.")
+                        self.post(frame, "The main session is still working. This message was not sent; resend it after the main reply finishes.")
+                    else:
+                        self._buffer_context(key, frame)
                     self.clear_reaction(frame)
                     return False
                 await asyncio.sleep(0.2)
@@ -2094,11 +2101,12 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    if is_fork and binding.get("_fork_source"):
+                    missing_fork_id = is_fork and bool(binding.get("_fork_source"))
+                    if missing_fork_id:
                         if self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
-                        raise RuntimeError("Codex did not return a new fork session ID")
-                    reply = await self._serve_history_asks(key, batch_frame, binding, reply)
+                    else:
+                        reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(codex error)"):
                         self.post(batch_frame, reply)
                         for entry in entries:
@@ -2118,7 +2126,9 @@ class Bridge:
                         body = (body + "\n\n" if body else "") + "\n".join(notices)
                     if not body and not attachments:
                         body = "(empty response)"
-                    if is_fork and not entries[0].get("from_peer"):
+                    if missing_fork_id:
+                        body += "\n\nCodex answered, but returned no new session ID; this thread was not saved. Resend your next message to retry the copy."
+                    elif is_fork and any(not entry.get("from_peer") for entry in entries):
                         body += "\n\nThe thread and main chat share project files. Use /worktree <repo> here for a separate copy."
                     self.post(batch_frame, body, tldr if body else None, attachments)
                     for entry in entries:

@@ -225,6 +225,7 @@ MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
 MAX_QUEUED_TURNS = 20
 MAX_QUEUED_PEER_TURNS = 5
+FORK_WAIT_SECONDS = 90
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -1773,9 +1774,11 @@ class Bridge:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
-        if any(other != key and (binding.get("worktree") or {}).get("path") == wt["path"]
-               for other, binding in self.bindings.items()):
-            return "This worktree is shared with another conversation; move that conversation before removing it."
+        others = [other for other, binding in self.bindings.items()
+                  if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
+        if others:
+            return (f"This worktree is shared with {', '.join(others)}; "
+                    "move those conversations with /worktree or /new before removing it.")
         # `busy` used to mean "a child is running here", but a child held for
         # background work has no in-flight turn — and this worktree is still its
         # cwd. Removing it would delete the tree from under a live writer.
@@ -2102,7 +2105,7 @@ class Bridge:
             if key in self.bindings:
                 return True
             self.set_reaction(frame, "👀")
-            deadline = time.monotonic() + max(30, self.timeout)
+            deadline = time.monotonic() + FORK_WAIT_SECONDS
             while main_key in self.busy or (
                 (live := self.live.get(main_key)) is not None and live.alive
             ):
@@ -2111,7 +2114,9 @@ class Bridge:
                     return False
                 if time.monotonic() >= deadline:
                     if (frame.get("author") or {}).get("type") == "user":
-                        self.post(frame, "The main session is still working. Reply again after it finishes to copy it.")
+                        self.post(frame, "The main session is still working. This message was not sent; resend it after the main reply finishes.")
+                    else:
+                        self._buffer_context(key, frame)
                     self.clear_reaction(frame)
                     return False
                 await asyncio.sleep(0.2)
@@ -2237,11 +2242,12 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    if is_fork and binding.get("_fork_source"):
+                    missing_fork_id = is_fork and bool(binding.get("_fork_source"))
+                    if missing_fork_id:
                         if self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
-                        raise RuntimeError("Claude did not return a new fork session ID")
-                    reply = await self._serve_history_asks(key, batch_frame, binding, reply)
+                    else:
+                        reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(claude error)"):
                         self.post(batch_frame, reply)
                         for queued in entries:
@@ -2249,8 +2255,10 @@ class Bridge:
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
-                    notice = ("The thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Claude session there."
-                              if is_fork and not entries[0].get("from_peer") else None)
+                    notice = ("Claude answered, but returned no new session ID; this thread was not saved. Resend your next message to retry the copy."
+                              if missing_fork_id else
+                              "The thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Claude session there."
+                              if is_fork and any(not entry.get("from_peer") for entry in entries) else None)
                     self._post_reply(batch_frame, binding, reply, notice=notice)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
@@ -3184,11 +3192,12 @@ class Bridge:
         body, tldr = self._split_tldr(reply, self._tldr_enabled(binding), self.tldr_min_chars)
         if notices:
             body = (body + "\n\n" if body else "") + "\n".join(notices)
+        has_reply_body = bool(body)
+        if notice:
+            body = (body + "\n\n" if body else "") + notice
         if not body and not attachments:
             body = "(no reply — the run ended without any text)"
-        if notice:
-            body += "\n\n" + notice
-        self.post(frame, body, tldr if body else None, attachments)
+        self.post(frame, body, tldr if has_reply_body else None, attachments)
 
     @staticmethod
     def _annotate_slash_failure(prompt: str, result: str, slash_commands: list[str]) -> str:

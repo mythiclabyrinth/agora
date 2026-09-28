@@ -78,6 +78,7 @@ copy command or storage format. If the copy fails, the bridge starts a fresh
 session with recent main-chat messages from Agora. Both conversations share
 project files. Use `/worktree <repo>` in the thread for a separate folder and
 a fresh session there. `/use` and `/new` in the thread replace its binding.
+`--no-history` disables the fallback history fetch.
 
 ## Execution safety
 

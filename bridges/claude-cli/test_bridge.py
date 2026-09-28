@@ -2371,6 +2371,55 @@ class HistoryAskTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_attachment_only_notice_does_not_create_tldr(self):
+        b = make_bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b._split_outbound_attachments = Mock(return_value=("", [{"path": "/tmp/file"}], []))
+        b._split_tldr = Mock(return_value=("", "summary"))
+        b.tldr_default = True
+        b.tldr_min_chars = 0
+        b._post_reply({"channel_id": "c1"}, {"cwd": "/tmp"}, "attached",
+                      notice="shared folder")
+        self.assertEqual(b.post.call_args.args[1], "shared folder")
+        self.assertIsNone(b.post.call_args.args[2])
+
+    def test_answer_without_new_id_is_posted_with_warning(self):
+        b = make_bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        del b.forward_to_claude
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old",
+                               "_fork_source": "old"}
+        b.typing = Mock()
+        b.run_claude = AsyncMock(return_value="useful answer")
+        b._split_outbound_attachments = Mock(return_value=("useful answer", [], []))
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        asyncio.run(b.forward_to_claude("c1:42", frame, "hello"))
+        self.assertIn("useful answer", b.post.call_args.args[1])
+        self.assertIn("was not saved", b.post.call_args.args[1])
+        self.assertNotIn("c1:42", b.bindings)
+
+    def test_busy_main_timeout_reports_unsent_human_and_buffers_peer(self):
+        for author_type in ("user", "agent"):
+            b = make_bridge()
+            b.thread_fork_locks = {}
+            b.timeout = 1800
+            b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+            b.busy.add("c1")
+            frame = {"channel_id": "c1", "thread_id": 42, "text": "hello",
+                     "author": {"type": author_type, "name": "Sender"}}
+            with patch.object(bridge, "FORK_WAIT_SECONDS", 0):
+                self.assertFalse(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+            if author_type == "user":
+                self.assertIn("was not sent", b.post.call_args.args[1])
+            else:
+                b.post.assert_not_called()
+                self.assertIn("c1:42", b.context_buffer)
+
     def test_cli_error_is_reported_before_missing_fork_id(self):
         b = make_bridge()
         del b.forward_to_claude
@@ -2407,8 +2456,8 @@ class ThreadForkTests(unittest.TestCase):
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("shared", b._remove_worktree("c1:42", True))
-            self.assertIn("shared", b._remove_worktree("c1", True))
+            self.assertIn("c1", b._remove_worktree("c1:42", True))
+            self.assertIn("c1:42", b._remove_worktree("c1", True))
         git.assert_not_called()
 
     def test_first_cli_turn_uses_fork_flag_and_records_new_id(self):

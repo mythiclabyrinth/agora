@@ -1085,6 +1085,51 @@ class PartialStreamTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_disabled_history_is_not_requested(self):
+        b = make_bridge()
+        b.history_enabled = False
+        b.send = Mock()
+        with self.assertRaisesRegex(RuntimeError, "history is disabled"):
+            asyncio.run(b._recent_main_history("c1"))
+        b.send.assert_not_called()
+
+    def test_answer_without_new_id_is_posted_with_warning(self):
+        b = make_bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        del b.forward_to_agent
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": None,
+                               "_fork_context": "earlier messages"}
+        b.typing = Mock()
+        b._save_state = Mock()
+        b.run_agent = AsyncMock(return_value="useful answer")
+        b._split_outbound_attachments = Mock(return_value=("useful answer", [], []))
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        self.assertIn("useful answer", b.post.call_args.args[1])
+        self.assertIn("was not saved", b.post.call_args.args[1])
+        self.assertNotIn("c1:42", b.bindings)
+
+    def test_busy_main_timeout_reports_unsent_human_and_buffers_peer(self):
+        for author_type in ("user", "agent"):
+            b = make_bridge()
+            b.thread_fork_locks = {}
+            b.timeout = 1800
+            b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+            b.busy.add("c1")
+            frame = {"channel_id": "c1", "thread_id": 42, "text": "hello",
+                     "author": {"type": author_type, "name": "Sender"}}
+            with patch.object(bridge, "FORK_WAIT_SECONDS", 0):
+                self.assertFalse(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+            if author_type == "user":
+                self.assertIn("was not sent", b.post.call_args.args[1])
+            else:
+                b.post.assert_not_called()
+                self.assertIn("c1:42", b.context_buffer)
+
     def test_worktree_starts_fresh_cursor_session(self):
         b = make_bridge()
         b._save_state = Mock()
@@ -1107,8 +1152,8 @@ class ThreadForkTests(unittest.TestCase):
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("shared", b._remove_worktree("c1:42", True))
-            self.assertIn("shared", b._remove_worktree("c1", True))
+            self.assertIn("c1", b._remove_worktree("c1:42", True))
+            self.assertIn("c1:42", b._remove_worktree("c1", True))
         git.assert_not_called()
 
     def test_sqlite_copy_changes_only_the_copied_agent_id(self):
@@ -1166,16 +1211,29 @@ class ThreadForkTests(unittest.TestCase):
 
     def test_copy_success_persists_a_distinct_thread_binding(self):
         b = make_bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
         b.thread_fork_locks = {}
         b.timeout = 1
         source_id, copied_id = str(uuid.uuid4()), str(uuid.uuid4())
         b.bindings["c1"] = {"session_id": source_id, "cwd": "/tmp/project",
                             "mode": "ask", "tldr": True}
-        frame = {"channel_id": "c1", "thread_id": 42, "author": {"type": "agent"}}
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
         with tempfile.TemporaryDirectory() as tmp:
             b.state_file = Path(tmp) / "state.json"
             with patch.object(bridge, "copy_cursor_session", return_value=copied_id):
                 self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
+            self.assertFalse(b.state_file.exists())
+            b._save_state()  # another channel might save while this copy is pending
+            self.assertNotIn("c1:42", json.loads(b.state_file.read_text()))
+            del b.forward_to_agent
+            b.typing = Mock()
+            b.run_agent = AsyncMock(return_value="done")
+            b._split_outbound_attachments = Mock(return_value=("done", [], []))
+            b.tldr_default = False
+            b.tldr_min_chars = 1500
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
             saved = json.loads(b.state_file.read_text())
         self.assertEqual(b.bindings["c1:42"]["session_id"], copied_id)
         self.assertEqual(b.bindings["c1"]["session_id"], source_id)
