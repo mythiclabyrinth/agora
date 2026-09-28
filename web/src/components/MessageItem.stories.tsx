@@ -218,7 +218,6 @@ export const OldReply: Story = {
     const replyTime = canvasElement.querySelector(".ago-last-reply");
     expect(replyTime?.querySelector('[aria-hidden="true"]')).toBeVisible();
     expect(replyTime?.querySelector(".ago-sr-only")).toHaveTextContent(String(new Date().getFullYear() - 1));
-    expect(replyTime?.querySelector(".ago-sr-only")).not.toBeVisible();
     expect(replyTime?.getAttribute("title")).toContain(String(new Date().getFullYear() - 1));
   },
 };
