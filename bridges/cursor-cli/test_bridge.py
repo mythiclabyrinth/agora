@@ -1085,6 +1085,77 @@ class PartialStreamTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_replacing_pending_copy_removes_old_session(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            b._set_binding("c1:42", None, "/tmp/new")
+        remove.assert_called_once_with(copied_id)
+        self.assertIsNone(b.bindings["c1:42"]["session_id"])
+
+    def test_replacing_copy_after_cursor_changes_id_removes_original(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": new_id,
+                               "_cursor_copy": True, "_cursor_copy_id": copied_id}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            b._set_binding("c1:42", None, "/tmp/new")
+        remove.assert_called_once_with(copied_id)
+
+    def test_failed_run_removes_original_copy_after_cursor_changes_id(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b._save_state = Mock()
+        copied_id = str(uuid.uuid4())
+        replacement_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True}
+        async def run(key, frame, binding, prompt):
+            binding["session_id"] = replacement_id
+            return "(agent error) access denied"
+        b.run_agent = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        remove.assert_called_once_with(copied_id)
+        self.assertNotIn("c1:42", b.bindings)
+
+    def test_copied_session_open_error_falls_back_to_history(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b._save_state = Mock()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        b._recent_main_history = AsyncMock(return_value="Tom: earlier request")
+        b._split_outbound_attachments = Mock(return_value=("history answer", [], []))
+        copied_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True}
+        async def run(key, frame, binding, prompt):
+            if binding.get("_cursor_copy"):
+                return "(agent error) invalid copied session"
+            binding["session_id"] = "new-session"
+            return "history answer"
+        b.run_agent = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "id": "tom"}}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        remove.assert_called_once_with(copied_id)
+        self.assertEqual(b.run_agent.await_count, 2)
+        self.assertIn("history answer", b.post.call_args.args[1])
+        self.assertEqual(b.bindings["c1:42"]["session_id"], "new-session")
+
     def test_stop_on_first_copied_turn_keeps_copy_without_history_retry(self):
         b = make_bridge()
         del b.forward_to_agent
@@ -1190,9 +1261,21 @@ class ThreadForkTests(unittest.TestCase):
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("the main chat", b._remove_worktree("c1:42", True))
-            self.assertIn("a thread in this channel", b._remove_worktree("c1", True))
+            self.assertIn("the main chat", b._remove_worktree("c1:42", False))
+            self.assertIn("a thread in this channel", b._remove_worktree("c1", False))
         git.assert_not_called()
+
+    def test_force_removal_rebinds_other_conversations(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {"c1": {"worktree": worktree, "cwd": "/tmp/shared"},
+                      "c2:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
+        with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+            self.assertIn("another channel", b._remove_worktree("c1", False))
+            self.assertIn("Removed worktree", b._remove_worktree("c1", True))
+        self.assertEqual(b.bindings["c2:42"]["cwd"], "/tmp")
+        self.assertNotIn("worktree", b.bindings["c2:42"])
 
     def test_sqlite_copy_changes_only_the_copied_agent_id(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1278,6 +1361,7 @@ class ThreadForkTests(unittest.TestCase):
         self.assertEqual(b.bindings["c1"]["session_id"], source_id)
         self.assertEqual(saved["c1:42"]["session_id"], copied_id)
         self.assertNotIn("_cursor_copy", saved["c1:42"])
+        self.assertNotIn("_cursor_copy_id", saved["c1:42"])
 
     def test_failed_copy_is_removed_and_error_is_posted(self):
         b = make_bridge()

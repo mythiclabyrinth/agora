@@ -1671,7 +1671,7 @@ class ThreadForkTests(unittest.TestCase):
             b._worktree_dir = Mock(return_value=target)
             with patch.object(bridge, "_git_repo_root", return_value=repo), \
                  patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
-                reply = b._create_worktree("c1:42", str(repo), "branch")
+                reply = b._create_worktree("c1:42", str(repo), "branch", keep_session=True)
         self.assertIn("Worktree ready", reply)
         self.assertEqual(b.bindings["c1:42"]["session_id"], "forked")
 
@@ -1692,15 +1692,52 @@ class ThreadForkTests(unittest.TestCase):
         self.assertIsNone(b.bindings["c1:42"]["session_id"])
         self.assertNotIn("_fork_source", b.bindings["c1:42"])
 
+    def test_new_with_auto_worktree_starts_fresh_session(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.auto_worktree = True
+        b.bindings["c1"] = {"cwd": "/tmp/old", "session_id": "old-session"}
+        with tempfile.TemporaryDirectory() as tmp:
+            b.allowed_roots = [Path(tmp).resolve()]
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            b._worktree_dir = Mock(return_value=Path(tmp) / "worktree")
+            with patch.object(bridge, "_git_repo_root", return_value=repo), \
+                 patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+                self.assertIn("Worktree ready", b._cmd_new("c1", str(repo)))
+        self.assertIsNone(b.bindings["c1"]["session_id"])
+
+    def test_account_switch_clears_pending_fork_source(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.listings = {}
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old-session",
+                               "_fork_source": "old-session"}
+        self.assertEqual(b._drop_bound_sessions(), 1)
+        self.assertIsNone(b.bindings["c1:42"]["session_id"])
+        self.assertNotIn("_fork_source", b.bindings["c1:42"])
+
     def test_shared_worktree_cannot_be_removed_from_either_binding(self):
         b = make_bridge()
         worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("the main chat", b._remove_worktree("c1:42", True))
-            self.assertIn("a thread in this channel", b._remove_worktree("c1", True))
+            self.assertIn("the main chat", b._remove_worktree("c1:42", False))
+            self.assertIn("a thread in this channel", b._remove_worktree("c1", False))
         git.assert_not_called()
+
+    def test_force_removal_rebinds_other_conversations(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {"c1": {"worktree": worktree, "cwd": "/tmp/shared"},
+                      "c2:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
+        with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+            self.assertIn("another channel", b._remove_worktree("c1", False))
+            self.assertIn("Removed worktree", b._remove_worktree("c1", True))
+        self.assertEqual(b.bindings["c2:42"]["cwd"], "/tmp")
+        self.assertNotIn("worktree", b.bindings["c2:42"])
 
     def test_fork_cli_uses_bound_folder_and_active_account_home(self):
         b = make_bridge()

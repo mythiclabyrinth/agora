@@ -2430,6 +2430,16 @@ class ThreadForkTests(unittest.TestCase):
         self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
         self.assertEqual(b.bindings["c1:42"]["_fork_source"], "main")
 
+    def test_account_switch_clears_pending_fork_source(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.listings = {}
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old-session",
+                               "_fork_source": "old-session"}
+        self.assertEqual(b._drop_bound_sessions(), 1)
+        self.assertIsNone(b.bindings["c1:42"]["session_id"])
+        self.assertNotIn("_fork_source", b.bindings["c1:42"])
+
     def test_cli_error_is_reported_before_missing_fork_id(self):
         b = make_bridge()
         del b.forward_to_claude
@@ -2466,9 +2476,21 @@ class ThreadForkTests(unittest.TestCase):
         b.bindings = {"c1": {"worktree": worktree},
                       "c1:42": {"worktree": dict(worktree)}}
         with patch.object(bridge, "_run_git") as git:
-            self.assertIn("the main chat", b._remove_worktree("c1:42", True))
-            self.assertIn("a thread in this channel", b._remove_worktree("c1", True))
+            self.assertIn("the main chat", b._remove_worktree("c1:42", False))
+            self.assertIn("a thread in this channel", b._remove_worktree("c1", False))
         git.assert_not_called()
+
+    def test_force_removal_rebinds_other_conversations(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        b.bindings = {"c1": {"worktree": worktree, "cwd": "/tmp/shared"},
+                      "c2:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
+        with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+            self.assertIn("another channel", b._remove_worktree("c1", False))
+            self.assertIn("Removed worktree", b._remove_worktree("c1", True))
+        self.assertEqual(b.bindings["c2:42"]["cwd"], "/tmp")
+        self.assertNotIn("worktree", b.bindings["c2:42"])
 
     def test_first_cli_turn_uses_fork_flag_and_records_new_id(self):
         binding = {"cwd": "/tmp", "session_id": "old-id", "_fork_source": "old-id"}

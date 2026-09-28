@@ -1585,7 +1585,8 @@ class Bridge:
         self.bindings[key] = b
         self._save_state()
 
-    def _create_worktree(self, key: str, repo_arg: str, branch_arg: str) -> str:
+    def _create_worktree(self, key: str, repo_arg: str, branch_arg: str,
+                         keep_session: bool = False) -> str:
         if not self.allowed_roots:
             return (
                 "/worktree is disabled: no allowed roots configured. Set "
@@ -1618,7 +1619,8 @@ class Bridge:
         if path.exists():
             # Idempotent: a thread re-running /worktree just rebinds to its own dir.
             current = self.bindings.get(key) or {}
-            self._set_binding(key, None if current.get("_fork_source") else current.get("session_id"), str(path))
+            session_id = current.get("session_id") if keep_session and not current.get("_fork_source") else None
+            self._set_binding(key, session_id, str(path))
             self._attach_worktree(key, path, branch, repo_root)
             return f"Reusing worktree {path} (branch {branch}). Just type to start."
         try:
@@ -1634,7 +1636,8 @@ class Bridge:
         if path.is_relative_to(repo_root):
             _ensure_git_excluded(repo_root, ".worktrees/")
         current = self.bindings.get(key) or {}
-        self._set_binding(key, None if current.get("_fork_source") else current.get("session_id"), str(path))
+        session_id = current.get("session_id") if keep_session and not current.get("_fork_source") else None
+        self._set_binding(key, session_id, str(path))
         self._attach_worktree(key, path, branch, repo_root)
         log(f"worktree add: {path} (branch {branch}) off {repo_root}")
         return (
@@ -1671,14 +1674,19 @@ class Bridge:
         if not wt:
             return "No worktree on this thread."
         others = [other for other, binding in self.bindings.items()
-                  if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
-        if others:
-            names = ["the main chat" if other == key.split(":", 1)[0]
+                  if other != key and isinstance(binding, dict)
+                  and (binding.get("worktree") or {}).get("path") == wt["path"]]
+        if others and not force:
+            channel = key.split(":", 1)[0]
+            names = ["another channel" if other.split(":", 1)[0] != channel
+                     else "the main chat" if other == channel
                      else "a thread in this channel" for other in others]
             return (f"This worktree is shared with {', '.join(names)}; "
-                    "move those conversations with /worktree or /new before removing it.")
+                    "move those conversations with /worktree or /new, or use /worktree remove force to move them back to the base repo.")
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
+        if any(other in self.busy for other in others):
+            return "Another conversation is using this worktree; stop its run before removing it."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
         args = ["worktree", "remove", path] + (["--force"] if force else [])
         r = _run_git(base, *args)
@@ -1697,6 +1705,8 @@ class Bridge:
             if br.returncode == 0
             else f"Kept branch {branch} — {(br.stderr or '').strip()[:140]}"
         )
+        for other in others:
+            self._set_binding(other, None, str(base))
         self._set_binding(key, None, str(base))  # rebind to the base repo, fresh session
         log(f"worktree remove: {path} (branch {branch})")
         return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}."
@@ -1713,7 +1723,7 @@ class Bridge:
                                                      or "--force" in rest.split()))
         # Anything else is a repo path: /worktree <repo> [branch]
         repo_arg, _, branch_arg = arg.partition(" ")
-        return self._create_worktree(key, repo_arg.strip(), branch_arg.strip())
+        return self._create_worktree(key, repo_arg.strip(), branch_arg.strip(), keep_session=True)
 
     def _model_catalog(self) -> list[dict]:
         if not getattr(self, "codex_bin", None):
@@ -1897,9 +1907,12 @@ class Bridge:
         """
         dropped = 0
         for binding in self.bindings.values():
+            if not isinstance(binding, dict):
+                continue
             if binding.get("session_id"):
                 binding["session_id"] = None
                 dropped += 1
+            binding.pop("_fork_source", None)
         # /sessions listings are rollouts of the account we are leaving; a
         # later `/use <n>` against them would bind an unreachable session.
         self.listings.clear()

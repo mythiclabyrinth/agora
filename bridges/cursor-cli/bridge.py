@@ -1108,6 +1108,10 @@ class Bridge:
     def _set_binding(self, key: str, session_id: str | None, cwd: str) -> None:
         """Write session/cwd while keeping per-channel execution overrides."""
         prev = self.bindings.get(key) or {}
+        copied_id = prev.get("_cursor_copy_id") or prev.get("session_id")
+        if (prev.get("_cursor_copy") and copied_id and
+                (session_id != copied_id or cwd != prev.get("cwd"))):
+            remove_cursor_copy(copied_id)
         binding: dict = {"session_id": session_id, "cwd": cwd}
         for k in ("model", "mode", "tldr"):
             if k in prev:
@@ -1265,14 +1269,19 @@ class Bridge:
         if not wt:
             return "No worktree on this thread."
         others = [other for other, binding in self.bindings.items()
-                  if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
-        if others:
-            names = ["the main chat" if other == key.split(":", 1)[0]
+                  if other != key and isinstance(binding, dict)
+                  and (binding.get("worktree") or {}).get("path") == wt["path"]]
+        if others and not force:
+            channel = key.split(":", 1)[0]
+            names = ["another channel" if other.split(":", 1)[0] != channel
+                     else "the main chat" if other == channel
                      else "a thread in this channel" for other in others]
             return (f"This worktree is shared with {', '.join(names)}; "
-                    "move those conversations with /worktree or /new before removing it.")
+                    "move those conversations with /worktree or /new, or use /worktree remove force to move them back to the base repo.")
         if key in self.busy:
             return "A run is in flight here — /stop it before removing the worktree."
+        if any(other in self.busy for other in others):
+            return "Another conversation is using this worktree; stop its run before removing it."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
         args = ["worktree", "remove", path] + (["--force"] if force else [])
         r = _run_git(base, *args)
@@ -1291,6 +1300,8 @@ class Bridge:
             if br.returncode == 0
             else f"Kept branch {branch} — {(br.stderr or '').strip()[:140]}"
         )
+        for other in others:
+            self._set_binding(other, None, str(base))
         self._set_binding(key, None, str(base))  # rebind to the base repo, fresh session
         log(f"worktree remove: {path} (branch {branch})")
         return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}."
@@ -1469,7 +1480,7 @@ class Bridge:
             future.set_result(frame)
 
     async def _recent_main_history(self, channel_id: str) -> str:
-        if not getattr(self, "history_enabled", True):
+        if not self.history_enabled:
             raise RuntimeError("history is disabled for this bridge")
         request_id = f"fork-hist-{time.time_ns()}"
         future = asyncio.get_running_loop().create_future()
@@ -1488,19 +1499,25 @@ class Bridge:
         for message in page.get("messages") or []:
             if isinstance(message, dict):
                 author = message.get("author") or {}
-                name = author.get("name") if isinstance(author, dict) else str(author)
+                if isinstance(author, dict):
+                    name = ("you" if author.get("type") == "agent" and
+                            author.get("id") == self.agent_id else author.get("name"))
+                else:
+                    name = str(author)
                 rows.append(f"{name or 'someone'}: {str(message.get('text') or '')[:1000]}")
         while rows and len("\n".join(rows)) > 12000:
             rows.pop(0)
         return "\n".join(rows)
 
-    async def _seed_thread_from_history(self, key: str, frame: dict, binding: dict) -> str:
+    async def _seed_thread_from_history(self, key: str, frame: dict, binding: dict,
+                                        copied_session_id: str | None = None) -> str:
         history = await self._recent_main_history(frame["channel_id"])
         if self.bindings.get(key) is binding:
-            if binding.get("_cursor_copy") and binding.get("session_id"):
-                await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+            if copied_session_id:
+                await asyncio.to_thread(remove_cursor_copy, copied_session_id)
             binding["session_id"] = None
             binding.pop("_cursor_copy", None)
+            binding.pop("_cursor_copy_id", None)
             binding["_fork_context"] = history
             self._save_state()
         return history
@@ -1548,6 +1565,7 @@ class Bridge:
                     return key in self.bindings
                 binding["session_id"] = copied_id
                 binding["_cursor_copy"] = True
+                binding["_cursor_copy_id"] = copied_id
                 self.bindings[key] = binding
             except Exception as error:
                 log(f"Cursor session copy failed; using recent history: {error!r}")
@@ -1645,6 +1663,7 @@ class Bridge:
                     entries = self._claim_pending_turns(key)
                     continue
                 is_fork = False
+                copied_session_id = (binding.get("_cursor_copy_id") or binding.get("session_id")) if binding.get("_cursor_copy") else None
                 try:
                     if not batch_text.lstrip().startswith("/"):
                         batch_text = self._flush_context(key, batch_text)
@@ -1669,7 +1688,8 @@ class Bridge:
                     if (reply.startswith("(agent error)") and binding.get("_cursor_copy")
                             and _cursor_session_unavailable(reply)):
                         try:
-                            history = await self._seed_thread_from_history(key, batch_frame, binding)
+                            history = await self._seed_thread_from_history(
+                                key, batch_frame, binding, copied_session_id)
                             if self.bindings.get(key) is not binding:
                                 raise RuntimeError("thread binding changed while fetching history")
                             retry_text = (f"[Recent main-chat messages:]\n{history}\n[End of history.]\n"
@@ -1682,8 +1702,8 @@ class Bridge:
                             log(f"Cursor history fallback failed after {copy_error!r}: {fallback_error!r}")
                             reply = f"(agent error) Cursor copy and history fallback failed: {fallback_error}"
                     if is_fork and self.bindings.get(key) is not binding:
-                        if binding.get("_cursor_copy") and binding.get("session_id"):
-                            await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+                        if copied_session_id:
+                            await asyncio.to_thread(remove_cursor_copy, copied_session_id)
                         self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
@@ -1692,8 +1712,8 @@ class Bridge:
                         continue
                     if reply.startswith("(agent error)"):
                         if is_fork and self.bindings.get(key) is binding:
-                            if binding.get("_cursor_copy") and binding.get("session_id"):
-                                await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+                            if copied_session_id:
+                                await asyncio.to_thread(remove_cursor_copy, copied_session_id)
                             self.bindings.pop(key, None)
                             self._save_state()
                         self.post(batch_frame, reply)
@@ -1719,6 +1739,7 @@ class Bridge:
                         if any(not entry.get("from_peer") for entry in entries):
                             body += "\n\nThe thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Cursor session there."
                         binding.pop("_cursor_copy", None)
+                        binding.pop("_cursor_copy_id", None)
                         binding.pop("_fork_context", None)
                         self._save_state()
                     self.post(batch_frame, body, tldr if body else None, attachments)
@@ -1734,8 +1755,8 @@ class Bridge:
                 except Exception as e:
                     if (is_fork and self.bindings.get(key) is binding
                             and not (binding.get("_cursor_copy") and "timed out" in str(e).lower())):
-                        if binding.get("_cursor_copy") and binding.get("session_id"):
-                            await asyncio.to_thread(remove_cursor_copy, binding["session_id"])
+                        if copied_session_id:
+                            await asyncio.to_thread(remove_cursor_copy, copied_session_id)
                         self.bindings.pop(key, None)
                         self._save_state()
                     log(f"agent run failed: {e!r}")

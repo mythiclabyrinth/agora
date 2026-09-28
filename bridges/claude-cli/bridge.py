@@ -1775,18 +1775,25 @@ class Bridge:
         if not wt:
             return "No worktree on this thread."
         others = [other for other, binding in self.bindings.items()
-                  if other != key and (binding.get("worktree") or {}).get("path") == wt["path"]]
-        if others:
-            names = ["the main chat" if other == key.split(":", 1)[0]
+                  if other != key and isinstance(binding, dict)
+                  and (binding.get("worktree") or {}).get("path") == wt["path"]]
+        if others and not force:
+            channel = key.split(":", 1)[0]
+            names = ["another channel" if other.split(":", 1)[0] != channel
+                     else "the main chat" if other == channel
                      else "a thread in this channel" for other in others]
             return (f"This worktree is shared with {', '.join(names)}; "
-                    "move those conversations with /worktree or /new before removing it.")
+                    "move those conversations with /worktree or /new, or use /worktree remove force to move them back to the base repo.")
         # `busy` used to mean "a child is running here", but a child held for
         # background work has no in-flight turn — and this worktree is still its
         # cwd. Removing it would delete the tree from under a live writer.
         held = self.live.get(key)
         if key in self.busy or (held is not None and held.alive):
             return "A run is in flight here — /stop it before removing the worktree."
+        if any(other in self.busy or
+               ((live := self.live.get(other)) is not None and live.alive)
+               for other in others):
+            return "Another conversation is using this worktree; stop its run before removing it."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
         args = ["worktree", "remove", path] + (["--force"] if force else [])
         r = _run_git(base, *args)
@@ -1805,6 +1812,8 @@ class Bridge:
             if br.returncode == 0
             else f"Kept branch {branch} — {(br.stderr or '').strip()[:140]}"
         )
+        for other in others:
+            self._set_binding(other, None, str(base))
         self._set_binding(key, None, str(base))  # rebind to the base repo, fresh session
         log(f"worktree remove: {path} (branch {branch})")
         return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}."
@@ -2000,9 +2009,12 @@ class Bridge:
     def _drop_bound_sessions(self) -> int:
         dropped = 0
         for binding in self.bindings.values():
-            if isinstance(binding, dict) and binding.get("session_id"):
+            if not isinstance(binding, dict):
+                continue
+            if binding.get("session_id"):
                 binding["session_id"] = None
                 dropped += 1
+            binding.pop("_fork_source", None)
         self.listings.clear()
         self._save_state()
         return dropped
