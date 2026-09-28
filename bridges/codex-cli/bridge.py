@@ -2009,7 +2009,7 @@ class Bridge:
         if frame.get("thread_id") in self.deleted_thread_roots:
             self.clear_reaction(frame)
             return False
-        if frame is wait["first_frame"] and (frame.get("author") or {}).get("type") == "user":
+        if (frame.get("author") or {}).get("type") == "user":
             self.post(frame, "The main session is still working. This message was not sent; resend it after the main reply finishes.")
         else:
             self._buffer_context(key, frame)
@@ -2024,10 +2024,9 @@ class Bridge:
         if not (self.bindings.get(main_key) or {}).get("session_id"):
             return True
         wait = self.thread_fork_locks.setdefault(
-            key, {"lock": asyncio.Lock(), "deadline": None, "waiting": 0, "first_frame": None})
-        if wait["deadline"] is None:
-            wait["deadline"] = time.monotonic() + FORK_WAIT_SECONDS
-            wait["first_frame"] = frame
+            key, {"lock": asyncio.Lock(), "deadline": None, "waiting": 0})
+        arrival_deadline = time.monotonic() + FORK_WAIT_SECONDS
+        wait["deadline"] = max(wait["deadline"] or arrival_deadline, arrival_deadline)
         wait["waiting"] += 1
         lock = wait["lock"]
         self.set_reaction(frame, "👀")
@@ -2040,14 +2039,12 @@ class Bridge:
             result = self._thread_fork_wait_expired(key, frame, wait)
             wait["waiting"] -= 1
             if not wait["waiting"]:
-                wait["deadline"] = None
-                wait["first_frame"] = None
+                self.thread_fork_locks.pop(key, None)
             return result
         except BaseException:
             wait["waiting"] -= 1
             if not wait["waiting"]:
-                wait["deadline"] = None
-                wait["first_frame"] = None
+                self.thread_fork_locks.pop(key, None)
             self.clear_reaction(frame)
             raise
         try:
@@ -2076,8 +2073,7 @@ class Bridge:
             lock.release()
             wait["waiting"] -= 1
             if not wait["waiting"]:
-                wait["deadline"] = None
-                wait["first_frame"] = None
+                self.thread_fork_locks.pop(key, None)
 
     async def forward_to_codex(
         self, key: str, frame: dict, text: str, from_peer: bool = False

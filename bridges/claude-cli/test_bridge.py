@@ -2371,6 +2371,52 @@ class HistoryAskTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_same_session_id_reports_unsupported_fork(self):
+        binding = {"cwd": "/tmp", "session_id": "old-id", "_fork_source": "old-id"}
+        reply, _ = run_bridge([_result("answer", session_id="old-id")], binding=binding)
+        self.assertEqual(reply, "answer")
+        self.assertTrue(binding["_fork_reused_source"])
+        self.assertEqual(binding["_fork_source"], "old-id")
+
+        b = make_bridge()
+        del b.forward_to_claude
+        b.typing = Mock()
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "old-id",
+                               "_fork_source": "old-id"}
+        async def run(key, frame, current, text):
+            current["_fork_reused_source"] = True
+            return "answer"
+        b.run_claude = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(b.forward_to_claude("c1:42", frame, "hello"))
+        self.assertNotIn("c1:42", b.bindings)
+        self.assertIn("didn't create a separate copy", b.post.call_args.args[1])
+        self.assertIn("reply was added to the main session", b.post.call_args.args[1])
+        self.assertNotIn("no new session ID", b.post.call_args.args[1])
+
+    def test_late_thread_reply_gets_its_own_full_wait(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        b.busy.add("c1")
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 1,
+                 "text": "first", "author": {"type": "user", "name": "Tom"}}
+        second = {"channel_id": "c1", "thread_id": 42, "message_id": 2,
+                  "text": "second", "author": {"type": "user", "name": "Tom"}}
+        async def run():
+            first_task = asyncio.create_task(b._ensure_thread_fork("c1:42", first))
+            await asyncio.sleep(0.05)
+            second_task = asyncio.create_task(b._ensure_thread_fork("c1:42", second))
+            await asyncio.sleep(0)
+            remaining = b.thread_fork_locks["c1:42"]["deadline"] - bridge.time.monotonic()
+            self.assertGreater(remaining, 0.08)
+            return await asyncio.gather(first_task, second_task)
+        with patch.object(bridge, "FORK_WAIT_SECONDS", 0.1):
+            self.assertEqual(asyncio.run(run()), [False, False])
+        self.assertEqual(b.post.call_count, 2)
+        self.assertNotIn("c1:42", b.thread_fork_locks)
+
     def test_concurrent_thread_replies_share_one_wait_deadline(self):
         b = make_bridge()
         b.thread_fork_locks = {}
@@ -2386,10 +2432,11 @@ class ThreadForkTests(unittest.TestCase):
                 b._ensure_thread_fork("c1:42", second))
         with patch.object(bridge, "FORK_WAIT_SECONDS", 0.01):
             self.assertEqual(asyncio.run(run()), [False, False])
-        self.assertEqual(b.post.call_count, 1)
-        self.assertIn("was not sent", b.post.call_args.args[1])
-        self.assertIn("Tom: second", b.context_buffer["c1:42"])
-        self.assertIsNone(b.thread_fork_locks["c1:42"]["deadline"])
+        self.assertEqual(b.post.call_count, 2)
+        self.assertTrue(all("was not sent" in call.args[1]
+                            for call in b.post.call_args_list))
+        self.assertNotIn("c1:42", b.context_buffer)
+        self.assertNotIn("c1:42", b.thread_fork_locks)
 
     def test_shared_removal_is_safe_and_rebinds_only_after_success(self):
         worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
