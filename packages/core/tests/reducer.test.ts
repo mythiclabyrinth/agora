@@ -257,12 +257,38 @@ describe("applyWsEvent message dedupe", () => {
       channel_id: "c1",
       message_id: 7,
       thread_id: 5,
+      reply_count: 1,
+      last_reply_ts: 8,
     };
     // Mutation onSuccess, then the hub broadcast echo.
     applyMessageDelete(qc, ev);
     applyWsEvent(qc, ev, { username: "me" });
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
+    expect(qc.getQueryState(keys.messages("c1", null))?.isInvalidated).toBe(false);
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", 5))!.pages[0].map(m => m.id)).toEqual([8]);
+  });
+
+  it("updates the latest reply time on a new reply and accepts authoritative delete stats", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.messages("c1", null), {
+      pages: [[{ ...msg(5), reply_count: 1, last_reply_ts: 50 }]],
+      pageParams: [undefined],
+    });
+    const reply = { ...msg(11), thread_id: 5, ts: 80 };
+    applyWsEvent(qc, { type: "message", message: reply }, { username: "me" });
+    const root = () => qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0];
+    expect(root()).toMatchObject({ reply_count: 2, last_reply_ts: 80 });
+    const localDelete = { type: "message_delete" as const, channel_id: "c1", message_id: 11,
+      thread_id: 5, reply_count: 1, last_reply_ts: 50 };
+    applyMessageDelete(qc, localDelete);
+    expect(root()).toMatchObject({ reply_count: 1, last_reply_ts: 50 });
+    expect(qc.getQueryState(keys.messages("c1", null))?.isInvalidated).toBe(false);
+    applyWsEvent(qc, localDelete, { username: "me" });
+    expect(root()).toMatchObject({ reply_count: 1, last_reply_ts: 50 });
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", message_id: 10,
+      thread_id: 5, reply_count: 0, last_reply_ts: null }, { username: "me" });
+    expect(root().reply_count).toBe(0);
+    expect(root().last_reply_ts).toBeUndefined();
   });
 
   it("separate QueryClients each apply the same message id independently", () => {

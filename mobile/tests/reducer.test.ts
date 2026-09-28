@@ -90,8 +90,9 @@ describe("appendMessage", () => {
 describe("bumpReplyCount", () => {
   it("increments the root's reply_count", () => {
     const data = pages([msg({ id: 5, reply_count: 1 })]);
-    const out = bumpReplyCount(data, 5)!;
+    const out = bumpReplyCount(data, msg({ id: 6, thread_id: 5, ts: 42 }))!;
     expect(out.pages[0][0].reply_count).toBe(2);
+    expect(out.pages[0][0].last_reply_ts).toBe(42);
   });
 });
 
@@ -483,9 +484,10 @@ describe("removeMessage / dropReplyCount", () => {
 
   it("decrements the root's reply_count, never below zero", () => {
     const data = pages([msg({ id: 5, reply_count: 1 })]);
-    const once = dropReplyCount(data, 5)!;
+    const ev = { type: "message_delete" as const, channel_id: "c1", message_id: 6, thread_id: 5 };
+    const once = dropReplyCount(data, ev)!;
     expect(once.pages[0][0].reply_count).toBe(0);
-    const twice = dropReplyCount(once, 5)!;
+    const twice = dropReplyCount(once, ev)!;
     expect(twice.pages[0][0].reply_count).toBe(0);
   });
 });

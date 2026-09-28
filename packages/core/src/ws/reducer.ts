@@ -111,17 +111,24 @@ export function removeMessage(
   return { ...data, pages: data.pages.map((p) => p.filter((m) => m.id !== messageId)) };
 }
 
-/** A reply was deleted: drop reply_count on its root in the top-level set. */
+/** A reply was deleted: use server stats when available, since the remaining
+    newest reply may not be loaded in this client's thread pages. */
 export function dropReplyCount(
   data: MessagePages | undefined,
-  rootId: number,
+  ev: MessageDeleteEvent,
 ): MessagePages | undefined {
   if (!data) return undefined;
   return {
     ...data,
     pages: data.pages.map((p) =>
       p.map((m) =>
-        m.id === rootId ? { ...m, reply_count: Math.max(0, (m.reply_count ?? 0) - 1) } : m,
+        m.id === ev.thread_id ? {
+          ...m,
+          reply_count: ev.reply_count ?? Math.max(0, (m.reply_count ?? 0) - 1),
+          last_reply_ts: ev.reply_count != null
+            ? (ev.last_reply_ts ?? undefined)
+            : m.last_reply_ts,
+        } : m,
       ),
     ),
   };
@@ -130,14 +137,18 @@ export function dropReplyCount(
 /** A reply arrived: bump reply_count on its root in the top-level page set. */
 export function bumpReplyCount(
   data: MessagePages | undefined,
-  rootId: number,
+  reply: Message,
 ): MessagePages | undefined {
   if (!data) return undefined;
   return {
     ...data,
     pages: data.pages.map((p) =>
       p.map((m) =>
-        m.id === rootId ? { ...m, reply_count: (m.reply_count ?? 0) + 1 } : m,
+        m.id === reply.thread_id ? {
+          ...m,
+          reply_count: (m.reply_count ?? 0) + 1,
+          last_reply_ts: Math.max(m.last_reply_ts ?? 0, reply.ts),
+        } : m,
       ),
     ),
   };
@@ -262,9 +273,9 @@ export function applyAliasToPages(
 
 /** Scrub a deleted message from every cache that may hold it. Shared by the
     WS case and useDeleteMessage's onSuccess. removeMessage / removeQueries /
-    invalidateQueries are safe to repeat; only dropReplyCount is gated so the
-    mutation + WS echo don't double-decrement, while the echo can still
-    re-invalidate threads/stars/pins. A root takes its whole thread with it
+    invalidateQueries are safe to repeat; fallback decrement is gated so the
+    mutation + WS echo don't double-decrement, while authoritative server
+    stats can still replace it. A root takes its whole thread with it
     server-side, so its reply page set and single-message cache go too. */
 export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): void {
   qc.setQueryData<MessagePages>(
@@ -272,11 +283,13 @@ export function applyMessageDelete(qc: QueryClient, ev: MessageDeleteEvent): voi
     (data) => removeMessage(data, ev.message_id),
   );
   if (ev.thread_id != null) {
-    // dropReplyCount is the only non-idempotent step — claim just around it.
-    if (claimId(deletedMessageIds, qc, ev.message_id)) {
+    // An authoritative WS echo may arrive after the local mutation applied a
+    // fallback decrement, so always allow its server stats to replace that.
+    const firstDelete = claimId(deletedMessageIds, qc, ev.message_id);
+    if (ev.reply_count != null || firstDelete) {
       qc.setQueryData<MessagePages>(
         keys.messages(ev.channel_id, null),
-        (data) => dropReplyCount(data, ev.thread_id!),
+        (data) => dropReplyCount(data, ev),
       );
     }
   } else {
@@ -406,7 +419,7 @@ export function applyWsEvent(
       if (message.thread_id != null) {
         qc.setQueryData<MessagePages>(
           keys.messages(message.channel_id, null),
-          (data) => bumpReplyCount(data, message.thread_id!),
+          (data) => bumpReplyCount(data, message),
         );
       }
       qc.setQueryData<Group[]>(keys.groups, (groups) =>

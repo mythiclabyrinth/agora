@@ -875,12 +875,22 @@ select {
 .ago-thread-btn { color: var(--faint); opacity: 0; transition: opacity .15s ease; }
 .ago-bubble:hover .ago-thread-btn { opacity: 1; }
 .ago-thread-btn:hover, .ago-replies:hover { color: var(--a1); }
-/* Thread names use the remaining footer width, capped for scanning; auto
-   margin anchors shorter names to the end of the conversation row. */
+/* Names distinguish identical roots. The meta column uses the width left by
+   the count, with enough room for a readable truncated name on narrow rows. */
+.ago-thread-meta {
+  display: flex; flex: 1 1 0; min-width: 72px; margin-top: 6px;
+  flex-direction: column; align-items: flex-end; justify-content: center;
+}
+/* Auto-sized names end at the bubble edge; long names truncate in the column. */
 .ago-thread-alias {
-  flex: 1 1 0; min-width: 90px; margin-top: 6px;
+  display: block; max-width: 100%;
   font-size: 10.5px; font-weight: 600; letter-spacing: .01em; color: var(--faint);
   text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ago-last-reply {
+  display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: right; color: var(--faint);
+  font-size: 10px; line-height: 1.15;
 }
 /* "Load earlier messages", at the top of a log that has more history. Both
    states are one line tall so the row never changes height mid-scroll. */

@@ -68,6 +68,7 @@ export const NamedThreadRoot: Story = {
       ...fixtureRootMessage,
       text: "/new ~/Coding/Projects/agora",
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: "Agora history paging",
     },
     onOpenThread: fn(),
@@ -80,6 +81,7 @@ export const NamedThreadRootTruncated: Story = {
       ...fixtureRootMessage,
       text: "/new ~/Coding/Projects/agora",
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: "Voice notes: preserve posts after a client disconnects mid-recording",
     },
     onOpenThread: fn(),
@@ -92,8 +94,23 @@ export const UnnamedThreadRoot: Story = {
       ...fixtureRootMessage,
       text: "/new ~/Coding/Projects/agora",
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: null,
     },
+    onOpenThread: fn(),
+  },
+};
+export const OldReply: Story = {
+  args: {
+    session,
+    message: { ...fixtureRootMessage, reply_count: 2, alias: "Archive", last_reply_ts: new Date(new Date().getFullYear() - 1, 8, 28, 14, 15).getTime() / 1000 },
+    onOpenThread: fn(),
+  },
+};
+export const MissingReplyTime: Story = {
+  args: {
+    session,
+    message: { ...fixtureRootMessage, reply_count: 2, alias: "Older server", last_reply_ts: undefined },
     onOpenThread: fn(),
   },
 };

@@ -135,6 +135,7 @@ export const NamedThreadRoot: Story = {
       text: "/new ~/Coding/Projects/agora",
       reactions: [],
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: "A deliberately long thread name that has to be truncated",
     },
   },
@@ -142,6 +143,7 @@ export const NamedThreadRoot: Story = {
     const canvas = within(canvasElement);
     const label = await canvas.findByTitle("A deliberately long thread name that has to be truncated");
     await expect(label).toBeVisible();
+    await expect(canvas.findByText(/Last reply at/)).resolves.toBeVisible();
     // The label belongs to the affordance row, never the message body.
     await expect(label.closest(".ago-bubble-foot")).not.toBeNull();
     await expect(canvas.getByText("83 replies →")).toBeVisible();
@@ -174,6 +176,7 @@ export const NamedThreadRootWidensWithMessage: Story = {
       text: "/new ~/Coding/Projects/agora --resume --model opus --permission-mode acceptEdits",
       reactions: [],
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: "A deliberately long thread name that has to be truncated",
     },
   },
@@ -199,6 +202,7 @@ export const UnnamedThreadRoot: Story = {
       text: "/new ~/Coding/Projects/agora",
       reactions: [],
       reply_count: 83,
+      last_reply_ts: Math.floor(Date.now() / 1000),
       alias: null,
     },
   },
@@ -206,6 +210,21 @@ export const UnnamedThreadRoot: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("83 replies →")).resolves.toBeVisible();
     expect(canvasElement.querySelector(".ago-thread-alias")).toBeNull();
+    await expect(canvas.findByText(/Last reply at/)).resolves.toBeVisible();
+  },
+};
+
+export const OldReply: Story = {
+  args: { message: { ...message, reply_count: 2, alias: "Archive", last_reply_ts: new Date(new Date().getFullYear() - 1, 8, 28, 14, 15).getTime() / 1000 } },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText(new RegExp(`Last reply at .*${new Date().getFullYear() - 1}`))).resolves.toBeVisible();
+  },
+};
+
+export const MissingReplyTime: Story = {
+  args: { message: { ...message, reply_count: 2, alias: "Older server", last_reply_ts: undefined } },
+  play: async ({ canvasElement }) => {
+    expect(within(canvasElement).queryByText(/Last reply at/)).not.toBeInTheDocument();
   },
 };
 

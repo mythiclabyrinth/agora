@@ -183,6 +183,29 @@ test("tapping a reaction does not open the thread", () => {
   expect(onOpenThread).not.toHaveBeenCalled();
 });
 
+test.each(["Named thread", null])("shows the compact reply time with thread name %s", (alias) => {
+  const m = { ...message("/new ~/project"), alias, reply_count: 2,
+    last_reply_ts: new Date(2025, 8, 28, 14, 15).getTime() / 1000 };
+  const tree = render(m, undefined, () => {});
+  const labels = tree.root.findAllByType(Text).map(node => node.props.children).flat().join(" ");
+  expect(labels).toContain("Last reply at");
+  expect(labels).toContain("2025");
+  expect(labels.includes("Named thread")).toBe(!!alias);
+  const replyTime = tree.root.find(node => node.type === Text
+    && typeof node.props.accessibilityLabel === "string"
+    && node.props.accessibilityLabel.startsWith("Last reply at"));
+  expect(replyTime.props.numberOfLines).toBe(1);
+  expect(replyTime.props.maxFontSizeMultiplier).toBe(1.2);
+});
+
+test("hides reply time when an older server omits it", () => {
+  const m = { ...message("/new ~/project"), alias: "Named thread", reply_count: 2 };
+  const tree = render(m, undefined, () => {});
+  expect(tree.root.findAll(node => node.type === Text
+    && typeof node.props.accessibilityLabel === "string"
+    && node.props.accessibilityLabel.startsWith("Last reply at"))).toHaveLength(0);
+});
+
 test.each([
   ["current-user", "alice"],
   ["other-user", "bob"],

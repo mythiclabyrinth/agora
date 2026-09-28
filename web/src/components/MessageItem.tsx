@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { create } from "zustand";
 import {
-  fmtTs, tldrOf, useAgents, useDeleteMessage, useEditMessage, useMe, usePinMessage, usePins,
+  fmtLastReply, fmtTs, tldrOf, useAgents, useDeleteMessage, useEditMessage, useMe, usePinMessage, usePins,
   FEATURES, useStarMessage, useStars, useTldrView, type LinkPreview, type Message,
 } from "@agora/core";
 import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
@@ -292,12 +292,14 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
             {m.reply_count} repl{m.reply_count === 1 ? "y" : "ies"} →
           </button>
         )}
-        {/* A named thread tells its roots apart when the text cannot — a channel
-            of identical "/new ~/project" roots is otherwise unreadable. Last in
-            the foot and pushed right by margin-left:auto, so it lands in the
-            bubble's bottom-right corner and never crowds the message body. */}
-        {!inThread && !!m.reply_count && !!m.alias?.trim() && (
-          <span className="ago-thread-alias" title={m.alias.trim()}>{m.alias.trim()}</span>
+        {/* The name distinguishes roots with identical text, while the latest
+            reply stays directly below it. Both occupy the right footer slot. */}
+        {!inThread && !!m.reply_count && (!!m.alias?.trim() || !!m.last_reply_ts) && (
+          <span className="ago-thread-meta">
+            {!!m.alias?.trim() && <span className="ago-thread-alias" title={m.alias.trim()}>{m.alias.trim()}</span>}
+            {!!m.last_reply_ts && <time className="ago-last-reply" dateTime={new Date(m.last_reply_ts * 1000).toISOString()}
+              title={fmtTs(m.last_reply_ts)}>Last reply at {fmtLastReply(m.last_reply_ts)}</time>}
+          </span>
         )}
       </div>
     </div>
