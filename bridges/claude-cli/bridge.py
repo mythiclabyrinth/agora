@@ -912,7 +912,7 @@ class Bridge:
         self._account_state_valid = True
         self.account_auth_problem: str | None = None
         self.busy: set[str] = set()
-        self.thread_fork_locks: dict[str, asyncio.Lock] = {}
+        self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
@@ -1770,14 +1770,14 @@ class Bridge:
             lines.append(f"• [{k}] {wt['branch']} → {wt['path']}{missing}")
         return "\n".join(lines)
 
-    def _remove_worktree(self, key: str, force: bool) -> str:
+    def _remove_worktree(self, key: str, force: bool, shared: bool = False) -> str:
         wt = (self.bindings.get(key) or {}).get("worktree")
         if not wt:
             return "No worktree on this thread."
         others = [other for other, binding in self.bindings.items()
                   if other != key and isinstance(binding, dict)
                   and (binding.get("worktree") or {}).get("path") == wt["path"]]
-        if others and not force:
+        if others and not (force or shared):
             channel = key.split(":", 1)[0]
             same_threads = sum(other.split(":", 1)[0] == channel and other != channel
                                for other in others)
@@ -1792,7 +1792,7 @@ class Bridge:
                 names.append("another channel" if other_channels == 1
                              else f"{other_channels} conversations in other channels")
             return (f"This worktree is shared with {', '.join(names)}; "
-                    "move those conversations with /worktree or /new, or use /worktree remove force to move them back to the base repo.")
+                    "move those conversations with /worktree or /new, or use /worktree remove shared to move them back safely.")
         # `busy` used to mean "a child is running here", but a child held for
         # background work has no in-flight turn — and this worktree is still its
         # cwd. Removing it would delete the tree from under a live writer.
@@ -1804,6 +1804,15 @@ class Bridge:
                for other in others):
             return "Another conversation is using this worktree; stop its run before removing it."
         base, path, branch = Path(wt["base"]), wt["path"], wt["branch"]
+        if shared and not force:
+            status = _run_git(Path(path), "status", "--porcelain")
+            if status.returncode != 0:
+                return f"Could not check worktree changes: {(status.stderr or status.stdout).strip()[:400]}"
+            if (status.stdout or "").strip():
+                return "This worktree has uncommitted changes. Commit them before /worktree remove shared."
+            merged = _run_git(base, "merge-base", "--is-ancestor", branch, "HEAD")
+            if merged.returncode != 0:
+                return "This branch is not merged into the base repo. Merge it before /worktree remove shared."
         args = ["worktree", "remove", path] + (["--force"] if force else [])
         r = _run_git(base, *args)
         if r.returncode != 0:
@@ -1825,7 +1834,8 @@ class Bridge:
             self._set_binding(other, None, str(base))
         self._set_binding(key, None, str(base))  # rebind to the base repo, fresh session
         log(f"worktree remove: {path} (branch {branch})")
-        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}."
+        warning = "\nForce removal may have discarded uncommitted changes and an unmerged branch." if force else ""
+        return f"Removed worktree {path}.\n{branch_note}\nThread rebound to {base}.{warning}"
 
     def _cmd_worktree(self, key: str, arg: str) -> str:
         sub, _, rest = arg.partition(" ")
@@ -1835,8 +1845,12 @@ class Bridge:
         if sub == "list":
             return self._worktree_list()
         if sub == "remove":
-            return self._remove_worktree(key, force=("force" in rest.split()
-                                                     or "--force" in rest.split()))
+            options = set(rest.split())
+            force = bool(options & {"force", "--force"})
+            shared = bool(options & {"shared", "--shared"})
+            if force and shared:
+                return "Choose /worktree remove shared or /worktree remove force, not both."
+            return self._remove_worktree(key, force=force, shared=shared)
         # Anything else is a repo path: /worktree <repo> [branch]
         repo_arg, _, branch_arg = arg.partition(" ")
         return self._create_worktree(key, repo_arg.strip(), branch_arg.strip())
@@ -2116,6 +2130,17 @@ class Bridge:
 
     # ------------------------------------------------------------ claude
 
+    def _thread_fork_wait_expired(self, key: str, frame: dict, wait: dict) -> bool:
+        if frame.get("thread_id") in self.deleted_thread_roots:
+            self.clear_reaction(frame)
+            return False
+        if frame is wait["first_frame"] and (frame.get("author") or {}).get("type") == "user":
+            self.post(frame, "The main session is still working. This message was not sent; resend it after the main reply finishes.")
+        else:
+            self._buffer_context(key, frame)
+        self.clear_reaction(frame)
+        return False
+
     async def _ensure_thread_fork(self, key: str, frame: dict) -> bool:
         thread_id = frame.get("thread_id")
         if not thread_id or key in self.bindings:
@@ -2123,23 +2148,42 @@ class Bridge:
         main_key = frame["channel_id"]
         if not (self.bindings.get(main_key) or {}).get("session_id"):
             return True
-        lock = self.thread_fork_locks.setdefault(key, asyncio.Lock())
-        async with lock:
+        wait = self.thread_fork_locks.setdefault(
+            key, {"lock": asyncio.Lock(), "deadline": None, "waiting": 0, "first_frame": None})
+        if wait["deadline"] is None:
+            wait["deadline"] = time.monotonic() + FORK_WAIT_SECONDS
+            wait["first_frame"] = frame
+        wait["waiting"] += 1
+        lock = wait["lock"]
+        self.set_reaction(frame, "👀")
+        try:
+            if lock.locked():
+                await asyncio.wait_for(lock.acquire(), max(0, wait["deadline"] - time.monotonic()))
+            else:
+                await lock.acquire()
+        except TimeoutError:
+            result = self._thread_fork_wait_expired(key, frame, wait)
+            wait["waiting"] -= 1
+            if not wait["waiting"]:
+                wait["deadline"] = None
+                wait["first_frame"] = None
+            return result
+        except BaseException:
+            wait["waiting"] -= 1
+            if not wait["waiting"]:
+                wait["deadline"] = None
+                wait["first_frame"] = None
+            self.clear_reaction(frame)
+            raise
+        try:
             if key in self.bindings:
                 return True
-            self.set_reaction(frame, "👀")
-            deadline = time.monotonic() + FORK_WAIT_SECONDS
             while main_key in self.busy:
                 if thread_id in self.deleted_thread_roots:
                     self.clear_reaction(frame)
                     return False
-                if time.monotonic() >= deadline:
-                    if (frame.get("author") or {}).get("type") == "user":
-                        self.post(frame, "The main session is still working. This message was not sent; resend it after the main reply finishes.")
-                    else:
-                        self._buffer_context(key, frame)
-                    self.clear_reaction(frame)
-                    return False
+                if time.monotonic() >= wait["deadline"]:
+                    return self._thread_fork_wait_expired(key, frame, wait)
                 await asyncio.sleep(0.2)
             if thread_id in self.deleted_thread_roots:
                 self.clear_reaction(frame)
@@ -2153,6 +2197,12 @@ class Bridge:
             binding["_fork_source"] = source["session_id"]
             self.bindings[key] = binding
             return True
+        finally:
+            lock.release()
+            wait["waiting"] -= 1
+            if not wait["waiting"]:
+                wait["deadline"] = None
+                wait["first_frame"] = None
 
     async def forward_to_claude(
         self, key: str, frame: dict, text: str, from_peer: bool = False

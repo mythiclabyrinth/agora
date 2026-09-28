@@ -264,6 +264,10 @@ finishes first. Both conversations share project files. Use `/worktree <repo>`
 in the thread for a separate folder and a fresh session there. `/use` and
 `/new` in the thread replace its binding.
 
+`/worktree remove shared` moves other idle conversations back to the base
+repo and refuses dirty or unmerged work. `/worktree remove force` discards
+uncommitted changes and can delete an unmerged branch.
+
 ## Multiple accounts
 
 Claude Code scopes its login, settings and sessions to `CLAUDE_CONFIG_DIR`, so

@@ -1092,6 +1092,97 @@ class PartialStreamTests(unittest.TestCase):
 
 
 class ThreadForkTests(unittest.TestCase):
+    def test_concurrent_thread_replies_share_one_wait_deadline(self):
+        b = make_bridge()
+        b.thread_fork_locks = {}
+        b.bindings["c1"] = {"session_id": "main", "cwd": "/tmp"}
+        b.busy.add("c1")
+        first = {"channel_id": "c1", "thread_id": 42, "message_id": 1,
+                 "text": "first", "author": {"type": "user", "name": "Tom"}}
+        second = {"channel_id": "c1", "thread_id": 42, "message_id": 2,
+                  "text": "second", "author": {"type": "user", "name": "Tom"}}
+        async def run():
+            return await asyncio.gather(
+                b._ensure_thread_fork("c1:42", first),
+                b._ensure_thread_fork("c1:42", second))
+        with patch.object(bridge, "FORK_WAIT_SECONDS", 0.01):
+            self.assertEqual(asyncio.run(run()), [False, False])
+        self.assertEqual(b.post.call_count, 1)
+        self.assertIn("was not sent", b.post.call_args.args[1])
+        self.assertIn("Tom: second", b.context_buffer["c1:42"])
+        self.assertIsNone(b.thread_fork_locks["c1:42"]["deadline"])
+
+    def test_shared_removal_is_safe_and_rebinds_only_after_success(self):
+        worktree = {"path": "/tmp/shared", "branch": "feature", "base": "/tmp"}
+        ok = Mock(returncode=0, stdout="", stderr="")
+        for result, expected, calls in (
+            (Mock(returncode=0, stdout=" M changed.py", stderr=""), "uncommitted", 1),
+            (Mock(returncode=1, stdout="", stderr=""), "not merged", 2),
+            (ok, "Removed worktree", 4),
+        ):
+            b = make_bridge()
+            b._save_state = Mock()
+            b.bindings = {"c1": {"worktree": dict(worktree), "cwd": "/tmp/shared"},
+                          "c1:42": {"worktree": dict(worktree), "cwd": "/tmp/shared"}}
+            results = ([result] if calls == 1 else
+                       [ok, result] if calls == 2 else [ok, ok, ok, ok])
+            with patch.object(bridge, "_run_git", side_effect=results) as git:
+                message = b._cmd_worktree("c1", "remove shared")
+            self.assertIn(expected, message)
+            self.assertEqual(git.call_count, calls)
+            self.assertTrue(all("--force" not in args.args and "-D" not in args.args
+                                for args in git.call_args_list))
+            if calls == 4:
+                self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp")
+                self.assertNotIn("worktree", b.bindings["c1:42"])
+            else:
+                self.assertEqual(b.bindings["c1:42"]["cwd"], "/tmp/shared")
+
+    def test_shared_removal_checks_real_git_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "repo"
+            worktree_path = Path(tmp) / "worktree"
+            base.mkdir()
+            def git(repo, *args):
+                result = bridge._run_git(repo, *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            git(base, "init")
+            git(base, "config", "user.name", "Agora Test")
+            git(base, "config", "user.email", "agora@example.test")
+            (base / "README").write_text("initial\n")
+            git(base, "add", "README")
+            git(base, "commit", "-m", "initial")
+            git(base, "worktree", "add", str(worktree_path), "-b", "feature")
+            b = make_bridge()
+            b._save_state = Mock()
+            worktree = {"path": str(worktree_path), "branch": "feature",
+                        "base": str(base)}
+            b.bindings = {"c1": {"worktree": worktree, "cwd": str(worktree_path)},
+                          "c1:42": {"worktree": dict(worktree), "cwd": str(worktree_path)}}
+            (worktree_path / "dirty.txt").write_text("unsaved\n")
+            self.assertIn("uncommitted", b._cmd_worktree("c1", "remove shared"))
+            self.assertTrue(worktree_path.exists())
+            (worktree_path / "dirty.txt").unlink()
+            (worktree_path / "feature.txt").write_text("committed\n")
+            git(worktree_path, "add", "feature.txt")
+            git(worktree_path, "commit", "-m", "feature")
+            self.assertIn("not merged", b._cmd_worktree("c1", "remove shared"))
+            self.assertTrue(worktree_path.exists())
+            git(base, "merge", "feature")
+            self.assertIn("Removed worktree", b._cmd_worktree("c1", "remove shared"))
+            self.assertFalse(worktree_path.exists())
+            self.assertEqual(b.bindings["c1:42"]["cwd"], str(base))
+
+    def test_force_removal_reply_warns_about_discarded_changes(self):
+        b = make_bridge()
+        b._save_state = Mock()
+        b.bindings["c1"] = {"worktree": {"path": "/tmp/worktree",
+                                        "branch": "feature", "base": "/tmp"},
+                             "cwd": "/tmp/worktree"}
+        with patch.object(bridge, "_run_git", return_value=Mock(returncode=0)):
+            message = b._cmd_worktree("c1", "remove force")
+        self.assertIn("discarded uncommitted changes", message)
+
     def test_cursor_error_after_agent_activity_does_not_retry_from_history(self):
         b = make_bridge()
         del b.forward_to_agent
@@ -1190,7 +1281,7 @@ class ThreadForkTests(unittest.TestCase):
         b._save_state = Mock()
         copied_id = str(uuid.uuid4())
         b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
-                               "_cursor_copy": True}
+                               "_cursor_copy": True, "_cursor_copy_id": copied_id}
         with patch.object(bridge, "remove_cursor_copy") as remove:
             b._set_binding("c1:42", None, "/tmp/new")
         remove.assert_called_once_with(copied_id)
@@ -1241,7 +1332,9 @@ class ThreadForkTests(unittest.TestCase):
         copied_id = str(uuid.uuid4())
         b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
                                "_cursor_copy": True}
+        prompts = []
         async def run(key, frame, binding, prompt, activity=None):
+            prompts.append(prompt)
             if binding.get("_cursor_copy"):
                 return "(agent error) invalid copied session"
             binding["session_id"] = "new-session"
@@ -1253,8 +1346,34 @@ class ThreadForkTests(unittest.TestCase):
             asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
         remove.assert_called_once_with(copied_id)
         self.assertEqual(b.run_agent.await_count, 2)
+        self.assertIn("for context only — you did not reply to these", prompts[1])
         self.assertIn("history answer", b.post.call_args.args[1])
         self.assertEqual(b.bindings["c1:42"]["session_id"], "new-session")
+
+    def test_successful_cursor_turn_removes_unused_original_copy(self):
+        b = make_bridge()
+        del b.forward_to_agent
+        b.typing = Mock()
+        b._save_state = Mock()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        copied_id = str(uuid.uuid4())
+        new_id = str(uuid.uuid4())
+        b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": copied_id,
+                               "_cursor_copy": True, "_cursor_copy_id": copied_id}
+        async def run(key, frame, binding, text, activity):
+            binding["session_id"] = new_id
+            return "done"
+        b.run_agent = AsyncMock(side_effect=run)
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7,
+                 "author": {"type": "user", "name": "Tom"}}
+        with patch.object(bridge, "remove_cursor_copy") as remove:
+            asyncio.run(b.forward_to_agent("c1:42", frame, "hello"))
+        remove.assert_called_once_with(copied_id)
+        self.assertEqual(b.bindings["c1:42"]["session_id"], new_id)
+        self.assertNotIn("_cursor_copy_id", b.bindings["c1:42"])
 
     def test_stop_on_first_copied_turn_keeps_copy_without_history_retry(self):
         b = make_bridge()

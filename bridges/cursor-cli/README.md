@@ -50,7 +50,7 @@ computer. Keep the computer awake and the bridge running for remote access.
 | `/use <n \| session-id>` | Bind the Agora channel/thread to a session |
 | `/new <dir>` | Start a fresh session under an allowed root |
 | `/worktree <repo> [branch]` | Create and bind an isolated Git worktree |
-| `/worktree show` / `/worktree remove [force]` | Inspect or remove the thread's worktree |
+| `/worktree show` / `/worktree remove [shared\|force]` | Inspect or remove the thread's worktree. `shared` safely moves other conversations back to the base repo and refuses dirty or unmerged work; `force` discards uncommitted changes and can delete an unmerged branch. |
 | `/worktrees` | List worktrees managed by this bridge |
 | `/models` | Query the installed CLI for models available to the account |
 | `/model <alias \| id \| default>` | Store a model override; aliases: `grok`, `opus`, `sonnet`, `fable`, `sol`, `luna`, `terra`, `composer`, `kimi` |
