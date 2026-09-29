@@ -1,6 +1,6 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { Text } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { fmtLastReply } from "@agora/core";
 import { ThreadTimeMeta } from "../src/components/ThreadTimeMeta";
 
@@ -19,6 +19,8 @@ it("shows the relative time above a compact accessible last-reply label", () => 
     expect(texts[1].props.accessibilityLabel).toContain("2025");
     expect(texts[1].props.numberOfLines).toBe(1);
     expect(texts[1].props.maxFontSizeMultiplier).toBe(1.2);
+    expect(StyleSheet.flatten(texts[1].props.style).fontSize).toBe(9.5);
+    expect(StyleSheet.flatten(tree.root.findByType(View).props.style).maxWidth).toBe(180);
     act(() => tree.unmount());
   } finally {
     nowSpy.mockRestore();

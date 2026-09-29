@@ -153,14 +153,19 @@ export const ReplyTimeStackOnNarrowScreen: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    const row = canvasElement.querySelector(".ago-inbox-row");
-    const stack = row?.querySelector(".ago-inbox-time-stack");
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const stack = row.querySelector(".ago-inbox-time-stack");
     const relative = stack?.querySelector(".ts");
     const lastReply = stack?.querySelector(".ago-inbox-last-reply");
     await expect(relative).toHaveTextContent("5m");
     await expect(lastReply).toHaveTextContent(/^Last reply at /);
     expect(lastReply!.getBoundingClientRect().top).toBeGreaterThan(relative!.getBoundingClientRect().top);
-    expect(stack!.getBoundingClientRect().width).toBeLessThanOrEqual(180);
+    expect(lastReply!.scrollWidth).toBeLessThanOrEqual(lastReply!.clientWidth);
+    expect(stack!.getBoundingClientRect().width).toBeLessThanOrEqual(150);
   },
 };
 
@@ -175,8 +180,13 @@ export const MissingReplyTimestamp: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    await expect(canvasElement.querySelector(".ago-inbox-time-stack .ts")).toBeVisible();
-    expect(canvasElement.querySelector(".ago-inbox-last-reply")).toBeNull();
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    await expect(row.querySelector(".ago-inbox-time-stack .ts")).toBeVisible();
+    expect(row.querySelector(".ago-inbox-last-reply")).toBeNull();
   },
 };
 
