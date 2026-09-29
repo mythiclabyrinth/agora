@@ -366,9 +366,11 @@ class LiveRun:
         self.waiters: deque = deque()
         self.owed_reports: set[str] = set()  # departed tasks awaiting a report
         self.report_order: deque[str] = deque()
+        self.anon_task_serial = 0
         self.handled_tasks: set[str] = set()  # stopped or collected by the model
         self.pending_stops: dict[str, str] = {}  # tool-use ID to task ID
         self.last_event_was_result = True
+        self.events_seen = 0
         self.closing = False
         # Deliberately ended (by /stop, or by a command that rebound the
         # conversation) rather than having died on its own. Waiters report
@@ -2977,8 +2979,9 @@ class Bridge:
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         live.waiters.append({"fut": fut, "frame": frame,
                              "prior_owed": set(live.owed_reports),
-                             "ahead": len(live.owed_reports)})
-        was_result = live.last_event_was_result
+                             "ahead": len(live.owed_reports),
+                             "events_seen": live.events_seen,
+                             "was_result": live.last_event_was_result})
         live.last_event_was_result = False
         try:
             await self._send_to_claude(live.proc, {
@@ -2987,7 +2990,6 @@ class Bridge:
             })
         except Exception:
             self._drop_waiter(live, fut)
-            live.last_event_was_result = was_result
             raise
         log(f"injected turn into live run for {live.key}: tasks={len(live.tasks)} "
             f"owed={sorted(live.owed_reports)} "
@@ -3001,7 +3003,11 @@ class Bridge:
 
     @staticmethod
     def _drop_waiter(live: LiveRun, fut: asyncio.Future) -> None:
+        dropped = next((w for w in live.waiters if w["fut"] is fut), None)
         live.waiters = deque(w for w in live.waiters if w["fut"] is not fut)
+        if (dropped is not None and not live.waiters
+                and dropped.get("events_seen") == live.events_seen):
+            live.last_event_was_result = dropped["was_result"]
 
     async def _followup_loop(self, live: LiveRun, perm_tasks: list[asyncio.Task]) -> None:
         """Sole reader of a live child's stdout.
@@ -3071,6 +3077,7 @@ class Bridge:
                     continue
                 if not raw:
                     break  # child exited on its own
+                live.events_seen += 1
                 last_event = time.monotonic()
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
@@ -3091,11 +3098,19 @@ class Bridge:
                     listed = listed if isinstance(listed, list) else []
                     # A departed task may wake the model for a report. A task
                     # the model stopped or collected itself will not do so.
-                    gone = ({t.get("task_id") for t in live.tasks if isinstance(t, dict)}
-                            - {t.get("task_id") for t in listed if isinstance(t, dict)})
+                    gone = ({t["task_id"] for t in live.tasks if isinstance(t, dict)
+                             and isinstance(t.get("task_id"), str)}
+                            - {t["task_id"] for t in listed if isinstance(t, dict)
+                               and isinstance(t.get("task_id"), str)})
+                    previous_anon = sum(isinstance(t, dict) and not isinstance(
+                        t.get("task_id"), str) for t in live.tasks)
+                    current_anon = sum(isinstance(t, dict) and not isinstance(
+                        t.get("task_id"), str) for t in listed)
+                    for _ in range(max(0, previous_anon - current_anon)):
+                        live.anon_task_serial += 1
+                        gone.add(f"__anon:{live.anon_task_serial}")
                     for task_id in gone:
-                        if (isinstance(task_id, str) and task_id not in live.handled_tasks
-                                and task_id not in live.owed_reports):
+                        if task_id not in live.handled_tasks and task_id not in live.owed_reports:
                             live.owed_reports.add(task_id)
                             live.report_order.append(task_id)
                     live.tasks = listed
@@ -3107,6 +3122,8 @@ class Bridge:
                         if not isinstance(args, dict):
                             continue
                         if name in ("TaskStop", "KillShell"):
+                            # The CLI's shell_id and task_id refer to the same
+                            # background inventory ID space.
                             task_id = args.get("task_id") or args.get("shell_id")
                             tool_id = block.get("id")
                             if isinstance(task_id, str) and isinstance(tool_id, str):
@@ -3299,12 +3316,8 @@ class Bridge:
         else:
             return
         for waiter in live.waiters:
-            prior = waiter.get("prior_owed")
-            if prior is not None:
-                prior.discard(task_id)
-                waiter["ahead"] = len(prior)
-            elif waiter["ahead"] > 0:
-                waiter["ahead"] -= 1
+            waiter["prior_owed"].discard(task_id)
+            waiter["ahead"] = len(waiter["prior_owed"])
 
     @staticmethod
     def _mark_task_handled(live: LiveRun, task_id: str) -> None:
@@ -3312,13 +3325,10 @@ class Bridge:
         live.handled_tasks.add(task_id)
         if task_id in live.owed_reports:
             live.owed_reports.remove(task_id)
+            # report_order keeps FIFO history; _settle_report skips removed IDs.
             for waiter in live.waiters:
-                prior = waiter.get("prior_owed")
-                if prior is not None:
-                    prior.discard(task_id)
-                    waiter["ahead"] = len(prior)
-                else:
-                    waiter["ahead"] = min(waiter["ahead"], len(live.owed_reports))
+                waiter["prior_owed"].discard(task_id)
+                waiter["ahead"] = len(waiter["prior_owed"])
 
     @staticmethod
     def _stopped_message(live: LiveRun) -> str:

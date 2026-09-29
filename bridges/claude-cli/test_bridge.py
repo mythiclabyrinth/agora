@@ -859,6 +859,11 @@ def _tasks_with_ids(*entries):
     })
 
 
+def _tasks_without_id():
+    return json.dumps({"type": "system", "subtype": "background_tasks_changed",
+                       "tasks": [{"description": "anonymous background job"}]})
+
+
 def _tool(name, task_id, tool_id="call-1", id_key="task_id"):
     return json.dumps({"type": "assistant", "message": {"content": [{
         "type": "tool_use", "id": tool_id, "name": name,
@@ -1105,6 +1110,33 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual(b.post.call_count, 1)
         self.assertIn("nothing further will be reported",
                       b.post.call_args_list[-1].args[1])
+
+    def test_silent_injected_turn_releases_after_waiter_times_out(self):
+        async def main():
+            b = followup_bridge(idle=0.16)
+            b.followup_task_idle_timeout = 2.0
+            b.timeout = 0.05
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            await asyncio.sleep(0.02)
+            b._send_to_claude = AsyncMock()
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                await b.run_claude("k", {"channel_id": "c1"},
+                                   b.bindings["k"], "silent follow up")
+            await asyncio.wait_for(b.live["k"].reader, 0.8)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+
+    def test_departed_task_without_id_still_owes_report(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks_without_id(), _result("started")],
+            pre_inject=[_tasks()],
+            inject=[_result("anonymous report"), _result("answer to comment")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["anonymous report"])
 
     def test_child_is_held_when_the_reply_leaves_background_work_running(self):
         first, b, _ = run_bridge_with_followups(
