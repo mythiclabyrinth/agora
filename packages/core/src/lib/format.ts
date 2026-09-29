@@ -22,8 +22,7 @@ export function fmtRelative(ts: number, now = Date.now()): string {
 
 /** True for nonzero timestamps representable by JavaScript Date. */
 export function validLastReplyTs(ts: number | null | undefined): ts is number {
-  return typeof ts === "number" && Number.isFinite(ts) && ts !== 0
-    && Math.abs(ts) <= 8.64e12;
+  return typeof ts === "number" && Number.isFinite(ts) && ts > 0 && ts <= 8.64e12;
 }
 
 /** Compact, local-time label for a thread's latest reply. */

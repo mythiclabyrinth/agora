@@ -1,10 +1,11 @@
 import type { ThreadRow } from "../api/types";
+import { validLastReplyTs } from "./format";
 
 export type ThreadSort = "recent" | "oldest" | "az" | "za";
 export type ThreadFilter = "all" | "saved" | "unset";
 
-function activityTs(thread: ThreadRow): number {
-  return thread.last_reply_ts || thread.root.ts;
+export function threadActivityTs(thread: ThreadRow): number {
+  return validLastReplyTs(thread.last_reply_ts) ? thread.last_reply_ts : thread.root.ts;
 }
 
 function alphabeticalKey(thread: ThreadRow): string {
@@ -23,7 +24,7 @@ function compareAlphabetically(a: ThreadRow, b: ThreadRow, direction: 1 | -1): n
   }
   const byName = aKey.localeCompare(bKey, undefined, { sensitivity: "base", numeric: true });
   if (byName) return byName * direction;
-  return activityTs(b) - activityTs(a) || a.root.id - b.root.id;
+  return threadActivityTs(b) - threadActivityTs(a) || a.root.id - b.root.id;
 }
 
 /** Filter and order the fetched Threads inbox without mutating its query-cache array. */
@@ -39,7 +40,7 @@ export function filterAndSortThreads(
   // The server and WS reducer already maintain recent order; preserve it exactly.
   if (sort === "recent") return filtered;
   return [...filtered].sort((a, b) => {
-    if (sort === "oldest") return activityTs(a) - activityTs(b) || a.root.id - b.root.id;
+    if (sort === "oldest") return threadActivityTs(a) - threadActivityTs(b) || a.root.id - b.root.id;
     return compareAlphabetically(a, b, sort === "az" ? 1 : -1);
   });
 }

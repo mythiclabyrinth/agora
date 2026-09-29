@@ -25,6 +25,7 @@ describe("validLastReplyTs", () => {
     expect(validLastReplyTs(1)).toBe(true);
     expect(validLastReplyTs(8.64e12)).toBe(true);
     expect(validLastReplyTs(0)).toBe(false);
+    expect(validLastReplyTs(-1)).toBe(false);
     expect(validLastReplyTs(undefined)).toBe(false);
     expect(validLastReplyTs(Number.NaN)).toBe(false);
     expect(validLastReplyTs(Number.POSITIVE_INFINITY)).toBe(false);

@@ -20,6 +20,7 @@ import { Stack, router } from "expo-router";
 import { Check, ListFilter, MessagesSquare, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
+  threadActivityTs,
   validLastReplyTs,
   useHideThread,
   useRenameThread,
@@ -76,7 +77,7 @@ function Row({
   };
   const latestReplyTs = validLastReplyTs(thread.last_reply_ts)
     ? thread.last_reply_ts : undefined;
-  const activityTs = latestReplyTs ?? thread.root.ts;
+  const activityTs = threadActivityTs(thread);
   return (
     <Pressable
       style={[styles.row, thread.unread > 0 ? styles.rowUnread : null]}

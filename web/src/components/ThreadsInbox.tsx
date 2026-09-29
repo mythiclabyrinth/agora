@@ -4,7 +4,7 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys,
+  filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys, threadActivityTs,
   useGroups, useHideThread, useMe, useRenameThread, useThreads, validLastReplyTs,
   type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
@@ -34,7 +34,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
   const canRemove = (g && g.role === "admin") || !!me?.instance_admin;
   const root = t.root || ({} as ThreadRow["root"]);
   const lastReplyTs = validLastReplyTs(t.last_reply_ts) ? t.last_reply_ts : undefined;
-  const activityTs = lastReplyTs ?? root.ts;
+  const activityTs = threadActivityTs(t);
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuId = useId();

@@ -4,7 +4,11 @@ import { colors } from "../lib/theme";
 
 /** Relative activity time shown at the right of the thread's top row. */
 export function ThreadRelativeTime({ timestamp }: { timestamp: number }) {
-  return <Text style={styles.relative}>{fmtRelative(timestamp)}</Text>;
+  return (
+    <Text style={styles.relative} accessibilityLabel={fmtLastReplyFull(timestamp)}>
+      {fmtRelative(timestamp)}
+    </Text>
+  );
 }
 
 /** Reply count and unread badge on the left, with the latest reply on the right. */

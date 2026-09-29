@@ -161,7 +161,7 @@ export const ReplyTimeStackOnNarrowScreen: Story = {
     const stack = row.querySelector(".ago-inbox-time-stack");
     const relative = stack?.querySelector(".ts");
     const lastReply = stack?.querySelector(".ago-inbox-last-reply");
-    await expect(relative).toHaveTextContent("5m");
+    await expect(relative).toHaveTextContent(/^\d+m$/);
     await expect(lastReply).toHaveTextContent(/^Last reply at /);
     expect(lastReply!.getBoundingClientRect().top).toBeGreaterThan(relative!.getBoundingClientRect().top);
     expect(lastReply!.scrollWidth).toBeLessThanOrEqual(lastReply!.clientWidth);

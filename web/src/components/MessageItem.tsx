@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { create } from "zustand";
 import {
   fmtLastReply, fmtLastReplyFull, fmtTs, tldrOf, useAgents, useDeleteMessage, useEditMessage, useMe, usePinMessage, usePins,
-  FEATURES, useStarMessage, useStars, useTldrView, type LinkPreview, type Message,
+  FEATURES, useStarMessage, useStars, useTldrView, validLastReplyTs, type LinkPreview, type Message,
 } from "@agora/core";
 import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
 import { Icon } from "../lib/icons";
@@ -100,10 +100,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
   const me = useMe().data;
   const mine = m.author_type === "user" && !!me && m.author_id === me.username;
   const cls = m.author_type === "agent" ? "assistant" : (mine ? "user" : "assistant peer");
-  const lastReplyTs = typeof m.last_reply_ts === "number"
-    && Number.isFinite(m.last_reply_ts) && m.last_reply_ts !== 0
-    && Math.abs(m.last_reply_ts) <= 8.64e12
-    ? m.last_reply_ts : undefined;
+  const lastReplyTs = validLastReplyTs(m.last_reply_ts) ? m.last_reply_ts : undefined;
 
   const pins = usePins(m.channel_id).data || [];
   const stars = useStars(m.channel_id).data || [];
