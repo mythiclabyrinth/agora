@@ -2,20 +2,35 @@ import { StyleSheet, Text, View } from "react-native";
 import { fmtLastReply, fmtLastReplyFull, fmtRelative, validLastReplyTs } from "@agora/core";
 import { colors } from "../lib/theme";
 
-export function ThreadTimeMeta({
-  relativeTs,
-  lastReplyTs,
+/** Relative activity time shown at the right of the thread's top row. */
+export function ThreadRelativeTime({ timestamp }: { timestamp: number }) {
+  return <Text style={styles.relative}>{fmtRelative(timestamp)}</Text>;
+}
+
+/** Reply count and unread badge on the left, with the latest reply on the right. */
+export function ThreadInboxFooter({
   replyCount,
+  unread,
+  lastReplyTs,
 }: {
-  relativeTs: number;
-  lastReplyTs?: number | null;
   replyCount: number;
+  unread: number;
+  lastReplyTs?: number | null;
 }) {
   const lastReply = replyCount > 0 && validLastReplyTs(lastReplyTs)
     ? lastReplyTs : undefined;
   return (
-    <View style={styles.stack}>
-      <Text style={styles.relative}>{fmtRelative(relativeTs)}</Text>
+    <View style={styles.footer} testID="thread-inbox-footer">
+      <View style={styles.replyGroup}>
+        <Text style={styles.replies}>
+          {replyCount} {replyCount === 1 ? "reply" : "replies"}
+        </Text>
+        {unread > 0 ? (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{unread > 99 ? "99+" : unread}</Text>
+          </View>
+        ) : null}
+      </View>
       {lastReply !== undefined && (
         <Text
           style={styles.lastReply}
@@ -31,7 +46,26 @@ export function ThreadTimeMeta({
 }
 
 const styles = StyleSheet.create({
-  stack: { alignItems: "flex-end", flexShrink: 1, maxWidth: 180 },
   relative: { color: colors.faint, fontSize: 11, lineHeight: 15 },
-  lastReply: { color: colors.faint, fontSize: 9.5, lineHeight: 12 },
+  footer: { flexDirection: "row", alignItems: "center", gap: 10 },
+  replyGroup: { flexDirection: "row", alignItems: "center", gap: 10 },
+  replies: { color: colors.faint, fontSize: 11.5 },
+  badge: {
+    backgroundColor: "rgba(139,124,255,0.35)",
+    borderRadius: 9,
+    minWidth: 20,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    alignItems: "center",
+  },
+  badgeText: { color: colors.text, fontSize: 11.5, fontWeight: "800" },
+  lastReply: {
+    color: colors.faint,
+    fontSize: 9.5,
+    lineHeight: 12,
+    marginLeft: "auto",
+    flexShrink: 1,
+    maxWidth: 180,
+    textAlign: "right",
+  },
 });
