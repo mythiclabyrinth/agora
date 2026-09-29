@@ -3,6 +3,7 @@ import json
 import importlib.util
 import io
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -850,6 +851,40 @@ def _tasks(*descriptions):
     })
 
 
+def _tasks_with_ids(*entries):
+    return json.dumps({
+        "type": "system", "subtype": "background_tasks_changed",
+        "tasks": [{"task_id": task_id, "task_type": "local_agent",
+                   "description": description} for task_id, description in entries],
+    })
+
+
+def _tasks_without_id():
+    return json.dumps({"type": "system", "subtype": "background_tasks_changed",
+                       "tasks": [{"description": "anonymous background job"}]})
+
+
+def _tool(name, task_id, tool_id="call-1", id_key="task_id"):
+    return json.dumps({"type": "assistant", "message": {"content": [{
+        "type": "tool_use", "id": tool_id, "name": name,
+        "input": {id_key: task_id},
+    }]}})
+
+
+def _tool_result(tool_id="call-1", is_error=False):
+    return json.dumps({"type": "user", "message": {"content": [{
+        "type": "tool_result", "tool_use_id": tool_id,
+        "content": "Successfully stopped task" if not is_error else "Permission denied",
+        "is_error": is_error,
+    }]}})
+
+
+def _user_text(text):
+    return json.dumps({"type": "user", "message": {"content": [{
+        "type": "text", "text": text,
+    }]}})
+
+
 def followup_bridge(idle=5.0):
     """A Bridge configured for the async-follow-up path, bound at key "k"."""
     b = make_bridge()
@@ -959,6 +994,216 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
 
 
 class AsyncFollowupTests(unittest.TestCase):
+    def test_stopped_mid_turn_task_does_not_steal_next_comment(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("anchor"), _result("started")],
+            pre_inject=[_tasks("anchor", "temporary"),
+                        _tool("TaskStop", "t1"), _tool_result(), _tasks("anchor")],
+            inject=[_result("answer to comment"), _tasks(),
+                    _result("anchor report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["anchor report"])
+        self.assertEqual(b.live, {})
+
+    def test_stop_after_inventory_removal_clears_owed_report(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("anchor", "temporary"), _result("started")],
+            pre_inject=[_tasks("anchor")],
+            inject=[_tool("TaskStop", "t1"), _tool_result(),
+                    _result("answer to comment"),
+                    _tasks(), _result("anchor report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["anchor report"])
+        self.assertEqual(b.live, {})
+
+    def test_background_finishes_during_injected_turn(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[_tasks(), _result("answer to comment"),
+                    _result("research report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research report"])
+        self.assertEqual(b.live, {})
+
+    def test_user_stream_event_does_not_claim_reply(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[_user_text("follow up"), _result("answer to comment"),
+                    _tasks(), _result("research report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research report"])
+        self.assertEqual(b.live, {})
+
+    def test_later_stopped_task_does_not_clear_earlier_report_debt(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("earlier", "later"), _result("started")],
+            pre_inject=[_tasks_with_ids(("t1", "later"))],
+            inject=[_tasks(), _tool("TaskStop", "t1"), _tool_result(),
+                    _result("earlier report"), _result("answer to comment")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["earlier report"])
+
+    def test_denied_stop_leaves_real_report_owed(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            pre_inject=[_tool("TaskStop", "t0"), _tool_result(is_error=True),
+                        _tasks()],
+            inject=[_result("research report"), _result("answer to comment")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research report"])
+
+    def test_kill_shell_names_with_shell_id_clear_debt(self):
+        for name in ("KillShell", "KillBash"):
+            with self.subTest(name=name):
+                first, b, injected = run_bridge_with_followups(
+                    [_tasks("shell", "anchor"), _result("started")],
+                    pre_inject=[_tasks_with_ids(("t1", "anchor")),
+                                _tool(name, "t0", id_key="shell_id"),
+                                _tool_result()],
+                    inject=[_result("answer to comment"), _tasks(),
+                            _result("anchor report")])
+                self.assertEqual((first, injected), ("started", "answer to comment"))
+                self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                                 ["anchor report"])
+
+    def test_unknown_shell_id_cannot_suppress_later_task_report(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("anchor"), _result("started")],
+            pre_inject=[_tool("KillShell", "t1", id_key="shell_id"),
+                        _tool_result(), _tasks("anchor", "later"),
+                        _tasks("anchor")],
+            inject=[_result("later report"), _result("answer to comment"),
+                    _tasks(), _result("anchor report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["later report", "anchor report"])
+
+    def test_null_stream_message_does_not_crash_followup(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[json.dumps({"type": "assistant", "message": None}),
+                    json.dumps({"type": "user", "message": None}),
+                    _result("answer to comment"), _tasks(),
+                    _result("research report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research report"])
+
+    def test_phantom_debt_with_waiter_releases_on_short_idle_timeout(self):
+        started = time.monotonic()
+        async def main():
+            b = followup_bridge(idle=0.15)
+            b.followup_task_idle_timeout = 2.0
+            b.timeout = 2.0
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            await asyncio.sleep(0.02)
+            b._send_to_claude = AsyncMock()
+
+            async def answer():
+                await asyncio.sleep(0.02)
+                proc.stdout.feed_data((_result("answer misfiled as report") + "\n").encode())
+
+            asyncio.create_task(answer())
+            with self.assertRaisesRegex(RuntimeError, "ended before replying"):
+                await b.run_claude("k", {"channel_id": "c1"},
+                                   b.bindings["k"], "follow up")
+            return b, proc
+
+        b, proc = asyncio.run(main())
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(b.live, {})
+        proc.kill.assert_called()
+
+    def test_idle_fallback_announces_dropped_report_debt(self):
+        async def main():
+            b = followup_bridge(idle=0.12)
+            b.followup_task_idle_timeout = 2.0
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            await asyncio.wait_for(b.live["k"].reader, 1.0)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.post.call_count, 1)
+        self.assertIn("nothing further will be reported",
+                      b.post.call_args_list[-1].args[1])
+
+    def test_silent_injected_turn_releases_after_waiter_times_out(self):
+        async def main():
+            b = followup_bridge(idle=0.16)
+            b.followup_task_idle_timeout = 2.0
+            b.timeout = 0.05
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            await asyncio.sleep(0.02)
+            b._send_to_claude = AsyncMock()
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                await b.run_claude("k", {"channel_id": "c1"},
+                                   b.bindings["k"], "silent follow up")
+            await asyncio.wait_for(b.live["k"].reader, 0.8)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+
+    def test_departed_task_without_id_still_owes_report(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks_without_id(), _result("started")],
+            pre_inject=[_tasks()],
+            inject=[_result("anonymous report"), _result("answer to comment")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["anonymous report"])
+
+    def test_anonymous_task_gaining_id_does_not_owe_report(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks_without_id(), _result("started")],
+            pre_inject=[_tasks_with_ids(("t0", "identified"))],
+            inject=[_result("answer to comment"), _tasks(),
+                    _result("identified report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["identified report"])
+
+    def test_active_turn_survives_short_idle_window(self):
+        async def main():
+            b = followup_bridge(idle=0.08)
+            b.followup_task_idle_timeout = 1.0
+            b.timeout = 2.0
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            b._send_to_claude = AsyncMock()
+            async def feed():
+                await asyncio.sleep(0.02)
+                proc.stdout.feed_data((_tasks() + "\n").encode())
+                proc.stdout.feed_data((json.dumps({
+                    "type": "assistant", "message": {"content": [
+                        {"type": "text", "text": "working"}]},
+                }) + "\n").encode())
+                await asyncio.sleep(0.25)
+                self.assertIn("k", b.live)
+                proc.stdout.feed_data((_result("answer to comment") + "\n").encode())
+                proc.stdout.feed_data((_result("research report") + "\n").encode())
+            feeder = asyncio.create_task(feed())
+            answer = await b.run_claude("k", {"channel_id": "c1"},
+                                        b.bindings["k"], "follow up")
+            await feeder
+            proc.stdout.feed_eof()
+            if "k" in b.live:
+                await asyncio.wait_for(b.live["k"].reader, 1.0)
+            return b, answer
+
+        b, answer = asyncio.run(main())
+        self.assertEqual(answer, "answer to comment")
+        self.assertIn("research report", [c.args[1] for c in b.post.call_args_list])
+
     def test_child_is_held_when_the_reply_leaves_background_work_running(self):
         first, b, _ = run_bridge_with_followups(
             [_tasks("deep research"), _result("kicked off the research"),
