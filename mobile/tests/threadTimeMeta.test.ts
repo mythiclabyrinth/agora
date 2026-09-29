@@ -4,13 +4,27 @@ import { StyleSheet, Text, View } from "react-native";
 import { fmtLastReply, fmtLastReplyFull, fmtRelative } from "@agora/core";
 import { ThreadInboxFooter, ThreadRelativeTime } from "../src/components/ThreadTimeMeta";
 
-it("shows only the relative activity time in the top row", () => {
+it("shows only the relative activity time in the top row when the footer has the full date", () => {
   const timestamp = 1_790_000_000;
   let tree!: TestRenderer.ReactTestRenderer;
-  act(() => { tree = TestRenderer.create(React.createElement(ThreadRelativeTime, { timestamp })); });
-  const fullDate = fmtLastReplyFull(timestamp);
-  const label = tree.root.findByProps({ accessibilityLabel: fullDate });
+  act(() => { tree = TestRenderer.create(React.createElement(ThreadRelativeTime, {
+    timestamp, replyCount: 2, lastReplyTs: timestamp,
+  })); });
+  const label = tree.root.findByType(Text);
   expect(label.props.children).toBe(fmtRelative(timestamp));
+  expect(label.props.accessibilityLabel).toBeUndefined();
+  act(() => tree.unmount());
+});
+
+it("announces the full activity date when there is no footer reply time", () => {
+  const timestamp = 1_790_000_000;
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(ThreadRelativeTime, {
+    timestamp, replyCount: 0, lastReplyTs: timestamp,
+  })); });
+  const label = tree.root.findByType(Text);
+  expect(label.props.children).toBe(fmtRelative(timestamp));
+  expect(label.props.accessibilityLabel).toBe(fmtLastReplyFull(timestamp));
   act(() => tree.unmount());
 });
 
@@ -47,7 +61,7 @@ it("shows the accessible compact last-reply label in the footer beside replies",
   }
 });
 
-it.each([Number.POSITIVE_INFINITY, Number.NaN, 0])("omits invalid reply timestamp %s", (ts) => {
+it.each([Number.POSITIVE_INFINITY, Number.NaN, 0, -1])("omits invalid reply timestamp %s", (ts) => {
   let tree!: TestRenderer.ReactTestRenderer;
   act(() => { tree = TestRenderer.create(React.createElement(ThreadInboxFooter, {
     replyCount: 3, unread: 0, lastReplyTs: ts,

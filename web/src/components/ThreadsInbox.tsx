@@ -35,6 +35,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
   const root = t.root || ({} as ThreadRow["root"]);
   const lastReplyTs = validLastReplyTs(t.last_reply_ts) ? t.last_reply_ts : undefined;
   const activityTs = threadActivityTs(t);
+  const replyFormatNow = Date.now();
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuId = useId();
@@ -60,10 +61,10 @@ function InboxRow({ t }: { t: ThreadRow }) {
             {t.reply_count > 0 && lastReplyTs !== undefined && (
               <time className="ago-inbox-last-reply" dateTime={new Date(lastReplyTs * 1000).toISOString()}>
                 <span className="ago-inbox-last-reply-visible" aria-hidden="true" title={fmtLastReplyFull(lastReplyTs)}>
-                  Last reply at {fmtLastReply(lastReplyTs)}
+                  Last reply at {fmtLastReply(lastReplyTs, replyFormatNow)}
                 </span>
                 <span className="ago-inbox-last-reply-compact" aria-hidden="true" title={fmtLastReplyFull(lastReplyTs)}>
-                  Last reply at {fmtLastReply(lastReplyTs, Date.now(), { compact: true })}
+                  Last reply at {fmtLastReply(lastReplyTs, replyFormatNow, { compact: true })}
                 </span>
                 <span className="ago-sr-only">Last reply at {fmtLastReplyFull(lastReplyTs)}</span>
               </time>

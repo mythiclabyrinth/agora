@@ -21,7 +21,6 @@ import { Check, ListFilter, MessagesSquare, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
   threadActivityTs,
-  validLastReplyTs,
   useHideThread,
   useRenameThread,
   useThreads,
@@ -75,8 +74,6 @@ function Row({
       { text: "Cancel", style: "cancel" },
     ]);
   };
-  const latestReplyTs = validLastReplyTs(thread.last_reply_ts)
-    ? thread.last_reply_ts : undefined;
   const activityTs = threadActivityTs(thread);
   return (
     <Pressable
@@ -100,7 +97,11 @@ function Row({
           {thread.channel_name}
           <Text style={styles.grp}> · {thread.group_name}</Text>
         </Text>
-        <ThreadRelativeTime timestamp={activityTs} />
+        <ThreadRelativeTime
+          timestamp={activityTs}
+          replyCount={thread.reply_count}
+          lastReplyTs={thread.last_reply_ts}
+        />
       </View>
       <View style={styles.mid}>
         <Text style={styles.author} numberOfLines={1}>
@@ -113,7 +114,7 @@ function Row({
       <ThreadInboxFooter
         replyCount={thread.reply_count}
         unread={thread.unread}
-        lastReplyTs={latestReplyTs}
+        lastReplyTs={thread.last_reply_ts}
       />
     </Pressable>
   );

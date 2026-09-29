@@ -10,6 +10,9 @@ import { ThreadsInbox } from "./ThreadsInbox";
 
 const root = fixtureThreads[0].root;
 const now = Math.floor(Date.now() / 1000);
+const tabletReplyDate = new Date(now * 1000);
+tabletReplyDate.setDate(tabletReplyDate.getDate() - 3);
+tabletReplyDate.setHours(12, 4, 0, 0);
 const inboxThreads = [
   { ...fixtureThreads[0], root: { ...root, id: 42, alias: "Zulu planning" }, last_reply_ts: now - 300 },
   { ...fixtureThreads[0], root: { ...root, id: 43, alias: null, text: "Alpha launch notes" }, last_reply_ts: now - 3600 },
@@ -191,6 +194,56 @@ export const MissingReplyTimestamp: Story = {
     });
     await expect(row.querySelector(".ago-inbox-time-stack .ts")).toBeVisible();
     expect(row.querySelector(".ago-inbox-last-reply")).toBeNull();
+  },
+};
+
+export const NoRepliesHidesReplyTimestamp: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": {
+        threads: [{ ...fixtureThreads[0], reply_count: 0, last_reply_ts: now - 300 }],
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    expect(row.querySelector(".ago-inbox-last-reply")).toBeNull();
+  },
+};
+
+export const TabletReplyTimeFits: Story = {
+  globals: { viewport: { value: "tabletComposer", isRotated: false } },
+  parameters: {
+    viewport: { defaultViewport: "tabletComposer" },
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": {
+        threads: [{
+          ...fixtureThreads[0],
+          root: { ...root, id: 47, alias: "Tablet reply time" },
+          last_reply_ts: Math.floor(tabletReplyDate.getTime() / 1000),
+        }],
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const lastReply = row.querySelector<HTMLElement>(".ago-inbox-last-reply");
+    const compact = row.querySelector<HTMLElement>(".ago-inbox-last-reply-compact");
+    expect(compact).not.toBeNull();
+    await expect(compact).toBeVisible();
+    expect(lastReply!.scrollWidth).toBeLessThanOrEqual(lastReply!.clientWidth);
   },
 };
 

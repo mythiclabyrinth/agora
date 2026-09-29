@@ -3,9 +3,21 @@ import { fmtLastReply, fmtLastReplyFull, fmtRelative, validLastReplyTs } from "@
 import { colors } from "../lib/theme";
 
 /** Relative activity time shown at the right of the thread's top row. */
-export function ThreadRelativeTime({ timestamp }: { timestamp: number }) {
+export function ThreadRelativeTime({
+  timestamp,
+  replyCount,
+  lastReplyTs,
+}: {
+  timestamp: number;
+  replyCount: number;
+  lastReplyTs?: number | null;
+}) {
+  const footerHasReplyTime = replyCount > 0 && validLastReplyTs(lastReplyTs);
   return (
-    <Text style={styles.relative} accessibilityLabel={fmtLastReplyFull(timestamp)}>
+    <Text
+      style={styles.relative}
+      accessibilityLabel={footerHasReplyTime ? undefined : fmtLastReplyFull(timestamp)}
+    >
       {fmtRelative(timestamp)}
     </Text>
   );
