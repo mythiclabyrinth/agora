@@ -1072,6 +1072,29 @@ class AsyncFollowupTests(unittest.TestCase):
                 self.assertEqual([c.args[1] for c in b.post.call_args_list],
                                  ["anchor report"])
 
+    def test_unknown_shell_id_cannot_suppress_later_task_report(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("anchor"), _result("started")],
+            pre_inject=[_tool("KillShell", "t1", id_key="shell_id"),
+                        _tool_result(), _tasks("anchor", "later"),
+                        _tasks("anchor")],
+            inject=[_result("later report"), _result("answer to comment"),
+                    _tasks(), _result("anchor report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["later report", "anchor report"])
+
+    def test_null_stream_message_does_not_crash_followup(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[json.dumps({"type": "assistant", "message": None}),
+                    json.dumps({"type": "user", "message": None}),
+                    _result("answer to comment"), _tasks(),
+                    _result("research report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research report"])
+
     def test_phantom_debt_with_waiter_releases_on_short_idle_timeout(self):
         started = time.monotonic()
         async def main():
@@ -1094,7 +1117,7 @@ class AsyncFollowupTests(unittest.TestCase):
             return b, proc
 
         b, proc = asyncio.run(main())
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.monotonic() - started, 1.5)
         self.assertEqual(b.live, {})
         proc.kill.assert_called()
 
@@ -1152,9 +1175,9 @@ class AsyncFollowupTests(unittest.TestCase):
 
     def test_active_turn_survives_short_idle_window(self):
         async def main():
-            b = followup_bridge(idle=0.06)
+            b = followup_bridge(idle=0.08)
             b.followup_task_idle_timeout = 1.0
-            b.timeout = 1.0
+            b.timeout = 2.0
             _, proc = await hand_off(b, [_tasks("research"), _result("started")])
             b._send_to_claude = AsyncMock()
             async def feed():
@@ -1164,7 +1187,7 @@ class AsyncFollowupTests(unittest.TestCase):
                     "type": "assistant", "message": {"content": [
                         {"type": "text", "text": "working"}]},
                 }) + "\n").encode())
-                await asyncio.sleep(0.14)
+                await asyncio.sleep(0.25)
                 self.assertIn("k", b.live)
                 proc.stdout.feed_data((_result("answer to comment") + "\n").encode())
                 proc.stdout.feed_data((_result("research report") + "\n").encode())

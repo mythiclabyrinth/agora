@@ -3062,7 +3062,7 @@ class Bridge:
                             f"owed={sorted(live.owed_reports)} "
                             f"ahead={[w['ahead'] for w in live.waiters]}")
                         if live.owed_reports and not live.user_stopped:
-                            self._post_timeout_notice(live, time.monotonic() - started)
+                            self._post_timeout_notice(live, time.monotonic() - live.started)
                             live.notice_posted = True
                         if live.owed_reports:
                             live.owed_reports.clear()
@@ -3118,7 +3118,7 @@ class Bridge:
                             live.report_order.append(task_id)
                     live.tasks = listed
                 elif kind == "assistant":
-                    for block in event.get("message", {}).get("content") or []:
+                    for block in (event.get("message") or {}).get("content") or []:
                         if not isinstance(block, dict) or block.get("type") != "tool_use":
                             continue
                         name, args = block.get("name"), block.get("input") or {}
@@ -3143,7 +3143,7 @@ class Bridge:
                     self._cancel_request(event.get("request_id") or "",
                                          "Claude withdrew the request.")
                 elif kind == "user":
-                    for block in event.get("message", {}).get("content") or []:
+                    for block in (event.get("message") or {}).get("content") or []:
                         if not isinstance(block, dict) or block.get("type") != "tool_result":
                             continue
                         task_id = live.pending_stops.pop(block.get("tool_use_id"), None)
@@ -3325,6 +3325,10 @@ class Bridge:
     @staticmethod
     def _mark_task_handled(live: LiveRun, task_id: str) -> None:
         """A stopped task cannot produce a separate report."""
+        if (task_id not in live.owed_reports
+                and not any(isinstance(task, dict) and task.get("task_id") == task_id
+                            for task in live.tasks)):
+            return
         live.handled_tasks.add(task_id)
         if task_id in live.owed_reports:
             live.owed_reports.remove(task_id)
@@ -3716,7 +3720,7 @@ class Bridge:
 
     @staticmethod
     def _progress_snippet(event: dict) -> str | None:
-        blocks = event.get("message", {}).get("content") or []
+        blocks = (event.get("message") or {}).get("content") or []
         texts, tools = [], []
         for b in blocks:
             if not isinstance(b, dict):
