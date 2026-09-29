@@ -366,7 +366,10 @@ class LiveRun:
         # injected — results satisfy those first, so a report generated before
         # the turn arrived is never mistaken for that turn's answer.
         self.waiters: deque = deque()
-        self.owed_reports = 0  # tasks that completed and are yet to be reported
+        self.owed_reports: set[str] = set()  # departed tasks awaiting a report
+        self.report_order: deque[str] = deque()
+        self.handled_tasks: set[str] = set()  # stopped or collected by the model
+        self.last_event_was_result = True
         self.closing = False
         # Deliberately ended (by /stop, or by a command that rebound the
         # conversation) rather than having died on its own. Waiters report
@@ -2726,6 +2729,7 @@ class Bridge:
                 self.claude_bin, "-p",
                 "--input-format", "stream-json",
                 "--output-format", "stream-json", "--verbose",
+                "--replay-user-messages",
                 "--permission-prompt-tool", "stdio",
                 "--permission-mode", mode,
                 *sys_args,
@@ -2966,14 +2970,16 @@ class Bridge:
         self.live[key] = live
         names = ", ".join(str(t.get("description") or t.get("task_id") or "?")
                           for t in tasks) or "?"
-        log(f"live run held for {key}: {len(tasks)} background task(s) [{names}]")
+        log(f"live run held for {key}: {len(tasks)} background task(s) [{names}], "
+            f"owed={sorted(live.owed_reports)} ahead=[]")
         live.reader = asyncio.create_task(self._followup_loop(live, perm_tasks))
 
     async def _inject_into_live(self, live: LiveRun, frame: dict, prompt: str) -> str:
         """Send a new channel turn down a live child's stdin and await its reply."""
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         live.waiters.append({"fut": fut, "frame": frame,
-                             "ahead": live.owed_reports})
+                             "ahead": len(live.owed_reports)})
+        live.last_event_was_result = False
         try:
             await self._send_to_claude(live.proc, {
                 "type": "user",
@@ -2982,7 +2988,9 @@ class Bridge:
         except Exception:
             self._drop_waiter(live, fut)
             raise
-        log(f"injected turn into live run for {live.key}")
+        log(f"injected turn into live run for {live.key}: tasks={len(live.tasks)} "
+            f"owed={sorted(live.owed_reports)} "
+            f"ahead={[w['ahead'] for w in live.waiters]}")
         try:
             async with asyncio.timeout(self.timeout):
                 return await fut
@@ -3013,7 +3021,7 @@ class Bridge:
         try:
             while True:
                 deadlines = [started + self.followup_max_wait]
-                if live.tasks or live.waiters or live.owed_reports:
+                if live.tasks or not live.last_event_was_result:
                     # Something is outstanding, so silence is expected — but not
                     # forever. This bounds a child whose inventory never empties
                     # (a dropped event, or an entry the CLI never reaps).
@@ -3039,6 +3047,12 @@ class Bridge:
                         # that still owes an answer.
                         blank_held, blank_deadline = None, None
                         continue
+                    if (not live.tasks and live.last_event_was_result
+                            and (live.owed_reports or live.waiters)):
+                        log(f"live run for {key} idle after result; dropping "
+                            f"owed={sorted(live.owed_reports)} "
+                            f"ahead={[w['ahead'] for w in live.waiters]}")
+                        live.owed_reports.clear()
                     waited = time.monotonic() - started
                     log(f"live run for {key} released after {waited:.0f}s "
                         f"({len(live.tasks)} task(s) still listed)")
@@ -3061,6 +3075,8 @@ class Bridge:
                 except json.JSONDecodeError:
                     continue
                 kind = event.get("type")
+                if kind not in ("rate_limit_event", "system"):
+                    live.last_event_was_result = kind == "result"
                 target = live.waiters[0]["frame"] if live.waiters else live.frame
                 if kind == "rate_limit_event":
                     self.capture_usage(event)
@@ -3068,15 +3084,27 @@ class Bridge:
                 if kind == "system" and event.get("subtype") == "background_tasks_changed":
                     listed = event.get("tasks")
                     listed = listed if isinstance(listed, list) else []
-                    # A task leaving the inventory means the CLI is about to
-                    # re-invoke the model to report it — the report is owed
-                    # before any turn injected from here on, and the child must
-                    # not be released until it arrives.
+                    # A departed task may wake the model for a report. A task
+                    # the model stopped or collected itself will not do so.
                     gone = ({t.get("task_id") for t in live.tasks if isinstance(t, dict)}
                             - {t.get("task_id") for t in listed if isinstance(t, dict)})
-                    live.owed_reports += len(gone)
+                    for task_id in gone:
+                        if (isinstance(task_id, str) and task_id not in live.handled_tasks
+                                and task_id not in live.owed_reports):
+                            live.owed_reports.add(task_id)
+                            live.report_order.append(task_id)
                     live.tasks = listed
                 elif kind == "assistant":
+                    for block in event.get("message", {}).get("content") or []:
+                        if not isinstance(block, dict) or block.get("type") != "tool_use":
+                            continue
+                        name, args = block.get("name"), block.get("input") or {}
+                        if not isinstance(args, dict):
+                            continue
+                        if name in ("TaskStop", "KillShell"):
+                            task_id = args.get("task_id") or args.get("shell_id")
+                            if isinstance(task_id, str):
+                                self._mark_task_handled(live, task_id)
                     snippet = self._progress_snippet(event)
                     if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
                         last_progress = time.monotonic()
@@ -3089,6 +3117,9 @@ class Bridge:
                     self._cancel_request(event.get("request_id") or "",
                                          "Claude withdrew the request.")
                 elif kind == "result":
+                    log(f"live follow-up result for {key}: tasks={len(live.tasks)} "
+                        f"owed={sorted(live.owed_reports)} "
+                        f"ahead={[w['ahead'] for w in live.waiters]}")
                     text = event.get("result") or ""
                     if event.get("is_error"):
                         text = f"(claude error) {text}"
@@ -3146,7 +3177,9 @@ class Bridge:
                             # setting is the one it was told to write for. The
                             # current binding may point at another repo by now.
                             self._settle_report(live)
-                            log(f"async follow-up posted for {key}")
+                            log(f"async follow-up posted for {key}: tasks={len(live.tasks)} "
+                                f"owed={sorted(live.owed_reports)} "
+                                f"ahead={[w['ahead'] for w in live.waiters]}")
                             live.reported = True
                             self._post_reply(live.frame, live.binding, text)
                 if (kind == "result" and not live.waiters and not live.tasks
@@ -3245,12 +3278,26 @@ class Bridge:
     def _settle_report(live: LiveRun) -> None:
         """Mark one owed background report delivered, and let every waiting turn
         move one place closer to being allowed to claim a result."""
-        if live.owed_reports <= 0:
+        while live.report_order:
+            task_id = live.report_order.popleft()
+            if task_id in live.owed_reports:
+                live.owed_reports.remove(task_id)
+                break
+        else:
             return
-        live.owed_reports -= 1
         for waiter in live.waiters:
             if waiter["ahead"] > 0:
                 waiter["ahead"] -= 1
+
+    @staticmethod
+    def _mark_task_handled(live: LiveRun, task_id: str) -> None:
+        """A stopped or collected task cannot produce a separate report."""
+        live.handled_tasks.add(task_id)
+        if task_id in live.owed_reports:
+            live.owed_reports.remove(task_id)
+            for waiter in live.waiters:
+                if waiter["ahead"] > 0:
+                    waiter["ahead"] -= 1
 
     @staticmethod
     def _stopped_message(live: LiveRun) -> str:
