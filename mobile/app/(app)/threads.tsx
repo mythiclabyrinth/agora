@@ -20,6 +20,7 @@ import { Stack, router } from "expo-router";
 import { Check, ListFilter, MessagesSquare, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
+  validLastReplyTs,
   useHideThread,
   useRenameThread,
   useThreads,
@@ -27,7 +28,7 @@ import {
 import type { ThreadFilter, ThreadRow, ThreadSort } from "@agora/core";
 import { Icon } from "../../src/components/Icon";
 import { toastErr } from "../../src/components/Toast";
-import { fmtTs } from "@agora/core";
+import { ThreadTimeMeta } from "../../src/components/ThreadTimeMeta";
 import { headerActions } from "../../src/lib/headerItems";
 import { colors } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
@@ -73,6 +74,9 @@ function Row({
       { text: "Cancel", style: "cancel" },
     ]);
   };
+  const latestReplyTs = validLastReplyTs(thread.last_reply_ts)
+    ? thread.last_reply_ts : undefined;
+  const activityTs = latestReplyTs ?? thread.root.ts;
   return (
     <Pressable
       style={[styles.row, thread.unread > 0 ? styles.rowUnread : null]}
@@ -95,7 +99,11 @@ function Row({
           {thread.channel_name}
           <Text style={styles.grp}> · {thread.group_name}</Text>
         </Text>
-        <Text style={styles.ts}>{fmtTs(thread.last_reply_ts)}</Text>
+        <ThreadTimeMeta
+          relativeTs={activityTs}
+          lastReplyTs={latestReplyTs}
+          replyCount={thread.reply_count}
+        />
       </View>
       <View style={styles.mid}>
         <Text style={styles.author} numberOfLines={1}>
@@ -344,11 +352,10 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   rowUnread: { borderColor: "rgba(139,124,255,0.45)" },
-  top: { flexDirection: "row", alignItems: "baseline", gap: 10 },
-  chan: { color: colors.text, fontSize: 12.5, fontWeight: "700", flex: 1 },
+  top: { flexDirection: "row", alignItems: "center", gap: 10 },
+  chan: { color: colors.text, fontSize: 12.5, fontWeight: "700", flex: 1, minWidth: 0 },
   hash: { color: colors.faint },
   grp: { color: colors.faint, fontWeight: "400" },
-  ts: { color: colors.faint, fontSize: 11 },
   mid: { flexDirection: "row", alignItems: "baseline", gap: 8 },
   author: { color: colors.a1, fontSize: 13, fontWeight: "700", flexShrink: 0 },
   snippet: { color: colors.dim, fontSize: 13.5, flex: 1 },

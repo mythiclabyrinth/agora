@@ -4,7 +4,8 @@
 import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  filterAndSortThreads, fmtTs, keys, useGroups, useHideThread, useMe, useRenameThread, useThreads,
+  filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys,
+  useGroups, useHideThread, useMe, useRenameThread, useThreads, validLastReplyTs,
   type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
 import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
@@ -20,15 +21,6 @@ function snippet(m: { alias?: string | null; text?: string }): string {
   return (m.text || "").split("\n")[0].slice(0, 140);
 }
 
-function relativeTime(ts: number): string {
-  const seconds = Math.max(0, Date.now() / 1000 - ts);
-  if (seconds < 60) return "Just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`;
-  return new Date(ts * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
-}
-
 function InboxRow({ t }: { t: ThreadRow }) {
   const ui = useUiState();
   const me = useMe().data;
@@ -41,6 +33,8 @@ function InboxRow({ t }: { t: ThreadRow }) {
   const g = groups.find(x => x.id === t.group_id);
   const canRemove = (g && g.role === "admin") || !!me?.instance_admin;
   const root = t.root || ({} as ThreadRow["root"]);
+  const lastReplyTs = validLastReplyTs(t.last_reply_ts) ? t.last_reply_ts : undefined;
+  const activityTs = lastReplyTs ?? root.ts;
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuId = useId();
@@ -59,7 +53,19 @@ function InboxRow({ t }: { t: ThreadRow }) {
       }}>
       <div className="ago-inbox-top">
         <div className="ago-inbox-meta">
-          <time className="ts" title={fmtTs(t.last_reply_ts || root.ts)} dateTime={new Date((t.last_reply_ts || root.ts) * 1000).toISOString()}>{relativeTime(t.last_reply_ts || root.ts)}</time>
+          <span className="ago-inbox-time-stack">
+            <time className="ts" title={fmtTs(activityTs)} dateTime={new Date(activityTs * 1000).toISOString()}>
+              {fmtRelative(activityTs)}
+            </time>
+            {t.reply_count > 0 && lastReplyTs !== undefined && (
+              <time className="ago-inbox-last-reply" dateTime={new Date(lastReplyTs * 1000).toISOString()}>
+                <span className="ago-inbox-last-reply-visible" aria-hidden="true" title={fmtLastReplyFull(lastReplyTs)}>
+                  Last reply at {fmtLastReply(lastReplyTs)}
+                </span>
+                <span className="ago-sr-only">Last reply at {fmtLastReplyFull(lastReplyTs)}</span>
+              </time>
+            )}
+          </span>
           <button ref={triggerRef} className="ago-inbox-more" aria-label="Thread options" aria-expanded={menuOpen}
             popoverTarget={menuId} onClick={e => e.stopPropagation()}><Icon name="ellipsis" /></button>
           <div id={menuId} ref={menuRef} popover="auto" className="ago-inbox-actions ago-inbox-menu"

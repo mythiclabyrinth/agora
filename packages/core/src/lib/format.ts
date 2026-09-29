@@ -10,6 +10,22 @@ export function fmtTs(ts: number | null | undefined): string {
   });
 }
 
+/** Compact relative activity time used in thread inbox rows. */
+export function fmtRelative(ts: number, now = Date.now()): string {
+  const seconds = Math.max(0, now / 1000 - ts);
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d`;
+  return new Date(ts * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/** True for nonzero timestamps representable by JavaScript Date. */
+export function validLastReplyTs(ts: number | null | undefined): ts is number {
+  return typeof ts === "number" && Number.isFinite(ts) && ts !== 0
+    && Math.abs(ts) <= 8.64e12;
+}
+
 /** Compact, local-time label for a thread's latest reply. */
 export function fmtLastReply(ts: number, now = Date.now()): string {
   const reply = new Date(ts * 1000);
