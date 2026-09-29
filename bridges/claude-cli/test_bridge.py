@@ -1058,17 +1058,19 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual([c.args[1] for c in b.post.call_args_list],
                          ["research report"])
 
-    def test_kill_shell_with_shell_id_clears_debt(self):
-        first, b, injected = run_bridge_with_followups(
-            [_tasks("shell", "anchor"), _result("started")],
-            pre_inject=[_tasks_with_ids(("t1", "anchor")),
-                        _tool("KillShell", "t0", id_key="shell_id"),
-                        _tool_result()],
-            inject=[_result("answer to comment"), _tasks(),
-                    _result("anchor report")])
-        self.assertEqual((first, injected), ("started", "answer to comment"))
-        self.assertEqual([c.args[1] for c in b.post.call_args_list],
-                         ["anchor report"])
+    def test_kill_shell_names_with_shell_id_clear_debt(self):
+        for name in ("KillShell", "KillBash"):
+            with self.subTest(name=name):
+                first, b, injected = run_bridge_with_followups(
+                    [_tasks("shell", "anchor"), _result("started")],
+                    pre_inject=[_tasks_with_ids(("t1", "anchor")),
+                                _tool(name, "t0", id_key="shell_id"),
+                                _tool_result()],
+                    inject=[_result("answer to comment"), _tasks(),
+                            _result("anchor report")])
+                self.assertEqual((first, injected), ("started", "answer to comment"))
+                self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                                 ["anchor report"])
 
     def test_phantom_debt_with_waiter_releases_on_short_idle_timeout(self):
         started = time.monotonic()
@@ -1137,6 +1139,47 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual((first, injected), ("started", "answer to comment"))
         self.assertEqual([c.args[1] for c in b.post.call_args_list],
                          ["anonymous report"])
+
+    def test_anonymous_task_gaining_id_does_not_owe_report(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks_without_id(), _result("started")],
+            pre_inject=[_tasks_with_ids(("t0", "identified"))],
+            inject=[_result("answer to comment"), _tasks(),
+                    _result("identified report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["identified report"])
+
+    def test_active_turn_survives_short_idle_window(self):
+        async def main():
+            b = followup_bridge(idle=0.06)
+            b.followup_task_idle_timeout = 1.0
+            b.timeout = 1.0
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            b._send_to_claude = AsyncMock()
+            async def feed():
+                await asyncio.sleep(0.02)
+                proc.stdout.feed_data((_tasks() + "\n").encode())
+                proc.stdout.feed_data((json.dumps({
+                    "type": "assistant", "message": {"content": [
+                        {"type": "text", "text": "working"}]},
+                }) + "\n").encode())
+                await asyncio.sleep(0.14)
+                self.assertIn("k", b.live)
+                proc.stdout.feed_data((_result("answer to comment") + "\n").encode())
+                proc.stdout.feed_data((_result("research report") + "\n").encode())
+            feeder = asyncio.create_task(feed())
+            answer = await b.run_claude("k", {"channel_id": "c1"},
+                                        b.bindings["k"], "follow up")
+            await feeder
+            proc.stdout.feed_eof()
+            if "k" in b.live:
+                await asyncio.wait_for(b.live["k"].reader, 1.0)
+            return b, answer
+
+        b, answer = asyncio.run(main())
+        self.assertEqual(answer, "answer to comment")
+        self.assertIn("research report", [c.args[1] for c in b.post.call_args_list])
 
     def test_child_is_held_when_the_reply_leaves_background_work_running(self):
         first, b, _ = run_bridge_with_followups(

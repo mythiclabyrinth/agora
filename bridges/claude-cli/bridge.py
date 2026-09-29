@@ -367,7 +367,7 @@ class LiveRun:
         self.owed_reports: set[str] = set()  # departed tasks awaiting a report
         self.report_order: deque[str] = deque()
         self.anon_task_serial = 0
-        self.handled_tasks: set[str] = set()  # stopped or collected by the model
+        self.handled_tasks: set[str] = set()  # stopped by the model
         self.pending_stops: dict[str, str] = {}  # tool-use ID to task ID
         self.last_event_was_result = True
         self.events_seen = 0
@@ -380,6 +380,7 @@ class LiveRun:
         self.user_stopped = False
         self.ended_reason: str | None = None
         self.reported = False  # produced at least one follow-up of its own
+        self.notice_posted = False
         self.started = time.monotonic()
         self.tmpdir: str | None = None  # --add-dir staging, removed at retirement
         self.reader: asyncio.Task | None = None
@@ -3060,9 +3061,10 @@ class Bridge:
                         log(f"live run for {key} idle after result; dropping "
                             f"owed={sorted(live.owed_reports)} "
                             f"ahead={[w['ahead'] for w in live.waiters]}")
-                        if live.owed_reports:
+                        if live.owed_reports and not live.user_stopped:
                             self._post_timeout_notice(live, time.monotonic() - started)
-                            live.reported = True
+                            live.notice_posted = True
+                        if live.owed_reports:
                             live.owed_reports.clear()
                     waited = time.monotonic() - started
                     log(f"live run for {key} released after {waited:.0f}s "
@@ -3106,7 +3108,8 @@ class Bridge:
                         t.get("task_id"), str) for t in live.tasks)
                     current_anon = sum(isinstance(t, dict) and not isinstance(
                         t.get("task_id"), str) for t in listed)
-                    for _ in range(max(0, previous_anon - current_anon)):
+                    departures = max(0, len(live.tasks) - len(listed))
+                    for _ in range(min(departures, max(0, previous_anon - current_anon))):
                         live.anon_task_serial += 1
                         gone.add(f"__anon:{live.anon_task_serial}")
                     for task_id in gone:
@@ -3121,7 +3124,7 @@ class Bridge:
                         name, args = block.get("name"), block.get("input") or {}
                         if not isinstance(args, dict):
                             continue
-                        if name in ("TaskStop", "KillShell"):
+                        if name in ("TaskStop", "KillShell", "KillBash"):
                             # The CLI's shell_id and task_id refer to the same
                             # background inventory ID space.
                             task_id = args.get("task_id") or args.get("shell_id")
@@ -3239,7 +3242,7 @@ class Bridge:
         # deadline branch alone: a child retired by a command exits through the
         # reader's EOF path, which used to drop its outstanding work silently.
         if ((live.tasks or live.owed_reports or not live.reported)
-                and not live.user_stopped):
+                and not live.user_stopped and not live.notice_posted):
             self._post_timeout_notice(live, time.monotonic() - live.started)
         while live.waiters:
             fut = live.waiters.popleft()["fut"]
@@ -3321,7 +3324,7 @@ class Bridge:
 
     @staticmethod
     def _mark_task_handled(live: LiveRun, task_id: str) -> None:
-        """A stopped or collected task cannot produce a separate report."""
+        """A stopped task cannot produce a separate report."""
         live.handled_tasks.add(task_id)
         if task_id in live.owed_reports:
             live.owed_reports.remove(task_id)
