@@ -15,7 +15,7 @@ it("shows the relative time above a compact accessible last-reply label", () => 
     })); });
     const texts = tree.root.findAllByType(Text);
     expect(texts[0].props.children).toBe("5m");
-    expect(texts[1].props.children).toEqual(["Last reply at ", fmtLastReply(lastReplyTs, now)]);
+    expect(texts[1].props.children).toEqual(["Last reply at ", fmtLastReply(lastReplyTs, now, { compact: true })]);
     expect(texts[1].props.accessibilityLabel).toContain("2025");
     expect(texts[1].props.numberOfLines).toBe(1);
     expect(texts[1].props.maxFontSizeMultiplier).toBe(1.2);

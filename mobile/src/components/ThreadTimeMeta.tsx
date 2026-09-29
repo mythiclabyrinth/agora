@@ -23,7 +23,7 @@ export function ThreadTimeMeta({
           maxFontSizeMultiplier={1.2}
           accessibilityLabel={`Last reply at ${fmtLastReplyFull(lastReply)}`}
         >
-          Last reply at {fmtLastReply(lastReply)}
+          Last reply at {fmtLastReply(lastReply, Date.now(), { compact: true })}
         </Text>
       )}
     </View>

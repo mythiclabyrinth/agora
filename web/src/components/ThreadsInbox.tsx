@@ -62,6 +62,9 @@ function InboxRow({ t }: { t: ThreadRow }) {
                 <span className="ago-inbox-last-reply-visible" aria-hidden="true" title={fmtLastReplyFull(lastReplyTs)}>
                   Last reply at {fmtLastReply(lastReplyTs)}
                 </span>
+                <span className="ago-inbox-last-reply-compact" aria-hidden="true" title={fmtLastReplyFull(lastReplyTs)}>
+                  Last reply at {fmtLastReply(lastReplyTs, Date.now(), { compact: true })}
+                </span>
                 <span className="ago-sr-only">Last reply at {fmtLastReplyFull(lastReplyTs)}</span>
               </time>
             )}

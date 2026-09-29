@@ -166,6 +166,10 @@ export const ReplyTimeStackOnNarrowScreen: Story = {
     expect(lastReply!.getBoundingClientRect().top).toBeGreaterThan(relative!.getBoundingClientRect().top);
     expect(lastReply!.scrollWidth).toBeLessThanOrEqual(lastReply!.clientWidth);
     expect(stack!.getBoundingClientRect().width).toBeLessThanOrEqual(150);
+    const rows = [...canvasElement.querySelectorAll<HTMLElement>(".ago-inbox-row")];
+    expect(rows).toHaveLength(4);
+    const heights = rows.map(item => item.getBoundingClientRect().height);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(2);
   },
 };
 

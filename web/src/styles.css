@@ -760,6 +760,7 @@ select {
   white-space: nowrap; color: var(--faint); font-size: 10px; line-height: 1.15;
 }
 .ago-inbox-last-reply-visible { display: block; overflow: hidden; text-overflow: ellipsis; }
+.ago-inbox-last-reply-compact { display: none; overflow: hidden; text-overflow: ellipsis; }
 .ago-inbox-main {
   display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12.5px;
 }
@@ -2770,6 +2771,10 @@ input[type="checkbox"] { accent-color: var(--a1); }
 
 .ago-inbox-list .ago-inbox-top { grid-row: 1 / 3; align-self: center; }
 .ago-inbox-list .ago-inbox-foot { grid-column: 1; }
+@media (max-width: 400px) {
+  .ago-inbox-last-reply-visible { display: none; }
+  .ago-inbox-last-reply-compact { display: block; }
+}
 /* Group overview shares the inbox row, whose meta column is on the right.
    Channel names stay on the left; the topic is right-aligned beside them. */
 .ago-inbox-list .ago-gp-chan {

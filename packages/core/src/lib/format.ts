@@ -27,7 +27,11 @@ export function validLastReplyTs(ts: number | null | undefined): ts is number {
 }
 
 /** Compact, local-time label for a thread's latest reply. */
-export function fmtLastReply(ts: number, now = Date.now()): string {
+export function fmtLastReply(
+  ts: number,
+  now = Date.now(),
+  options: { compact?: boolean } = {},
+): string {
   const reply = new Date(ts * 1000);
   const today = new Date(now);
   const sameDay = reply.getFullYear() === today.getFullYear()
@@ -35,6 +39,7 @@ export function fmtLastReply(ts: number, now = Date.now()): string {
     && reply.getDate() === today.getDate();
   if (sameDay) return reply.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   if (reply.getFullYear() === today.getFullYear()) {
+    if (options.compact) return reply.toLocaleDateString([], { month: "short", day: "numeric" });
     return reply.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
   return reply.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });

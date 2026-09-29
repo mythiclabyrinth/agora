@@ -53,6 +53,21 @@ describe("fmtLastReply", () => {
     );
   });
 
+  it("omits the time for earlier days in compact mode", () => {
+    const now = local(2026, 9, 28, 18, 0);
+    const yesterday = local(2026, 9, 27, 14, 15) / 1000;
+    const lastYear = local(2025, 9, 28, 14, 15) / 1000;
+    expect(fmtLastReply(yesterday, now, { compact: true })).toBe(
+      new Date(yesterday * 1000).toLocaleDateString([], { month: "short", day: "numeric" }),
+    );
+    expect(fmtLastReply(lastYear, now, { compact: true })).toBe(
+      new Date(lastYear * 1000).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }),
+    );
+    expect(fmtLastReply(local(2026, 9, 28, 14, 15) / 1000, now, { compact: true })).toBe(
+      new Date(local(2026, 9, 28, 14, 15)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+    );
+  });
+
   it("includes the year and time in the full accessible date", () => {
     const ts = local(2025, 9, 28, 14, 15) / 1000;
     expect(fmtLastReplyFull(ts)).toBe(new Date(ts * 1000).toLocaleString([], {
