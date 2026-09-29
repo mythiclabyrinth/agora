@@ -851,10 +851,26 @@ def _tasks(*descriptions):
     })
 
 
-def _tool(name, task_id, tool_id="call-1"):
+def _tasks_with_ids(*entries):
+    return json.dumps({
+        "type": "system", "subtype": "background_tasks_changed",
+        "tasks": [{"task_id": task_id, "task_type": "local_agent",
+                   "description": description} for task_id, description in entries],
+    })
+
+
+def _tool(name, task_id, tool_id="call-1", id_key="task_id"):
     return json.dumps({"type": "assistant", "message": {"content": [{
         "type": "tool_use", "id": tool_id, "name": name,
-        "input": {"task_id": task_id},
+        "input": {id_key: task_id},
+    }]}})
+
+
+def _tool_result(tool_id="call-1", is_error=False):
+    return json.dumps({"type": "user", "message": {"content": [{
+        "type": "tool_result", "tool_use_id": tool_id,
+        "content": "Successfully stopped task" if not is_error else "Permission denied",
+        "is_error": is_error,
     }]}})
 
 
@@ -977,7 +993,7 @@ class AsyncFollowupTests(unittest.TestCase):
         first, b, injected = run_bridge_with_followups(
             [_tasks("anchor"), _result("started")],
             pre_inject=[_tasks("anchor", "temporary"),
-                        _tool("TaskStop", "t1"), _tasks("anchor")],
+                        _tool("TaskStop", "t1"), _tool_result(), _tasks("anchor")],
             inject=[_result("answer to comment"), _tasks(),
                     _result("anchor report")])
         self.assertEqual((first, injected), ("started", "answer to comment"))
@@ -989,7 +1005,8 @@ class AsyncFollowupTests(unittest.TestCase):
         first, b, injected = run_bridge_with_followups(
             [_tasks("anchor", "temporary"), _result("started")],
             pre_inject=[_tasks("anchor")],
-            inject=[_tool("TaskStop", "t1"), _result("answer to comment"),
+            inject=[_tool("TaskStop", "t1"), _tool_result(),
+                    _result("answer to comment"),
                     _tasks(), _result("anchor report")])
         self.assertEqual((first, injected), ("started", "answer to comment"))
         self.assertEqual([c.args[1] for c in b.post.call_args_list],
@@ -1006,7 +1023,7 @@ class AsyncFollowupTests(unittest.TestCase):
                          ["research report"])
         self.assertEqual(b.live, {})
 
-    def test_replayed_user_prompt_does_not_claim_reply(self):
+    def test_user_stream_event_does_not_claim_reply(self):
         first, b, injected = run_bridge_with_followups(
             [_tasks("research"), _result("started")],
             inject=[_user_text("follow up"), _result("answer to comment"),
@@ -1015,6 +1032,38 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual([c.args[1] for c in b.post.call_args_list],
                          ["research report"])
         self.assertEqual(b.live, {})
+
+    def test_later_stopped_task_does_not_clear_earlier_report_debt(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("earlier", "later"), _result("started")],
+            pre_inject=[_tasks_with_ids(("t1", "later"))],
+            inject=[_tasks(), _tool("TaskStop", "t1"), _tool_result(),
+                    _result("earlier report"), _result("answer to comment")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["earlier report"])
+
+    def test_denied_stop_leaves_real_report_owed(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            pre_inject=[_tool("TaskStop", "t0"), _tool_result(is_error=True),
+                        _tasks()],
+            inject=[_result("research report"), _result("answer to comment")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["research report"])
+
+    def test_kill_shell_with_shell_id_clears_debt(self):
+        first, b, injected = run_bridge_with_followups(
+            [_tasks("shell", "anchor"), _result("started")],
+            pre_inject=[_tasks_with_ids(("t1", "anchor")),
+                        _tool("KillShell", "t0", id_key="shell_id"),
+                        _tool_result()],
+            inject=[_result("answer to comment"), _tasks(),
+                    _result("anchor report")])
+        self.assertEqual((first, injected), ("started", "answer to comment"))
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["anchor report"])
 
     def test_phantom_debt_with_waiter_releases_on_short_idle_timeout(self):
         started = time.monotonic()
@@ -1041,6 +1090,21 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 1.0)
         self.assertEqual(b.live, {})
         proc.kill.assert_called()
+
+    def test_idle_fallback_announces_dropped_report_debt(self):
+        async def main():
+            b = followup_bridge(idle=0.12)
+            b.followup_task_idle_timeout = 2.0
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            await asyncio.wait_for(b.live["k"].reader, 1.0)
+            return b
+
+        b = asyncio.run(main())
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.post.call_count, 1)
+        self.assertIn("nothing further will be reported",
+                      b.post.call_args_list[-1].args[1])
 
     def test_child_is_held_when_the_reply_leaves_background_work_running(self):
         first, b, _ = run_bridge_with_followups(
