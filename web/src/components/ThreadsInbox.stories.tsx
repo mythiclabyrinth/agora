@@ -9,11 +9,15 @@ import { normalizeSelection, useUiState } from "../state/ui";
 import { ThreadsInbox } from "./ThreadsInbox";
 
 const root = fixtureThreads[0].root;
+const now = Math.floor(Date.now() / 1000);
+const tabletReplyDate = new Date(now * 1000);
+tabletReplyDate.setDate(tabletReplyDate.getDate() - 3);
+tabletReplyDate.setHours(12, 4, 0, 0);
 const inboxThreads = [
-  { ...fixtureThreads[0], root: { ...root, id: 42, alias: "Zulu planning" }, last_reply_ts: 400 },
-  { ...fixtureThreads[0], root: { ...root, id: 43, alias: null, text: "Alpha launch notes" }, last_reply_ts: 300 },
-  { ...fixtureThreads[0], root: { ...root, id: 44, alias: "Bravo review" }, last_reply_ts: 200 },
-  { ...fixtureThreads[0], root: { ...root, id: 45, alias: null, text: "Charlie follow-up" }, last_reply_ts: 100 },
+  { ...fixtureThreads[0], root: { ...root, id: 42, alias: "Zulu planning" }, last_reply_ts: now - 300 },
+  { ...fixtureThreads[0], root: { ...root, id: 43, alias: null, text: "Alpha launch notes" }, last_reply_ts: now - 3600 },
+  { ...fixtureThreads[0], root: { ...root, id: 44, alias: "Bravo review" }, last_reply_ts: now - 86400 * 3 },
+  { ...fixtureThreads[0], root: { ...root, id: 45, alias: null, text: "Charlie follow-up" }, last_reply_ts: now - 86400 * 10 },
 ];
 
 const dmThread = {
@@ -138,6 +142,108 @@ export const SortFilterAndPersistence: Story = {
 
     await userEvent.selectOptions(canvas.getByLabelText("Filter threads"), "unset");
     expect(rowNames(canvasElement)).toEqual(["Charlie follow-up", "Alpha launch notes"]);
+  },
+};
+
+export const ReplyTimeStackOnNarrowScreen: Story = {
+  globals: { viewport: { value: "smallPhone", isRotated: false } },
+  parameters: {
+    viewport: { defaultViewport: "smallPhone" },
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": { threads: inboxThreads },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const stack = row.querySelector(".ago-inbox-time-stack");
+    const relative = stack?.querySelector(".ts");
+    const lastReply = stack?.querySelector(".ago-inbox-last-reply");
+    await expect(relative).toHaveTextContent(/^\d+m$/);
+    await expect(lastReply).toHaveTextContent(/^Last reply at /);
+    expect(lastReply!.getBoundingClientRect().top).toBeGreaterThan(relative!.getBoundingClientRect().top);
+    expect(lastReply!.scrollWidth).toBeLessThanOrEqual(lastReply!.clientWidth);
+    expect(stack!.getBoundingClientRect().width).toBeLessThanOrEqual(150);
+    const rows = [...canvasElement.querySelectorAll<HTMLElement>(".ago-inbox-row")];
+    expect(rows).toHaveLength(4);
+    const heights = rows.map(item => item.getBoundingClientRect().height);
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(2);
+  },
+};
+
+export const MissingReplyTimestamp: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": {
+        threads: [{ ...fixtureThreads[0], last_reply_ts: 0 }],
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    await expect(row.querySelector(".ago-inbox-time-stack .ts")).toBeVisible();
+    expect(row.querySelector(".ago-inbox-last-reply")).toBeNull();
+  },
+};
+
+export const NoRepliesHidesReplyTimestamp: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": {
+        threads: [{ ...fixtureThreads[0], reply_count: 0, last_reply_ts: now - 300 }],
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    expect(row.querySelector(".ago-inbox-last-reply")).toBeNull();
+  },
+};
+
+export const TabletReplyTimeFits: Story = {
+  globals: { viewport: { value: "tabletComposer", isRotated: false } },
+  parameters: {
+    viewport: { defaultViewport: "tabletComposer" },
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": {
+        threads: [{
+          ...fixtureThreads[0],
+          root: { ...root, id: 47, alias: "Tablet reply time" },
+          last_reply_ts: Math.floor(tabletReplyDate.getTime() / 1000),
+        }],
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const row = await waitFor(() => {
+      const candidate = canvasElement.querySelector(".ago-inbox-row");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    const lastReply = row.querySelector<HTMLElement>(".ago-inbox-last-reply");
+    const compact = row.querySelector<HTMLElement>(".ago-inbox-last-reply-compact");
+    expect(compact).not.toBeNull();
+    await expect(compact).toBeVisible();
+    expect(lastReply!.scrollWidth).toBeLessThanOrEqual(lastReply!.clientWidth);
   },
 };
 

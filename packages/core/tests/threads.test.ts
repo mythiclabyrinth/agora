@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterAndSortThreads, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
+import { filterAndSortThreads, threadActivityTs, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
 
 function thread(
   id: number,
@@ -26,6 +26,13 @@ const rows = [
 ];
 
 describe("filterAndSortThreads", () => {
+  it("uses only valid reply timestamps for activity ordering", () => {
+    const invalid = { ...thread(12, "Invalid", Number.NaN, { rootTs: 10 }), last_reply_ts: Number.NaN };
+    const valid = thread(13, "Valid", 20, { rootTs: 30 });
+    expect(threadActivityTs(invalid)).toBe(10);
+    expect(threadActivityTs(valid)).toBe(20);
+  });
+
   it("preserves cache order for the default recent/all view", () => {
     expect(filterAndSortThreads(rows, "recent", "all").map((t) => t.root.id))
       .toEqual([1, 2, 3, 4]);

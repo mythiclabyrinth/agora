@@ -8,7 +8,7 @@ import { Pin, Star } from "lucide-react-native";
 import type { Session } from "@agora/core";
 import { FEATURES, useSelectOption } from "@agora/core";
 import type { Message } from "@agora/core";
-import { fmtLastReply, fmtLastReplyFull, fmtTs } from "@agora/core";
+import { fmtLastReply, fmtLastReplyFull, fmtTs, validLastReplyTs } from "@agora/core";
 import { colors } from "../lib/theme";
 import { useSession } from "../state/session";
 import { tldrOf, useTldrView } from "@agora/core";
@@ -141,14 +141,14 @@ export function MessageItem({
   const threadFoot = replies ? (
     <View style={styles.threadFoot}>
       {replies}
-      {threadName || message.last_reply_ts ? (
+      {threadName || validLastReplyTs(message.last_reply_ts) ? (
         <View style={styles.threadMeta}>
           {threadName ? (
             <Text style={styles.threadAlias} numberOfLines={1} maxFontSizeMultiplier={1.2}>
               {threadName}
             </Text>
           ) : null}
-          {message.last_reply_ts ? (
+          {validLastReplyTs(message.last_reply_ts) ? (
             <Text style={styles.lastReply} numberOfLines={1} maxFontSizeMultiplier={1.2}
               accessibilityLabel={`Last reply at ${fmtLastReplyFull(message.last_reply_ts)}`}>
               Last reply at {fmtLastReply(message.last_reply_ts)}

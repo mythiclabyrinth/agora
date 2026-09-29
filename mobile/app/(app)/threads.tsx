@@ -20,6 +20,7 @@ import { Stack, router } from "expo-router";
 import { Check, ListFilter, MessagesSquare, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
+  threadActivityTs,
   useHideThread,
   useRenameThread,
   useThreads,
@@ -27,7 +28,7 @@ import {
 import type { ThreadFilter, ThreadRow, ThreadSort } from "@agora/core";
 import { Icon } from "../../src/components/Icon";
 import { toastErr } from "../../src/components/Toast";
-import { fmtTs } from "@agora/core";
+import { ThreadInboxFooter, ThreadRelativeTime } from "../../src/components/ThreadTimeMeta";
 import { headerActions } from "../../src/lib/headerItems";
 import { colors } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
@@ -73,6 +74,7 @@ function Row({
       { text: "Cancel", style: "cancel" },
     ]);
   };
+  const activityTs = threadActivityTs(thread);
   return (
     <Pressable
       style={[styles.row, thread.unread > 0 ? styles.rowUnread : null]}
@@ -95,7 +97,11 @@ function Row({
           {thread.channel_name}
           <Text style={styles.grp}> · {thread.group_name}</Text>
         </Text>
-        <Text style={styles.ts}>{fmtTs(thread.last_reply_ts)}</Text>
+        <ThreadRelativeTime
+          timestamp={activityTs}
+          replyCount={thread.reply_count}
+          lastReplyTs={thread.last_reply_ts}
+        />
       </View>
       <View style={styles.mid}>
         <Text style={styles.author} numberOfLines={1}>
@@ -105,18 +111,11 @@ function Row({
           {snippet(thread)}
         </Text>
       </View>
-      <View style={styles.foot}>
-        <Text style={styles.replies}>
-          {thread.reply_count} {thread.reply_count === 1 ? "reply" : "replies"}
-        </Text>
-        {thread.unread > 0 ? (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>
-              {thread.unread > 99 ? "99+" : thread.unread}
-            </Text>
-          </View>
-        ) : null}
-      </View>
+      <ThreadInboxFooter
+        replyCount={thread.reply_count}
+        unread={thread.unread}
+        lastReplyTs={thread.last_reply_ts}
+      />
     </Pressable>
   );
 }
@@ -344,25 +343,13 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   rowUnread: { borderColor: "rgba(139,124,255,0.45)" },
-  top: { flexDirection: "row", alignItems: "baseline", gap: 10 },
-  chan: { color: colors.text, fontSize: 12.5, fontWeight: "700", flex: 1 },
+  top: { flexDirection: "row", alignItems: "center", gap: 10 },
+  chan: { color: colors.text, fontSize: 12.5, fontWeight: "700", flex: 1, minWidth: 0 },
   hash: { color: colors.faint },
   grp: { color: colors.faint, fontWeight: "400" },
-  ts: { color: colors.faint, fontSize: 11 },
   mid: { flexDirection: "row", alignItems: "baseline", gap: 8 },
   author: { color: colors.a1, fontSize: 13, fontWeight: "700", flexShrink: 0 },
   snippet: { color: colors.dim, fontSize: 13.5, flex: 1 },
-  foot: { flexDirection: "row", alignItems: "center", gap: 10 },
-  replies: { color: colors.faint, fontSize: 11.5 },
-  badge: {
-    backgroundColor: "rgba(139,124,255,0.35)",
-    borderRadius: 9,
-    minWidth: 20,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    alignItems: "center",
-  },
-  badgeText: { color: colors.text, fontSize: 11.5, fontWeight: "800" },
   empty: { alignItems: "center", paddingVertical: 60, gap: 6 },
   emptyText: { color: colors.dim, fontSize: 15, fontWeight: "600" },
   emptyHint: {

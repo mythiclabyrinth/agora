@@ -4,11 +4,12 @@ import ThreadsScreen, { RenameModal, ThreadViewSheet } from "../../app/(app)/thr
 import { usePrefs } from "../state/prefs";
 
 const root = fixtureThreads[0].root;
+const now = Math.floor(Date.now() / 1000);
 const inboxThreads = [
-  { ...fixtureThreads[0], root: { ...root, id: 42, alias: "Zulu planning" }, last_reply_ts: 400 },
-  { ...fixtureThreads[0], root: { ...root, id: 43, alias: null, text: "Alpha launch notes" }, last_reply_ts: 300 },
-  { ...fixtureThreads[0], root: { ...root, id: 44, alias: "Bravo review" }, last_reply_ts: 200 },
-  { ...fixtureThreads[0], root: { ...root, id: 45, alias: null, text: "Charlie follow-up" }, last_reply_ts: 100 },
+  { ...fixtureThreads[0], root: { ...root, id: 42, alias: "Zulu planning" }, last_reply_ts: now - 300 },
+  { ...fixtureThreads[0], root: { ...root, id: 43, alias: null, text: "Alpha launch notes" }, last_reply_ts: now - 3600 },
+  { ...fixtureThreads[0], root: { ...root, id: 44, alias: "Bravo review" }, last_reply_ts: now - 86400 * 3 },
+  { ...fixtureThreads[0], root: { ...root, id: 45, alias: null, text: "Charlie follow-up" }, last_reply_ts: now - 86400 * 10 },
 ];
 
 const meta = {
