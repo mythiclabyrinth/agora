@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterAndSortThreads, threadActivityTs, threadGroupOptions, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
+import { filterAndSortThreads, resolveThreadGroupSelection, threadActivityTs, threadGroupOptions, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
 
 function thread(
   id: number,
@@ -104,5 +104,30 @@ describe("filterAndSortThreads", () => {
       { id: "a", name: "Alpha" },
       { id: "z", name: "Zulu" },
     ]);
+  });
+});
+
+describe("resolveThreadGroupSelection", () => {
+  const threads = [thread(1, "Product thread", 1, { groupId: "product", groupName: "Product" })];
+  const groups = [{ id: "product", name: "Product" }, { id: "design", name: "Design" }];
+
+  it("keeps the selection while groups have not loaded", () => {
+    expect(resolveThreadGroupSelection({ threads, groups: undefined, groupsLoaded: false, selectedGroupId: "design" }))
+      .toEqual({ groupId: "design", shouldClear: false, options: [
+        { id: "design", name: "design" }, { id: "product", name: "Product" },
+      ] });
+  });
+
+  it("keeps a group with no fetched threads and includes it in the options", () => {
+    expect(resolveThreadGroupSelection({ threads, groups, groupsLoaded: true, selectedGroupId: "design" }))
+      .toEqual({ groupId: "design", shouldClear: false, options: [
+        { id: "product", name: "Product" }, { id: "design", name: "Design" },
+      ] });
+    expect(filterAndSortThreads(threads, "recent", "all", "design")).toEqual([]);
+  });
+
+  it("clears a group only after the loaded groups list no longer contains it", () => {
+    expect(resolveThreadGroupSelection({ threads, groups: [groups[0]], groupsLoaded: true, selectedGroupId: "design" }))
+      .toEqual({ groupId: null, shouldClear: true, options: [{ id: "product", name: "Product" }] });
   });
 });

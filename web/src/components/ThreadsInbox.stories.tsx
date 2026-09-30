@@ -173,6 +173,23 @@ export const GroupFilter: Story = {
   },
 };
 
+export const SelectedGroupOutsideFetchedThreads: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups },
+      "GET /api/threads?limit=100": { threads: inboxThreads.slice(0, 2) },
+    },
+    setup: () => useUiState.setState({ threadsGroup: "design" }),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("No matching threads")).resolves.toBeVisible();
+    expect(canvas.getByLabelText("Filter threads by group")).toHaveValue("design");
+    expect(useUiState.getState().threadsGroup).toBe("design");
+  },
+};
+
 export const ReplyTimeStackOnNarrowScreen: Story = {
   globals: { viewport: { value: "smallPhone", isRotated: false } },
   parameters: {

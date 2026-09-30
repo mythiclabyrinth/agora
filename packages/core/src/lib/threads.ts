@@ -4,19 +4,38 @@ import { validLastReplyTs } from "./format";
 export type ThreadSort = "recent" | "oldest" | "az" | "za";
 export type ThreadFilter = "all" | "saved" | "unset";
 
-/** Groups represented in the inbox, ordered like the sidebar when available. */
-export function threadGroupOptions(threads: ThreadRow[], groups: Pick<Group, "id" | "name">[] = []): { id: string; name: string }[] {
+/** Groups represented in the inbox, plus the selected group, in sidebar order when available. */
+export function threadGroupOptions(
+  threads: ThreadRow[],
+  groups: Pick<Group, "id" | "name">[] = [],
+  selectedGroupId: string | null = null,
+): { id: string; name: string }[] {
+  const groupInfo = new Map(groups.map((group, index) => [group.id, { index, name: group.name }]));
   const names = new Map<string, string>();
   for (const thread of threads) {
     if (thread.group_id && !names.has(thread.group_id)) names.set(thread.group_id, thread.group_name);
   }
-  const order = new Map(groups.map((group, index) => [group.id, index]));
-  return [...names].map(([id, name]) => ({ id, name: groups.find(group => group.id === id)?.name ?? name }))
+  if (selectedGroupId && !names.has(selectedGroupId)) {
+    names.set(selectedGroupId, groupInfo.get(selectedGroupId)?.name ?? selectedGroupId);
+  }
+  return [...names].map(([id, name]) => ({ id, name: groupInfo.get(id)?.name ?? name }))
     .sort((a, b) => {
-      const aOrder = order.get(a.id) ?? Infinity;
-      const bOrder = order.get(b.id) ?? Infinity;
+      const aOrder = groupInfo.get(a.id)?.index ?? Infinity;
+      const bOrder = groupInfo.get(b.id)?.index ?? Infinity;
       return aOrder - bOrder || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
     });
+}
+
+/** A capped thread list cannot prove that a selected group has been removed. */
+export function resolveThreadGroupSelection({ threads, groups, groupsLoaded, selectedGroupId }: {
+  threads: ThreadRow[];
+  groups: Pick<Group, "id" | "name">[] | undefined;
+  groupsLoaded: boolean;
+  selectedGroupId: string | null;
+}): { groupId: string | null; shouldClear: boolean; options: { id: string; name: string }[] } {
+  const shouldClear = !!selectedGroupId && groupsLoaded && !groups?.some(group => group.id === selectedGroupId);
+  const groupId = shouldClear ? null : selectedGroupId;
+  return { groupId, shouldClear, options: threadGroupOptions(threads, groups, groupId) };
 }
 
 export function threadActivityTs(thread: ThreadRow): number {

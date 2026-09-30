@@ -22,11 +22,11 @@ export function SelectDropdown<T extends string>({
       <Text style={styles.triggerText} numberOfLines={1}>{selected?.label}</Text>
       <Icon icon={open ? ChevronUp : ChevronDown} size={17} color={colors.a1} />
     </Pressable>
-    {open ? <ScrollView style={styles.menu} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+    {open ? <ScrollView accessibilityRole="menu" style={styles.menu} nestedScrollEnabled keyboardShouldPersistTaps="handled">
       {options.map(option => <Pressable key={option.value} accessibilityRole="menuitem"
         accessibilityLabel={option.label}
         accessibilityState={{ selected: option.value === value }} style={styles.option}
-        onPress={() => onChange(option.value)}>
+        onPress={() => { if (option.value === value) onToggle(); else onChange(option.value); }}>
         <Text style={[styles.optionText, option.value === value && styles.selectedText]} numberOfLines={1}>
           {option.label}
         </Text>

@@ -22,7 +22,7 @@ import { ListFilter, MessagesSquare, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
   threadActivityTs,
-  threadGroupOptions,
+  resolveThreadGroupSelection,
   useGroups,
   useHideThread,
   useRenameThread,
@@ -204,6 +204,7 @@ export function ThreadViewSheet({
   onFilter: (filter: ThreadFilter) => void;
   onGroup: (groupId: string | null) => void;
   onClose: () => void;
+  /** Opens a chosen menu in Storybook previews. */
   initialOpen?: "sort" | "filter" | "group" | null;
 }) {
   const [open, setOpen] = React.useState<"sort" | "filter" | "group" | null>(initialOpen);
@@ -264,11 +265,13 @@ export default function ThreadsScreen() {
   const setSort = usePrefs((state) => state.setThreadSort);
   const setFilter = usePrefs((state) => state.setThreadFilter);
   const setGroup = usePrefs((state) => state.setThreadGroup);
-  const groupOptions = React.useMemo(() => threadGroupOptions(threads.data ?? [], groups.data ?? []), [threads.data, groups.data]);
-  const effectiveGroupId = groupOptions.some(group => group.id === groupId) ? groupId : null;
+  const groupSelection = React.useMemo(() => resolveThreadGroupSelection({
+    threads: threads.data ?? [], groups: groups.data, groupsLoaded: groups.isSuccess, selectedGroupId: groupId,
+  }), [threads.data, groups.data, groups.isSuccess, groupId]);
+  const effectiveGroupId = groupSelection.groupId;
   React.useEffect(() => {
-    if (threads.isSuccess && groupId && !effectiveGroupId) setGroup(null);
-  }, [threads.isSuccess, groupId, effectiveGroupId, setGroup]);
+    if (groupSelection.shouldClear) setGroup(null);
+  }, [groupSelection.shouldClear, setGroup]);
   const displayedThreads = React.useMemo(
     () => filterAndSortThreads(threads.data ?? [], sort, filter, effectiveGroupId),
     [threads.data, sort, filter, effectiveGroupId],
@@ -293,7 +296,7 @@ export default function ThreadsScreen() {
       }} />
       <RenameModal thread={renaming} onClose={() => setRenaming(null)} />
       {viewOptionsOpen ? (
-        <ThreadViewSheet sort={sort} filter={filter} groupId={effectiveGroupId} groupOptions={groupOptions}
+        <ThreadViewSheet sort={sort} filter={filter} groupId={effectiveGroupId} groupOptions={groupSelection.options}
           onSort={setSort} onFilter={setFilter} onGroup={setGroup}
           onClose={() => setViewOptionsOpen(false)} />
       ) : null}
@@ -315,7 +318,7 @@ export default function ThreadsScreen() {
         ListEmptyComponent={
           threads.isLoading ? (
             <ActivityIndicator color={colors.dim} style={{ paddingVertical: 40 }} />
-          ) : (threads.data?.length ?? 0) > 0 ? (
+          ) : (threads.data?.length ?? 0) > 0 || effectiveGroupId ? (
             <View style={styles.empty}>
               <Icon icon={MessagesSquare} size={34} color={colors.faint} />
               <Text style={styles.emptyText}>No matching threads</Text>
