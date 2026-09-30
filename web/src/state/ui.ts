@@ -60,6 +60,7 @@ interface UiState {
   unreadsOnly: boolean;
   threadsSort: ThreadSort;
   threadsFilter: ThreadFilter;
+  threadsGroup: string | null;
   hiddenOpen: boolean;
   sideCollapsed: boolean;
   threadRoot: number | null;
@@ -80,6 +81,7 @@ interface UiState {
   setUnreadsOnly: (on: boolean) => void;
   setThreadsSort: (sort: ThreadSort) => void;
   setThreadsFilter: (filter: ThreadFilter) => void;
+  setThreadsGroup: (groupId: string | null) => void;
   toggleHiddenSection: () => void;
   toggleSide: () => void;
   openThread: (rootId: number, history?: "push" | "replace" | "none") => void;
@@ -102,6 +104,7 @@ export const useUiState = create<UiState>((set, get) => ({
   unreadsOnly: localStorage.getItem("agora_unreads_only") === "1",
   threadsSort: loadEnum("agora_threads_sort", ["recent", "oldest", "az", "za"], "recent"),
   threadsFilter: loadEnum("agora_threads_filter", ["all", "saved", "unset"], "all"),
+  threadsGroup: localStorage.getItem("agora_threads_group") || null,
   hiddenOpen: false,
   sideCollapsed: localStorage.getItem("agora_side") === "collapsed",
   threadRoot: null,
@@ -168,6 +171,11 @@ export const useUiState = create<UiState>((set, get) => ({
   setThreadsFilter: (filter) => {
     localStorage.setItem("agora_threads_filter", filter);
     set({ threadsFilter: filter });
+  },
+  setThreadsGroup: (groupId) => {
+    if (groupId === null) localStorage.removeItem("agora_threads_group");
+    else localStorage.setItem("agora_threads_group", groupId);
+    set({ threadsGroup: groupId });
   },
   toggleHiddenSection: () => set((s) => ({ hiddenOpen: !s.hiddenOpen })),
   toggleSide: () => set((s) => {

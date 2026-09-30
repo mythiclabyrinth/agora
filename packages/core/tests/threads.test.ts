@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { filterAndSortThreads, threadActivityTs, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
+import { filterAndSortThreads, threadActivityTs, threadGroupOptions, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
 
 function thread(
   id: number,
   name: string,
   activity: number,
-  options: { saved?: boolean; rootTs?: number } = {},
+  options: { saved?: boolean; rootTs?: number; groupId?: string; groupName?: string } = {},
 ): ThreadRow {
   return {
     root: {
@@ -15,6 +15,8 @@ function thread(
       ts: options.rootTs ?? activity,
     },
     last_reply_ts: activity,
+    group_id: options.groupId ?? "product",
+    group_name: options.groupName ?? "Product",
   } as ThreadRow;
 }
 
@@ -74,5 +76,33 @@ describe("filterAndSortThreads", () => {
     const newer = thread(11, "Newer", 0, { rootTs: 20 });
     expect(filterAndSortThreads([newer, older], "oldest", "all").map((t) => t.root.id))
       .toEqual([10, 11]);
+  });
+
+  it("combines group with saved and unset filters", () => {
+    const grouped = [
+      thread(1, "Saved A", 4, { saved: true, groupId: "a" }),
+      thread(2, "Unset A", 3, { groupId: "a" }),
+      thread(3, "Saved B", 2, { saved: true, groupId: "b" }),
+      thread(4, "Unset B", 1, { groupId: "b" }),
+    ];
+    expect(filterAndSortThreads(grouped, "recent", "all", "a").map(t => t.root.id)).toEqual([1, 2]);
+    expect(filterAndSortThreads(grouped, "recent", "saved", "a").map(t => t.root.id)).toEqual([1]);
+    expect(filterAndSortThreads(grouped, "recent", "unset", "b").map(t => t.root.id)).toEqual([4]);
+    expect(filterAndSortThreads(grouped, "recent", "all", "gone")).toEqual([]);
+  });
+
+  it("lists each represented group once in sidebar order, then alphabetically", () => {
+    const grouped = [
+      thread(1, "One", 4, { groupId: "z", groupName: "Zulu" }),
+      thread(2, "Two", 3, { groupId: "a", groupName: "Alpha" }),
+      thread(3, "Three", 2, { groupId: "z", groupName: "Zulu" }),
+      thread(4, "Four", 1, { groupId: "b", groupName: "Beta" }),
+    ];
+    const sidebar = [{ id: "b", name: "Renamed Beta" }];
+    expect(threadGroupOptions(grouped, sidebar)).toEqual([
+      { id: "b", name: "Renamed Beta" },
+      { id: "a", name: "Alpha" },
+      { id: "z", name: "Zulu" },
+    ]);
   });
 });

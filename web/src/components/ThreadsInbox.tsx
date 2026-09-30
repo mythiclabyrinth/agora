@@ -1,10 +1,10 @@
 /* Threads inbox (.ago-inbox-list): every thread the user participates in,
    newest first, with rename and two-step remove on each row. */
 
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys, threadActivityTs,
+  filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys, threadActivityTs, threadGroupOptions,
   useGroups, useHideThread, useMe, useRenameThread, useThreads, validLastReplyTs,
   type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
@@ -129,17 +129,26 @@ function InboxRow({ t }: { t: ThreadRow }) {
 export function ThreadsInbox() {
   const ui = useUiState();
   const qc = useQueryClient();
-  const threads = useThreads().data || [];
+  const threadsQuery = useThreads();
+  const threads = threadsQuery.data || [];
+  const groups = useGroups().data || [];
   const sort = useUiState(state => state.threadsSort);
   const filter = useUiState(state => state.threadsFilter);
+  const groupId = useUiState(state => state.threadsGroup);
   const setSort = useUiState(state => state.setThreadsSort);
   const setFilter = useUiState(state => state.setThreadsFilter);
+  const setGroup = useUiState(state => state.setThreadsGroup);
   const [search, setSearch] = useState("");
   const [toolsOpen, setToolsOpen] = useState(false);
+  const groupOptions = useMemo(() => threadGroupOptions(threads, groups), [threads, groups]);
+  const effectiveGroupId = groupOptions.some(group => group.id === groupId) ? groupId : null;
+  useEffect(() => {
+    if (threadsQuery.isSuccess && groupId && !effectiveGroupId) setGroup(null);
+  }, [threadsQuery.isSuccess, groupId, effectiveGroupId, setGroup]);
   const displayedThreads = useMemo(
-    () => filterAndSortThreads(threads, sort, filter).filter(t =>
+    () => filterAndSortThreads(threads, sort, filter, effectiveGroupId).filter(t =>
       `${snippet(t.root)} ${t.channel_name} ${t.group_name} ${t.root.author_name || t.root.author_id}`.toLowerCase().includes(search.trim().toLowerCase())),
-    [threads, sort, filter, search],
+    [threads, sort, filter, effectiveGroupId, search],
   );
 
   return (
@@ -172,6 +181,14 @@ export function ThreadsInbox() {
               <option value="all">All Threads</option>
               <option value="saved">Saved Threads</option>
               <option value="unset">Unset Threads</option>
+            </select>
+          </label>
+          <label className="ago-inbox-control">
+            <span>Group</span>
+            <select className="ago-search-scope" aria-label="Filter threads by group"
+              value={effectiveGroupId ?? ""} onChange={event => setGroup(event.target.value || null)}>
+              <option value="">All groups</option>
+              {groupOptions.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
             </select>
           </label>
           <button className="btn sm" title="Refresh"

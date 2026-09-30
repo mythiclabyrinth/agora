@@ -55,6 +55,7 @@ it("renders the rename dialog on an opaque accessible modal surface", () => {
 it("applies thread view choices immediately and closes from its controls", () => {
   const onSort = jest.fn();
   const onFilter = jest.fn();
+  const onGroup = jest.fn();
   const onClose = jest.fn();
   let tree!: TestRenderer.ReactTestRenderer;
 
@@ -62,8 +63,11 @@ it("applies thread view choices immediately and closes from its controls", () =>
     tree = TestRenderer.create(React.createElement(ThreadViewSheet, {
       sort: "recent",
       filter: "all",
+      groupId: null,
+      groupOptions: [{ id: "product", name: "Product" }],
       onSort,
       onFilter,
+      onGroup,
       onClose,
     }));
   });
@@ -72,15 +76,25 @@ it("applies thread view choices immediately and closes from its controls", () =>
   expect(sheet.props.accessibilityViewIsModal).toBe(true);
   expect(sheet.props.accessibilityLabel).toBe("Thread view options");
 
-  const oldest = tree.root.find((node) => node.props.accessibilityRole === "radio"
-    && node.findAllByType(TextInput).length === 0
-    && node.findAll((child) => child.props.children === "Oldest").length > 0);
-  const saved = tree.root.find((node) => node.props.accessibilityRole === "radio"
-    && node.findAll((child) => child.props.children === "Saved Threads").length > 0);
+  const trigger = (label: string) => tree.root.find((node) => node.props.accessibilityRole === "button"
+    && typeof node.props.accessibilityLabel === "string"
+    && node.props.accessibilityLabel.startsWith(`${label}: `));
+  const option = (label: string) => tree.root.find((node) => node.props.accessibilityRole === "menuitem"
+    && node.props.accessibilityLabel === label);
+  expect(trigger("Sort by").props.accessibilityState).toEqual({ expanded: false });
+  act(() => trigger("Sort by").props.onPress());
+  expect(trigger("Sort by").props.accessibilityState).toEqual({ expanded: true });
+  const oldest = option("Oldest");
   act(() => oldest.props.onPress());
+  expect(trigger("Sort by").props.accessibilityState).toEqual({ expanded: false });
+  act(() => trigger("Show").props.onPress());
+  const saved = option("Saved Threads");
   act(() => saved.props.onPress());
   expect(onSort).toHaveBeenCalledWith("oldest");
   expect(onFilter).toHaveBeenCalledWith("saved");
+  act(() => trigger("Group").props.onPress());
+  act(() => option("Product").props.onPress());
+  expect(onGroup).toHaveBeenCalledWith("product");
 
   const done = tree.root.find((node) => node.props.accessibilityRole === "button"
     && node.findAll((child) => child.props.children === "Done").length > 0);

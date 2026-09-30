@@ -27,6 +27,7 @@ interface PersistedPrefs {
   linkBrowser: LinkBrowser;
   threadSort: ThreadSort;
   threadFilter: ThreadFilter;
+  threadGroup: string | null;
   /** Conversation keys (`threadAddressKey`) where require-agent was switched
       OFF. Absent = on, which is the default. Renamed from the old
       `requireAgentThreads` on-list so stale blobs are ignored, not inverted. */
@@ -48,6 +49,7 @@ interface PrefsState {
   linkBrowser: LinkBrowser;
   threadSort: ThreadSort;
   threadFilter: ThreadFilter;
+  threadGroup: string | null;
   requireAgentOffThreads: string[];
   load: () => Promise<void>;
   toggleGroup: (groupId: string) => void;
@@ -59,6 +61,7 @@ interface PrefsState {
   setLinkBrowser: (browser: LinkBrowser) => void;
   setThreadSort: (sort: ThreadSort) => void;
   setThreadFilter: (filter: ThreadFilter) => void;
+  setThreadGroup: (groupId: string | null) => void;
   isRequireAgent: (key: string) => boolean;
   setRequireAgent: (key: string, on: boolean) => void;
   toggleRequireAgent: (key: string) => void;
@@ -74,6 +77,7 @@ function persist(state: PrefsState): void {
     linkBrowser: state.linkBrowser,
     threadSort: state.threadSort,
     threadFilter: state.threadFilter,
+    threadGroup: state.threadGroup,
     requireAgentOffThreads: state.requireAgentOffThreads,
   };
   FileSystem.writeAsStringAsync(PREFS_FILE, JSON.stringify(data)).catch(() => {
@@ -91,6 +95,7 @@ export const usePrefs = create<PrefsState>((set, get) => ({
   linkBrowser: "in-app",
   threadSort: "recent",
   threadFilter: "all",
+  threadGroup: null,
   requireAgentOffThreads: [],
 
   async load() {
@@ -120,6 +125,8 @@ export const usePrefs = create<PrefsState>((set, get) => ({
         threadFilter: ["all", "saved", "unset"].includes(data.threadFilter ?? "")
           ? data.threadFilter as ThreadFilter
           : "all",
+        threadGroup: typeof data.threadGroup === "string" && data.threadGroup.length > 0
+          ? data.threadGroup : null,
         requireAgentOffThreads: parseRequireAgentKeys(data.requireAgentOffThreads),
       });
     } catch {
@@ -177,6 +184,11 @@ export const usePrefs = create<PrefsState>((set, get) => ({
 
   setThreadFilter(filter) {
     set({ threadFilter: filter });
+    persist(get());
+  },
+
+  setThreadGroup(groupId) {
+    set({ threadGroup: groupId });
     persist(get());
   },
 

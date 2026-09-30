@@ -21,6 +21,7 @@ beforeEach(() => {
     linkBrowser: "in-app",
     threadSort: "recent",
     threadFilter: "all",
+    threadGroup: null,
     requireAgentOffThreads: [],
   });
 });
@@ -57,26 +58,28 @@ it("persists both link preference axes", () => {
 it("persists thread sorting and filtering", () => {
   usePrefs.getState().setThreadSort("za");
   usePrefs.getState().setThreadFilter("saved");
+  usePrefs.getState().setThreadGroup("product");
   expect(JSON.parse(mockWrite.mock.calls.at(-1)![1])).toMatchObject({
     threadSort: "za",
     threadFilter: "saved",
+    threadGroup: "product",
   });
 });
 
 it("loads valid thread preferences", async () => {
-  mockRead.mockResolvedValue(JSON.stringify({ threadSort: "oldest", threadFilter: "unset" }));
+  mockRead.mockResolvedValue(JSON.stringify({ threadSort: "oldest", threadFilter: "unset", threadGroup: "product" }));
   await usePrefs.getState().load();
-  expect(usePrefs.getState()).toMatchObject({ threadSort: "oldest", threadFilter: "unset" });
+  expect(usePrefs.getState()).toMatchObject({ threadSort: "oldest", threadFilter: "unset", threadGroup: "product" });
 });
 
 it("defaults missing or invalid thread preferences", async () => {
-  mockRead.mockResolvedValue(JSON.stringify({ threadSort: "newest", threadFilter: 12 }));
+  mockRead.mockResolvedValue(JSON.stringify({ threadSort: "newest", threadFilter: 12, threadGroup: 12 }));
   await usePrefs.getState().load();
-  expect(usePrefs.getState()).toMatchObject({ threadSort: "recent", threadFilter: "all" });
+  expect(usePrefs.getState()).toMatchObject({ threadSort: "recent", threadFilter: "all", threadGroup: null });
 
   mockRead.mockResolvedValue(JSON.stringify({ collapsedGroups: [], unreadsOnly: true }));
   await usePrefs.getState().load();
-  expect(usePrefs.getState()).toMatchObject({ threadSort: "recent", threadFilter: "all" });
+  expect(usePrefs.getState()).toMatchObject({ threadSort: "recent", threadFilter: "all", threadGroup: null });
 });
 
 it("expands only the requested collapsed group and persists the change", () => {
