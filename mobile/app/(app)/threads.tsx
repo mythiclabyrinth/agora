@@ -208,6 +208,7 @@ export function ThreadViewSheet({
   initialOpen?: "sort" | "filter" | "group" | null;
 }) {
   const [open, setOpen] = React.useState<"sort" | "filter" | "group" | null>(initialOpen);
+  const controlsRef = React.useRef<ScrollView>(null);
   const groupChoices = React.useMemo(() => [
     { value: "", label: "All groups" },
     ...groupOptions.map(group => ({ value: group.id, label: group.name })),
@@ -233,8 +234,9 @@ export function ThreadViewSheet({
               <Icon icon={X} size={20} color={colors.dim} />
             </Pressable>
           </View>
-          <ScrollView style={styles.viewControls} contentContainerStyle={styles.viewControlsContent}
-            nestedScrollEnabled keyboardShouldPersistTaps="handled">
+          <ScrollView ref={controlsRef} style={styles.viewControls} contentContainerStyle={styles.viewControlsContent}
+            nestedScrollEnabled keyboardShouldPersistTaps="handled"
+            onContentSizeChange={() => { if (open === "group") controlsRef.current?.scrollToEnd?.({ animated: true }); }}>
             <SelectDropdown label="Sort by" value={sort} options={SORT_OPTIONS}
               open={open === "sort"} onToggle={() => setOpen(open === "sort" ? null : "sort")}
               onChange={value => { onSort(value); setOpen(null); }} />

@@ -13,12 +13,16 @@ export function threadGroupOptions(
   const groupInfo = new Map(groups.map((group, index) => [group.id, { index, name: group.name }]));
   const names = new Map<string, string>();
   for (const thread of threads) {
-    if (thread.group_id && !names.has(thread.group_id)) names.set(thread.group_id, thread.group_name);
+    if (thread.group_id && !names.has(thread.group_id)) {
+      names.set(thread.group_id, thread.group_name?.trim() || "Unknown group");
+    } else if (thread.group_id && names.get(thread.group_id) === "Unknown group" && thread.group_name?.trim()) {
+      names.set(thread.group_id, thread.group_name.trim());
+    }
   }
   if (selectedGroupId && !names.has(selectedGroupId)) {
-    names.set(selectedGroupId, groupInfo.get(selectedGroupId)?.name ?? selectedGroupId);
+    names.set(selectedGroupId, groupInfo.has(selectedGroupId) ? "Unknown group" : "Loading…");
   }
-  return [...names].map(([id, name]) => ({ id, name: groupInfo.get(id)?.name ?? name }))
+  return [...names].map(([id, name]) => ({ id, name: groupInfo.get(id)?.name?.trim() || name }))
     .sort((a, b) => {
       const aOrder = groupInfo.get(a.id)?.index ?? Infinity;
       const bOrder = groupInfo.get(b.id)?.index ?? Infinity;
@@ -33,7 +37,9 @@ export function resolveThreadGroupSelection({ threads, groups, groupsLoaded, sel
   groupsLoaded: boolean;
   selectedGroupId: string | null;
 }): { groupId: string | null; shouldClear: boolean; options: { id: string; name: string }[] } {
-  const shouldClear = !!selectedGroupId && groupsLoaded && !groups?.some(group => group.id === selectedGroupId);
+  const shouldClear = !!selectedGroupId && groupsLoaded
+    && !groups?.some(group => group.id === selectedGroupId)
+    && !threads.some(thread => thread.group_id === selectedGroupId);
   const groupId = shouldClear ? null : selectedGroupId;
   return { groupId, shouldClear, options: threadGroupOptions(threads, groups, groupId) };
 }

@@ -114,7 +114,7 @@ describe("resolveThreadGroupSelection", () => {
   it("keeps the selection while groups have not loaded", () => {
     expect(resolveThreadGroupSelection({ threads, groups: undefined, groupsLoaded: false, selectedGroupId: "design" }))
       .toEqual({ groupId: "design", shouldClear: false, options: [
-        { id: "design", name: "design" }, { id: "product", name: "Product" },
+        { id: "design", name: "Loading…" }, { id: "product", name: "Product" },
       ] });
   });
 
@@ -129,5 +129,19 @@ describe("resolveThreadGroupSelection", () => {
   it("clears a group only after the loaded groups list no longer contains it", () => {
     expect(resolveThreadGroupSelection({ threads, groups: [groups[0]], groupsLoaded: true, selectedGroupId: "design" }))
       .toEqual({ groupId: null, shouldClear: true, options: [{ id: "product", name: "Product" }] });
+  });
+
+  it("keeps a group represented by a thread even when it is absent from groups", () => {
+    const orphan = thread(2, "Orphan thread", 2, { groupId: "old", groupName: "Former group" });
+    expect(resolveThreadGroupSelection({ threads: [...threads, orphan], groups, groupsLoaded: true, selectedGroupId: "old" }))
+      .toEqual({ groupId: "old", shouldClear: false, options: [
+        { id: "product", name: "Product" }, { id: "old", name: "Former group" },
+      ] });
+  });
+
+  it("uses a safe label when a deleted group's thread has no group name", () => {
+    const orphan = thread(2, "Orphan thread", 2, { groupId: "old", groupName: "" });
+    expect(resolveThreadGroupSelection({ threads: [orphan], groups: [], groupsLoaded: true, selectedGroupId: "old" }))
+      .toEqual({ groupId: "old", shouldClear: false, options: [{ id: "old", name: "Unknown group" }] });
   });
 });
