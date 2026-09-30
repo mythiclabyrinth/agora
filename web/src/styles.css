@@ -565,6 +565,8 @@ select {
 }
 .ago-head-text .dim { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ago-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.ago-head:has(.ago-inbox-tools) { flex-wrap: wrap; }
+.ago-head > .ago-inbox-tools { flex-shrink: 1; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ---------- pinned threads ---------- */
 .ago-pin-wrap { position: relative; }

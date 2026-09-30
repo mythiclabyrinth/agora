@@ -11,22 +11,26 @@ import {
   Modal,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
 import { Stack, router } from "expo-router";
-import { Check, ListFilter, MessagesSquare, X } from "lucide-react-native";
+import { ListFilter, MessagesSquare, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
   threadActivityTs,
+  resolveThreadGroupSelection,
+  useGroups,
   useHideThread,
   useRenameThread,
   useThreads,
 } from "@agora/core";
 import type { ThreadFilter, ThreadRow, ThreadSort } from "@agora/core";
 import { Icon } from "../../src/components/Icon";
+import { SelectDropdown } from "../../src/components/SelectDropdown";
 import { toastErr } from "../../src/components/Toast";
 import { ThreadInboxFooter, ThreadRelativeTime } from "../../src/components/ThreadTimeMeta";
 import { headerActions } from "../../src/lib/headerItems";
@@ -184,37 +188,31 @@ export function RenameModal({
 export function ThreadViewSheet({
   sort,
   filter,
+  groupId,
+  groupOptions,
   onSort,
   onFilter,
+  onGroup,
   onClose,
+  initialOpen = null,
 }: {
   sort: ThreadSort;
   filter: ThreadFilter;
+  groupId: string | null;
+  groupOptions: { id: string; name: string }[];
   onSort: (sort: ThreadSort) => void;
   onFilter: (filter: ThreadFilter) => void;
+  onGroup: (groupId: string | null) => void;
   onClose: () => void;
+  /** Opens a chosen menu in Storybook previews. */
+  initialOpen?: "sort" | "filter" | "group" | null;
 }) {
-  const choices = <T extends string>(
-    options: { value: T; label: string }[],
-    selected: T,
-    onSelect: (value: T) => void,
-  ) => options.map((option) => {
-    const checked = option.value === selected;
-    return (
-      <Pressable
-        key={option.value}
-        style={[styles.choice, checked ? styles.choiceSelected : null]}
-        accessibilityRole="radio"
-        accessibilityState={{ checked }}
-        onPress={() => onSelect(option.value)}
-      >
-        <Text style={[styles.choiceText, checked ? styles.choiceTextSelected : null]}>
-          {option.label}
-        </Text>
-        {checked ? <Icon icon={Check} size={18} color={colors.a1} /> : null}
-      </Pressable>
-    );
-  });
+  const [open, setOpen] = React.useState<"sort" | "filter" | "group" | null>(initialOpen);
+  const controlsRef = React.useRef<ScrollView>(null);
+  const groupChoices = React.useMemo(() => [
+    { value: "", label: "All groups" },
+    ...groupOptions.map(group => ({ value: group.id, label: group.name })),
+  ], [groupOptions]);
 
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
@@ -236,14 +234,19 @@ export function ThreadViewSheet({
               <Icon icon={X} size={20} color={colors.dim} />
             </Pressable>
           </View>
-          <Text style={styles.sectionLabel}>Sort by</Text>
-          <View accessibilityRole="radiogroup" style={styles.choiceGroup}>
-            {choices(SORT_OPTIONS, sort, onSort)}
-          </View>
-          <Text style={styles.sectionLabel}>Show</Text>
-          <View accessibilityRole="radiogroup" style={styles.choiceGroup}>
-            {choices(FILTER_OPTIONS, filter, onFilter)}
-          </View>
+          <ScrollView ref={controlsRef} style={styles.viewControls} contentContainerStyle={styles.viewControlsContent}
+            nestedScrollEnabled keyboardShouldPersistTaps="handled"
+            onContentSizeChange={() => { if (open === "group") controlsRef.current?.scrollToEnd?.({ animated: true }); }}>
+            <SelectDropdown label="Sort by" value={sort} options={SORT_OPTIONS}
+              open={open === "sort"} onToggle={() => setOpen(open === "sort" ? null : "sort")}
+              onChange={value => { onSort(value); setOpen(null); }} />
+            <SelectDropdown label="Show" value={filter} options={FILTER_OPTIONS}
+              open={open === "filter"} onToggle={() => setOpen(open === "filter" ? null : "filter")}
+              onChange={value => { onFilter(value); setOpen(null); }} />
+            <SelectDropdown label="Group" value={groupId ?? ""} options={groupChoices}
+              open={open === "group"} onToggle={() => setOpen(open === "group" ? null : "group")}
+              onChange={value => { onGroup(value || null); setOpen(null); }} />
+          </ScrollView>
           <Pressable accessibilityRole="button" style={styles.doneButton} onPress={onClose}>
             <Text style={styles.doneText}>Done</Text>
           </Pressable>
@@ -255,17 +258,27 @@ export function ThreadViewSheet({
 
 export default function ThreadsScreen() {
   const threads = useThreads();
+  const groups = useGroups();
   const [renaming, setRenaming] = React.useState<ThreadRow | null>(null);
   const [viewOptionsOpen, setViewOptionsOpen] = React.useState(false);
   const sort = usePrefs((state) => state.threadSort);
   const filter = usePrefs((state) => state.threadFilter);
+  const groupId = usePrefs((state) => state.threadGroup);
   const setSort = usePrefs((state) => state.setThreadSort);
   const setFilter = usePrefs((state) => state.setThreadFilter);
+  const setGroup = usePrefs((state) => state.setThreadGroup);
+  const groupSelection = React.useMemo(() => resolveThreadGroupSelection({
+    threads: threads.data ?? [], groups: groups.data, groupsLoaded: groups.isSuccess, selectedGroupId: groupId,
+  }), [threads.data, groups.data, groups.isSuccess, groupId]);
+  const effectiveGroupId = groupSelection.groupId;
+  React.useEffect(() => {
+    if (groupSelection.shouldClear) setGroup(null);
+  }, [groupSelection.shouldClear, setGroup]);
   const displayedThreads = React.useMemo(
-    () => filterAndSortThreads(threads.data ?? [], sort, filter),
-    [threads.data, sort, filter],
+    () => filterAndSortThreads(threads.data ?? [], sort, filter, effectiveGroupId),
+    [threads.data, sort, filter, effectiveGroupId],
   );
-  const optionsActive = sort !== "recent" || filter !== "all";
+  const optionsActive = sort !== "recent" || filter !== "all" || effectiveGroupId !== null;
   return (
     <>
       <Stack.Screen options={{
@@ -285,7 +298,8 @@ export default function ThreadsScreen() {
       }} />
       <RenameModal thread={renaming} onClose={() => setRenaming(null)} />
       {viewOptionsOpen ? (
-        <ThreadViewSheet sort={sort} filter={filter} onSort={setSort} onFilter={setFilter}
+        <ThreadViewSheet sort={sort} filter={filter} groupId={effectiveGroupId} groupOptions={groupSelection.options}
+          onSort={setSort} onFilter={setFilter} onGroup={setGroup}
           onClose={() => setViewOptionsOpen(false)} />
       ) : null}
       <FlatList
@@ -306,7 +320,7 @@ export default function ThreadsScreen() {
         ListEmptyComponent={
           threads.isLoading ? (
             <ActivityIndicator color={colors.dim} style={{ paddingVertical: 40 }} />
-          ) : (threads.data?.length ?? 0) > 0 ? (
+          ) : (threads.data?.length ?? 0) > 0 || effectiveGroupId ? (
             <View style={styles.empty}>
               <Icon icon={MessagesSquare} size={34} color={colors.faint} />
               <Text style={styles.emptyText}>No matching threads</Text>
@@ -405,37 +419,14 @@ const styles = StyleSheet.create({
     padding: 18,
     paddingBottom: 34,
     gap: 12,
+    maxHeight: "85%",
   },
+  viewControls: { flexShrink: 1 },
+  viewControlsContent: { gap: 12 },
   sheetHead: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
   sheetTitleBlock: { flex: 1, gap: 3 },
   sheetTitle: { color: colors.text, fontSize: 18, fontWeight: "800" },
   sheetHint: { color: colors.faint, fontSize: 12.5 },
-  sectionLabel: {
-    color: colors.faint,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-    marginTop: 2,
-  },
-  choiceGroup: { gap: 6 },
-  choice: {
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 11,
-    backgroundColor: colors.panel,
-  },
-  choiceSelected: {
-    borderColor: "rgba(139,124,255,0.5)",
-    backgroundColor: "rgba(139,124,255,0.10)",
-  },
-  choiceText: { color: colors.dim, fontSize: 14, fontWeight: "600" },
-  choiceTextSelected: { color: colors.text },
   doneButton: {
     minHeight: 44,
     alignItems: "center",

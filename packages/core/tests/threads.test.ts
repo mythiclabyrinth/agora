@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { filterAndSortThreads, threadActivityTs, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
+import { filterAndSortThreads, resolveThreadGroupSelection, threadActivityTs, threadGroupOptions, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
 
 function thread(
   id: number,
   name: string,
   activity: number,
-  options: { saved?: boolean; rootTs?: number } = {},
+  options: { saved?: boolean; rootTs?: number; groupId?: string; groupName?: string } = {},
 ): ThreadRow {
   return {
     root: {
@@ -15,6 +15,8 @@ function thread(
       ts: options.rootTs ?? activity,
     },
     last_reply_ts: activity,
+    group_id: options.groupId ?? "product",
+    group_name: options.groupName ?? "Product",
   } as ThreadRow;
 }
 
@@ -74,5 +76,72 @@ describe("filterAndSortThreads", () => {
     const newer = thread(11, "Newer", 0, { rootTs: 20 });
     expect(filterAndSortThreads([newer, older], "oldest", "all").map((t) => t.root.id))
       .toEqual([10, 11]);
+  });
+
+  it("combines group with saved and unset filters", () => {
+    const grouped = [
+      thread(1, "Saved A", 4, { saved: true, groupId: "a" }),
+      thread(2, "Unset A", 3, { groupId: "a" }),
+      thread(3, "Saved B", 2, { saved: true, groupId: "b" }),
+      thread(4, "Unset B", 1, { groupId: "b" }),
+    ];
+    expect(filterAndSortThreads(grouped, "recent", "all", "a").map(t => t.root.id)).toEqual([1, 2]);
+    expect(filterAndSortThreads(grouped, "recent", "saved", "a").map(t => t.root.id)).toEqual([1]);
+    expect(filterAndSortThreads(grouped, "recent", "unset", "b").map(t => t.root.id)).toEqual([4]);
+    expect(filterAndSortThreads(grouped, "recent", "all", "gone")).toEqual([]);
+  });
+
+  it("lists each represented group once in sidebar order, then alphabetically", () => {
+    const grouped = [
+      thread(1, "One", 4, { groupId: "z", groupName: "Zulu" }),
+      thread(2, "Two", 3, { groupId: "a", groupName: "Alpha" }),
+      thread(3, "Three", 2, { groupId: "z", groupName: "Zulu" }),
+      thread(4, "Four", 1, { groupId: "b", groupName: "Beta" }),
+    ];
+    const sidebar = [{ id: "b", name: "Renamed Beta" }];
+    expect(threadGroupOptions(grouped, sidebar)).toEqual([
+      { id: "b", name: "Renamed Beta" },
+      { id: "a", name: "Alpha" },
+      { id: "z", name: "Zulu" },
+    ]);
+  });
+});
+
+describe("resolveThreadGroupSelection", () => {
+  const threads = [thread(1, "Product thread", 1, { groupId: "product", groupName: "Product" })];
+  const groups = [{ id: "product", name: "Product" }, { id: "design", name: "Design" }];
+
+  it("keeps the selection while groups have not loaded", () => {
+    expect(resolveThreadGroupSelection({ threads, groups: undefined, groupsLoaded: false, selectedGroupId: "design" }))
+      .toEqual({ groupId: "design", shouldClear: false, options: [
+        { id: "design", name: "Loading…" }, { id: "product", name: "Product" },
+      ] });
+  });
+
+  it("keeps a group with no fetched threads and includes it in the options", () => {
+    expect(resolveThreadGroupSelection({ threads, groups, groupsLoaded: true, selectedGroupId: "design" }))
+      .toEqual({ groupId: "design", shouldClear: false, options: [
+        { id: "product", name: "Product" }, { id: "design", name: "Design" },
+      ] });
+    expect(filterAndSortThreads(threads, "recent", "all", "design")).toEqual([]);
+  });
+
+  it("clears a group only after the loaded groups list no longer contains it", () => {
+    expect(resolveThreadGroupSelection({ threads, groups: [groups[0]], groupsLoaded: true, selectedGroupId: "design" }))
+      .toEqual({ groupId: null, shouldClear: true, options: [{ id: "product", name: "Product" }] });
+  });
+
+  it("keeps a group represented by a thread even when it is absent from groups", () => {
+    const orphan = thread(2, "Orphan thread", 2, { groupId: "old", groupName: "Former group" });
+    expect(resolveThreadGroupSelection({ threads: [...threads, orphan], groups, groupsLoaded: true, selectedGroupId: "old" }))
+      .toEqual({ groupId: "old", shouldClear: false, options: [
+        { id: "product", name: "Product" }, { id: "old", name: "Former group" },
+      ] });
+  });
+
+  it("uses a safe label when a deleted group's thread has no group name", () => {
+    const orphan = thread(2, "Orphan thread", 2, { groupId: "old", groupName: "" });
+    expect(resolveThreadGroupSelection({ threads: [orphan], groups: [], groupsLoaded: true, selectedGroupId: "old" }))
+      .toEqual({ groupId: "old", shouldClear: false, options: [{ id: "old", name: "Unknown group" }] });
   });
 });

@@ -87,6 +87,7 @@ const preview: Preview = {
       linkBrowser: "in-app",
       threadSort: "recent",
       threadFilter: "all",
+      threadGroup: null,
       requireAgentOffThreads: [],
     });
     useToasts.setState({ items: [] });

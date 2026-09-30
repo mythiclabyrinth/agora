@@ -19,6 +19,10 @@ const inboxThreads = [
   { ...fixtureThreads[0], root: { ...root, id: 44, alias: "Bravo review" }, last_reply_ts: now - 86400 * 3 },
   { ...fixtureThreads[0], root: { ...root, id: 45, alias: null, text: "Charlie follow-up" }, last_reply_ts: now - 86400 * 10 },
 ];
+const groupThreads = inboxThreads.map((thread, index) => index < 2 ? thread : {
+  ...thread, group_id: "design", group_name: "Design",
+});
+const groups = [...fixtureGroups, { ...fixtureGroups[0], id: "design", name: "Design" }];
 
 const dmThread = {
   ...fixtureThreads[0],
@@ -142,6 +146,82 @@ export const SortFilterAndPersistence: Story = {
 
     await userEvent.selectOptions(canvas.getByLabelText("Filter threads"), "unset");
     expect(rowNames(canvasElement)).toEqual(["Charlie follow-up", "Alpha launch notes"]);
+  },
+};
+
+export const GroupFilter: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups },
+      "GET /api/threads?limit=100": { threads: groupThreads },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Zulu planning");
+    await userEvent.selectOptions(canvas.getByLabelText("Filter threads by group"), "design");
+    expect(rowNames(canvasElement)).toEqual(["Bravo review", "Charlie follow-up"]);
+    expect(localStorage.getItem("agora_threads_group")).toBe("design");
+    await userEvent.selectOptions(canvas.getByLabelText("Filter threads"), "saved");
+    expect(rowNames(canvasElement)).toEqual(["Bravo review"]);
+    await userEvent.selectOptions(canvas.getByLabelText("Filter threads by group"), "");
+    expect(rowNames(canvasElement)).toEqual(["Zulu planning", "Bravo review"]);
+    expect(localStorage.getItem("agora_threads_group")).toBeNull();
+    await userEvent.selectOptions(canvas.getByLabelText("Filter threads by group"), "design");
+    expect(rowNames(canvasElement)).toEqual(["Bravo review"]);
+  },
+};
+
+export const SelectedGroupOutsideFetchedThreads: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups },
+      "GET /api/threads?limit=100": { threads: inboxThreads.slice(0, 2) },
+    },
+    setup: () => useUiState.setState({ threadsGroup: "design" }),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("No matching threads")).resolves.toBeVisible();
+    expect(canvas.getByLabelText("Filter threads by group")).toHaveValue("design");
+    expect(useUiState.getState().threadsGroup).toBe("design");
+  },
+};
+
+export const RemovedGroupClearsSelection: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": { threads: inboxThreads.slice(0, 2) },
+    },
+    setup: () => useUiState.getState().setThreadsGroup("design"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Zulu planning");
+    await waitFor(() => expect(canvas.getByLabelText("Filter threads by group")).toHaveValue(""));
+    expect(localStorage.getItem("agora_threads_group")).toBeNull();
+  },
+};
+
+export const RemovedGroupWithThread: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": { threads: [{ ...dmThread, group_id: "old", group_name: "" }] },
+    },
+    setup: () => useUiState.getState().setThreadsGroup("old"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Private agent thread");
+    expect(canvas.getByLabelText("Filter threads by group")).toHaveValue("old");
+    expect(canvas.getByRole("option", { name: "Unknown group" })).toBeInTheDocument();
+    expect(localStorage.getItem("agora_threads_group")).toBe("old");
   },
 };
 
