@@ -2324,9 +2324,12 @@ class UsageTests(unittest.TestCase):
             instance.capture_usage({"rate_limit_info": {
                 "status": "rejected", "unifiedWindows": None,
             }})
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "unifiedWindows": [],
+            }})
             warning.assert_not_called()
         self.assertEqual(instance.last_usage_frame["limited_until"], reset)
-        instance.send.assert_called_once()
+        self.assertEqual(instance.send.call_count, 2)
 
     def test_rejected_limit_sets_and_success_clears(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)

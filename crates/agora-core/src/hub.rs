@@ -2508,20 +2508,20 @@ impl Hub {
             && self.store.agents_share_channel(agent_id, handle_name) {
             Some(handle_name.to_string())
         } else {
-            let shared: Vec<Value> = self.store.known_agents().into_iter()
-                .filter(|agent| agent["id"].as_str()
-                    .is_some_and(|target| self.store.agents_share_channel(agent_id, target)))
-                .collect();
-            let exact: Vec<String> = shared.iter()
+            let known = self.store.known_agents();
+            let exact: Vec<String> = known.iter()
                 .filter(|agent| agent["name"].as_str()
                     .is_some_and(|name| name.eq_ignore_ascii_case(handle_name)))
                 .filter_map(|agent| agent["id"].as_str().map(str::to_string))
+                .filter(|target| self.store.agents_share_channel(agent_id, target))
                 .collect();
             let matches: Vec<String> = if exact.is_empty() {
-                shared.iter()
+                let requested_slug = slugify(handle_name);
+                known.iter()
                     .filter(|agent| agent["name"].as_str()
-                        .is_some_and(|name| slugify(name) == handle_name.to_lowercase()))
+                        .is_some_and(|name| slugify(name) == requested_slug))
                     .filter_map(|agent| agent["id"].as_str().map(str::to_string))
+                    .filter(|target| self.store.agents_share_channel(agent_id, target))
                     .collect()
             } else { exact };
             (matches.len() == 1).then(|| matches[0].clone())
@@ -4701,6 +4701,11 @@ mod tests {
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "slug", "agent_id": "bot-a",
             "target_agent_id": "@special-agent"
+        }));
+        assert_eq!(last_frame(&mut requester, "usage_response").unwrap()["target_agent_id"], "bot-d");
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "slug-normalized", "agent_id": "bot-a",
+            "target_agent_id": "@special_agent"
         }));
         assert_eq!(last_frame(&mut requester, "usage_response").unwrap()["target_agent_id"], "bot-d");
     }

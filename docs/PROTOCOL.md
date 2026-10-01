@@ -535,6 +535,8 @@ windows without assuming that `primary` means five hours or that every plan has
 a weekly or model-specific limit.
 `plan` and `credits` carry forward on same-provider updates when omitted and
 clear when sent as `null`.
+A frame with no windows and no limit change is ignored, so a `null` plan or
+credits value clears only when that update is accepted.
 
 `usage_request` requires requester and target to share a channel; errors return
 `usage_response` with the same `request_id` and an `error` string. An invalid

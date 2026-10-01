@@ -1134,11 +1134,10 @@ class Bridge:
         status = info.get("status")
         if status is not None and status not in ("allowed", "allowed_warning", "rejected"):
             self._warn_usage_shape("status", f"status={status!r}")
-        raw_windows = info.get("unifiedWindows")
-        if raw_windows is not None and not isinstance(raw_windows, dict):
+        raw_windows = info.get("unifiedWindows") or {}
+        if raw_windows and not isinstance(raw_windows, dict):
             self._warn_usage_shape("windows", f"unifiedWindows has type {type(raw_windows).__name__}")
             return
-        raw_windows = raw_windows or {}
         windows = []
         for key, value in raw_windows.items():
             if not isinstance(value, dict):
