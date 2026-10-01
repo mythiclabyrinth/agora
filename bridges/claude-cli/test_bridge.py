@@ -2153,7 +2153,7 @@ class UsageTests(unittest.TestCase):
             asyncio.run(instance.refresh_usage())
         instance.send.assert_called_once_with(instance.last_usage_frame)
 
-    def test_subscription_refresh_below_limit_clears_rejection(self):
+    def test_subscription_refresh_below_limit_preserves_rejection(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.claude_bin = "claude-test"
         instance.agent_id = "claude-cli"
@@ -2170,8 +2170,41 @@ class UsageTests(unittest.TestCase):
                  {"key": "five_hour", "used_percent": 12}
              ]):
             asyncio.run(instance.refresh_usage())
+        self.assertIn("limited_until", instance.last_usage_frame)
+        self.assertEqual(instance.last_usage_frame["limited_window"], "five_hour")
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
+    def test_expired_limit_clears_without_refreshing_window_age(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.last_usage_frame = {
+            "type": "usage_update", "captured_at": 1234,
+            "windows": [{"key": "five_hour", "used_percent": 100}],
+            "limited_until": int(bridge.time.time()) - 1,
+            "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        instance.clear_expired_limit()
+        self.assertEqual(instance.last_usage_frame["captured_at"], 1234)
         self.assertNotIn("limited_until", instance.last_usage_frame)
-        self.assertNotIn("limited_window", instance.last_usage_frame)
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
+    def test_refresh_after_expiry_sends_only_one_frame(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.claude_bin = "claude-test"
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = {
+            "type": "usage_update", "captured_at": 1234,
+            "windows": [{"key": "five_hour", "used_percent": 100}],
+            "limited_until": int(bridge.time.time()) - 1,
+            "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        proc = Mock(returncode=1)
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+            asyncio.run(instance.refresh_usage())
+        self.assertEqual(instance.last_usage_frame["captured_at"], 1234)
+        self.assertNotIn("limited_until", instance.last_usage_frame)
         instance.send.assert_called_once_with(instance.last_usage_frame)
 
     def test_subscription_usage_refresh_timeout_preserves_snapshot_and_kills_process(self):

@@ -902,6 +902,11 @@ impl Hub {
         let limited_window = frame["limited_window"].as_str()
             .filter(|window| !window.is_empty() && window.len() <= 64
                 && window.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
+        if windows.is_empty() && limited_until.is_some() {
+            windows = self.current_agent_usage(agent_id)
+                .and_then(|usage| usage["windows"].as_array().cloned())
+                .unwrap_or_default();
+        }
         if availability == "available" && windows.is_empty() && limited_until.is_none() { return; }
         let mut snapshot = json!({
             "agent_id": agent_id, "provider": provider, "availability": availability,
@@ -913,9 +918,11 @@ impl Hub {
                 "balance": credits["balance"].as_str().map(|s| s.chars().take(64).collect::<String>()),
             })).unwrap_or(Value::Null),
         });
-        if let (Some(until), Some(window)) = (limited_until, limited_window) {
+        if let Some(until) = limited_until {
             snapshot["limited_until"] = json!(until);
-            snapshot["limited_window"] = json!(window);
+            if let Some(window) = limited_window {
+                snapshot["limited_window"] = json!(window);
+            }
         }
         self.store.set_agent_usage(agent_id, provider, &snapshot, captured_at);
         let stale = agent_usage_is_stale(&snapshot, now_s);
@@ -2455,6 +2462,7 @@ impl Hub {
             "agent_id": agent_id, "target_agent_id": frame["target_agent_id"],
         });
         let Some(request_id) = frame["request_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128) else {
+            response["request_id"] = Value::Null;
             response["error"] = json!("invalid request_id");
             let _ = handle.tx.send(response);
             return;
@@ -2476,20 +2484,14 @@ impl Hub {
             (matches.len() == 1).then(|| matches[0].clone())
         };
         let Some(target) = target else {
-            response["error"] = json!("unknown agent");
+            response["error"] = json!("target agent is unavailable or not shared");
             let _ = handle.tx.send(response);
             return;
         };
         response["target_agent_id"] = json!(target);
-        let shared = self.store.channels_for_agent(agent_id).iter().any(|(group, _)| {
-            self.store.group_channels(group).iter().any(|channel| {
-                let Some(channel_id) = channel["id"].as_str() else { return false };
-                self.store.agent_in_channel(agent_id, channel_id)
-                    && self.store.agent_in_channel(&target, channel_id)
-            })
-        });
+        let shared = self.store.agents_share_channel(agent_id, &target);
         if !shared {
-            response["error"] = json!("agents do not share a channel");
+            response["error"] = json!("target agent is unavailable or not shared");
             let _ = handle.tx.send(response);
             return;
         }
@@ -4649,6 +4651,64 @@ mod tests {
         assert!(response["usage"].is_null());
         assert_eq!(response["refreshing"], false);
         assert_eq!(last_frame(&mut target, "usage_refresh").unwrap()["agent_id"], "bot-b");
+    }
+
+    #[test]
+    fn limit_only_update_keeps_windows_and_omission_clears_limit() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 40}]
+        }));
+        let until = now() as i64 + 3600;
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [], "limited_until": until
+        }));
+        assert_eq!(h.current_agent_usage("bot-a").unwrap()["limited_until"], until);
+        for window in [json!("weekly limit")] {
+            h.handle_agent_frame(&json!({
+                "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+                "captured_at": now(), "windows": [],
+                "limited_until": until, "limited_window": window
+            }));
+            let stored = h.current_agent_usage("bot-a").unwrap();
+            assert_eq!(stored["limited_until"], until);
+            assert!(stored.get("limited_window").is_none());
+            assert_eq!(stored["windows"][0]["key"], "five_hour");
+        }
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 20}]
+        }));
+        let stored = h.current_agent_usage("bot-a").unwrap();
+        assert!(stored.get("limited_until").is_none());
+        assert!(stored.get("limited_window").is_none());
+    }
+
+    #[test]
+    fn usage_request_errors_hide_target_existence_and_normalize_request_id() {
+        let h = hub();
+        let mut requester = add_agent(&h, "bot-a", "Bot A", false);
+        let _target = add_agent(&h, "bot-b", "Bot B", false);
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "one", "agent_id": "bot-a",
+            "target_agent_id": "bot-b"
+        }));
+        let denied = last_frame(&mut requester, "usage_response").unwrap();
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "two", "agent_id": "bot-a",
+            "target_agent_id": "missing"
+        }));
+        let unknown = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(denied["error"], unknown["error"]);
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": 42, "agent_id": "bot-a",
+            "target_agent_id": "bot-b"
+        }));
+        let invalid = last_frame(&mut requester, "usage_response").unwrap();
+        assert!(invalid["request_id"].is_null());
     }
 
     #[test]

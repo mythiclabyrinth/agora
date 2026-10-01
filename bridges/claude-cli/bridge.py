@@ -1166,15 +1166,15 @@ class Bridge:
             self.last_usage_frame.update(limited_until=limited_until, limited_window=limited_window)
         self.send(self.last_usage_frame)
 
-    def clear_expired_limit(self, *, successful_turn: bool = False) -> None:
+    def clear_expired_limit(self, *, successful_turn: bool = False, emit: bool = True) -> None:
         frame = getattr(self, "last_usage_frame", None)
         if not frame or "limited_until" not in frame:
             return
         if successful_turn or frame["limited_until"] <= time.time():
             self.last_usage_frame = {k: v for k, v in frame.items()
                                      if k not in ("limited_until", "limited_window")}
-            self.last_usage_frame["captured_at"] = time.time()
-            self.send(self.last_usage_frame)
+            if emit:
+                self.send(self.last_usage_frame)
 
     async def refresh_usage(self) -> None:
         """Fetch live subscription limits through Claude's zero-turn /usage command."""
@@ -1203,7 +1203,7 @@ class Bridge:
                 await proc.wait()
         if epoch != getattr(self, "account_epoch", 0):
             return
-        self.clear_expired_limit()
+        self.clear_expired_limit(emit=False)
         if windows:
             limited = self.last_usage_frame or {}
             self.last_usage_frame = {
@@ -1211,10 +1211,9 @@ class Bridge:
                 "provider": "claude", "availability": "available",
                 "captured_at": time.time(), "windows": windows,
             }
-            if any(w.get("used_percent", 0) >= 100 for w in windows):
-                for key in ("limited_until", "limited_window"):
-                    if key in limited:
-                        self.last_usage_frame[key] = limited[key]
+            for key in ("limited_until", "limited_window"):
+                if key in limited:
+                    self.last_usage_frame[key] = limited[key]
         if self.last_usage_frame:
             self.send(self.last_usage_frame)
 

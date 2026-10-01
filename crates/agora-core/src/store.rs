@@ -1606,6 +1606,23 @@ impl Store {
             .collect()
     }
 
+    /// Whether two agents can both read at least one ordinary channel.
+    /// Agent DMs are user-agent routes, never shared agent rooms.
+    pub fn agents_share_channel(&self, requester: &str, target: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM memberships a \
+             JOIN memberships b ON b.group_id = a.group_id \
+             JOIN channels c ON c.group_id = a.group_id AND c.kind != 'agent_dm' \
+             WHERE a.member_type = 'agent' AND a.member_id = ?1 \
+             AND b.member_type = 'agent' AND b.member_id = ?2 \
+             AND (a.channel_id = '' OR a.channel_id = c.id) \
+             AND (b.channel_id = '' OR b.channel_id = c.id) LIMIT 1",
+            params![requester, target],
+            |_| Ok(()),
+        ).is_ok()
+    }
+
     /// Whether one agent is a member of a channel, either through a
     /// group-wide membership or a row scoped to that exact channel.
     pub fn agent_in_channel(&self, agent_id: &str, channel_id: &str) -> bool {
@@ -4245,6 +4262,7 @@ mod tests {
         assert!(s.agent_in_channel("bot-a", c2id));
         assert!(s.agent_in_channel("bot-b", c1id));
         assert!(!s.agent_in_channel("bot-b", c2id));
+        assert!(s.agents_share_channel("bot-a", "bot-b"));
         assert!(!s.agent_in_channel("missing", c1id));
         assert!(s.user_in_group("tom", gid));
         assert!(!s.user_in_group("alice", gid));
@@ -4265,6 +4283,14 @@ mod tests {
         s.add_member(g2id, "agent", "bot-c", "member", Some(c1id));
         assert!(!s.agent_in_channel("bot-c", c1id));
         assert!(!s.agent_in_channel("bot-c", c3id));
+        assert!(!s.agents_share_channel("bot-a", "bot-c"));
+
+        // Synthetic DM membership rows must not open the usage-read boundary.
+        let dm = s.open_agent_dm("tom", "bot-a", "Bot A");
+        let dm_id = dm["id"].as_str().unwrap();
+        s.add_member("", "agent", "dm-a", "member", Some(dm_id));
+        s.add_member("", "agent", "dm-b", "member", Some(dm_id));
+        assert!(!s.agents_share_channel("dm-a", "dm-b"));
     }
 
     #[test]
