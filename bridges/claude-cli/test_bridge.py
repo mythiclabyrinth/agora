@@ -2246,6 +2246,30 @@ class UsageTests(unittest.TestCase):
         instance.capture_usage({"rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": "nope"}}}})
         instance.send.assert_not_called()
 
+    def test_unrecognised_limit_fields_log_at_most_once_an_hour(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        unknown = {"rate_limit_info": {
+            "status": "changed_status",
+            "unifiedWindows": {"five_hour": {"utilization": 0.5}},
+        }}
+        with patch.object(bridge, "log") as warning:
+            instance.capture_usage(unknown)
+            instance.capture_usage(unknown)
+            warning.assert_called_once()
+            self.assertIn("changed_status", warning.call_args.args[0])
+            instance._usage_warning_at -= 3601
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "rateLimitType": "renamed_window",
+                "unifiedWindows": {"five_hour": {
+                    "utilization": 1.0, "resetsAt": int(bridge.time.time()) + 3600,
+                }},
+            }})
+            self.assertEqual(warning.call_count, 2)
+            self.assertIn("rateLimitType", warning.call_args.args[0])
+
     def test_rejected_limit_sets_and_success_clears(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.agent_id = "claude-cli"

@@ -1117,12 +1117,23 @@ class Bridge:
     def send(self, frame: dict) -> None:
         self.outbox.put_nowait(frame)
 
+    def _warn_usage_shape(self, detail: str) -> None:
+        now_s = time.time()
+        if now_s - getattr(self, "_usage_warning_at", 0) >= 3600:
+            self._usage_warning_at = now_s
+            log(f"unrecognised rate_limit_info: {detail}")
+
     def capture_usage(self, event: dict) -> None:
         info = event.get("rate_limit_info") or {}
         if not isinstance(info, dict):
             return
+        status = info.get("status")
+        if status is not None and status not in ("allowed", "allowed_warning", "rejected"):
+            self._warn_usage_shape(f"status={status!r}")
         raw_windows = info.get("unifiedWindows") or {}
         if not isinstance(raw_windows, dict):
+            if status == "rejected":
+                self._warn_usage_shape(f"rejected with unusable rateLimitType={info.get('rateLimitType')!r}")
             return
         windows = []
         for key, value in raw_windows.items():
@@ -1145,7 +1156,6 @@ class Bridge:
                 "window_minutes": 300 if key == "five_hour" else (10080 if key.startswith("seven_day") else None),
                 "resets_at": int(reset) if isinstance(reset, (int, float)) and reset > 0 else None,
             })
-        status = info.get("status")
         limited_window = info.get("rateLimitType")
         limited_until = None
         if status == "rejected" and isinstance(limited_window, str):
@@ -1154,6 +1164,8 @@ class Bridge:
             if (isinstance(reset, (int, float)) and not isinstance(reset, bool)
                     and time.time() < reset <= time.time() + 8 * 86400):
                 limited_until = int(reset)
+        if status == "rejected" and limited_until is None:
+            self._warn_usage_shape(f"rejected with unusable rateLimitType={limited_window!r}")
         if status == "rejected" and limited_until is None and (
                 not isinstance(limited_window, str) or limited_window not in raw_windows):
             candidates = []
