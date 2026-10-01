@@ -2153,6 +2153,27 @@ class UsageTests(unittest.TestCase):
             asyncio.run(instance.refresh_usage())
         instance.send.assert_called_once_with(instance.last_usage_frame)
 
+    def test_subscription_refresh_below_limit_clears_rejection(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.claude_bin = "claude-test"
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = {
+            "type": "usage_update", "windows": [{"key": "five_hour", "used_percent": 100}],
+            "limited_until": int(bridge.time.time()) + 3600,
+            "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        proc = Mock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(b'{}', b''))
+        with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)), \
+             patch.object(bridge, "parse_subscription_usage", return_value=[
+                 {"key": "five_hour", "used_percent": 12}
+             ]):
+            asyncio.run(instance.refresh_usage())
+        self.assertNotIn("limited_until", instance.last_usage_frame)
+        self.assertNotIn("limited_window", instance.last_usage_frame)
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
     def test_subscription_usage_refresh_timeout_preserves_snapshot_and_kills_process(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.claude_bin = "claude-test"
@@ -2191,6 +2212,46 @@ class UsageTests(unittest.TestCase):
         instance.send = Mock()
         instance.capture_usage({"rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": "nope"}}}})
         instance.send.assert_not_called()
+
+    def test_rejected_limit_sets_and_success_clears(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        reset = int(bridge.time.time()) + 3600
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"resetsAt": reset}},
+        }})
+        self.assertEqual(instance.last_usage_frame["limited_until"], reset)
+        self.assertEqual(instance.last_usage_frame["limited_window"], "five_hour")
+        instance.clear_expired_limit(successful_turn=True)
+        self.assertNotIn("limited_until", instance.last_usage_frame)
+        self.assertEqual(instance.send.call_count, 2)
+
+    def test_rejected_limit_without_reset_is_ignored(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"resetsAt": "bad"}},
+        }})
+        instance.send.assert_not_called()
+
+    def test_rejected_event_with_invalid_limit_keeps_usable_windows(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "unknown",
+            "unifiedWindows": {"five_hour": {"utilization": 0.4, "resetsAt": 2000}},
+        }})
+        frame = instance.send.call_args.args[0]
+        self.assertEqual(frame["windows"][0]["used_percent"], 40)
+        self.assertNotIn("limited_until", frame)
 
 
 class ClaudeAccountTests(unittest.TestCase):
