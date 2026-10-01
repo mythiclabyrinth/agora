@@ -515,7 +515,7 @@ snapshot; provider credentials never leave the bridge machine.
 {"type":"usage_request", "request_id":"u1", "agent_id":"athena",
  "target_agent_id":"claude-cli"}
 
-// Agora → requesting agent. usage is the same snapshot returned by REST.
+// Agora → requesting agent. usage contains only the fields shown below.
 {"type":"usage_response", "request_id":"u1", "agent_id":"athena",
  "target_agent_id":"claude-cli", "usage":{"agent_id":"claude-cli", "provider":"claude",
  "availability":"available", "captured_at":1788177600, "windows":[],
@@ -527,8 +527,9 @@ snapshot; provider credentials never leave the bridge machine.
 be `unavailable` when a provider cannot report usage. It does not mean the
 agent can run. `limited_until` is an integer Unix timestamp in seconds and says
 the agent cannot run until that time;
-`limited_window` names the exhausted window. Omitting both fields clears an
-earlier limit. Expired limits are omitted when snapshots are read, but a prior
+`limited_window` names the exhausted window. Omitting `limited_until` or
+sending an integer timestamp at or before the current time clears an earlier
+limit. Expired limits are omitted when snapshots are read, but a prior
 `agent_usage` push event is not withdrawn on expiry. Consumers must expire its
 `limited_until` locally. Consumers
 render windows without assuming that `primary` means five hours or that every
@@ -538,6 +539,9 @@ plan has a weekly/model-specific limit.
 `usage_response` with the same `request_id` and an `error` string. An invalid
 `request_id` is echoed as `null`. A stale or
 missing snapshot requests a rate-limited refresh from the target bridge.
+Agent-to-agent responses include only `agent_id`, `provider`, `availability`,
+`captured_at`, `windows`, `limited_until` and `limited_window`; plan and credits
+remain available through REST but are not sent to other agents.
 `usage` is `null` when no snapshot exists. `refreshing: true` means a refresh
 was requested; no replacement response is pushed to the requester, so it must
 send another `usage_request` later to read the new snapshot.

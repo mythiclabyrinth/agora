@@ -906,15 +906,18 @@ impl Hub {
                 && window.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
         let previous = self.current_agent_usage(agent_id)
             .filter(|usage| usage["provider"].as_str() == Some(provider));
+        let expired_submitted_limit = availability == "available" && submitted_limit
+            .and_then(Value::as_i64).is_some_and(|until| until <= now_s as i64);
         let invalid_submitted_limit = availability == "available" && submitted_limit.is_some()
-            && validated_until.is_none();
+            && validated_until.is_none() && !expired_submitted_limit;
         let limited_until = validated_until.or_else(|| invalid_submitted_limit.then(||
             previous.as_ref().and_then(|usage| usage["limited_until"].as_i64())
         ).flatten());
         let limited_window = if invalid_submitted_limit && limited_until.is_some() {
             previous.as_ref().and_then(|usage| usage["limited_window"].as_str())
         } else { limited_window };
-        let clearing_limit = availability == "available" && submitted_limit.is_none()
+        let clearing_limit = availability == "available"
+            && (submitted_limit.is_none() || expired_submitted_limit)
             && previous.as_ref().is_some_and(|usage| usage.get("limited_until").is_some());
         let carry_previous = availability == "available" && windows.is_empty()
             && (limited_until.is_some() || clearing_limit);
@@ -2520,7 +2523,16 @@ impl Hub {
         let should_refresh = age.is_none_or(|seconds| seconds >= 300.0);
         let refreshing = should_refresh && self.request_agent_usage_refresh(&target);
         let stale = usage.as_ref().is_some_and(|u| agent_usage_is_stale(u, now()));
-        response["usage"] = json!(usage);
+        response["usage"] = json!(usage.as_ref().map(|snapshot| {
+            let mut visible = json!({});
+            for field in ["agent_id", "provider", "availability", "captured_at",
+                "windows", "limited_until", "limited_window"] {
+                if let Some(value) = snapshot.get(field) {
+                    visible[field] = value.clone();
+                }
+            }
+            visible
+        }));
         response["stale"] = json!(stale);
         response["refreshing"] = json!(refreshing);
         let _ = handle.tx.send(response);
@@ -4626,7 +4638,8 @@ mod tests {
         h.handle_agent_frame(&json!({
             "type": "usage_update", "agent_id": "bot-b", "provider": "claude",
             "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 100}],
-            "limited_until": until, "limited_window": "five_hour"
+            "limited_until": until, "limited_window": "five_hour",
+            "plan": "Pro", "credits": {"has_credits": true, "balance": "5"}
         }));
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "denied", "agent_id": "bot-a",
@@ -4646,6 +4659,9 @@ mod tests {
         assert_eq!(allowed["request_id"], "allowed");
         assert_eq!(allowed["usage"]["limited_until"], until);
         assert_eq!(allowed["usage"]["limited_window"], "five_hour");
+        assert!(allowed["usage"].get("plan").is_none());
+        assert!(allowed["usage"].get("credits").is_none());
+        assert_eq!(h.current_agent_usage("bot-b").unwrap()["plan"], "Pro");
         assert_eq!(allowed["stale"], false);
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "handle", "agent_id": "bot-a",
@@ -4754,6 +4770,14 @@ mod tests {
         let stored = h.current_agent_usage("bot-a").unwrap();
         assert_eq!(stored["limited_until"], until);
         assert_eq!(stored["limited_window"], "five_hour");
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [],
+            "limited_until": now() as i64 - 1,
+        }));
+        let cleared = h.current_agent_usage("bot-a").unwrap();
+        assert!(cleared.get("limited_until").is_none());
+        assert!(cleared.get("limited_window").is_none());
     }
 
     #[test]

@@ -2461,6 +2461,8 @@ class ClaudeAccountTests(unittest.TestCase):
             {name: "" for name in bridge.CLAUDE_CREDENTIAL_OVERRIDES}, clear=False,
         ):
             b = self._bridge(tmp)
+            b.last_usage_frame["limited_until"] = int(time.time()) + 3600
+            b.last_usage_frame["limited_window"] = "five_hour"
             b.account_status = AsyncMock(return_value={
                 "ok": True,
                 "projectsDirectory": str(b.accounts["personal"] / "projects"),
@@ -2474,6 +2476,28 @@ class ClaudeAccountTests(unittest.TestCase):
             saved = json.loads(b.state_file.read_text())
             self.assertEqual(saved["config_dir"], str(b.accounts["personal"]))
             self.assertEqual(b.last_usage_frame["availability"], "unavailable")
+            self.assertNotIn("limited_until", b.last_usage_frame)
+
+    def test_same_account_verification_preserves_active_limit(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            bridge.os.environ,
+            {name: "" for name in bridge.CLAUDE_CREDENTIAL_OVERRIDES}, clear=False,
+        ):
+            b = self._bridge(tmp)
+            b._account_state_valid = False
+            b.last_usage_frame["limited_until"] = int(time.time()) + 3600
+            b.last_usage_frame["limited_window"] = "five_hour"
+            b.account_status = AsyncMock(return_value={
+                "ok": True,
+                "projectsDirectory": str(b.accounts["work"] / "projects"),
+            })
+            reply = asyncio.run(b._cmd_switch("work"))
+            self.assertIn("Login verified", reply)
+            self.assertEqual(b.account_epoch, 0)
+            self.assertEqual(b.bindings["c1"]["session_id"], "old")
+            self.assertGreater(b.last_usage_frame["limited_until"], time.time())
+            self.assertEqual(b.last_usage_frame["limited_window"], "five_hour")
+            b.send.assert_not_called()
 
     def test_v2_state_matches_renamed_account_by_persisted_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

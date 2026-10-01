@@ -2143,7 +2143,6 @@ class Bridge:
             self._account_state_valid = True
             self.account_auth_problem = None
             self._save_state()
-            self.clear_usage()
             self._spawn(self.refresh_usage())
             return f"Login verified for {name} ({self.config_dir}); existing sessions were kept."
         previous = self.account
