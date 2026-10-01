@@ -2153,6 +2153,60 @@ class UsageTests(unittest.TestCase):
             asyncio.run(instance.refresh_usage())
         instance.send.assert_called_once_with(instance.last_usage_frame)
 
+    def test_subscription_refresh_below_limit_preserves_rejection(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.claude_bin = "claude-test"
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = {
+            "type": "usage_update", "windows": [{"key": "five_hour", "used_percent": 100}],
+            "limited_until": int(bridge.time.time()) + 3600,
+            "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        proc = Mock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(b'{}', b''))
+        with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)), \
+             patch.object(bridge, "parse_subscription_usage", return_value=[
+                 {"key": "five_hour", "used_percent": 12}
+             ]):
+            asyncio.run(instance.refresh_usage())
+        self.assertIn("limited_until", instance.last_usage_frame)
+        self.assertEqual(instance.last_usage_frame["limited_window"], "five_hour")
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
+    def test_expired_limit_clear_uses_new_capture_time(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.last_usage_frame = {
+            "type": "usage_update", "captured_at": 1234,
+            "windows": [{"key": "five_hour", "used_percent": 100}],
+            "limited_until": int(bridge.time.time()) - 1,
+            "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        instance.clear_expired_limit()
+        self.assertGreater(instance.last_usage_frame["captured_at"], 1234)
+        self.assertNotIn("limited_until", instance.last_usage_frame)
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
+    def test_refresh_after_expiry_sends_only_one_frame(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.claude_bin = "claude-test"
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = {
+            "type": "usage_update", "captured_at": 1234,
+            "windows": [{"key": "five_hour", "used_percent": 100}],
+            "limited_until": int(bridge.time.time()) - 1,
+            "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        proc = Mock(returncode=1)
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
+            asyncio.run(instance.refresh_usage())
+        self.assertGreater(instance.last_usage_frame["captured_at"], 1234)
+        self.assertNotIn("limited_until", instance.last_usage_frame)
+        instance.send.assert_called_once_with(instance.last_usage_frame)
+
     def test_subscription_usage_refresh_timeout_preserves_snapshot_and_kills_process(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.claude_bin = "claude-test"
@@ -2191,6 +2245,86 @@ class UsageTests(unittest.TestCase):
         instance.send = Mock()
         instance.capture_usage({"rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": "nope"}}}})
         instance.send.assert_not_called()
+
+    def test_rejected_limit_sets_and_success_clears(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        reset = int(bridge.time.time()) + 3600
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"resetsAt": reset}},
+        }})
+        self.assertEqual(instance.last_usage_frame["limited_until"], reset)
+        self.assertEqual(instance.last_usage_frame["limited_window"], "five_hour")
+        instance.clear_expired_limit(successful_turn=True)
+        self.assertNotIn("limited_until", instance.last_usage_frame)
+        self.assertEqual(instance.send.call_count, 2)
+
+    def test_rejected_limit_without_reset_is_ignored(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"resetsAt": "bad"}},
+        }})
+        instance.send.assert_not_called()
+
+    def test_repeated_rejection_keeps_previous_limit_with_fresh_capture_time(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        until = int(bridge.time.time()) + 3600
+        captured_at = bridge.time.time() - 120
+        instance.last_usage_frame = {
+            "type": "usage_update", "agent_id": "claude-cli", "provider": "claude",
+            "availability": "available", "captured_at": captured_at,
+            "windows": [{"key": "five_hour", "used_percent": 90}],
+            "limited_until": until, "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"resetsAt": "bad"}},
+        }})
+        frame = instance.send.call_args.args[0]
+        self.assertEqual(frame["limited_until"], until)
+        self.assertEqual(frame["limited_window"], "five_hour")
+        self.assertGreater(frame["captured_at"], captured_at)
+        self.assertEqual(frame["windows"][0]["key"], "five_hour")
+
+    def test_unmatched_limit_type_uses_latest_saturated_window_reset(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        now_s = int(bridge.time.time())
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "unknown",
+            "unifiedWindows": {
+                "five_hour": {"utilization": 1.0, "resetsAt": now_s + 3600},
+                "seven_day": {"utilization": 1.1, "resetsAt": now_s + 7200},
+                "seven_day_opus": {"utilization": 0.8, "resetsAt": now_s + 9000},
+            },
+        }})
+        frame = instance.send.call_args.args[0]
+        self.assertEqual(frame["limited_until"], now_s + 7200)
+        self.assertEqual(frame["limited_window"], "seven_day")
+
+    def test_rejected_event_with_invalid_limit_keeps_usable_windows(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "unknown",
+            "unifiedWindows": {"five_hour": {"utilization": 0.4, "resetsAt": 2000}},
+        }})
+        frame = instance.send.call_args.args[0]
+        self.assertEqual(frame["windows"][0]["used_percent"], 40)
+        self.assertNotIn("limited_until", frame)
 
 
 class ClaudeAccountTests(unittest.TestCase):
@@ -2327,6 +2461,8 @@ class ClaudeAccountTests(unittest.TestCase):
             {name: "" for name in bridge.CLAUDE_CREDENTIAL_OVERRIDES}, clear=False,
         ):
             b = self._bridge(tmp)
+            b.last_usage_frame["limited_until"] = int(time.time()) + 3600
+            b.last_usage_frame["limited_window"] = "five_hour"
             b.account_status = AsyncMock(return_value={
                 "ok": True,
                 "projectsDirectory": str(b.accounts["personal"] / "projects"),
@@ -2340,6 +2476,28 @@ class ClaudeAccountTests(unittest.TestCase):
             saved = json.loads(b.state_file.read_text())
             self.assertEqual(saved["config_dir"], str(b.accounts["personal"]))
             self.assertEqual(b.last_usage_frame["availability"], "unavailable")
+            self.assertNotIn("limited_until", b.last_usage_frame)
+
+    def test_same_account_verification_preserves_active_limit(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            bridge.os.environ,
+            {name: "" for name in bridge.CLAUDE_CREDENTIAL_OVERRIDES}, clear=False,
+        ):
+            b = self._bridge(tmp)
+            b._account_state_valid = False
+            b.last_usage_frame["limited_until"] = int(time.time()) + 3600
+            b.last_usage_frame["limited_window"] = "five_hour"
+            b.account_status = AsyncMock(return_value={
+                "ok": True,
+                "projectsDirectory": str(b.accounts["work"] / "projects"),
+            })
+            reply = asyncio.run(b._cmd_switch("work"))
+            self.assertIn("Login verified", reply)
+            self.assertEqual(b.account_epoch, 0)
+            self.assertEqual(b.bindings["c1"]["session_id"], "old")
+            self.assertGreater(b.last_usage_frame["limited_until"], time.time())
+            self.assertEqual(b.last_usage_frame["limited_window"], "five_hour")
+            b.send.assert_not_called()
 
     def test_v2_state_matches_renamed_account_by_persisted_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

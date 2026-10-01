@@ -1119,7 +1119,11 @@ class Bridge:
 
     def capture_usage(self, event: dict) -> None:
         info = event.get("rate_limit_info") or {}
+        if not isinstance(info, dict):
+            return
         raw_windows = info.get("unifiedWindows") or {}
+        if not isinstance(raw_windows, dict):
+            return
         windows = []
         for key, value in raw_windows.items():
             if not isinstance(value, dict):
@@ -1141,13 +1145,58 @@ class Bridge:
                 "window_minutes": 300 if key == "five_hour" else (10080 if key.startswith("seven_day") else None),
                 "resets_at": int(reset) if isinstance(reset, (int, float)) and reset > 0 else None,
             })
-        if not windows:
+        status = info.get("status")
+        limited_window = info.get("rateLimitType")
+        limited_until = None
+        if status == "rejected" and isinstance(limited_window, str):
+            limiting = raw_windows.get(limited_window)
+            reset = limiting.get("resetsAt") if isinstance(limiting, dict) else None
+            if (isinstance(reset, (int, float)) and not isinstance(reset, bool)
+                    and time.time() < reset <= time.time() + 8 * 86400):
+                limited_until = int(reset)
+        if status == "rejected" and limited_until is None and (
+                not isinstance(limited_window, str) or limited_window not in raw_windows):
+            candidates = []
+            now_s = time.time()
+            for key, value in raw_windows.items():
+                if not isinstance(value, dict):
+                    continue
+                used, reset = value.get("utilization"), value.get("resetsAt")
+                if (isinstance(used, (int, float)) and not isinstance(used, bool)
+                        and used >= 1.0 and isinstance(reset, (int, float))
+                        and not isinstance(reset, bool) and now_s < reset <= now_s + 8 * 86400):
+                    candidates.append((int(reset), str(key)))
+            if candidates:
+                limited_until, limited_window = max(candidates)
+        if status == "rejected" and limited_until is None and self.last_usage_frame:
+            previous_until = self.last_usage_frame.get("limited_until")
+            if isinstance(previous_until, int) and previous_until > time.time():
+                limited_until = previous_until
+                limited_window = self.last_usage_frame.get("limited_window")
+        if not windows and limited_until is None:
             return
+        if not windows and self.last_usage_frame:
+            windows = self.last_usage_frame.get("windows", [])
         self.last_usage_frame = {
             "type": "usage_update", "agent_id": self.agent_id, "provider": "claude",
             "availability": "available", "captured_at": time.time(), "windows": windows,
         }
+        if limited_until is not None:
+            self.last_usage_frame["limited_until"] = limited_until
+            if limited_window is not None:
+                self.last_usage_frame["limited_window"] = limited_window
         self.send(self.last_usage_frame)
+
+    def clear_expired_limit(self, *, successful_turn: bool = False, emit: bool = True) -> None:
+        frame = getattr(self, "last_usage_frame", None)
+        if not frame or "limited_until" not in frame:
+            return
+        if successful_turn or frame["limited_until"] <= time.time():
+            self.last_usage_frame = {k: v for k, v in frame.items()
+                                     if k not in ("limited_until", "limited_window")}
+            self.last_usage_frame["captured_at"] = time.time()
+            if emit:
+                self.send(self.last_usage_frame)
 
     async def refresh_usage(self) -> None:
         """Fetch live subscription limits through Claude's zero-turn /usage command."""
@@ -1176,12 +1225,17 @@ class Bridge:
                 await proc.wait()
         if epoch != getattr(self, "account_epoch", 0):
             return
+        self.clear_expired_limit(emit=False)
         if windows:
+            limited = self.last_usage_frame or {}
             self.last_usage_frame = {
                 "type": "usage_update", "agent_id": self.agent_id,
                 "provider": "claude", "availability": "available",
                 "captured_at": time.time(), "windows": windows,
             }
+            for key in ("limited_until", "limited_window"):
+                if key in limited:
+                    self.last_usage_frame[key] = limited[key]
         if self.last_usage_frame:
             self.send(self.last_usage_frame)
 
@@ -2089,7 +2143,6 @@ class Bridge:
             self._account_state_valid = True
             self.account_auth_problem = None
             self._save_state()
-            self.clear_usage()
             self._spawn(self.refresh_usage())
             return f"Login verified for {name} ({self.config_dir}); existing sessions were kept."
         previous = self.account
@@ -2841,6 +2894,7 @@ class Bridge:
                             if event.get("is_error"):
                                 result_text = f"(claude error) {text}"
                                 break
+                            self.clear_expired_limit(successful_turn=True)
                             # Resuming with -p can fork to a new session id;
                             # track it (successful runs only) so follow-ups
                             # keep continuing the same conversation.
@@ -3156,6 +3210,8 @@ class Bridge:
                     text = event.get("result") or ""
                     if event.get("is_error"):
                         text = f"(claude error) {text}"
+                    else:
+                        self.clear_expired_limit(successful_turn=True)
                     binding = self.bindings.get(key) or live.binding
                     new_sid = event.get("session_id")
                     # Same identity guard the main loop uses: if the key was

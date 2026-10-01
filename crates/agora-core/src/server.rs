@@ -3332,7 +3332,7 @@ async fn agent_usage(
     if state.hub.store.agent(&agent_id).is_none() {
         return Err(err(StatusCode::NOT_FOUND, "Unknown agent"));
     }
-    let usage = state.hub.store.agent_usage(&agent_id);
+    let usage = state.hub.current_agent_usage(&agent_id);
     let age = usage.as_ref()
         .and_then(|u| u["captured_at"].as_f64())
         .map(|at| (crate::store::now() - at).max(0.0));
