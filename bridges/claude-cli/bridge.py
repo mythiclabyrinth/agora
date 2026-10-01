@@ -942,6 +942,7 @@ class Bridge:
         self.queue_full_notified: set[str] = set()
         self.outbox: asyncio.Queue = asyncio.Queue()
         self.last_usage_frame: dict | None = None
+        self._usage_warning_at: dict[str, float] = {}
         # In-flight asks awaiting a channel response: options_id ->
         # (future, channel_id, thread_id). Futures resolve to
         # ("option", option_id, user) on a button tap, or ("text", reply, user)
@@ -1123,7 +1124,8 @@ class Bridge:
         if now_s - warned.get(kind, 0) >= 3600:
             warned[kind] = now_s
             self._usage_warning_at = warned
-            log(f"unrecognised rate_limit_info: {detail}")
+            prefix = "unrecognised" if kind == "status" else "unusable"
+            log(f"{prefix} rate_limit_info: {detail}")
 
     def capture_usage(self, event: dict) -> None:
         info = event.get("rate_limit_info") or {}
@@ -1132,9 +1134,10 @@ class Bridge:
         status = info.get("status")
         if status is not None and status not in ("allowed", "allowed_warning", "rejected"):
             self._warn_usage_shape("status", f"status={status!r}")
-        raw_windows = info.get("unifiedWindows") or {}
+        raw_windows = info.get("unifiedWindows", {})
         if not isinstance(raw_windows, dict):
-            raw_windows = {}
+            self._warn_usage_shape("windows", f"unifiedWindows has type {type(raw_windows).__name__}")
+            return
         windows = []
         for key, value in raw_windows.items():
             if not isinstance(value, dict):
@@ -1157,6 +1160,8 @@ class Bridge:
                 "resets_at": int(reset) if isinstance(reset, (int, float)) and reset > 0 else None,
             })
         limited_window = info.get("rateLimitType")
+        reported_window = (limited_window if isinstance(limited_window, str)
+                           and isinstance(raw_windows.get(limited_window), dict) else None)
         limited_until = None
         if status == "rejected" and isinstance(limited_window, str):
             limiting = raw_windows.get(limited_window)
@@ -1176,7 +1181,8 @@ class Bridge:
                         and not isinstance(reset, bool) and now_s < reset <= now_s + 8 * 86400):
                     candidates.append((int(reset), str(key)))
             if candidates:
-                limited_until, limited_window = max(candidates)
+                limited_until, fallback_window = max(candidates)
+                limited_window = reported_window or fallback_window
         if status == "rejected" and limited_until is None and self.last_usage_frame:
             previous_until = self.last_usage_frame.get("limited_until")
             if isinstance(previous_until, int) and previous_until > time.time():

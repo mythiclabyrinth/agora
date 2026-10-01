@@ -2505,12 +2505,22 @@ impl Hub {
         let target = if self.store.agent(handle_name).is_some() {
             Some(handle_name.to_string())
         } else {
-            let matches: Vec<String> = self.store.known_agents().into_iter()
-                .filter(|agent| agent["name"].as_str().is_some_and(|name|
-                    name.eq_ignore_ascii_case(handle_name) || slugify(name) == handle_name.to_lowercase()))
-                .filter_map(|agent| agent["id"].as_str().map(str::to_string))
-                .filter(|target| self.store.agents_share_channel(agent_id, target))
+            let shared: Vec<Value> = self.store.known_agents().into_iter()
+                .filter(|agent| agent["id"].as_str()
+                    .is_some_and(|target| self.store.agents_share_channel(agent_id, target)))
                 .collect();
+            let exact: Vec<String> = shared.iter()
+                .filter(|agent| agent["name"].as_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(handle_name)))
+                .filter_map(|agent| agent["id"].as_str().map(str::to_string))
+                .collect();
+            let matches: Vec<String> = if exact.is_empty() {
+                shared.iter()
+                    .filter(|agent| agent["name"].as_str()
+                        .is_some_and(|name| slugify(name) == handle_name.to_lowercase()))
+                    .filter_map(|agent| agent["id"].as_str().map(str::to_string))
+                    .collect()
+            } else { exact };
             (matches.len() == 1).then(|| matches[0].clone())
         };
         let Some(target) = target else {
@@ -4713,6 +4723,22 @@ mod tests {
         assert!(response["usage"].is_null());
         assert_eq!(response["refreshing"], false);
         assert_eq!(last_frame(&mut target, "usage_refresh").unwrap()["agent_id"], "bot-b");
+    }
+
+    #[test]
+    fn usage_request_prefers_exact_display_name_over_slug_collision() {
+        let h = hub();
+        let mut requester = add_agent(&h, "requester", "Requester", false);
+        let _first = add_agent(&h, "first-id", "Bot B", false);
+        let _second = add_agent(&h, "second-id", "bot-b", false);
+        setup_channel(&h, &["requester", "first-id", "second-id"]);
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "name", "agent_id": "requester",
+            "target_agent_id": "@bot-b"
+        }));
+        let response = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(response["target_agent_id"], "second-id");
+        assert!(response.get("error").is_none());
     }
 
     #[test]
