@@ -879,7 +879,7 @@ impl Hub {
         if provider.is_empty() || provider.len() > 32 { return; }
         let availability = frame["availability"].as_str().unwrap_or("available");
         if !matches!(availability, "available" | "unavailable") { return; }
-        let captured_at = frame["captured_at"].as_f64().unwrap_or_else(now);
+        let mut captured_at = frame["captured_at"].as_f64().unwrap_or_else(now);
         let now_s = now();
         if captured_at <= 0.0 || captured_at > now_s + 300.0 { return; }
         let mut windows = Vec::new();
@@ -902,12 +902,17 @@ impl Hub {
         let limited_window = frame["limited_window"].as_str()
             .filter(|window| !window.is_empty() && window.len() <= 64
                 && window.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
-        if windows.is_empty() && limited_until.is_some() {
-            windows = self.current_agent_usage(agent_id)
-                .and_then(|usage| usage["windows"].as_array().cloned())
-                .unwrap_or_default();
+        let previous = self.current_agent_usage(agent_id)
+            .filter(|usage| usage["provider"].as_str() == Some(provider));
+        let clearing_limit = limited_until.is_none()
+            && previous.as_ref().is_some_and(|usage| usage.get("limited_until").is_some());
+        if windows.is_empty() && (limited_until.is_some() || clearing_limit) {
+            if let Some(usage) = &previous {
+                windows = usage["windows"].as_array().cloned().unwrap_or_default();
+                captured_at = usage["captured_at"].as_f64().unwrap_or(captured_at);
+            }
         }
-        if availability == "available" && windows.is_empty() && limited_until.is_none() { return; }
+        if availability == "available" && windows.is_empty() && limited_until.is_none() && !clearing_limit { return; }
         let mut snapshot = json!({
             "agent_id": agent_id, "provider": provider, "availability": availability,
             "captured_at": captured_at, "windows": windows,
@@ -2473,13 +2478,14 @@ impl Hub {
             let _ = handle.tx.send(response);
             return;
         };
-        let handle_name = requested_target.trim_start_matches('@');
+        let handle_name = requested_target.strip_prefix('@').unwrap_or(requested_target);
         let target = if self.store.agent(requested_target).is_some() {
             Some(requested_target.to_string())
         } else {
             let matches: Vec<String> = self.store.known_agents().into_iter()
                 .filter(|agent| agent["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(handle_name)))
                 .filter_map(|agent| agent["id"].as_str().map(str::to_string))
+                .filter(|target| self.store.agents_share_channel(agent_id, target))
                 .collect();
             (matches.len() == 1).then(|| matches[0].clone())
         };
@@ -2488,13 +2494,13 @@ impl Hub {
             let _ = handle.tx.send(response);
             return;
         };
-        response["target_agent_id"] = json!(target);
         let shared = self.store.agents_share_channel(agent_id, &target);
         if !shared {
             response["error"] = json!("target agent is unavailable or not shared");
             let _ = handle.tx.send(response);
             return;
         }
+        response["target_agent_id"] = json!(target);
         let usage = self.current_agent_usage(&target);
         let age = usage.as_ref().and_then(|u| u["captured_at"].as_f64())
             .map(|at| (now() - at).max(0.0));
@@ -4616,7 +4622,9 @@ mod tests {
         let denied = last_frame(&mut requester, "usage_response").unwrap();
         assert_eq!(denied["request_id"], "denied");
         assert!(denied["error"].is_string());
+        assert_eq!(denied["target_agent_id"], "bot-b");
         setup_channel(&h, &["bot-a", "bot-b"]);
+        let _duplicate_name = add_agent(&h, "bot-c", "Bot B", false);
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "allowed", "agent_id": "bot-a",
             "target_agent_id": "bot-b"
@@ -4688,6 +4696,26 @@ mod tests {
     }
 
     #[test]
+    fn limit_without_windows_clears_on_empty_update() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        let captured_at = now() - 100.0;
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": captured_at, "windows": [],
+            "limited_until": now() as i64 + 3600,
+        }));
+        assert!(h.current_agent_usage("bot-a").unwrap().get("limited_until").is_some());
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [],
+        }));
+        let stored = h.current_agent_usage("bot-a").unwrap();
+        assert!(stored.get("limited_until").is_none());
+        assert_eq!(stored["captured_at"], captured_at);
+    }
+
+    #[test]
     fn usage_request_errors_hide_target_existence_and_normalize_request_id() {
         let h = hub();
         let mut requester = add_agent(&h, "bot-a", "Bot A", false);
@@ -4697,12 +4725,21 @@ mod tests {
             "target_agent_id": "bot-b"
         }));
         let denied = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(denied["target_agent_id"], "bot-b");
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "two", "agent_id": "bot-a",
             "target_agent_id": "missing"
         }));
         let unknown = last_frame(&mut requester, "usage_response").unwrap();
         assert_eq!(denied["error"], unknown["error"]);
+        assert_eq!(unknown["target_agent_id"], "missing");
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "three", "agent_id": "bot-a",
+            "target_agent_id": "@Bot B"
+        }));
+        let by_name = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(by_name["target_agent_id"], "@Bot B");
+        assert_eq!(by_name["error"], denied["error"]);
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": 42, "agent_id": "bot-a",
             "target_agent_id": "bot-b"

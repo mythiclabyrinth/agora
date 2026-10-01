@@ -1154,16 +1154,25 @@ class Bridge:
             if (isinstance(reset, (int, float)) and not isinstance(reset, bool)
                     and time.time() < reset <= time.time() + 8 * 86400):
                 limited_until = int(reset)
+        if status == "rejected" and limited_until is None and self.last_usage_frame:
+            previous_until = self.last_usage_frame.get("limited_until")
+            if isinstance(previous_until, int) and previous_until > time.time():
+                limited_until = previous_until
+                limited_window = self.last_usage_frame.get("limited_window")
         if not windows and limited_until is None:
             return
+        captured_at = time.time()
         if not windows and self.last_usage_frame:
             windows = self.last_usage_frame.get("windows", [])
+            captured_at = self.last_usage_frame.get("captured_at", captured_at)
         self.last_usage_frame = {
             "type": "usage_update", "agent_id": self.agent_id, "provider": "claude",
-            "availability": "available", "captured_at": time.time(), "windows": windows,
+            "availability": "available", "captured_at": captured_at, "windows": windows,
         }
         if limited_until is not None:
-            self.last_usage_frame.update(limited_until=limited_until, limited_window=limited_window)
+            self.last_usage_frame["limited_until"] = limited_until
+            if limited_window is not None:
+                self.last_usage_frame["limited_window"] = limited_window
         self.send(self.last_usage_frame)
 
     def clear_expired_limit(self, *, successful_turn: bool = False, emit: bool = True) -> None:

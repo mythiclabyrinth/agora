@@ -2273,6 +2273,28 @@ class UsageTests(unittest.TestCase):
         }})
         instance.send.assert_not_called()
 
+    def test_repeated_rejection_keeps_previous_limit_and_window_timestamp(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        until = int(bridge.time.time()) + 3600
+        captured_at = bridge.time.time() - 120
+        instance.last_usage_frame = {
+            "type": "usage_update", "agent_id": "claude-cli", "provider": "claude",
+            "availability": "available", "captured_at": captured_at,
+            "windows": [{"key": "five_hour", "used_percent": 90}],
+            "limited_until": until, "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"resetsAt": "bad"}},
+        }})
+        frame = instance.send.call_args.args[0]
+        self.assertEqual(frame["limited_until"], until)
+        self.assertEqual(frame["limited_window"], "five_hour")
+        self.assertEqual(frame["captured_at"], captured_at)
+        self.assertEqual(frame["windows"][0]["key"], "five_hour")
+
     def test_rejected_event_with_invalid_limit_keeps_usable_windows(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.agent_id = "claude-cli"

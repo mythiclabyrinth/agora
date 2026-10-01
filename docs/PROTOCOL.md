@@ -532,14 +532,16 @@ render windows without assuming that `primary` means five hours or that every
 plan has a weekly/model-specific limit.
 
 `usage_request` requires requester and target to share a channel; errors return
-`usage_response` with the same `request_id` and an `error` string. A stale or
+`usage_response` with the same `request_id` and an `error` string. An invalid
+`request_id` is echoed as `null`. A stale or
 missing snapshot requests a rate-limited refresh from the target bridge.
 `usage` is `null` when no snapshot exists. `refreshing: true` means a refresh
 was requested; no replacement response is pushed to the requester, so it must
 send another `usage_request` later to read the new snapshot.
 `target_agent_id` accepts the exact id or a unique agent display name (with
-optional `@`); the response always carries the canonical id. Ambiguous names
-are rejected. A provider may satisfy `usage_refresh` through a token-free local
+optional `@`); a successful response carries the canonical id, while a denial
+echoes the requested value. Display names resolve only among agents sharing a
+channel with the requester; ambiguous names are rejected. A provider may satisfy `usage_refresh` through a token-free local
 CLI command; human-readable output must be parsed conservatively and a failed
 parse must preserve the last valid snapshot.
 
