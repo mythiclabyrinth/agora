@@ -2246,6 +2246,91 @@ class UsageTests(unittest.TestCase):
         instance.capture_usage({"rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": "nope"}}}})
         instance.send.assert_not_called()
 
+    def test_unrecognised_limit_fields_log_at_most_once_an_hour(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        unknown = {"rate_limit_info": {
+            "status": "changed_status",
+            "unifiedWindows": {"five_hour": {"utilization": 0.5}},
+        }}
+        with patch.object(bridge, "log") as warning:
+            instance.capture_usage(unknown)
+            instance.capture_usage(unknown)
+            warning.assert_called_once()
+            self.assertIn("changed_status", warning.call_args.args[0])
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "rateLimitType": "renamed_window",
+                "unifiedWindows": {"five_hour": {
+                    "utilization": 1.0, "resetsAt": int(bridge.time.time()) + 3600,
+                }},
+            }})
+            warning.assert_called_once()  # The saturated-window fallback found the limit.
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "rateLimitType": "five_hour",
+                "unifiedWindows": {
+                    "five_hour": {"resetsAt": "bad"},
+                    "seven_day": {"utilization": 1.0, "resetsAt": int(bridge.time.time()) + 5 * 86400},
+                },
+            }})
+            warning.assert_called_once()  # A different saturated window is usable.
+            self.assertEqual(instance.last_usage_frame["limited_window"], "seven_day")
+            self.assertEqual(instance.last_usage_frame["limited_until"],
+                             int(bridge.time.time()) + 5 * 86400)
+            instance.last_usage_frame = None
+            unusable = {"rate_limit_info": {
+                "status": "rejected", "rateLimitType": "renamed_window",
+                "unifiedWindows": {"five_hour": {"utilization": 0.5}},
+            }}
+            instance.capture_usage(unusable)
+            instance.capture_usage(unusable)
+            self.assertEqual(warning.call_count, 2)
+            self.assertIn("rateLimitType", warning.call_args.args[0])
+            instance._usage_warning_at["rejected"] -= 3601
+            instance.capture_usage(unusable)
+            self.assertEqual(warning.call_count, 3)
+            self.assertIn("unusable rate_limit_info", warning.call_args.args[0])
+
+    def test_malformed_unified_windows_warns_without_refreshing_snapshot(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        snapshot = {"captured_at": 1234, "windows": [{"key": "five_hour"}]}
+        instance.last_usage_frame = snapshot
+        instance.send = Mock()
+        with patch.object(bridge, "log") as warning:
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "unifiedWindows": ["malformed"],
+            }})
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "unifiedWindows": ["malformed"],
+            }})
+            warning.assert_called_once()
+            self.assertIn("unifiedWindows", warning.call_args.args[0])
+        self.assertIs(instance.last_usage_frame, snapshot)
+        instance.send.assert_not_called()
+
+    def test_null_unified_windows_does_not_warn_or_drop_known_limit(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        reset = int(bridge.time.time()) + 3600
+        instance.last_usage_frame = {
+            "type": "usage_update", "agent_id": "claude-cli", "provider": "claude",
+            "availability": "available", "captured_at": 1234,
+            "windows": [], "limited_until": reset, "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        with patch.object(bridge, "log") as warning:
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "unifiedWindows": None,
+            }})
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "unifiedWindows": [],
+            }})
+            warning.assert_not_called()
+        self.assertEqual(instance.last_usage_frame["limited_until"], reset)
+        self.assertEqual(instance.send.call_count, 2)
+
     def test_rejected_limit_sets_and_success_clears(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.agent_id = "claude-cli"

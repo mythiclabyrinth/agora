@@ -907,7 +907,8 @@ impl Hub {
         let previous = self.current_agent_usage(agent_id)
             .filter(|usage| usage["provider"].as_str() == Some(provider));
         let expired_submitted_limit = availability == "available" && submitted_limit
-            .and_then(Value::as_i64).is_some_and(|until| until <= now_s as i64);
+            .is_some_and(|value| value.is_null()
+                || value.as_i64().is_some_and(|until| until <= now_s as i64));
         let invalid_submitted_limit = availability == "available" && submitted_limit.is_some()
             && validated_until.is_none() && !expired_submitted_limit;
         let limited_until = validated_until.or_else(|| invalid_submitted_limit.then(||
@@ -927,13 +928,19 @@ impl Hub {
             }
         }
         if availability == "available" && windows.is_empty() && limited_until.is_none() && !clearing_limit { return; }
-        let previous_plan = if carry_previous { previous.as_ref().and_then(|usage| usage["plan"].as_str()) } else { None };
-        let previous_credits = if carry_previous { previous.as_ref().and_then(|usage| usage.get("credits")) } else { None };
+        let previous_plan = if availability == "available" && frame.get("plan").is_none() {
+            previous.as_ref().and_then(|usage| usage["plan"].as_str())
+        } else { None };
+        let previous_credits = if availability == "available" && frame.get("credits").is_none() {
+            previous.as_ref().and_then(|usage| usage.get("credits")).filter(|credits| credits.is_object())
+        } else { None };
         let mut snapshot = json!({
             "agent_id": agent_id, "provider": provider, "availability": availability,
             "captured_at": captured_at, "windows": windows,
             "plan": frame["plan"].as_str().or(previous_plan).map(|s| s.chars().take(64).collect::<String>()),
-            "credits": frame.get("credits").filter(|v| v.is_object()).or(previous_credits).map(|credits| json!({
+            "credits": frame.get("credits").filter(|v| v.as_object().is_some_and(|object|
+                ["has_credits", "unlimited", "balance"].iter().any(|key| object.contains_key(*key))))
+                .or(previous_credits).map(|credits| json!({
                 "has_credits": credits["has_credits"].as_bool(),
                 "unlimited": credits["unlimited"].as_bool(),
                 "balance": credits["balance"].as_str().map(|s| s.chars().take(64).collect::<String>()),
@@ -2495,14 +2502,28 @@ impl Hub {
             return;
         };
         let handle_name = requested_target.strip_prefix('@').unwrap_or(requested_target);
-        let target = if self.store.agent(requested_target).is_some() {
-            Some(requested_target.to_string())
+        let target = if handle_name.is_empty() {
+            None
+        } else if self.store.agent(handle_name).is_some()
+            && self.store.agents_share_channel(agent_id, handle_name) {
+            Some(handle_name.to_string())
         } else {
-            let matches: Vec<String> = self.store.known_agents().into_iter()
-                .filter(|agent| agent["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(handle_name)))
+            let known = self.store.known_agents();
+            let exact: Vec<String> = known.iter()
+                .filter(|agent| agent["name"].as_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(handle_name)))
                 .filter_map(|agent| agent["id"].as_str().map(str::to_string))
                 .filter(|target| self.store.agents_share_channel(agent_id, target))
                 .collect();
+            let matches: Vec<String> = if exact.is_empty() {
+                let requested_slug = slugify(handle_name);
+                known.iter()
+                    .filter(|agent| agent["name"].as_str()
+                        .is_some_and(|name| slugify(name) == requested_slug))
+                    .filter_map(|agent| agent["id"].as_str().map(str::to_string))
+                    .filter(|target| self.store.agents_share_channel(agent_id, target))
+                    .collect()
+            } else { exact };
             (matches.len() == 1).then(|| matches[0].clone())
         };
         let Some(target) = target else {
@@ -4649,7 +4670,8 @@ mod tests {
         assert_eq!(denied["request_id"], "denied");
         assert!(denied["error"].is_string());
         assert_eq!(denied["target_agent_id"], "bot-b");
-        setup_channel(&h, &["bot-a", "bot-b"]);
+        let _slug_target = add_agent(&h, "bot-d", "Special Agent", false);
+        setup_channel(&h, &["bot-a", "bot-b", "bot-d"]);
         let _duplicate_name = add_agent(&h, "bot-c", "Bot B", false);
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "allowed", "agent_id": "bot-a",
@@ -4669,6 +4691,23 @@ mod tests {
         }));
         let by_handle = last_frame(&mut requester, "usage_response").unwrap();
         assert_eq!(by_handle["target_agent_id"], "bot-b");
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "prefixed-id", "agent_id": "bot-a",
+            "target_agent_id": "@bot-b"
+        }));
+        let by_id = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(by_id["target_agent_id"], "bot-b");
+        assert!(by_id.get("error").is_none());
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "slug", "agent_id": "bot-a",
+            "target_agent_id": "@special-agent"
+        }));
+        assert_eq!(last_frame(&mut requester, "usage_response").unwrap()["target_agent_id"], "bot-d");
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "slug-normalized", "agent_id": "bot-a",
+            "target_agent_id": "@special_agent"
+        }));
+        assert_eq!(last_frame(&mut requester, "usage_response").unwrap()["target_agent_id"], "bot-d");
     }
 
     #[test]
@@ -4692,6 +4731,45 @@ mod tests {
         assert!(response["usage"].is_null());
         assert_eq!(response["refreshing"], false);
         assert_eq!(last_frame(&mut target, "usage_refresh").unwrap()["agent_id"], "bot-b");
+    }
+
+    #[test]
+    fn usage_request_prefers_exact_display_name_over_slug_collision() {
+        let h = hub();
+        let mut requester = add_agent(&h, "requester", "Requester", false);
+        let _first = add_agent(&h, "first-id", "Bot B", false);
+        let _second = add_agent(&h, "second-id", "bot-b", false);
+        setup_channel(&h, &["requester", "first-id", "second-id"]);
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "name", "agent_id": "requester",
+            "target_agent_id": "@bot-b"
+        }));
+        let response = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(response["target_agent_id"], "second-id");
+        assert!(response.get("error").is_none());
+    }
+
+    #[test]
+    fn usage_request_falls_back_to_shared_name_when_id_is_not_shared() {
+        let h = hub();
+        let mut requester = add_agent(&h, "requester", "Requester", false);
+        let _hidden = add_agent(&h, "ops-bot", "Hidden", false);
+        let _shared = add_agent(&h, "shared-ops", "Ops Bot", false);
+        setup_channel(&h, &["requester", "shared-ops"]);
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "fallback", "agent_id": "requester",
+            "target_agent_id": "@ops-bot"
+        }));
+        let response = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(response["target_agent_id"], "shared-ops");
+        assert!(response.get("error").is_none());
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "empty", "agent_id": "requester",
+            "target_agent_id": "@"
+        }));
+        let denied = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(denied["error"], "target agent is unavailable or not shared");
+        assert_eq!(denied["target_agent_id"], "@");
     }
 
     #[test]
@@ -4729,6 +4807,52 @@ mod tests {
         let stored = h.current_agent_usage("bot-a").unwrap();
         assert!(stored.get("limited_until").is_none());
         assert!(stored.get("limited_window").is_none());
+        assert_eq!(stored["plan"], "Pro");
+        assert_eq!(stored["credits"]["balance"], "5");
+    }
+
+    #[test]
+    fn null_limit_clears_and_null_credits_stay_null() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 100}],
+            "limited_until": now() as i64 + 3600, "plan": "Pro",
+        }));
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [], "limited_until": null,
+        }));
+        let cleared = h.current_agent_usage("bot-a").unwrap();
+        assert!(cleared.get("limited_until").is_none());
+        assert_eq!(cleared["plan"], "Pro");
+        assert!(cleared["credits"].is_null());
+    }
+
+    #[test]
+    fn explicit_null_plan_and_credits_clear_previous_values() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 50}],
+            "plan": "Pro", "credits": {"has_credits": true, "balance": "5"},
+        }));
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 40}],
+            "plan": null, "credits": null,
+        }));
+        let cleared = h.current_agent_usage("bot-a").unwrap();
+        assert!(cleared["plan"].is_null());
+        assert!(cleared["credits"].is_null());
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 30}],
+            "credits": {"new_field": true},
+        }));
+        assert!(h.current_agent_usage("bot-a").unwrap()["credits"].is_null());
     }
 
     #[test]

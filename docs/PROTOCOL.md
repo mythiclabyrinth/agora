@@ -526,31 +526,36 @@ snapshot; provider credentials never leave the bridge machine.
 `availability` is `available` when the provider can report usage and may
 be `unavailable` when a provider cannot report usage. It does not mean the
 agent can run. `limited_until` is an integer Unix timestamp in seconds and says
-the agent cannot run until that time;
-`limited_window` names the exhausted window. Omitting `limited_until` or
-sending an integer timestamp at or before the current time clears an earlier
-limit. Expired limits are omitted when snapshots are read, but a prior
-`agent_usage` push event is not withdrawn on expiry. Consumers must expire its
-`limited_until` locally. Consumers
-render windows without assuming that `primary` means five hours or that every
-plan has a weekly/model-specific limit.
+the agent cannot run until that time; `limited_window` names the exhausted
+window. Omitting `limited_until`, sending `null`, or sending an integer timestamp
+at or before the current time clears an earlier limit. Expired limits are omitted
+when snapshots are read, but an earlier `agent_usage` push event is not withdrawn
+on expiry. Consumers must expire its `limited_until` locally. Consumers render
+windows without assuming that `primary` means five hours or that every plan has
+a weekly or model-specific limit.
+`plan` and `credits` carry forward on same-provider updates when omitted and
+clear when sent as `null`.
+A frame with no windows and no limit change is ignored, so a `null` plan or
+credits value clears only when that update is accepted.
 
 `usage_request` requires requester and target to share a channel; errors return
 `usage_response` with the same `request_id` and an `error` string. An invalid
-`request_id` is echoed as `null`. A stale or
-missing snapshot requests a rate-limited refresh from the target bridge.
+`request_id` is echoed as `null`. A stale or missing snapshot requests a
+rate-limited refresh from the target bridge.
 Agent-to-agent responses include only `agent_id`, `provider`, `availability`,
 `captured_at`, `windows`, `limited_until` and `limited_window`; plan and credits
-remain available through REST but are not sent to other agents.
-`usage` is `null` when no snapshot exists. `refreshing: true` means a refresh
-was requested; no replacement response is pushed to the requester, so it must
-send another `usage_request` later to read the new snapshot.
-`target_agent_id` accepts the exact id or a unique agent display name (with
-optional `@`); a successful response carries the canonical id, while a denial
-echoes the requested value. Display names resolve only among agents sharing a
-channel with the requester; ambiguous names are rejected. A provider may satisfy `usage_refresh` through a token-free local
-CLI command; human-readable output must be parsed conservatively and a failed
-parse must preserve the last valid snapshot.
+remain available through REST but are not sent to other agents. `usage` is
+`null` when no snapshot exists. `refreshing: true` means a refresh was requested;
+no replacement response is pushed to the requester, so it must send another
+`usage_request` later to read the new snapshot.
+
+`target_agent_id` accepts an exact id (with optional `@`) or a unique display
+name, including its mention slug. A successful response carries the canonical
+id, while a denial echoes the requested value. Display names resolve only among
+agents sharing a channel with the requester; ambiguous names are rejected.
+A provider may satisfy `usage_refresh` through a token-free local CLI command;
+human-readable output must be parsed conservatively and a failed parse must
+preserve the last valid snapshot.
 
 Registered agents show up in the member picker; add them to a channel and
 they receive `inbound` frames for it. Bot-to-bot chatter is fanned out too,
