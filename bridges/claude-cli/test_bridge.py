@@ -2260,15 +2260,33 @@ class UsageTests(unittest.TestCase):
             instance.capture_usage(unknown)
             warning.assert_called_once()
             self.assertIn("changed_status", warning.call_args.args[0])
-            instance._usage_warning_at -= 3601
             instance.capture_usage({"rate_limit_info": {
                 "status": "rejected", "rateLimitType": "renamed_window",
                 "unifiedWindows": {"five_hour": {
                     "utilization": 1.0, "resetsAt": int(bridge.time.time()) + 3600,
                 }},
             }})
+            warning.assert_called_once()  # The saturated-window fallback found the limit.
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "rateLimitType": "five_hour",
+                "unifiedWindows": {
+                    "five_hour": {"resetsAt": "bad"},
+                    "seven_day": {"utilization": 1.0, "resetsAt": int(bridge.time.time()) + 7200},
+                },
+            }})
+            warning.assert_called_once()  # A different saturated window is usable.
+            instance.last_usage_frame = None
+            unusable = {"rate_limit_info": {
+                "status": "rejected", "rateLimitType": "renamed_window",
+                "unifiedWindows": {"five_hour": {"utilization": 0.5}},
+            }}
+            instance.capture_usage(unusable)
+            instance.capture_usage(unusable)
             self.assertEqual(warning.call_count, 2)
             self.assertIn("rateLimitType", warning.call_args.args[0])
+            instance._usage_warning_at["rejected"] -= 3601
+            instance.capture_usage(unusable)
+            self.assertEqual(warning.call_count, 3)
 
     def test_rejected_limit_sets_and_success_clears(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)

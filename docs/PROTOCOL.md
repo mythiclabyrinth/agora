@@ -533,6 +533,8 @@ when snapshots are read, but an earlier `agent_usage` push event is not withdraw
 on expiry. Consumers must expire its `limited_until` locally. Consumers render
 windows without assuming that `primary` means five hours or that every plan has
 a weekly or model-specific limit.
+`plan` and `credits` carry forward on same-provider updates when omitted and
+clear when sent as `null`.
 
 `usage_request` requires requester and target to share a channel; errors return
 `usage_response` with the same `request_id` and an `error` string. An invalid

@@ -1117,10 +1117,12 @@ class Bridge:
     def send(self, frame: dict) -> None:
         self.outbox.put_nowait(frame)
 
-    def _warn_usage_shape(self, detail: str) -> None:
+    def _warn_usage_shape(self, kind: str, detail: str) -> None:
         now_s = time.time()
-        if now_s - getattr(self, "_usage_warning_at", 0) >= 3600:
-            self._usage_warning_at = now_s
+        warned = getattr(self, "_usage_warning_at", {})
+        if now_s - warned.get(kind, 0) >= 3600:
+            warned[kind] = now_s
+            self._usage_warning_at = warned
             log(f"unrecognised rate_limit_info: {detail}")
 
     def capture_usage(self, event: dict) -> None:
@@ -1129,12 +1131,10 @@ class Bridge:
             return
         status = info.get("status")
         if status is not None and status not in ("allowed", "allowed_warning", "rejected"):
-            self._warn_usage_shape(f"status={status!r}")
+            self._warn_usage_shape("status", f"status={status!r}")
         raw_windows = info.get("unifiedWindows") or {}
         if not isinstance(raw_windows, dict):
-            if status == "rejected":
-                self._warn_usage_shape(f"rejected with unusable rateLimitType={info.get('rateLimitType')!r}")
-            return
+            raw_windows = {}
         windows = []
         for key, value in raw_windows.items():
             if not isinstance(value, dict):
@@ -1165,9 +1165,6 @@ class Bridge:
                     and time.time() < reset <= time.time() + 8 * 86400):
                 limited_until = int(reset)
         if status == "rejected" and limited_until is None:
-            self._warn_usage_shape(f"rejected with unusable rateLimitType={limited_window!r}")
-        if status == "rejected" and limited_until is None and (
-                not isinstance(limited_window, str) or limited_window not in raw_windows):
             candidates = []
             now_s = time.time()
             for key, value in raw_windows.items():
@@ -1185,6 +1182,8 @@ class Bridge:
             if isinstance(previous_until, int) and previous_until > time.time():
                 limited_until = previous_until
                 limited_window = self.last_usage_frame.get("limited_window")
+        if status == "rejected" and limited_until is None:
+            self._warn_usage_shape("rejected", f"rejected with unusable rateLimitType={limited_window!r}")
         if not windows and limited_until is None:
             return
         if not windows and self.last_usage_frame:

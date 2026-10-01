@@ -928,15 +928,19 @@ impl Hub {
             }
         }
         if availability == "available" && windows.is_empty() && limited_until.is_none() && !clearing_limit { return; }
-        let previous_plan = if availability == "available" { previous.as_ref().and_then(|usage| usage["plan"].as_str()) } else { None };
-        let previous_credits = if availability == "available" {
+        let previous_plan = if availability == "available" && frame.get("plan").is_none() {
+            previous.as_ref().and_then(|usage| usage["plan"].as_str())
+        } else { None };
+        let previous_credits = if availability == "available" && frame.get("credits").is_none() {
             previous.as_ref().and_then(|usage| usage.get("credits")).filter(|credits| credits.is_object())
         } else { None };
         let mut snapshot = json!({
             "agent_id": agent_id, "provider": provider, "availability": availability,
             "captured_at": captured_at, "windows": windows,
             "plan": frame["plan"].as_str().or(previous_plan).map(|s| s.chars().take(64).collect::<String>()),
-            "credits": frame.get("credits").filter(|v| v.is_object()).or(previous_credits).map(|credits| json!({
+            "credits": frame.get("credits").filter(|v| v.as_object().is_some_and(|object|
+                ["has_credits", "unlimited", "balance"].iter().any(|key| object.contains_key(*key))))
+                .or(previous_credits).map(|credits| json!({
                 "has_credits": credits["has_credits"].as_bool(),
                 "unlimited": credits["unlimited"].as_bool(),
                 "balance": credits["balance"].as_str().map(|s| s.chars().take(64).collect::<String>()),
@@ -4767,6 +4771,31 @@ mod tests {
         assert!(cleared.get("limited_until").is_none());
         assert_eq!(cleared["plan"], "Pro");
         assert!(cleared["credits"].is_null());
+    }
+
+    #[test]
+    fn explicit_null_plan_and_credits_clear_previous_values() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 50}],
+            "plan": "Pro", "credits": {"has_credits": true, "balance": "5"},
+        }));
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 40}],
+            "plan": null, "credits": null,
+        }));
+        let cleared = h.current_agent_usage("bot-a").unwrap();
+        assert!(cleared["plan"].is_null());
+        assert!(cleared["credits"].is_null());
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 30}],
+            "credits": {"new_field": true},
+        }));
+        assert!(h.current_agent_usage("bot-a").unwrap()["credits"].is_null());
     }
 
     #[test]
