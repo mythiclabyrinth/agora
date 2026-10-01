@@ -879,7 +879,7 @@ impl Hub {
         if provider.is_empty() || provider.len() > 32 { return; }
         let availability = frame["availability"].as_str().unwrap_or("available");
         if !matches!(availability, "available" | "unavailable") { return; }
-        let mut captured_at = frame["captured_at"].as_f64().unwrap_or_else(now);
+        let captured_at = frame["captured_at"].as_f64().unwrap_or_else(now);
         let now_s = now();
         if captured_at <= 0.0 || captured_at > now_s + 300.0 { return; }
         let mut windows = Vec::new();
@@ -897,7 +897,8 @@ impl Hub {
             }
         }
         if availability == "unavailable" { windows.clear(); }
-        let limited_until = frame["limited_until"].as_i64().filter(|until| availability == "available" && {
+        let submitted_limit = frame.get("limited_until");
+        let validated_until = frame["limited_until"].as_i64().filter(|until| availability == "available" && {
             *until > now_s as i64 && *until <= now_s as i64 + 8 * 86400
         });
         let limited_window = frame["limited_window"].as_str()
@@ -905,14 +906,21 @@ impl Hub {
                 && window.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
         let previous = self.current_agent_usage(agent_id)
             .filter(|usage| usage["provider"].as_str() == Some(provider));
-        let clearing_limit = availability == "available" && limited_until.is_none()
+        let invalid_submitted_limit = availability == "available" && submitted_limit.is_some()
+            && validated_until.is_none();
+        let limited_until = validated_until.or_else(|| invalid_submitted_limit.then(||
+            previous.as_ref().and_then(|usage| usage["limited_until"].as_i64())
+        ).flatten());
+        let limited_window = if invalid_submitted_limit && limited_until.is_some() {
+            previous.as_ref().and_then(|usage| usage["limited_window"].as_str())
+        } else { limited_window };
+        let clearing_limit = availability == "available" && submitted_limit.is_none()
             && previous.as_ref().is_some_and(|usage| usage.get("limited_until").is_some());
         let carry_previous = availability == "available" && windows.is_empty()
             && (limited_until.is_some() || clearing_limit);
         if carry_previous {
             if let Some(usage) = &previous {
                 windows = usage["windows"].as_array().cloned().unwrap_or_default();
-                captured_at = usage["captured_at"].as_f64().unwrap_or(captured_at);
             }
         }
         if availability == "available" && windows.is_empty() && limited_until.is_none() && !clearing_limit { return; }
@@ -4718,13 +4726,34 @@ mod tests {
             "limited_until": now() as i64 + 3600,
         }));
         assert!(h.current_agent_usage("bot-a").unwrap().get("limited_until").is_some());
+        let cleared_at = now() - 50.0;
         h.handle_agent_frame(&json!({
             "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
-            "captured_at": now(), "windows": [],
+            "captured_at": cleared_at, "windows": [],
         }));
         let stored = h.current_agent_usage("bot-a").unwrap();
         assert!(stored.get("limited_until").is_none());
-        assert_eq!(stored["captured_at"], captured_at);
+        assert_eq!(stored["captured_at"], cleared_at);
+    }
+
+    #[test]
+    fn invalid_present_limit_does_not_clear_previous_limit() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        let until = now() as i64 + 3600;
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [], "limited_until": until,
+            "limited_window": "five_hour",
+        }));
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [],
+            "limited_until": now() as i64 + 9 * 86400,
+        }));
+        let stored = h.current_agent_usage("bot-a").unwrap();
+        assert_eq!(stored["limited_until"], until);
+        assert_eq!(stored["limited_window"], "five_hour");
     }
 
     #[test]
@@ -4781,6 +4810,26 @@ mod tests {
         }));
         let invalid = last_frame(&mut requester, "usage_response").unwrap();
         assert!(invalid["request_id"].is_null());
+    }
+
+    #[test]
+    fn usage_request_does_not_treat_agent_dm_as_shared_channel() {
+        let h = hub();
+        let mut requester = add_agent(&h, "bot-a", "Bot A", false);
+        let _target = add_agent(&h, "bot-b", "Bot B", false);
+        let dm = h.store.open_agent_dm("tom", "bot-a", "Bot A");
+        let dm_id = dm["id"].as_str().unwrap();
+        // Even membership rows pointing at an actual agent DM cannot grant
+        // cross-agent access to provider usage.
+        h.store.add_member("", "agent", "bot-a", "member", Some(dm_id));
+        h.store.add_member("", "agent", "bot-b", "member", Some(dm_id));
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "dm-only", "agent_id": "bot-a",
+            "target_agent_id": "bot-b",
+        }));
+        let denied = last_frame(&mut requester, "usage_response").unwrap();
+        assert!(denied["error"].is_string());
+        assert!(denied.get("usage").is_none());
     }
 
     #[test]

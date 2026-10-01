@@ -2174,7 +2174,7 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(instance.last_usage_frame["limited_window"], "five_hour")
         instance.send.assert_called_once_with(instance.last_usage_frame)
 
-    def test_expired_limit_clears_without_refreshing_window_age(self):
+    def test_expired_limit_clear_uses_new_capture_time(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.last_usage_frame = {
             "type": "usage_update", "captured_at": 1234,
@@ -2184,7 +2184,7 @@ class UsageTests(unittest.TestCase):
         }
         instance.send = Mock()
         instance.clear_expired_limit()
-        self.assertEqual(instance.last_usage_frame["captured_at"], 1234)
+        self.assertGreater(instance.last_usage_frame["captured_at"], 1234)
         self.assertNotIn("limited_until", instance.last_usage_frame)
         instance.send.assert_called_once_with(instance.last_usage_frame)
 
@@ -2203,7 +2203,7 @@ class UsageTests(unittest.TestCase):
         proc.communicate = AsyncMock(return_value=(b"", b""))
         with patch.object(bridge.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)):
             asyncio.run(instance.refresh_usage())
-        self.assertEqual(instance.last_usage_frame["captured_at"], 1234)
+        self.assertGreater(instance.last_usage_frame["captured_at"], 1234)
         self.assertNotIn("limited_until", instance.last_usage_frame)
         instance.send.assert_called_once_with(instance.last_usage_frame)
 
@@ -2273,7 +2273,7 @@ class UsageTests(unittest.TestCase):
         }})
         instance.send.assert_not_called()
 
-    def test_repeated_rejection_keeps_previous_limit_and_window_timestamp(self):
+    def test_repeated_rejection_keeps_previous_limit_with_fresh_capture_time(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.agent_id = "claude-cli"
         until = int(bridge.time.time()) + 3600
@@ -2292,8 +2292,26 @@ class UsageTests(unittest.TestCase):
         frame = instance.send.call_args.args[0]
         self.assertEqual(frame["limited_until"], until)
         self.assertEqual(frame["limited_window"], "five_hour")
-        self.assertEqual(frame["captured_at"], captured_at)
+        self.assertGreater(frame["captured_at"], captured_at)
         self.assertEqual(frame["windows"][0]["key"], "five_hour")
+
+    def test_unmatched_limit_type_uses_latest_saturated_window_reset(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        instance.last_usage_frame = None
+        instance.send = Mock()
+        now_s = int(bridge.time.time())
+        instance.capture_usage({"rate_limit_info": {
+            "status": "rejected", "rateLimitType": "unknown",
+            "unifiedWindows": {
+                "five_hour": {"utilization": 1.0, "resetsAt": now_s + 3600},
+                "seven_day": {"utilization": 1.1, "resetsAt": now_s + 7200},
+                "seven_day_opus": {"utilization": 0.8, "resetsAt": now_s + 9000},
+            },
+        }})
+        frame = instance.send.call_args.args[0]
+        self.assertEqual(frame["limited_until"], now_s + 7200)
+        self.assertEqual(frame["limited_window"], "seven_day")
 
     def test_rejected_event_with_invalid_limit_keeps_usable_windows(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
