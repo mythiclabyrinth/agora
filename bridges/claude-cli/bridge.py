@@ -1134,10 +1134,11 @@ class Bridge:
         status = info.get("status")
         if status is not None and status not in ("allowed", "allowed_warning", "rejected"):
             self._warn_usage_shape("status", f"status={status!r}")
-        raw_windows = info.get("unifiedWindows", {})
-        if not isinstance(raw_windows, dict):
+        raw_windows = info.get("unifiedWindows")
+        if raw_windows is not None and not isinstance(raw_windows, dict):
             self._warn_usage_shape("windows", f"unifiedWindows has type {type(raw_windows).__name__}")
             return
+        raw_windows = raw_windows or {}
         windows = []
         for key, value in raw_windows.items():
             if not isinstance(value, dict):
@@ -1160,8 +1161,6 @@ class Bridge:
                 "resets_at": int(reset) if isinstance(reset, (int, float)) and reset > 0 else None,
             })
         limited_window = info.get("rateLimitType")
-        reported_window = (limited_window if isinstance(limited_window, str)
-                           and isinstance(raw_windows.get(limited_window), dict) else None)
         limited_until = None
         if status == "rejected" and isinstance(limited_window, str):
             limiting = raw_windows.get(limited_window)
@@ -1181,8 +1180,7 @@ class Bridge:
                         and not isinstance(reset, bool) and now_s < reset <= now_s + 8 * 86400):
                     candidates.append((int(reset), str(key)))
             if candidates:
-                limited_until, fallback_window = max(candidates)
-                limited_window = reported_window or fallback_window
+                limited_until, limited_window = max(candidates)
         if status == "rejected" and limited_until is None and self.last_usage_frame:
             previous_until = self.last_usage_frame.get("limited_until")
             if isinstance(previous_until, int) and previous_until > time.time():

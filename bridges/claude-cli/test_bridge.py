@@ -2271,13 +2271,13 @@ class UsageTests(unittest.TestCase):
                 "status": "rejected", "rateLimitType": "five_hour",
                 "unifiedWindows": {
                     "five_hour": {"resetsAt": "bad"},
-                    "seven_day": {"utilization": 1.0, "resetsAt": int(bridge.time.time()) + 7200},
+                    "seven_day": {"utilization": 1.0, "resetsAt": int(bridge.time.time()) + 5 * 86400},
                 },
             }})
             warning.assert_called_once()  # A different saturated window is usable.
-            self.assertEqual(instance.last_usage_frame["limited_window"], "five_hour")
+            self.assertEqual(instance.last_usage_frame["limited_window"], "seven_day")
             self.assertEqual(instance.last_usage_frame["limited_until"],
-                             int(bridge.time.time()) + 7200)
+                             int(bridge.time.time()) + 5 * 86400)
             instance.last_usage_frame = None
             unusable = {"rate_limit_info": {
                 "status": "rejected", "rateLimitType": "renamed_window",
@@ -2309,6 +2309,24 @@ class UsageTests(unittest.TestCase):
             self.assertIn("unifiedWindows", warning.call_args.args[0])
         self.assertIs(instance.last_usage_frame, snapshot)
         instance.send.assert_not_called()
+
+    def test_null_unified_windows_does_not_warn_or_drop_known_limit(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_id = "claude-cli"
+        reset = int(bridge.time.time()) + 3600
+        instance.last_usage_frame = {
+            "type": "usage_update", "agent_id": "claude-cli", "provider": "claude",
+            "availability": "available", "captured_at": 1234,
+            "windows": [], "limited_until": reset, "limited_window": "five_hour",
+        }
+        instance.send = Mock()
+        with patch.object(bridge, "log") as warning:
+            instance.capture_usage({"rate_limit_info": {
+                "status": "rejected", "unifiedWindows": None,
+            }})
+            warning.assert_not_called()
+        self.assertEqual(instance.last_usage_frame["limited_until"], reset)
+        instance.send.assert_called_once()
 
     def test_rejected_limit_sets_and_success_clears(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)

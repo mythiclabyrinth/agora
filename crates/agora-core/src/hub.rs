@@ -2502,7 +2502,10 @@ impl Hub {
             return;
         };
         let handle_name = requested_target.strip_prefix('@').unwrap_or(requested_target);
-        let target = if self.store.agent(handle_name).is_some() {
+        let target = if handle_name.is_empty() {
+            None
+        } else if self.store.agent(handle_name).is_some()
+            && self.store.agents_share_channel(agent_id, handle_name) {
             Some(handle_name.to_string())
         } else {
             let shared: Vec<Value> = self.store.known_agents().into_iter()
@@ -4739,6 +4742,29 @@ mod tests {
         let response = last_frame(&mut requester, "usage_response").unwrap();
         assert_eq!(response["target_agent_id"], "second-id");
         assert!(response.get("error").is_none());
+    }
+
+    #[test]
+    fn usage_request_falls_back_to_shared_name_when_id_is_not_shared() {
+        let h = hub();
+        let mut requester = add_agent(&h, "requester", "Requester", false);
+        let _hidden = add_agent(&h, "ops-bot", "Hidden", false);
+        let _shared = add_agent(&h, "shared-ops", "Ops Bot", false);
+        setup_channel(&h, &["requester", "shared-ops"]);
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "fallback", "agent_id": "requester",
+            "target_agent_id": "@ops-bot"
+        }));
+        let response = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(response["target_agent_id"], "shared-ops");
+        assert!(response.get("error").is_none());
+        h.handle_agent_frame(&json!({
+            "type": "usage_request", "request_id": "empty", "agent_id": "requester",
+            "target_agent_id": "@"
+        }));
+        let denied = last_frame(&mut requester, "usage_response").unwrap();
+        assert_eq!(denied["error"], "target agent is unavailable or not shared");
+        assert_eq!(denied["target_agent_id"], "@");
     }
 
     #[test]
