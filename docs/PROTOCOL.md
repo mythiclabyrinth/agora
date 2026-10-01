@@ -525,9 +525,12 @@ snapshot; provider credentials never leave the bridge machine.
 
 `availability` is `available` when the provider can report usage and may
 be `unavailable` when a provider cannot report usage. It does not mean the
-agent can run. `limited_until` says the agent cannot run until that Unix time;
+agent can run. `limited_until` is an integer Unix timestamp in seconds and says
+the agent cannot run until that time;
 `limited_window` names the exhausted window. Omitting both fields clears an
-earlier limit. Expired limits are omitted when snapshots are read. Consumers
+earlier limit. Expired limits are omitted when snapshots are read, but a prior
+`agent_usage` push event is not withdrawn on expiry. Consumers must expire its
+`limited_until` locally. Consumers
 render windows without assuming that `primary` means five hours or that every
 plan has a weekly/model-specific limit.
 

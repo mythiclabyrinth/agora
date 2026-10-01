@@ -896,7 +896,8 @@ impl Hub {
                 }));
             }
         }
-        let limited_until = frame["limited_until"].as_i64().filter(|until| {
+        if availability == "unavailable" { windows.clear(); }
+        let limited_until = frame["limited_until"].as_i64().filter(|until| availability == "available" && {
             *until > now_s as i64 && *until <= now_s as i64 + 8 * 86400
         });
         let limited_window = frame["limited_window"].as_str()
@@ -904,20 +905,24 @@ impl Hub {
                 && window.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
         let previous = self.current_agent_usage(agent_id)
             .filter(|usage| usage["provider"].as_str() == Some(provider));
-        let clearing_limit = limited_until.is_none()
+        let clearing_limit = availability == "available" && limited_until.is_none()
             && previous.as_ref().is_some_and(|usage| usage.get("limited_until").is_some());
-        if windows.is_empty() && (limited_until.is_some() || clearing_limit) {
+        let carry_previous = availability == "available" && windows.is_empty()
+            && (limited_until.is_some() || clearing_limit);
+        if carry_previous {
             if let Some(usage) = &previous {
                 windows = usage["windows"].as_array().cloned().unwrap_or_default();
                 captured_at = usage["captured_at"].as_f64().unwrap_or(captured_at);
             }
         }
         if availability == "available" && windows.is_empty() && limited_until.is_none() && !clearing_limit { return; }
+        let previous_plan = if carry_previous { previous.as_ref().and_then(|usage| usage["plan"].as_str()) } else { None };
+        let previous_credits = if carry_previous { previous.as_ref().and_then(|usage| usage.get("credits")) } else { None };
         let mut snapshot = json!({
             "agent_id": agent_id, "provider": provider, "availability": availability,
             "captured_at": captured_at, "windows": windows,
-            "plan": frame["plan"].as_str().map(|s| s.chars().take(64).collect::<String>()),
-            "credits": frame.get("credits").filter(|v| v.is_object()).map(|credits| json!({
+            "plan": frame["plan"].as_str().or(previous_plan).map(|s| s.chars().take(64).collect::<String>()),
+            "credits": frame.get("credits").filter(|v| v.is_object()).or(previous_credits).map(|credits| json!({
                 "has_credits": credits["has_credits"].as_bool(),
                 "unlimited": credits["unlimited"].as_bool(),
                 "balance": credits["balance"].as_str().map(|s| s.chars().take(64).collect::<String>()),
@@ -4653,6 +4658,10 @@ mod tests {
                 "type": "usage_request", "request_id": request_id,
                 "agent_id": "bot-a", "target_agent_id": "bot-b"
             }));
+            if request_id == "first" {
+                let first = last_frame(&mut requester, "usage_response").unwrap();
+                assert_eq!(first["refreshing"], true);
+            }
         }
         let response = last_frame(&mut requester, "usage_response").unwrap();
         assert_eq!(response["request_id"], "second");
@@ -4667,7 +4676,8 @@ mod tests {
         let _rx = add_agent(&h, "bot-a", "Bot A", false);
         h.handle_agent_frame(&json!({
             "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
-            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 40}]
+            "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 40}],
+            "plan": "Pro", "credits": {"has_credits": true, "unlimited": false, "balance": "5"}
         }));
         let until = now() as i64 + 3600;
         h.handle_agent_frame(&json!({
@@ -4675,6 +4685,8 @@ mod tests {
             "captured_at": now(), "windows": [], "limited_until": until
         }));
         assert_eq!(h.current_agent_usage("bot-a").unwrap()["limited_until"], until);
+        assert_eq!(h.current_agent_usage("bot-a").unwrap()["plan"], "Pro");
+        assert_eq!(h.current_agent_usage("bot-a").unwrap()["credits"]["balance"], "5");
         for window in [json!("weekly limit")] {
             h.handle_agent_frame(&json!({
                 "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
@@ -4713,6 +4725,29 @@ mod tests {
         let stored = h.current_agent_usage("bot-a").unwrap();
         assert!(stored.get("limited_until").is_none());
         assert_eq!(stored["captured_at"], captured_at);
+    }
+
+    #[test]
+    fn unavailable_usage_discards_previous_account_snapshot() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now() - 100.0,
+            "windows": [{"key": "five_hour", "used_percent": 95}],
+            "limited_until": now() as i64 + 3600,
+            "plan": "Pro", "credits": {"has_credits": true, "balance": "5"},
+        }));
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "availability": "unavailable", "captured_at": now(), "windows": [],
+        }));
+        let stored = h.current_agent_usage("bot-a").unwrap();
+        assert_eq!(stored["availability"], "unavailable");
+        assert!(stored["windows"].as_array().unwrap().is_empty());
+        assert!(stored.get("limited_until").is_none());
+        assert!(stored["plan"].is_null());
+        assert!(stored["credits"].is_null());
     }
 
     #[test]
