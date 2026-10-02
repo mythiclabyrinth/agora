@@ -26,25 +26,38 @@ export function SectionRail({ boxRef, messages }: {
     const rail = railRef.current;
     const dot = rail?.querySelectorAll<HTMLElement>(".ago-rail-dot")[active];
     if (!rail || !dot) return;
+    const padding = getComputedStyle(rail);
+    const topPadding = parseFloat(padding.paddingTop) || 0;
+    const bottomPadding = parseFloat(padding.paddingBottom) || 0;
     // Scroll only the rail. scrollIntoView can also move the message log/page.
-    if (dot.offsetTop < rail.scrollTop) rail.scrollTop = dot.offsetTop;
-    else if (dot.offsetTop + dot.offsetHeight > rail.scrollTop + rail.clientHeight) {
-      rail.scrollTop = dot.offsetTop + dot.offsetHeight - rail.clientHeight;
+    if (dot.offsetTop < rail.scrollTop + topPadding) rail.scrollTop = dot.offsetTop - topPadding;
+    else if (dot.offsetTop + dot.offsetHeight > rail.scrollTop + rail.clientHeight - bottomPadding) {
+      rail.scrollTop = dot.offsetTop + dot.offsetHeight - rail.clientHeight + bottomPadding;
     }
   }, [active, sections]);
 
   useEffect(() => {
     const box = boxRef.current;
     if (!box || sections.length < 2) return;
+    const targets = sections.flatMap((section, index) => {
+      const element = box.querySelector<HTMLElement>(`[data-mid="${section.mid}"]`);
+      return element ? [{ element, index }] : [];
+    });
     let raf = 0;
     const recompute = () => {
       raf = 0;
       const mark = box.scrollTop + ACTIVE_OFFSET_PX;
       let idx = 0;
-      for (let i = 0; i < sections.length; i++) {
-        const el = box.querySelector<HTMLElement>(`[data-mid="${sections[i].mid}"]`);
-        if (!el) continue;
-        if (el.offsetTop <= mark) idx = i; else break;
+      let low = 0;
+      let high = targets.length - 1;
+      while (low <= high) {
+        const middle = (low + high) >>> 1;
+        if (targets[middle].element.offsetTop <= mark) {
+          idx = targets[middle].index;
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
       }
       // At the very bottom the last section is the one being read.
       if (box.scrollHeight - box.scrollTop - box.clientHeight < AT_BOTTOM_PX) {

@@ -30,6 +30,7 @@ export function agentRailColors(agents: Pick<AgentInfo, "id" | "rail_marker">[])
   const used = new Set<number>();
   for (const id of [...new Set(agents.filter(a => a.rail_marker).map(a => a.id))].sort()) {
     let slot = hashId(id) % RAIL_AGENT_COLORS.length;
+    // Stop probing when all slots are used; the next agents must reuse colours.
     if (used.size < RAIL_AGENT_COLORS.length) {
       while (used.has(slot)) slot = (slot + 1) % RAIL_AGENT_COLORS.length;
       used.add(slot);
