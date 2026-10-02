@@ -986,7 +986,8 @@ class Bridge:
         self.busy: set[str] = set()
         self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
-        self.idle_compact_tokens = max(0, args.idle_compact_tokens)
+        self.auto_compact_tokens = (args.auto_compact_tokens
+                                    if args.auto_compact else 0)
         self.warm_timers: dict[str, asyncio.Task] = {}
         self.warm_compacting: set[str] = set()
         self.warm_activity_during_compaction: set[str] = set()
@@ -1652,7 +1653,7 @@ class Bridge:
             task.cancel()
 
     def _schedule_warm_timer(self, key: str, frame: dict) -> None:
-        if self.idle_compact_tokens <= 0 or key in self.busy or key in self.warm_compacting:
+        if self.auto_compact_tokens <= 0 or key in self.busy or key in self.warm_compacting:
             return
         binding = self.bindings.get(key) or {}
         sid = binding.get("session_id")
@@ -1708,14 +1709,14 @@ class Bridge:
             binding = self.bindings.get(key) or {}
             proc = self.procs.get(key)
             live = self.live.get(key)
-            if (self.idle_compact_tokens <= 0 or self.account_auth_problem
+            if (self.auto_compact_tokens <= 0 or self.account_auth_problem
                     or key in self.busy or (proc is not None and proc.returncode is None)
                     or (live is not None and live.alive)
                     or self.pending_turns.get(key)
                     or self.pending_questions.get(key)
                     or binding.get("session_id") != sid or binding.get("_fork_source")):
                 return
-            info = cold_resume_info(sid, self.projects_dir, self.idle_compact_tokens,
+            info = cold_resume_info(sid, self.projects_dir, self.auto_compact_tokens,
                                     min_idle=0)
             if not info or info[1] < WARM_COMPACT_IDLE_SECONDS:
                 return
@@ -1737,7 +1738,7 @@ class Bridge:
                 self._schedule_warm_timer(key, frame)
 
     async def _compact_before_cold_resume(self, key: str, frame: dict) -> bool:
-        if (self.idle_compact_tokens <= 0 or self.account_auth_problem
+        if (self.auto_compact_tokens <= 0 or self.account_auth_problem
                 or key in self.busy or key in self.warm_compacting):
             return False
         binding = self.bindings.get(key) or {}
@@ -1749,7 +1750,7 @@ class Bridge:
                 or (proc is not None and proc.returncode is None)
                 or self.pending_turns.get(key) or self.pending_questions.get(key)):
             return False
-        info = cold_resume_info(sid, self.projects_dir, self.idle_compact_tokens)
+        info = cold_resume_info(sid, self.projects_dir, self.auto_compact_tokens)
         if not info or not self._needs_compaction(key, sid, info[0]):
             return False
         self.warm_compacting.add(key)
@@ -1765,7 +1766,7 @@ class Bridge:
 
     async def _forward_human_with_cold_compaction(self, key: str, frame: dict,
                                                    text: str) -> None:
-        if self.idle_compact_tokens <= 0:
+        if self.auto_compact_tokens <= 0:
             await self.forward_to_claude(key, frame, text)
             return
         state = self.cold_compact_pending.get(key)
@@ -4231,6 +4232,22 @@ def _env_file_from_argv(argv: list[str], default: Path) -> Path:
     return Path(override).expanduser() if override else default
 
 
+def add_auto_compact_arguments(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--auto-compact", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("CLAUDE_AUTO_COMPACT", "0").lower()
+                    in ("1", "true", "yes"),
+                    help="automatically compact large idle sessions (off by default)")
+    ap.add_argument("--auto-compact-tokens", type=int,
+                    default=int(os.environ.get("CLAUDE_AUTO_COMPACT_TOKENS", "300000")),
+                    help="minimum context size for automatic compaction (default: 300000)")
+
+
+def validate_auto_compact_arguments(ap: argparse.ArgumentParser,
+                                    args: argparse.Namespace) -> None:
+    if args.auto_compact and args.auto_compact_tokens <= 0:
+        ap.error("--auto-compact-tokens must be positive when --auto-compact is enabled")
+
+
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
     default_state = script_dir / "state.json"
@@ -4294,9 +4311,7 @@ def main() -> None:
                     help="only summarize replies at least this many chars long")
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("CLAUDE_TIMEOUT", "1800")),
                     help="per-run timeout in seconds")
-    ap.add_argument("--idle-compact-tokens", type=int,
-                    default=int(os.environ.get("CLAUDE_IDLE_COMPACT_TOKENS", "300000")),
-                    help="context threshold for warm idle and cold-resume auto-compaction; 0 disables both")
+    add_auto_compact_arguments(ap)
     ap.add_argument("--async-followups", action=argparse.BooleanOptionalAction,
                     default=os.environ.get("CLAUDE_ASYNC_FOLLOWUPS", "0") in ("1", "true", "yes"),
                     help="let a run that backgrounded work post its findings "
@@ -4348,6 +4363,7 @@ def main() -> None:
                          "@mentioning Claude. Empty (the default) keeps peers "
                          "on the chat path only")
     args = ap.parse_args()
+    validate_auto_compact_arguments(ap, args)
     if args.max_file_mb <= 0:
         ap.error("--max-file-mb must be positive")
     try:

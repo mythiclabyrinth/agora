@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import importlib.util
@@ -140,7 +141,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.context_buffer_limit = 50
     instance.busy = set()
     instance.pending_turns = {}
-    instance.idle_compact_tokens = 300000
+    instance.auto_compact_tokens = 0
     instance.warm_timers = {}
     instance.warm_compacting = set()
     instance.warm_activity_during_compaction = set()
@@ -701,6 +702,54 @@ class PeerForwardTests(unittest.TestCase):
         self.assertEqual(entry["text"], "latest")
 
 
+class AutoCompactSettingsTests(unittest.TestCase):
+    def _parse(self, argv=(), env=None):
+        ap = argparse.ArgumentParser()
+        with patch.dict(bridge.os.environ, env or {}, clear=True):
+            bridge.add_auto_compact_arguments(ap)
+        return ap, ap.parse_args(list(argv))
+
+    def test_off_by_default_and_threshold_alone_has_no_effect(self):
+        ap, args = self._parse()
+        self.assertFalse(args.auto_compact)
+        self.assertEqual(args.auto_compact_tokens, 300000)
+        bridge.validate_auto_compact_arguments(ap, args)
+        instance = make_bridge()
+        self.assertEqual(instance.auto_compact_tokens, 0)
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        frame = {"channel_id": "c1", "author": {"type": "user"}, "text": "work"}
+        with patch.object(bridge, "cold_resume_info") as scan:
+            asyncio.run(instance.handle_inbound(frame))
+        scan.assert_not_called()
+        self.assertFalse(instance.warm_timers)
+        _, args = self._parse(env={"CLAUDE_AUTO_COMPACT_TOKENS": "450000"})
+        self.assertFalse(args.auto_compact)
+        self.assertEqual(args.auto_compact_tokens, 450000)
+
+    def test_enable_default_and_custom_threshold(self):
+        ap, args = self._parse(["--auto-compact"])
+        bridge.validate_auto_compact_arguments(ap, args)
+        self.assertTrue(args.auto_compact)
+        self.assertEqual(args.auto_compact_tokens, 300000)
+        ap, args = self._parse(["--auto-compact", "--auto-compact-tokens", "450000"])
+        bridge.validate_auto_compact_arguments(ap, args)
+        self.assertEqual(args.auto_compact_tokens, 450000)
+        _, args = self._parse(env={"CLAUDE_AUTO_COMPACT": "yes"})
+        self.assertTrue(args.auto_compact)
+        _, args = self._parse(["--no-auto-compact"],
+                              env={"CLAUDE_AUTO_COMPACT": "1"})
+        self.assertFalse(args.auto_compact)
+
+    def test_enabled_nonpositive_threshold_is_rejected(self):
+        for value in ("0", "-1"):
+            ap, args = self._parse(["--auto-compact", "--auto-compact-tokens", value])
+            with patch("sys.stderr", new_callable=io.StringIO) as stderr, self.assertRaises(SystemExit):
+                bridge.validate_auto_compact_arguments(ap, args)
+            self.assertIn("must be positive", stderr.getvalue())
+        ap, args = self._parse(["--auto-compact-tokens", "0"])
+        bridge.validate_auto_compact_arguments(ap, args)
+
+
 class ColdResumeTests(unittest.TestCase):
     def test_compaction_metadata_reports_post_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -732,6 +781,7 @@ class ColdResumeTests(unittest.TestCase):
 
     def test_cold_compacts_before_human_message_without_question(self):
         instance = make_bridge()
+        instance.auto_compact_tokens = 300000
         instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
         frame = {"channel_id": "c1", "message_id": 1,
                  "author": {"type": "user"}, "text": "work"}
@@ -764,6 +814,7 @@ class ColdResumeTests(unittest.TestCase):
 
     def test_cold_regrowth_guard_and_failure_still_runs_message(self):
         instance = make_bridge()
+        instance.auto_compact_tokens = 300000
         instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
         instance.warm_compacted_sizes["c1"] = ("old-id", 370000)
         instance._compact_session = AsyncMock(return_value=38000)
@@ -781,6 +832,7 @@ class ColdResumeTests(unittest.TestCase):
     def test_human_arriving_during_cold_compaction_keeps_message_order(self):
         async def run():
             instance = make_bridge()
+            instance.auto_compact_tokens = 300000
             instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
             first = {"channel_id": "c1", "message_id": 1,
                      "author": {"type": "user"}, "text": "first"}
@@ -818,6 +870,7 @@ class ColdResumeTests(unittest.TestCase):
     def test_after_cold_compaction_later_human_uses_queue_and_stop_drops_it(self):
         async def run():
             instance = make_bridge()
+            instance.auto_compact_tokens = 300000
             del instance.forward_to_claude
             instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
             instance._compact_session = AsyncMock(return_value=38000)
@@ -856,6 +909,7 @@ class ColdResumeTests(unittest.TestCase):
 class WarmCompactTests(unittest.TestCase):
     def _bridge(self):
         instance = make_bridge()
+        instance.auto_compact_tokens = 300000
         instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp",
                                     "model": "opus", "permission_mode": "acceptEdits"}
         instance._compact_session = AsyncMock(return_value=38000)
@@ -923,7 +977,7 @@ class WarmCompactTests(unittest.TestCase):
     def test_zero_disables_timer_and_cold_compaction(self):
         async def run():
             instance = self._bridge()
-            instance.idle_compact_tokens = 0
+            instance.auto_compact_tokens = 0
             frame = {"channel_id": "c1", "author": {"type": "user"}, "text": "work"}
             with patch.object(bridge, "cold_resume_info") as scan:
                 await instance.handle_inbound(frame)
@@ -942,6 +996,14 @@ class WarmCompactTests(unittest.TestCase):
         self._fire(instance, tokens=410000)
         instance._compact_session.assert_not_awaited()
         self._fire(instance, tokens=420000)
+        instance._compact_session.assert_awaited_once()
+
+    def test_custom_threshold_controls_compaction(self):
+        instance = self._bridge()
+        instance.auto_compact_tokens = 450000
+        self._fire(instance, tokens=410000)
+        instance._compact_session.assert_not_awaited()
+        self._fire(instance, tokens=450000)
         instance._compact_session.assert_awaited_once()
 
     def test_failed_compaction_does_not_retry_without_new_turn(self):

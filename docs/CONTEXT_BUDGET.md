@@ -62,8 +62,10 @@ Tests (`bridges/codex-cli/test_bridge.py`):
 
 ## B. Claude: automatic idle compaction
 
-`CLAUDE_IDLE_COMPACT_TOKENS` is the one threshold for both paths (default
-300,000; `0` disables both). No new setting or per-channel command is needed.
+`CLAUDE_AUTO_COMPACT` enables both paths and is off by default. When enabled,
+`CLAUDE_AUTO_COMPACT_TOKENS` sets their shared context threshold (default
+300,000; must be positive). The token setting has no effect while automatic
+compaction is off. No per-channel command is needed.
 
 After a turn or command finishes, the bridge schedules a one-shot check after
 15 minutes of quiet. New inbound activity cancels and resets the timer. At the
@@ -87,5 +89,5 @@ before another automatic compact. Timers are memory-only and disappear on
 restart. Claude's native mid-turn auto-compact settings are unchanged.
 
 Tests cover the warm and cold paths, skipped unsafe states, cancellation by new
-activity, threshold zero, the regrowth guard, peer and scheduled messages, and
+activity, disabled and invalid settings, the regrowth guard, peer and scheduled messages, and
 use of the normal model and system arguments.
