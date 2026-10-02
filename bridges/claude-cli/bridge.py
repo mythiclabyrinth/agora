@@ -331,6 +331,10 @@ class RunStopped(Exception):
     told, so a turn killed by something other than /stop can say why."""
 
 
+class CompactionDeferred(Exception):
+    """A real turn took the binding before an idle compaction could start."""
+
+
 class LiveRun:
     """A `claude -p` child kept alive past the reply, because it still owns
     background work that will re-invoke the model.
@@ -993,6 +997,8 @@ class Bridge:
         self.warm_compacting: set[str] = set()
         self.warm_activity_during_compaction: set[str] = set()
         self.warm_compacted_sizes: dict[str, tuple[str, int]] = self._saved_warm_compacted_sizes
+        self.turn_activity: dict[str, int] = {}
+        self.run_generation: dict[str, int] = {}
         self.cold_compact_failures: dict[str, tuple[str, int]] = {}
         self.cold_compact_pending: dict[str, dict] = {}
         self.pending_updates: dict[int, str] = {}
@@ -1688,7 +1694,16 @@ class Bridge:
                  "unresolved error messages. Drop resolved dead ends and tool "
                  "output already acted on.")
         started = time.time()
-        await self.forward_to_claude(key, frame, "/compact " + focus)
+        if key in self.busy or self.pending_turns.get(key):
+            raise CompactionDeferred
+        if await self.forward_to_claude(key, frame, "/compact " + focus) is False:
+            queue = self.pending_turns.get(key, [])
+            remaining = [entry for entry in queue if entry.get("frame") is not frame]
+            if remaining:
+                self.pending_turns[key] = remaining
+            else:
+                self.pending_turns.pop(key, None)
+            raise CompactionDeferred
         current_sid = (self.bindings.get(key) or {}).get("session_id")
         after = None
         for candidate in dict.fromkeys((current_sid, sid)):
@@ -1733,6 +1748,7 @@ class Bridge:
             if self.warm_timers.get(key) is not asyncio.current_task():
                 return
             binding = self.bindings.get(key) or {}
+            activity = self.turn_activity.get(key, 0)
             proc = self.procs.get(key)
             live = self.live.get(key)
             if (self.auto_compact_tokens <= 0 or self.account_auth_problem
@@ -1745,6 +1761,10 @@ class Bridge:
             info = await asyncio.to_thread(
                 cold_resume_info, sid, self.projects_dir,
                 self.auto_compact_tokens, min_idle=0)
+            if (self.turn_activity.get(key, 0) != activity or key in self.busy
+                    or self.pending_turns.get(key)
+                    or (self.bindings.get(key) or {}).get("session_id") != sid):
+                return
             if not info or info[1] < WARM_COMPACT_IDLE_SECONDS:
                 return
             before = info[0]
@@ -1753,6 +1773,8 @@ class Bridge:
             self.warm_compacting.add(key)
             await self._compact_and_report(key, frame, sid, before)
         except asyncio.CancelledError:
+            return
+        except CompactionDeferred:
             return
         except Exception as exc:
             log(f"warm compact for {key} failed: {exc!r}")
@@ -1782,8 +1804,13 @@ class Bridge:
                 self.cold_compact_failures.pop(key, None)
             if self.cold_compact_failures.get(key, (sid, 0))[1] >= 2:
                 return False
+            activity = self.run_generation.get(key, 0)
             info = await asyncio.to_thread(
                 cold_resume_info, sid, self.projects_dir, self.auto_compact_tokens)
+            if (self.run_generation.get(key, 0) != activity or key in self.busy
+                    or self.pending_turns.get(key)
+                    or (self.bindings.get(key) or {}).get("session_id") != sid):
+                return False
             if not info or not self._needs_compaction(key, sid, info[0]):
                 return False
         except Exception as exc:
@@ -1801,6 +1828,8 @@ class Bridge:
                 previous = self.cold_compact_failures.get(key, (current_sid, 0))
                 count = previous[1] if previous[0] == current_sid else 0
                 self.cold_compact_failures[key] = (current_sid, count + 1)
+        except CompactionDeferred:
+            return False
         except Exception as exc:
             log(f"cold compact for {key} failed: {exc!r}")
             current_sid = (self.bindings.get(key) or {}).get("session_id") or sid
@@ -1831,10 +1860,7 @@ class Bridge:
         try:
             async with state["lock"]:
                 if first:
-                    compacted = await self._compact_before_cold_resume(key, frame)
-                    if not compacted:
-                        # Ordinary turns keep the existing bridge queue path.
-                        self.cold_compact_pending.pop(key, None)
+                    await self._compact_before_cold_resume(key, frame)
                 # Let forward_to_claude claim the first turn (or enqueue a
                 # later one) before releasing the ordering lock. The normal
                 # bridge queue then owns the turn, including /stop and limits.
@@ -1851,11 +1877,37 @@ class Bridge:
 
     async def handle_inbound(self, frame: dict) -> None:
         key = self.binding_key(frame)
-        self._cancel_warm_timer(key)
+        starts_turn = self._starts_turn(frame, key)
+        if starts_turn:
+            self.turn_activity[key] = self.turn_activity.get(key, 0) + 1
+            self._cancel_warm_timer(key)
         try:
             await self._handle_inbound_message(frame)
         finally:
-            self._schedule_warm_timer(key, frame)
+            if starts_turn:
+                self._schedule_warm_timer(key, frame)
+
+    def _starts_turn(self, frame: dict, key: str) -> bool:
+        """Only model-bound turns interrupt the idle-compaction window."""
+        author = frame.get("author") or {}
+        from_peer = (author.get("type") == "agent" and frame.get("mentioned")
+                     and str(author.get("id") or "").lower() in self.peer_agents)
+        if author.get("type") != "user" and not from_peer:
+            return False
+        if (not from_peer and not (frame.get("mentioned") or not frame.get("any_mention"))
+                and not self.pending_questions.get(key)):
+            return False
+        if not self._strip_mention(frame.get("text") or "") and not frame.get("attachments"):
+            return False
+        if not (self.bindings.get(key) or self.bindings.get(frame["channel_id"])):
+            return False
+        cmd_text = command_text(
+            frame.get("text") or "", self._own_handles(), frame.get("thread_context_chars"))
+        cmd = (cmd_text or "").partition(" ")[0].lower()
+        bridge_commands = {"/commands", "/sessions", "/use", "/new", "/worktree",
+                           "/worktrees", "/model", "/permissions", "/tldr",
+                           "/switch", "/stop", "/status"}
+        return not (cmd in bridge_commands and (not from_peer or cmd in self.peer_commands))
 
     async def _handle_inbound_message(self, frame: dict) -> None:
         key = self.binding_key(frame)
@@ -2632,6 +2684,7 @@ class Bridge:
             return False
         self.pending_turns.setdefault(key, []).append(entry)
         self.busy.add(key)
+        self.run_generation[key] = self.run_generation.get(key, 0) + 1
         self.typing(frame, True)
         typing_frame = frame
         entries = self._claim_pending_turns(key)

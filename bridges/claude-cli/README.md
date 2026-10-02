@@ -130,7 +130,7 @@ Set `CLAUDE_AUTO_COMPACT=1` to enable automatic compaction. When an enabled
 session reaches `CLAUDE_AUTO_COMPACT_TOKENS` (default 300,000), the bridge
 compacts it after 15 minutes of quiet. If the bridge was
 not running during that window, it compacts before the next human message when
-the session has been idle at least an hour. The message then runs immediately;
+the session has been idle at least an hour. The message then runs next;
 no choice or reply is required. Peer and scheduled messages do not trigger
 cold compaction. Active or queued work is skipped. The session must grow at
 least 50,000 tokens after compaction before another automatic compact.

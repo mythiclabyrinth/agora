@@ -1912,7 +1912,7 @@ class Bridge:
         changes = []
         for label, suffix, before, enabled in zip(labels, suffixes, previous, current):
             if before != enabled:
-                changes.append(suffix if enabled else f"[Relay settings update: {label} are off.]")
+                changes.append(suffix if enabled else f"\n\n[Relay settings update: {label} are off.]")
         return "".join(changes), current
 
     def _cmd_tldr(self, key: str, arg: str) -> str:
