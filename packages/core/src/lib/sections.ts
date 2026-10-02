@@ -10,12 +10,12 @@ export interface ConversationSection {
 }
 
 // Distinct hues that stay legible as small outlined dots on light and dark surfaces.
-const RAIL_AGENT_COLORS = [
+export const RAIL_AGENT_COLORS = [
   "#d97a36", "#448edb", "#b365d6",
   "#d25585", "#c9a227", "#5aa64a",
 ] as const;
 
-function hashId(id: string): number {
+export function hashId(id: string): number {
   let hash = 2166136261;
   for (let i = 0; i < id.length; i += 1) {
     hash = Math.imul(hash ^ id.charCodeAt(i), 16777619);

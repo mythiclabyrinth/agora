@@ -9,7 +9,12 @@ import {
 } from "@agora/core/testing/fixtures";
 import { SectionRail } from "./SectionRail";
 import { MessageItem } from "./MessageItem";
-import type { Message } from "@agora/core";
+import { agentRailColors, type Message } from "@agora/core";
+
+const markedAgents = fixtureAgents.map(agent => ({ ...agent, rail_marker: true }));
+const expectedAgentColors = agentRailColors(markedAgents);
+const cssRgb = (hex: string) =>
+  `rgb(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
 
 const messages: Message[] = [
   fixtureRootMessage,
@@ -111,7 +116,7 @@ export const MultipleSections: Story = {
 export const AgentThread: Story = {
   args: { messages: agentThread, viewportHeight: 360 },
   parameters: {
-    apiRoutes: { "GET /api/agents": { agents: fixtureAgents.map(agent => ({ ...agent, rail_marker: true })) } },
+    apiRoutes: { "GET /api/agents": { agents: markedAgents } },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -122,9 +127,9 @@ export const AgentThread: Story = {
     expect(dots[2].getAttribute("aria-label")).toContain("(agent)");
     expect(getComputedStyle(dots[1]).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(getComputedStyle(dots[1]).borderTopStyle).toBe("solid");
-    expect(getComputedStyle(dots[1]).borderTopColor).toBe("rgb(217, 122, 54)");
+    expect(getComputedStyle(dots[1]).borderTopColor).toBe(cssRgb(expectedAgentColors.get("codex")!));
     await userEvent.click(dots[2]);
     await waitFor(() => expect(dots[2].classList.contains("active")).toBe(true));
-    expect(getComputedStyle(dots[2]).backgroundColor).toBe("rgb(210, 85, 133)");
+    expect(getComputedStyle(dots[2]).backgroundColor).toBe(cssRgb(expectedAgentColors.get("claude")!));
   },
 };

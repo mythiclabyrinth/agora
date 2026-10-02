@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "../api/types";
-import { agentRailColors, conversationSections } from "./sections";
+import { RAIL_AGENT_COLORS, agentRailColors, conversationSections, hashId } from "./sections";
 
 const message = (
   id: number,
@@ -77,6 +77,10 @@ describe("conversationSections", () => {
     const colors = agentRailColors(roster);
     expect(colors.size).toBe(7);
     expect(new Set(colors.values()).size).toBe(6);
-    expect([...colors.values()].slice(0, 6)).toContain(colors.get("agent-6"));
+    expect(colors.get("agent-6")).toBe(RAIL_AGENT_COLORS[hashId("agent-6") % RAIL_AGENT_COLORS.length]);
+  });
+
+  it("excludes agents without the rail marker", () => {
+    expect(agentRailColors([{ id: "a", rail_marker: false }, { id: "b" }]).size).toBe(0);
   });
 });
