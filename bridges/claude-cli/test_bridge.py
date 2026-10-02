@@ -1192,6 +1192,34 @@ class WarmCompactTests(unittest.TestCase):
             "text": "answer", "any_mention": True, "mentioned": False,
         }, "c1"))
 
+    def test_switch_listing_keeps_timer_real_switch_cancels_it(self):
+        async def run():
+            instance = self._bridge()
+            instance.account_epoch = 0
+            instance._schedule_warm_timer("c1", {"channel_id": "c1"})
+            original = instance.warm_timers["c1"]
+            async def switch(arg):
+                if arg:
+                    instance.account_epoch += 1
+                    instance.bindings["c1"]["session_id"] = None
+                return "accounts"
+            instance._cmd_switch = AsyncMock(side_effect=switch)
+            frame = {"channel_id": "c1", "author": {"type": "user"},
+                     "text": "/switch"}
+            await instance.handle_inbound(frame)
+            self.assertIs(instance.warm_timers["c1"], original)
+            self.assertFalse(original.cancelled())
+            await instance.handle_inbound(dict(frame, text="/switch another"))
+            await asyncio.sleep(0)
+            self.assertTrue(original.cancelled())
+            self.assertFalse(instance.warm_timers)
+        asyncio.run(run())
+
+    def test_bridge_command_set_matches_help(self):
+        import re
+        advertised = set(re.findall(r"(?m)^(/[a-z]+)", bridge.HELP))
+        self.assertEqual(bridge.BRIDGE_COMMANDS, advertised)
+
     def test_turn_started_during_warm_size_scan_skips_compaction(self):
         async def run():
             instance = self._bridge()

@@ -1765,12 +1765,16 @@ class Bridge:
             info = await asyncio.to_thread(
                 cold_resume_info, sid, self.projects_dir,
                 self.auto_compact_tokens, min_idle=0)
+            fresh_proc = self.procs.get(key)
+            fresh_live = self.live.get(key)
             if (self.turn_activity.get(key, 0) != activity or key in self.busy
                     or self.pending_turns.get(key)
+                    or self.pending_questions.get(key)
                     or (self.bindings.get(key) or {}).get("session_id") != sid
+                    or (self.bindings.get(key) or {}).get("_fork_source")
                     or self.account_auth_problem
-                    or ((proc := self.procs.get(key)) is not None and proc.returncode is None)
-                    or ((live := self.live.get(key)) is not None and live.alive)):
+                    or (fresh_proc is not None and fresh_proc.returncode is None)
+                    or (fresh_live is not None and fresh_live.alive)):
                 return
             if not info or info[1] < WARM_COMPACT_IDLE_SECONDS:
                 return
@@ -1988,6 +1992,7 @@ class Bridge:
                 from_peer=from_peer)
             return
         previous_sid = (self.bindings.get(key) or {}).get("session_id")
+        previous_epoch = self.account_epoch if cmd == "/switch" else None
         if cmd == "/commands":
             self.post(frame, HELP)
         elif cmd == "/sessions":
@@ -2023,7 +2028,7 @@ class Bridge:
             self.post(frame, self._cmd_status(key))
         else:
             raise AssertionError(f"unhandled bridge command: {cmd}")
-        if cmd == "/switch":
+        if cmd == "/switch" and self.account_epoch != previous_epoch:
             for timer_key in list(self.warm_timers):
                 self._cancel_warm_timer(timer_key)
         elif (self.bindings.get(key) or {}).get("session_id") != previous_sid:
