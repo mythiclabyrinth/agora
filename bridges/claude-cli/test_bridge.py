@@ -171,6 +171,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.clear_reaction = Mock()
     instance.post = Mock()
     instance.forward_to_claude = AsyncMock()
+    instance._save_state = Mock()
     return instance
 
 
@@ -779,6 +780,41 @@ class ColdResumeTests(unittest.TestCase):
             self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 500000, now))
             self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 300000, now - 5400))
             self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 0, now))
+
+    def test_latest_compact_boundary_prevents_repeat_compaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = Path(tmp) / "projects"
+            folder = projects / "project"
+            folder.mkdir(parents=True)
+            records = [
+                {"type": "assistant", "timestamp": "2026-10-02T00:00:00Z",
+                 "message": {"usage": {"cache_read_input_tokens": 410000}}},
+                {"type": "system", "subtype": "compact_boundary",
+                 "timestamp": "2026-10-02T00:01:00Z",
+                 "compactMetadata": {"postTokens": 38000}},
+            ]
+            (folder / "old-id.jsonl").write_text(
+                "\n".join(json.dumps(record) for record in records) + "\n")
+            now = bridge.datetime.fromisoformat("2026-10-02T02:00:00+00:00").timestamp()
+            self.assertIsNone(bridge.cold_resume_info("old-id", projects, 300000, now))
+            self.assertIsNone(bridge.cold_resume_info("old-id", projects, 300000, now, min_idle=0))
+            instance = make_bridge()
+            instance.auto_compact_tokens = 300000
+            instance.accounts = {"default": Path(tmp)}
+            instance.account = "default"
+            instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+            instance._compact_session = AsyncMock()
+            async def run():
+                with patch.object(bridge, "WARM_COMPACT_IDLE_SECONDS", 0):
+                    frame = {"channel_id": "c1"}
+                    task = asyncio.create_task(instance._warm_compact_after_idle(
+                        "c1", frame, "old-id"))
+                    instance.warm_timers["c1"] = task
+                    await task
+                self.assertFalse(await instance._compact_before_cold_resume(
+                    "c1", {"channel_id": "c1"}))
+            asyncio.run(run())
+            instance._compact_session.assert_not_awaited()
 
     def test_cold_compacts_before_human_message_without_question(self):
         instance = make_bridge()
@@ -3119,10 +3155,29 @@ class ClaudeAccountTests(unittest.TestCase):
                 "_v": 2, "account": "old-name",
                 "config_dir": str(Path(tmp) / "same"),
                 "bindings": {"c1": {"session_id": "keep", "cwd": "/repo"}},
+                "warm_compacted_sizes": {"c1": ["keep", 38000]},
             }))
             bindings = b._load_state()
             self.assertEqual(b.account, "renamed")
             self.assertEqual(bindings["c1"]["session_id"], "keep")
+            self.assertEqual(b._saved_warm_compacted_sizes["c1"], ("keep", 38000))
+
+    def test_compaction_baseline_round_trips_in_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = bridge.Bridge.__new__(bridge.Bridge)
+            b.accounts = {"test": Path(tmp)}
+            b.account = "test"
+            b._account_state_valid = True
+            b._saved_account = "test"
+            b._previous_config_dir = Path(tmp)
+            b.state_file = Path(tmp) / "state.json"
+            b.bindings = {"c1": {"session_id": "keep", "cwd": "/repo"}}
+            b.warm_compacted_sizes = {"c1": ("keep", 38000)}
+            b._save_state()
+            self.assertEqual(json.loads(b.state_file.read_text())[
+                "warm_compacted_sizes"]["c1"], ["keep", 38000])
+            b._load_state()
+            self.assertEqual(b._saved_warm_compacted_sizes["c1"], ("keep", 38000))
 
     def test_flat_state_migrates_without_losing_bindings(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
@@ -3728,6 +3783,7 @@ class ThreadForkTests(unittest.TestCase):
             b._account_state_valid = True
             b.accounts = {"default": Path(tmp)}
             b._previous_config_dir = Path(tmp)
+            del b._save_state
             b._save_state()
             self.assertNotIn("c1:42", json.loads(b.state_file.read_text())["bindings"])
 

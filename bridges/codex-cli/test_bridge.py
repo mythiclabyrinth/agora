@@ -848,13 +848,11 @@ class OutboundAttachmentTests(unittest.TestCase):
         for binding, subcommand in [({"cwd": "/tmp"}, None),
                                     ({"cwd": "/tmp", "session_id": "old-id",
                                       "relay_developer_installed": True,
-                                      "relay_developer_settings": [False, False, True],
-                                      "relay_instruction_settings": [False, False, True]}, "resume"),
+                                      "relay_developer_settings": [False, False, True]}, "resume"),
                                     ({"cwd": "/tmp", "session_id": "old-id",
                                       "_fork_source": "old-id",
                                       "relay_developer_installed": True,
-                                      "relay_developer_settings": [False, False, True],
-                                      "relay_instruction_settings": [False, False, True]}, "fork")]:
+                                      "relay_developer_settings": [False, False, True]}, "fork")]:
             instance = make_bridge()
             instance.codex_bin = "codex"
             instance.timeout = 30
@@ -895,14 +893,12 @@ class OutboundAttachmentTests(unittest.TestCase):
         self.assertEqual(instance._relay_note_for_run(binding)[0], "")
         binding["session_id"] = "existing"
         self.assertIn(bridge.TLDR_SENTINEL, instance._relay_note_for_run(binding)[0])
-        binding["relay_instruction_settings"] = instance._instruction_settings(binding)
         self.assertIn(bridge.TLDR_SENTINEL, instance._relay_note_for_run(binding)[0])
         binding["relay_developer_installed"] = True
         binding["relay_developer_settings"] = instance._instruction_settings(binding)
         self.assertEqual(instance._relay_note_for_run(binding)[0], "")
         binding["tldr"] = False
         self.assertIn("TL;DR summaries are off", instance._relay_note_for_run(binding)[0])
-        binding["relay_instruction_settings"] = instance._instruction_settings(binding)
         self.assertIn("TL;DR summaries are off", instance._relay_note_for_run(binding)[0])
         fork = dict(binding, _fork_source="existing")
         self.assertIn("TL;DR summaries are off", instance._relay_note_for_run(fork)[0])
@@ -910,19 +906,16 @@ class OutboundAttachmentTests(unittest.TestCase):
     def test_existing_and_foreign_sessions_keep_relay_suffix_after_compaction(self):
         instance = make_bridge()
         instance.tldr_default = True
-        for binding in ({"session_id": "pre-upgrade", "cwd": "/tmp",
-                         "relay_instruction_settings": [True, False, True]},
+        for binding in ({"session_id": "pre-upgrade", "cwd": "/tmp"},
                         {"session_id": "foreign", "cwd": "/tmp"}):
             first, _ = instance._relay_note_for_run(binding)
-            binding["relay_instruction_settings"] = instance._instruction_settings(binding)
             second, _ = instance._relay_note_for_run(binding)
             self.assertEqual(first, second)
             self.assertIn(bridge.TLDR_SENTINEL, second)
             self.assertIn(bridge.HISTORY_SENTINEL, second)
         own = {"session_id": "bridge-started", "cwd": "/tmp",
                "relay_developer_installed": True,
-               "relay_developer_settings": [True, False, True],
-               "relay_instruction_settings": [True, False, True]}
+               "relay_developer_settings": [True, False, True]}
         self.assertEqual(instance._relay_note_for_run(own)[0], "")
         own.pop("relay_developer_settings")
         self.assertIn(bridge.TLDR_SENTINEL, instance._relay_note_for_run(own)[0])
@@ -941,9 +934,8 @@ class OutboundAttachmentTests(unittest.TestCase):
                    "relay_developer_settings": [True, False, True]}
         binding["tldr"] = False
         for _ in range(2):
-            note, current = instance._relay_note_for_run(binding)
+            note, _ = instance._relay_note_for_run(binding)
             self.assertIn("TL;DR summaries are off", note)
-            binding["relay_instruction_settings"] = current
         body = "A long answer with detail."
         self.assertEqual(instance._split_tldr(
             body + "\n" + bridge.TLDR_SENTINEL + " summary", False, 0),
@@ -952,9 +944,18 @@ class OutboundAttachmentTests(unittest.TestCase):
         self.assertEqual(instance._relay_note_for_run(binding)[0], "")
         binding["relay_developer_settings"] = [False, False, True]
         for _ in range(2):
-            note, current = instance._relay_note_for_run(binding)
-            self.assertIn("TL;DR summaries are on", note)
-            binding["relay_instruction_settings"] = current
+            note, _ = instance._relay_note_for_run(binding)
+            self.assertIn(bridge.TLDR_PROMPT_SUFFIX, note)
+
+    def test_enabled_history_and_peer_rules_repeat_in_full(self):
+        instance = make_bridge()
+        instance.peer_agents = frozenset({"claude"})
+        binding = {"session_id": "own", "relay_developer_installed": True,
+                   "relay_developer_settings": [False, False, False]}
+        for _ in range(2):
+            note, _ = instance._relay_note_for_run(binding)
+            self.assertIn(bridge.COLLAB_PROMPT_SUFFIX, note)
+            self.assertIn(bridge.HISTORY_PROMPT_SUFFIX, note)
 
     def test_foreign_session_sends_suffix_on_every_run(self):
         async def events():

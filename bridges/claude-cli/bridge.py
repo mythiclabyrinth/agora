@@ -729,11 +729,8 @@ def find_session(session_id: str, projects_dir: Path | None = None) -> dict | No
     return None
 
 
-def cold_resume_info(session_id: str, projects_dir: Path, threshold: int,
-                     now: float | None = None, min_idle: float = 3600) -> tuple[int, float, float] | None:
-    """Read the last assistant usage and age; fail open if the log is unavailable."""
-    if threshold <= 0:
-        return None
+def _tail_records(session_id: str, projects_dir: Path) -> list[dict]:
+    """Read the recent session records in reverse order."""
     for path in projects_dir.glob(f"*/{session_id}.jsonl"):
         try:
             size = path.stat().st_size
@@ -743,54 +740,57 @@ def cold_resume_info(session_id: str, projects_dir: Path, threshold: int,
                     stream.readline()
                 lines = stream.read().decode("utf-8", errors="replace").splitlines()
         except OSError:
-            return None
+            return []
+        records = []
         for line in reversed(lines):
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if record.get("type") != "assistant" or record.get("isSidechain"):
-                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+    return []
+
+
+def cold_resume_info(session_id: str, projects_dir: Path, threshold: int,
+                     now: float | None = None, min_idle: float = 3600) -> tuple[int, float, float] | None:
+    """Read the latest assistant size or compact boundary and its age."""
+    if threshold <= 0:
+        return None
+    for record in _tail_records(session_id, projects_dir):
+        if record.get("type") == "system" and record.get("subtype") == "compact_boundary":
+            tokens = (record.get("compactMetadata") or {}).get("postTokens")
+            if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
+                return None
+        elif record.get("type") == "assistant" and not record.get("isSidechain"):
             usage = (record.get("message") or {}).get("usage") or {}
             tokens = sum(usage.get(name, 0) or 0 for name in (
                 "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-            timestamp = record.get("timestamp")
-            try:
-                last = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
-            except (AttributeError, ValueError):
-                return None
-            idle = (time.time() if now is None else now) - last
-            return (tokens, idle, last) if tokens >= threshold and idle >= min_idle else None
+        else:
+            continue
+        try:
+            last = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).timestamp()
+        except (KeyError, AttributeError, ValueError):
+            return None
+        idle = (time.time() if now is None else now) - last
+        return (tokens, idle, last) if tokens >= threshold and idle >= min_idle else None
     return None
 
 
 def compacted_tokens(session_id: str, projects_dir: Path, since: float) -> int | None:
     """Get Claude's recorded post-compaction context size for this compact run."""
-    for path in projects_dir.glob(f"*/{session_id}.jsonl"):
+    for record in _tail_records(session_id, projects_dir):
+        if record.get("type") != "system" or record.get("subtype") != "compact_boundary":
+            continue
         try:
-            size = path.stat().st_size
-            with path.open("rb") as stream:
-                stream.seek(max(0, size - TAIL_BYTES))
-                if size > TAIL_BYTES:
-                    stream.readline()
-                lines = stream.read().decode("utf-8", errors="replace").splitlines()
-        except OSError:
+            stamp = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).timestamp()
+        except (KeyError, AttributeError, ValueError):
             return None
-        for line in reversed(lines):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("type") != "system" or record.get("subtype") != "compact_boundary":
-                continue
-            try:
-                stamp = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).timestamp()
-            except (KeyError, AttributeError, ValueError):
-                return None
-            if stamp < since:
-                return None
-            value = (record.get("compactMetadata") or {}).get("postTokens")
-            return value if isinstance(value, int) and value > 0 else None
+        if stamp < since:
+            return None
+        value = (record.get("compactMetadata") or {}).get("postTokens")
+        return value if isinstance(value, int) and value > 0 else None
     return None
 
 
@@ -983,6 +983,7 @@ class Bridge:
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
         self._account_state_valid = True
         self.account_auth_problem: str | None = None
+        self._shutting_down = False
         self.busy: set[str] = set()
         self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
@@ -991,7 +992,7 @@ class Bridge:
         self.warm_timers: dict[str, asyncio.Task] = {}
         self.warm_compacting: set[str] = set()
         self.warm_activity_during_compaction: set[str] = set()
-        self.warm_compacted_sizes: dict[str, tuple[str, int]] = {}
+        self.warm_compacted_sizes: dict[str, tuple[str, int]] = self._saved_warm_compacted_sizes
         self.cold_compact_failures: dict[str, tuple[str, int]] = {}
         self.cold_compact_pending: dict[str, dict] = {}
         self.pending_updates: dict[int, str] = {}
@@ -1069,6 +1070,7 @@ class Bridge:
     def _load_state(self) -> dict[str, dict]:
         self._previous_config_dir: Path | None = self.config_dir
         self._saved_account: str | None = self.account
+        self._saved_warm_compacted_sizes: dict[str, tuple[str, int]] = {}
         try:
             raw = json.loads(self.state_file.read_text())
         except (OSError, json.JSONDecodeError):
@@ -1076,6 +1078,14 @@ class Bridge:
         if not isinstance(raw, dict):
             return {}
         if raw.get("_v") == 2 and isinstance(raw.get("bindings"), dict):
+            saved_sizes = raw.get("warm_compacted_sizes")
+            for key, value in (saved_sizes if isinstance(saved_sizes, dict) else {}).items():
+                binding = raw["bindings"].get(key)
+                if (isinstance(binding, dict) and isinstance(value, list)
+                        and len(value) == 2 and isinstance(value[0], str)
+                        and isinstance(value[1], int) and not isinstance(value[1], bool)
+                        and value[1] > 0 and binding.get("session_id") == value[0]):
+                    self._saved_warm_compacted_sizes[key] = (value[0], value[1])
             saved = raw.get("account")
             saved_dir = raw.get("config_dir")
             self._saved_account = saved if isinstance(saved, str) else None
@@ -1096,6 +1106,10 @@ class Bridge:
             "config_dir": str(config_dir) if config_dir is not None else None,
             "bindings": {key: value for key, value in self.bindings.items()
                          if isinstance(value, dict) and not value.get("_fork_source")},
+            "warm_compacted_sizes": {
+                key: [sid, tokens]
+                for key, (sid, tokens) in getattr(self, "warm_compacted_sizes", {}).items()
+                if (self.bindings.get(key) or {}).get("session_id") == sid},
         }, indent=2))
 
     def _resolve_account(self, name: object, saved_dir: Path | None) -> str:
@@ -1703,6 +1717,7 @@ class Bridge:
             log(f"auto compact for {key} lost its bound session")
             return False
         self.warm_compacted_sizes[key] = (current_sid, after)
+        self._save_state()
         self.cold_compact_failures.pop(key, None)
         # A queued message may have run in the same forward loop. Keep the
         # confirmed baseline to prevent repeat compaction, but omit a notice
@@ -3296,6 +3311,7 @@ class Bridge:
         """Synchronous sweep for shutdown. A child held for background work has
         no in-flight turn to reap it, so without this it survives the bridge —
         and keeps applying edits under the channel's permission mode."""
+        self._shutting_down = True
         for task in self.warm_timers.values():
             task.cancel()
         self.warm_timers.clear()
@@ -3620,7 +3636,7 @@ class Bridge:
             await asyncio.gather(*perm_tasks, return_exceptions=True)
         # The first idle timer may have fired while the background child was
         # still alive. Start a fresh quiet window once it has actually exited.
-        if key not in self.live and key not in self.busy:
+        if not getattr(self, "_shutting_down", False) and key not in self.live and key not in self.busy:
             self._schedule_warm_timer(key, live.frame)
 
     def _resolved_spawn(self, binding: dict | None) -> tuple:
@@ -4142,6 +4158,7 @@ class Bridge:
             except (OSError, websockets.WebSocketException) as e:
                 log(f"disconnected: {e!r}")
             except asyncio.CancelledError:
+                self._shutting_down = True
                 raise
             log(f"reconnecting in {backoff:.0f}s")
             await asyncio.sleep(backoff)
@@ -4436,7 +4453,10 @@ def main() -> None:
     # Children held for background work outlive their turn, so the process must
     # reap them on the way out. SIGTERM's default disposition would skip the
     # finally below; turning it into SystemExit lets the sweep run.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    def shutdown(*_args) -> None:
+        instance._shutting_down = True
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, shutdown)
     try:
         asyncio.run(instance.run())
     except KeyboardInterrupt:

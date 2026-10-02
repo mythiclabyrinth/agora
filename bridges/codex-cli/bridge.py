@@ -1908,10 +1908,12 @@ class Bridge:
         if previous == current:
             return "", current
         labels = ("TL;DR summaries", "peer agent etiquette", "history requests")
-        changes = [f"{label} are {'on' if enabled else 'off'}"
-                   for label, before, enabled in zip(labels, previous, current)
-                   if before != enabled]
-        return "\n\n[Relay settings update: " + "; ".join(changes) + ".]", current
+        suffixes = (TLDR_PROMPT_SUFFIX, COLLAB_PROMPT_SUFFIX, HISTORY_PROMPT_SUFFIX)
+        changes = []
+        for label, suffix, before, enabled in zip(labels, suffixes, previous, current):
+            if before != enabled:
+                changes.append(suffix if enabled else f"[Relay settings update: {label} are off.]")
+        return "".join(changes), current
 
     def _cmd_tldr(self, key: str, arg: str) -> str:
         b = self.bindings.get(key)
@@ -2734,9 +2736,6 @@ class Bridge:
                 if started_with_developer and new_session_id:
                     binding["relay_developer_installed"] = True
                     binding["relay_developer_settings"] = instruction_settings
-                    changed = True
-                if binding.get("relay_instruction_settings") != instruction_settings:
-                    binding["relay_instruction_settings"] = instruction_settings
                     changed = True
                 if changed:
                     self._save_state()

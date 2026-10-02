@@ -30,7 +30,8 @@ Changes (`bridges/codex-cli/bridge.py`):
 1. Build the standing text from the same pieces `_prompt_suffixes()` uses (reword
    the "(… note from the relay, not the user: …)" wrappers into plain developer
    instructions; keep every rule and sentinel format). Pass it on every run as
-   `-c developer_instructions=<TOML string>` (new, resume and fork). Escape
+   `-c developer_instructions=<TOML string>` for sessions the bridge started
+   (new, resume and fork). Escape
    properly (use a TOML basic string with `\\`, `"`, newlines escaped — or
    `json.dumps`, which is a valid TOML basic string for this text; test it).
    Bridge-started sessions stop appending suffixes to each prompt; older and
@@ -38,10 +39,11 @@ Changes (`bridges/codex-cli/bridge.py`):
 2. Record in the binding the instruction "fingerprint" the session started with
    (`tldr`, peer agents, history enabled). Because a changed value is ignored on
    resume, when the current settings differ from the session's starting ones,
-   append a single short in-band relay note to the **next** prompt only (e.g.
-   "Relay note: TL;DR summaries are now off for this conversation."), then
-   update the stored fingerprint. Applies to `/tldr` and bridge restarts with
-   different flags.
+   append a corrective in-band relay note on **every** prompt until the settings
+   match the installed developer instructions. A setting switched on gets its
+   full instruction text (including the sentinel format); a setting switched
+   off gets a short note. Applies to `/tldr` and bridge restarts with different
+   flags.
 3. Sessions bound via `/use` that were started outside the bridge, or before this
    change, have no durable bridge developer instructions. Append the legacy
    suffix on every prompt in these sessions so compaction cannot remove the
@@ -51,12 +53,13 @@ Changes (`bridges/codex-cli/bridge.py`):
    verify, and fall back to (3) if not.
 
 Tests (`bridges/codex-cli/test_bridge.py`):
-- new / resume / fork commands include `-c developer_instructions=…`. The prompt
-  sent on stdin has no relay suffix for sessions started by the bridge; older
-  and foreign sessions keep the suffix on every prompt.
+- new / resume / fork commands for bridge-started sessions include
+  `-c developer_instructions=…`. The prompt sent on stdin has no relay suffix
+  while settings match; older and foreign sessions keep the suffix on every prompt.
 - the TOML value round-trips (`tomllib.loads(f"x = {value}")["x"] == text`).
-- `/tldr off` on a live session → exactly one in-band note on the next prompt,
-  none after.
+- `/tldr off` on a live session → a short corrective note on every prompt;
+  `/tldr on` in a session started with it off → the full TL;DR instruction on
+  every prompt, until the setting matches the original developer instructions.
 - `/use` of a foreign or pre-upgrade session → full suffix on every turn.
 - Manual e2e (record result in the PR): new session, two follow-ups, `/tldr`
   toggle, and one session forced to compact with
@@ -88,8 +91,9 @@ worked, and exact unresolved errors. The bridge reads `postTokens` from the
 compact boundary and posts `Auto-compacted this session: 412k → 38k tokens.`
 A failed attempt posts nothing; the cold path still runs the human message.
 The session must grow at least 50,000 tokens after a successful compaction
-before another automatic compact. Timers are memory-only and disappear on
-restart. Claude's native mid-turn auto-compact settings are unchanged.
+before another automatic compact. The baseline is saved in `state.json` across
+restarts; timers are memory-only. Claude's native mid-turn auto-compact settings
+are unchanged.
 
 Tests cover the warm and cold paths, skipped unsafe states, cancellation by new
 activity, disabled and invalid settings, the regrowth guard, peer and scheduled messages, and

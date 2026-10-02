@@ -134,6 +134,9 @@ the session has been idle at least an hour. The message then runs immediately;
 no choice or reply is required. Peer and scheduled messages do not trigger
 cold compaction. Active or queued work is skipped. The session must grow at
 least 50,000 tokens after compaction before another automatic compact.
+The bridge saves this growth baseline in `state.json` across restarts. A peer
+or scheduled turn arriving during cold compaction can run before the human
+message that triggered it.
 Automatic compaction is off by default; the token threshold has no effect
 until it is enabled.
 
