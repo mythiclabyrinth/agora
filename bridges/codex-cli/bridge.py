@@ -150,7 +150,7 @@ def read_codex_usage(thread_id: str | None = None, sessions_dir: Path | None = N
 # TL;DR support. When enabled for a run we ask Codex to end a long reply with a
 # sentinel line the bridge lifts into the post frame's `tldr` field (a short
 # summary clients can toggle to). Codex has no --append-system-prompt, so the
-# instruction rides as a suffix on the prompt itself. The sentinel is
+# instruction is supplied as developer_instructions. The sentinel is
 # deliberately obscure so a literal occurrence in normal prose is vanishingly
 # unlikely to be stripped.
 TLDR_SENTINEL = "<<<AGORA_TLDR>>>"
@@ -163,7 +163,7 @@ TLDR_PROMPT_SUFFIX = (
     "replies. Never mention this note or the sentinel anywhere else.)"
 )
 
-# Multi-agent etiquette. Appended to every prompt when this bridge accepts
+# Multi-agent etiquette. Included in developer instructions when this bridge accepts
 # peer-agent @mentions (--peer-agents), so the model only tags a fellow agent
 # when the humans actually asked for a hand-off — an unnecessary tag burns a
 # turn of the server's limited agent-to-agent relay budget.
@@ -210,6 +210,23 @@ HISTORY_PROMPT_SUFFIX = (
     f"you need, never ask more than {HISTORY_MAX_HOPS} times in one turn, and "
     "never mention this note or the sentinel in an ordinary reply.)"
 )
+
+
+def _developer_note(suffix: str) -> str:
+    """Validate relay note formatting once when the module is loaded."""
+    wrapped = suffix.strip()
+    if not (wrapped.startswith("(") and wrapped.endswith(")") and ": " in wrapped):
+        raise ValueError("unexpected relay instruction format")
+    body = wrapped[1:-1].split(": ", 1)[1]
+    if not body:
+        raise ValueError("empty relay instruction")
+    return body[0].upper() + body[1:]
+
+
+DEVELOPER_NOTES = tuple(map(_developer_note, (
+    TLDR_PROMPT_SUFFIX, COLLAB_PROMPT_SUFFIX,
+    HISTORY_PROMPT_SUFFIX, ATTACH_PROMPT_SUFFIX,
+)))
 
 
 def parse_peer_agents(raw: str) -> frozenset[str]:
@@ -1854,9 +1871,7 @@ class Bridge:
         return self.tldr_default if choice is None else bool(choice)
 
     def _prompt_suffixes(self, binding: dict) -> str:
-        """Standing relay notes appended to every prompt (Codex has no
-        --append-system-prompt): TL;DR formatting when enabled, multi-agent
-        etiquette when peer @mentions are allowed."""
+        """Legacy relay notes for sessions without our developer instructions."""
         parts = []
         if self._tldr_enabled(binding):
             parts.append(TLDR_PROMPT_SUFFIX)
@@ -1866,6 +1881,39 @@ class Bridge:
             parts.append(HISTORY_PROMPT_SUFFIX)
         parts.append(ATTACH_PROMPT_SUFFIX)
         return "".join(parts)
+
+    def _instruction_settings(self, binding: dict) -> list[bool]:
+        return [self._tldr_enabled(binding), bool(self.peer_agents), self.history_enabled]
+
+    def _developer_instructions(self, binding: dict) -> str:
+        notes = []
+        if self._tldr_enabled(binding):
+            notes.append(DEVELOPER_NOTES[0])
+        if self.peer_agents:
+            notes.append(DEVELOPER_NOTES[1])
+        if self.history_enabled:
+            notes.append(DEVELOPER_NOTES[2])
+        notes.append(DEVELOPER_NOTES[3])
+        return "\n\n".join(notes)
+
+    def _relay_note_for_run(self, binding: dict) -> tuple[str, list[bool]]:
+        current = self._instruction_settings(binding)
+        previous = binding.get("relay_developer_settings")
+        if not binding.get("session_id") and not binding.get("_fork_source"):
+            return "", current
+        if not binding.get("relay_developer_installed"):
+            return self._prompt_suffixes(binding), current
+        if previous is None:
+            return self._prompt_suffixes(binding), current
+        if previous == current:
+            return "", current
+        labels = ("TL;DR summaries", "peer agent etiquette", "history requests")
+        suffixes = (TLDR_PROMPT_SUFFIX, COLLAB_PROMPT_SUFFIX, HISTORY_PROMPT_SUFFIX)
+        changes = []
+        for label, suffix, before, enabled in zip(labels, suffixes, previous, current):
+            if before != enabled:
+                changes.append(suffix if enabled else f"[Relay settings update: {label} are off.]")
+        return "".join(changes), current
 
     def _cmd_tldr(self, key: str, arg: str) -> str:
         b = self.bindings.get(key)
@@ -2443,7 +2491,7 @@ class Bridge:
         stripped from the body so it never leaks into the visible message. A
         normal reply with no sentinel is returned untouched.
         """
-        if not enabled or not reply or TLDR_SENTINEL not in reply:
+        if not reply or TLDR_SENTINEL not in reply:
             return reply, None
         lines = reply.splitlines()
         idx = next(
@@ -2459,6 +2507,8 @@ class Bridge:
             return reply, None  # bare marker, nothing to summarize with
         if not body:
             return tldr, None  # reply was essentially just the summary line
+        if not enabled:
+            return body, None
         tldr = tldr[:MAX_TLDR_CHARS]
         # Drop (but still strip) the summary when the body is short enough to
         # read whole, or when the summary isn't strictly shorter than the body
@@ -2564,13 +2614,18 @@ class Bridge:
         # before the allowlist; those that still match are kept, the rest fall
         # back to the bridge default.
         model = self._resolved_model(binding.get("model"))
-        prompt += self._prompt_suffixes(binding)
+        started_with_developer = not binding.get("session_id") and not binding.get("_fork_source")
+        relay_note, instruction_settings = self._relay_note_for_run(binding)
+        prompt += relay_note
         try:
             cmd = [self.codex_bin, "exec"]
             if binding.get("_fork_source"):
                 cmd += ["fork", binding["_fork_source"]]
             elif binding.get("session_id"):
                 cmd += ["resume", binding["session_id"]]
+            if started_with_developer or binding.get("relay_developer_installed"):
+                cmd += ["-c", "developer_instructions=" + json.dumps(
+                    self._developer_instructions(binding), ensure_ascii=False)]
             cmd += [
                 "--json",
                 "--skip-git-repo-check",
@@ -2676,6 +2731,14 @@ class Bridge:
                 binding.pop("_fork_reused_source", None)
                 self.bindings[key] = binding
                 self._save_state()
+            if self.bindings.get(key) is binding:
+                changed = False
+                if started_with_developer and new_session_id:
+                    binding["relay_developer_installed"] = True
+                    binding["relay_developer_settings"] = instruction_settings
+                    changed = True
+                if changed:
+                    self._save_state()
             return "\n\n".join(reply_parts)
         finally:
             if tmpdir:

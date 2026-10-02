@@ -137,6 +137,8 @@ export const guides = {
       ["CLAUDE_PERMISSION_TIMEOUT", "Optional", "600", "Seconds to wait for a relayed Approve or Reject action before denying it."],
       ["CLAUDE_TLDR", "Optional", "0", "Enable short summaries by default; /tldr overrides per conversation."],
       ["CLAUDE_TLDR_MIN_CHARS", "Optional", "1500", "Minimum reply length eligible for a summary."],
+      ["CLAUDE_AUTO_COMPACT", "Optional", "0", "Enable automatic compaction after 15 minutes idle or before a human message after one hour idle. Off by default."],
+      ["CLAUDE_AUTO_COMPACT_TOKENS", "Optional", "300000", "Context threshold for automatic compaction. Applies only when CLAUDE_AUTO_COMPACT is enabled and must then be positive."],
       ["CLAUDE_TIMEOUT", "Optional", "1800", "Maximum seconds for one Claude run, including approval waits."],
       ["CLAUDE_ASYNC_FOLLOWUPS", "Optional", "0", "Let work Claude backgrounded post its findings later as their own message. Off by default; set 1 to opt in."],
       ["CLAUDE_FOLLOWUP_IDLE_TIMEOUT", "Optional", "180", "Settle window in seconds for a trailing reply once nothing is outstanding."],

@@ -126,6 +126,20 @@ follow-up machinery.
 | `/commands` | show this bridge command list |
 | anything else | forwarded to the bound session (plain text **and** Claude CLI slash commands the headless CLI supports, e.g. `/compact`, `/usage`, `/context`) |
 
+Set `CLAUDE_AUTO_COMPACT=1` to enable automatic compaction. When an enabled
+session reaches `CLAUDE_AUTO_COMPACT_TOKENS` (default 300,000), the bridge
+compacts it after 15 minutes of quiet. If the bridge was
+not running during that window, it compacts before the next human message when
+the session has been idle at least an hour. The message then runs immediately;
+no choice or reply is required. Peer and scheduled messages do not trigger
+cold compaction. Active or queued work is skipped. The session must grow at
+least 50,000 tokens after compaction before another automatic compact.
+The bridge saves this growth baseline in `state.json` across restarts. A peer
+or scheduled turn arriving during cold compaction can run before the human
+message that triggered it.
+Automatic compaction is off by default; the token threshold has no effect
+until it is enabled.
+
 `/model`, `/permissions`, and `/tldr` are **per channel/thread** — same as session
 bindings — so one channel can plan read-only on Sonnet while another auto-applies
 on Opus. All persist in `state.json`. Bridge `/model` is intentional (not Claude's
@@ -341,10 +355,15 @@ Everything is env-overridable (flags take precedence): `AGORA_URL`,
 `--dangerously-skip-permissions` for fully unattended runs — the permission mode
 here is just the **default**, overridable per channel with `/permissions`),
 `CLAUDE_MODEL` (default model for every run, e.g. `opus`; channels override with
-`/model`), `CLAUDE_ALLOW_PERMISSION_ESCALATION` (`1` to let `/permissions` raise
+`/model`), `CLAUDE_AUTO_WORKTREE` (`1` to give new repository sessions their own
+worktree; off by default), `CLAUDE_ALLOW_PERMISSION_ESCALATION` (`1` to let `/permissions` raise
 privilege above the default — off by default), `CLAUDE_TLDR` (`1` to add short
 summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TLDR_MIN_CHARS` (minimum reply length to summarize, default 1500),
+`CLAUDE_AUTO_COMPACT` (`1` to enable automatic compaction after an idle period
+or before a cold human resume; off by default),
+`CLAUDE_AUTO_COMPACT_TOKENS` (context threshold for both automatic paths,
+default 300000; must be positive when enabled),
 `CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`1` to let
 backgrounded work post its findings as a later message — off by default),
 `CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (settle window in seconds once nothing is

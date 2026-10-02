@@ -220,6 +220,8 @@ FOLLOWUP_IDLE_TIMEOUT = 180.0
 FOLLOWUP_TASK_IDLE_TIMEOUT = 1800.0
 FOLLOWUP_MAX_WAIT = 6 * 60 * 60.0
 TAIL_BYTES = 256 * 1024  # how much of a session .jsonl to scan for the last prompt
+WARM_COMPACT_IDLE_SECONDS = 15 * 60
+WARM_COMPACT_REGROW_TOKENS = 50_000
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_ATTACHMENTS = 5
@@ -727,6 +729,71 @@ def find_session(session_id: str, projects_dir: Path | None = None) -> dict | No
     return None
 
 
+def _tail_records(session_id: str, projects_dir: Path) -> list[dict]:
+    """Read the recent session records in reverse order."""
+    for path in projects_dir.glob(f"*/{session_id}.jsonl"):
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as stream:
+                stream.seek(max(0, size - TAIL_BYTES))
+                if size > TAIL_BYTES:
+                    stream.readline()
+                lines = stream.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            return []
+        records = []
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+    return []
+
+
+def cold_resume_info(session_id: str, projects_dir: Path, threshold: int,
+                     now: float | None = None, min_idle: float = 3600) -> tuple[int, float, float] | None:
+    """Read the latest assistant size or compact boundary and its age."""
+    if threshold <= 0:
+        return None
+    for record in _tail_records(session_id, projects_dir):
+        if record.get("type") == "system" and record.get("subtype") == "compact_boundary":
+            tokens = (record.get("compactMetadata") or {}).get("postTokens")
+            if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0:
+                return None
+        elif record.get("type") == "assistant" and not record.get("isSidechain"):
+            usage = (record.get("message") or {}).get("usage") or {}
+            tokens = sum(usage.get(name, 0) or 0 for name in (
+                "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        else:
+            continue
+        try:
+            last = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).timestamp()
+        except (KeyError, AttributeError, ValueError):
+            return None
+        idle = (time.time() if now is None else now) - last
+        return (tokens, idle, last) if tokens >= threshold and idle >= min_idle else None
+    return None
+
+
+def compacted_tokens(session_id: str, projects_dir: Path, since: float) -> int | None:
+    """Get Claude's recorded post-compaction context size for this compact run."""
+    for record in _tail_records(session_id, projects_dir):
+        if record.get("type") != "system" or record.get("subtype") != "compact_boundary":
+            continue
+        try:
+            stamp = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).timestamp()
+        except (KeyError, AttributeError, ValueError):
+            return None
+        if stamp < since:
+            return None
+        value = (record.get("compactMetadata") or {}).get("postTokens")
+        return value if isinstance(value, int) and value > 0 else None
+    return None
+
+
 def _age(ts: float) -> str:
     delta = max(0, int(time.time() - ts))
     if delta < 3600:
@@ -916,9 +983,18 @@ class Bridge:
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
         self._account_state_valid = True
         self.account_auth_problem: str | None = None
+        self._shutting_down = False
         self.busy: set[str] = set()
         self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
+        self.auto_compact_tokens = (args.auto_compact_tokens
+                                    if args.auto_compact else 0)
+        self.warm_timers: dict[str, asyncio.Task] = {}
+        self.warm_compacting: set[str] = set()
+        self.warm_activity_during_compaction: set[str] = set()
+        self.warm_compacted_sizes: dict[str, tuple[str, int]] = self._saved_warm_compacted_sizes
+        self.cold_compact_failures: dict[str, tuple[str, int]] = {}
+        self.cold_compact_pending: dict[str, dict] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
         self.deleted_thread_roots: dict[int, None] = {}
@@ -994,6 +1070,7 @@ class Bridge:
     def _load_state(self) -> dict[str, dict]:
         self._previous_config_dir: Path | None = self.config_dir
         self._saved_account: str | None = self.account
+        self._saved_warm_compacted_sizes: dict[str, tuple[str, int]] = {}
         try:
             raw = json.loads(self.state_file.read_text())
         except (OSError, json.JSONDecodeError):
@@ -1001,6 +1078,14 @@ class Bridge:
         if not isinstance(raw, dict):
             return {}
         if raw.get("_v") == 2 and isinstance(raw.get("bindings"), dict):
+            saved_sizes = raw.get("warm_compacted_sizes")
+            for key, value in (saved_sizes if isinstance(saved_sizes, dict) else {}).items():
+                binding = raw["bindings"].get(key)
+                if (isinstance(binding, dict) and isinstance(value, list)
+                        and len(value) == 2 and isinstance(value[0], str)
+                        and isinstance(value[1], int) and not isinstance(value[1], bool)
+                        and value[1] > 0 and binding.get("session_id") == value[0]):
+                    self._saved_warm_compacted_sizes[key] = (value[0], value[1])
             saved = raw.get("account")
             saved_dir = raw.get("config_dir")
             self._saved_account = saved if isinstance(saved, str) else None
@@ -1021,6 +1106,10 @@ class Bridge:
             "config_dir": str(config_dir) if config_dir is not None else None,
             "bindings": {key: value for key, value in self.bindings.items()
                          if isinstance(value, dict) and not value.get("_fork_source")},
+            "warm_compacted_sizes": {
+                key: [sid, tokens]
+                for key, (sid, tokens) in getattr(self, "warm_compacted_sizes", {}).items()
+                if (self.bindings.get(key) or {}).get("session_id") == sid},
         }, indent=2))
 
     def _resolve_account(self, name: object, saved_dir: Path | None) -> str:
@@ -1263,6 +1352,8 @@ class Bridge:
 
     def post(self, key_frame: dict, text: str, tldr: str | None = None,
              attachments: list[dict] | None = None) -> None:
+        if key_frame.get("_auto_compact"):
+            return
         base = {
             "type": "post",
             "agent_id": self.agent_id,
@@ -1284,6 +1375,8 @@ class Bridge:
             first = False
 
     def typing(self, frame: dict, active: bool) -> None:
+        if frame.get("_auto_compact"):
+            return
         self.send({
             "type": "typing",
             "agent_id": self.agent_id,
@@ -1293,6 +1386,8 @@ class Bridge:
         })
 
     def progress(self, frame: dict, text: str) -> None:
+        if frame.get("_auto_compact"):
+            return
         self.send({
             "type": "progress",
             "agent_id": self.agent_id,
@@ -1564,7 +1659,205 @@ class Bridge:
             f"request.]\n{name}: {text}"
         )
 
+    def _cancel_warm_timer(self, key: str) -> None:
+        if key in self.warm_compacting:
+            self.warm_activity_during_compaction.add(key)
+            return
+        task = self.warm_timers.pop(key, None)
+        if task is not None:
+            task.cancel()
+
+    def _schedule_warm_timer(self, key: str, frame: dict) -> None:
+        if self.auto_compact_tokens <= 0 or key in self.busy or key in self.warm_compacting:
+            return
+        binding = self.bindings.get(key) or {}
+        sid = binding.get("session_id")
+        if not sid or binding.get("_fork_source"):
+            return
+        self._cancel_warm_timer(key)
+        post_frame = {"channel_id": frame["channel_id"], "thread_id": frame.get("thread_id")}
+        self.warm_timers[key] = asyncio.create_task(
+            self._warm_compact_after_idle(key, post_frame, sid))
+
+    async def _compact_session(self, key: str, frame: dict, sid: str,
+                               before: int) -> int | None:
+        """Compact via the ordinary run path and read Claude's resulting size."""
+        focus = ("Summarise for continuing this work. Keep verbatim: open tasks "
+                 "and next steps, decisions and why, user preferences/constraints, "
+                 "file paths, branch and PR numbers, commands that worked, exact "
+                 "unresolved error messages. Drop resolved dead ends and tool "
+                 "output already acted on.")
+        started = time.time()
+        await self.forward_to_claude(key, frame, "/compact " + focus)
+        current_sid = (self.bindings.get(key) or {}).get("session_id")
+        after = None
+        for candidate in dict.fromkeys((current_sid, sid)):
+            if candidate:
+                after = await asyncio.to_thread(
+                    compacted_tokens, candidate, self.projects_dir, started)
+                if after is not None:
+                    break
+        return after if after is not None and after < before else None
+
+    def _needs_compaction(self, key: str, sid: str, tokens: int) -> bool:
+        previous = self.warm_compacted_sizes.get(key)
+        return not (previous and previous[0] == sid
+                    and tokens - previous[1] < WARM_COMPACT_REGROW_TOKENS)
+
+    async def _compact_and_report(self, key: str, frame: dict, sid: str,
+                                  before: int, *, skip_if_activity: bool = True) -> bool:
+        auto_frame = {"channel_id": frame["channel_id"],
+                      "thread_id": frame.get("thread_id"), "_auto_compact": True}
+        after = await self._compact_session(key, auto_frame, sid, before)
+        if after is None:
+            log(f"auto compact for {key} could not verify a smaller context")
+            return False
+        current_sid = (self.bindings.get(key) or {}).get("session_id")
+        if not current_sid:
+            log(f"auto compact for {key} lost its bound session")
+            return False
+        self.warm_compacted_sizes[key] = (current_sid, after)
+        self._save_state()
+        self.cold_compact_failures.pop(key, None)
+        # A queued message may have run in the same forward loop. Keep the
+        # confirmed baseline to prevent repeat compaction, but omit a notice
+        # that would arrive after that message's reply.
+        if skip_if_activity and key in self.warm_activity_during_compaction:
+            return True
+        self.post(frame, f"Auto-compacted this session: {before // 1000}k → {after // 1000}k tokens.")
+        return True
+
+    async def _warm_compact_after_idle(self, key: str, frame: dict, sid: str) -> None:
+        try:
+            await asyncio.sleep(WARM_COMPACT_IDLE_SECONDS)
+            if self.warm_timers.get(key) is not asyncio.current_task():
+                return
+            binding = self.bindings.get(key) or {}
+            proc = self.procs.get(key)
+            live = self.live.get(key)
+            if (self.auto_compact_tokens <= 0 or self.account_auth_problem
+                    or key in self.busy or (proc is not None and proc.returncode is None)
+                    or (live is not None and live.alive)
+                    or self.pending_turns.get(key)
+                    or self.pending_questions.get(key)
+                    or binding.get("session_id") != sid or binding.get("_fork_source")):
+                return
+            info = await asyncio.to_thread(
+                cold_resume_info, sid, self.projects_dir,
+                self.auto_compact_tokens, min_idle=0)
+            if not info or info[1] < WARM_COMPACT_IDLE_SECONDS:
+                return
+            before = info[0]
+            if not self._needs_compaction(key, sid, before):
+                return
+            self.warm_compacting.add(key)
+            await self._compact_and_report(key, frame, sid, before)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            log(f"warm compact for {key} failed: {exc!r}")
+        finally:
+            if self.warm_timers.get(key) is asyncio.current_task():
+                self.warm_timers.pop(key, None)
+            self.warm_compacting.discard(key)
+            if key in self.warm_activity_during_compaction:
+                self.warm_activity_during_compaction.discard(key)
+                self._schedule_warm_timer(key, frame)
+
+    async def _compact_before_cold_resume(self, key: str, frame: dict) -> bool:
+        if (self.auto_compact_tokens <= 0 or self.account_auth_problem
+                or key in self.busy or key in self.warm_compacting):
+            return False
+        try:
+            binding = self.bindings.get(key) or {}
+            sid = binding.get("session_id")
+            live = self.live.get(key)
+            proc = self.procs.get(key)
+            if (not sid or binding.get("_fork_source") or frame.get("scheduled")
+                    or (live is not None and live.alive)
+                    or (proc is not None and proc.returncode is None)
+                    or self.pending_turns.get(key) or self.pending_questions.get(key)):
+                return False
+            if self.cold_compact_failures.get(key, (None, 0))[0] != sid:
+                self.cold_compact_failures.pop(key, None)
+            if self.cold_compact_failures.get(key, (sid, 0))[1] >= 2:
+                return False
+            info = await asyncio.to_thread(
+                cold_resume_info, sid, self.projects_dir, self.auto_compact_tokens)
+            if not info or not self._needs_compaction(key, sid, info[0]):
+                return False
+        except Exception as exc:
+            log(f"cold compact size check for {key} failed: {exc!r}")
+            return False
+        self.set_reaction(frame, "👀")
+        self.warm_compacting.add(key)
+        try:
+            confirmed = await self._compact_and_report(
+                key, frame, sid, info[0], skip_if_activity=False)
+            current_sid = (self.bindings.get(key) or {}).get("session_id") or sid
+            if confirmed:
+                self.cold_compact_failures.pop(key, None)
+            else:
+                previous = self.cold_compact_failures.get(key, (current_sid, 0))
+                count = previous[1] if previous[0] == current_sid else 0
+                self.cold_compact_failures[key] = (current_sid, count + 1)
+        except Exception as exc:
+            log(f"cold compact for {key} failed: {exc!r}")
+            current_sid = (self.bindings.get(key) or {}).get("session_id") or sid
+            previous = self.cold_compact_failures.get(key, (current_sid, 0))
+            count = previous[1] if previous[0] == current_sid else 0
+            self.cold_compact_failures[key] = (current_sid, count + 1)
+        finally:
+            self.warm_compacting.discard(key)
+            self.warm_activity_during_compaction.discard(key)
+        return True
+
+    async def _forward_human_with_cold_compaction(self, key: str, frame: dict,
+                                                   text: str) -> None:
+        if self.auto_compact_tokens <= 0:
+            await self.forward_to_claude(key, frame, text)
+            return
+        state = self.cold_compact_pending.get(key)
+        if state is None:
+            state = {"lock": asyncio.Lock(), "waiting": 0}
+            self.cold_compact_pending[key] = state
+            first = True
+        else:
+            first = False
+            if state["lock"].locked():
+                self.set_reaction(frame, "⏳")
+        state["waiting"] += 1
+        forward_task: asyncio.Task | None = None
+        try:
+            async with state["lock"]:
+                if first:
+                    compacted = await self._compact_before_cold_resume(key, frame)
+                    if not compacted:
+                        # Ordinary turns keep the existing bridge queue path.
+                        self.cold_compact_pending.pop(key, None)
+                # Let forward_to_claude claim the first turn (or enqueue a
+                # later one) before releasing the ordering lock. The normal
+                # bridge queue then owns the turn, including /stop and limits.
+                forward_task = asyncio.create_task(
+                    self.forward_to_claude(key, frame, text))
+                await asyncio.sleep(0)
+            await forward_task
+        finally:
+            if forward_task is not None and not forward_task.done():
+                forward_task.cancel()
+            state["waiting"] -= 1
+            if not state["waiting"] and self.cold_compact_pending.get(key) is state:
+                self.cold_compact_pending.pop(key, None)
+
     async def handle_inbound(self, frame: dict) -> None:
+        key = self.binding_key(frame)
+        self._cancel_warm_timer(key)
+        try:
+            await self._handle_inbound_message(frame)
+        finally:
+            self._schedule_warm_timer(key, frame)
+
+    async def _handle_inbound_message(self, frame: dict) -> None:
         key = self.binding_key(frame)
         # Only humans may drive Claude. Non-user authors (other agents/bots) are
         # never acted on even when they @mention us: a prompt-injected agent in
@@ -1622,7 +1915,7 @@ class Bridge:
         cmd, _, rest = (cmd_text or "").partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
         if not cmd.startswith("/"):
-            await self.forward_to_claude(key, frame, text)
+            await self._forward_human_with_cold_compaction(key, frame, text)
             return
         await self._run_command(key, frame, cmd, rest, text)
 
@@ -2340,6 +2633,7 @@ class Bridge:
         self.pending_turns.setdefault(key, []).append(entry)
         self.busy.add(key)
         self.typing(frame, True)
+        typing_frame = frame
         entries = self._claim_pending_turns(key)
         fork_failed = False
         try:
@@ -2355,6 +2649,11 @@ class Bridge:
                 if binding:
                     fork_failed = False
                 batch_frame, batch_text = self._coalesce_turns(entries)
+                if frame.get("_auto_compact") and not batch_frame.get("_auto_compact"):
+                    if typing_frame is not frame:
+                        self.typing(typing_frame, False)
+                    self.typing(batch_frame, True)
+                    typing_frame = batch_frame
                 for queued in entries:
                     # The hub only reorders human messages.
                     if queued.get("queued") and not queued.get("from_peer") and not fork_failed:
@@ -2450,7 +2749,7 @@ class Bridge:
                 entries = self._claim_pending_turns(key)
         finally:
             self.busy.discard(key)
-            self.typing(frame, False)
+            self.typing(typing_frame, False)
         return True
 
     # -------------------------------------------------------- history asks
@@ -3012,6 +3311,10 @@ class Bridge:
         """Synchronous sweep for shutdown. A child held for background work has
         no in-flight turn to reap it, so without this it survives the bridge —
         and keeps applying edits under the channel's permission mode."""
+        self._shutting_down = True
+        for task in self.warm_timers.values():
+            task.cancel()
+        self.warm_timers.clear()
         held = [live.proc for live in self.live.values()]
         for proc in [*held, *self.procs.values()]:
             try:
@@ -3331,6 +3634,10 @@ class Bridge:
             self._cancel_perm(oid, "The run ended before a decision.")
         if perm_tasks:
             await asyncio.gather(*perm_tasks, return_exceptions=True)
+        # The first idle timer may have fired while the background child was
+        # still alive. Start a fresh quiet window once it has actually exited.
+        if not getattr(self, "_shutting_down", False) and key not in self.live and key not in self.busy:
+            self._schedule_warm_timer(key, live.frame)
 
     def _resolved_spawn(self, binding: dict | None) -> tuple:
         """The (model, permission_mode) a run started from this binding *now*
@@ -3613,6 +3920,13 @@ class Bridge:
             return
         tool = req.get("tool_name") or "tool"
         tool_input = req.get("input") or {}
+        if frame.get("_auto_compact"):
+            # A hidden maintenance turn cannot ask the channel for approval or
+            # an answer. Deny promptly so the CLI can finish or fail cleanly.
+            await self._send_to_claude(proc, self._perm_response(
+                req_id, False, tool_input,
+                "Automatic compaction cannot request interactive input."))
+            return
         if tool == "AskUserQuestion":
             # Not a permission gate — the CLI is waiting for answers, so post
             # the questions as choice buttons instead of Approve/Reject.
@@ -3844,6 +4158,7 @@ class Bridge:
             except (OSError, websockets.WebSocketException) as e:
                 log(f"disconnected: {e!r}")
             except asyncio.CancelledError:
+                self._shutting_down = True
                 raise
             log(f"reconnecting in {backoff:.0f}s")
             await asyncio.sleep(backoff)
@@ -3979,6 +4294,22 @@ def _env_file_from_argv(argv: list[str], default: Path) -> Path:
     return Path(override).expanduser() if override else default
 
 
+def add_auto_compact_arguments(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--auto-compact", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("CLAUDE_AUTO_COMPACT", "0").lower()
+                    in ("1", "true", "yes"),
+                    help="automatically compact large idle sessions (off by default)")
+    ap.add_argument("--auto-compact-tokens", type=int,
+                    default=int(os.environ.get("CLAUDE_AUTO_COMPACT_TOKENS", "300000")),
+                    help="minimum context size for automatic compaction (default: 300000)")
+
+
+def validate_auto_compact_arguments(ap: argparse.ArgumentParser,
+                                    args: argparse.Namespace) -> None:
+    if args.auto_compact and args.auto_compact_tokens <= 0:
+        ap.error("--auto-compact-tokens must be positive when --auto-compact is enabled")
+
+
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
     default_state = script_dir / "state.json"
@@ -4042,6 +4373,7 @@ def main() -> None:
                     help="only summarize replies at least this many chars long")
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("CLAUDE_TIMEOUT", "1800")),
                     help="per-run timeout in seconds")
+    add_auto_compact_arguments(ap)
     ap.add_argument("--async-followups", action=argparse.BooleanOptionalAction,
                     default=os.environ.get("CLAUDE_ASYNC_FOLLOWUPS", "0") in ("1", "true", "yes"),
                     help="let a run that backgrounded work post its findings "
@@ -4093,6 +4425,7 @@ def main() -> None:
                          "@mentioning Claude. Empty (the default) keeps peers "
                          "on the chat path only")
     args = ap.parse_args()
+    validate_auto_compact_arguments(ap, args)
     if args.max_file_mb <= 0:
         ap.error("--max-file-mb must be positive")
     try:
@@ -4120,7 +4453,10 @@ def main() -> None:
     # Children held for background work outlive their turn, so the process must
     # reap them on the way out. SIGTERM's default disposition would skip the
     # finally below; turning it into SystemExit lets the sweep run.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    def shutdown(*_args) -> None:
+        instance._shutting_down = True
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, shutdown)
     try:
         asyncio.run(instance.run())
     except KeyboardInterrupt:

@@ -1,9 +1,10 @@
 # Configuration
 
 Everything lives in one file: `config.json` in the server's data dir,
-created on first boot. Any key can also be set as an `AGORA_*` environment
-variable (Railway-friendly); env values are written into `config.json` at
-boot, so unsetting one later keeps the last value.
+created on first boot. Selected keys also have environment overrides
+(Railway-friendly); these overrides are written into `config.json`
+at boot, so unsetting one later keeps the last value. API keys are different:
+they are read at use time and are not copied into `config.json`.
 
 ## `config.json` reference
 
@@ -14,7 +15,7 @@ boot, so unsetting one later keeps the last value.
 | `session_secret` | generated | Signs session tokens; rotate it to sign everyone out. |
 | `username` | `me` | Display name of the bootstrap local user. |
 | `bind` | `127.0.0.1` | `0.0.0.0` accepts LAN/remote connections — read [Staying safe on a network](self-hosting.md#staying-safe-on-a-network) first. |
-| `port` | `4470` | Falls back to an ephemeral port if taken (env: `PORT`). |
+| `port` | `4470` | Falls back to an ephemeral port if taken. `AGORA_PORT` wins over the PaaS `PORT` fallback. |
 | `require_tls` | `false` | Refuse plaintext outbound connections to non-loopback hosts. |
 | `connections` | `[]` | Outbound Pantheo endpoints — managed from the [Connections pane](agents.md), not by hand. |
 | `pairing_tokens` | `[]` | Dial-in agent credentials — likewise managed from the UI. |
@@ -28,6 +29,13 @@ boot, so unsetting one later keeps the last value.
 | `public_url` | `""` | Public https origin, used to build the OAuth redirect URI. |
 | `map_style_url` | `""` | MapLibre style URL for map artifacts; empty uses the built-in default, `"none"` disables external tiles. |
 | `ai.voice` / `ai.search` | defaults | Instance-admin AI settings (keys, models, enable flags). Set from the **AI & voice** panel in the clients, or leave empty and supply process-env fallbacks. |
+
+For Apple sign-in, `AGORA_APPLE_ALLOWED_EMAILS` sets the comma-separated
+admission list. `AGORA_APPLE_BUNDLE_ID` is needed only for a custom iOS build;
+leave it unset for the stock app. Both are persisted to `config.json` at boot.
+See [Sign in with Apple](sign-in.md#apple) for the entitlement and admission
+rules. The server [`.env.example`](../../.env.example) lists the supported
+environment overrides.
 
 ### Voice and Ask AI
 
@@ -44,6 +52,10 @@ the Enabled flags alone; missing credentials fail with a clear error when used.
 | `OPENAI_API_KEY` | Voice TTS and OpenAI STT; also Ask AI when provider is `openai` |
 | `GROQ_API_KEY` | Voice STT and TTS when that half is set to `groq` |
 | `ANTHROPIC_API_KEY` | Ask AI when provider is `anthropic` |
+
+In particular, `ANTHROPIC_API_KEY` is a process-env fallback for Ask AI, not a
+persisted `AGORA_*` override. Leave it unset if the key is configured in the
+instance-admin UI instead.
 
 Voice **STT / TTS providers** (Features tab): `openai` or `groq`. Groq TTS uses Orpheus (`canopylabs/orpheus-v1-english` or `canopylabs/orpheus-arabic-saudi`; wav only; 200-character chunks). **Accent** (`american` / `british` / `arabic`) is stored once and applied on every provider: OpenAI `gpt-4o-mini-tts` follows it via speech instructions; Groq maps Arabic onto the Arabic Orpheus model and English accents onto English voices. Models and voices stay per provider so switching does not leak a foreign id.
 
