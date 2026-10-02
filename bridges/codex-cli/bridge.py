@@ -1869,13 +1869,23 @@ class Bridge:
         return [self._tldr_enabled(binding), bool(self.peer_agents), self.history_enabled]
 
     def _developer_instructions(self, binding: dict) -> str:
-        source = self._prompt_suffixes(binding).strip()
-        if not source:
-            return ""
-        notes = source.split("\n\n")
+        notes = []
+        if self._tldr_enabled(binding):
+            notes.append(TLDR_PROMPT_SUFFIX)
+        if self.peer_agents:
+            notes.append(COLLAB_PROMPT_SUFFIX)
+        if self.history_enabled:
+            notes.append(HISTORY_PROMPT_SUFFIX)
+        notes.append(ATTACH_PROMPT_SUFFIX)
         bodies = []
         for note in notes:
-            body = note.split(": ", 1)[1].removesuffix(")")
+            wrapped = note.strip()
+            if not (wrapped.startswith("(") and wrapped.endswith(")")
+                    and ": " in wrapped):
+                raise ValueError("unexpected relay instruction format")
+            body = wrapped[1:-1].split(": ", 1)[1]
+            if not body:
+                raise ValueError("empty relay instruction")
             bodies.append(body[0].upper() + body[1:])
         return "\n\n".join(bodies)
 
@@ -1884,6 +1894,8 @@ class Bridge:
         previous = binding.get("relay_instruction_settings")
         if not binding.get("session_id") and not binding.get("_fork_source"):
             return "", current
+        if not binding.get("relay_developer_installed"):
+            return self._prompt_suffixes(binding), current
         if previous is None:
             return self._prompt_suffixes(binding), current
         if previous == current:
@@ -2591,6 +2603,7 @@ class Bridge:
         # before the allowlist; those that still match are kept, the rest fall
         # back to the bridge default.
         model = self._resolved_model(binding.get("model"))
+        started_with_developer = not binding.get("session_id") and not binding.get("_fork_source")
         relay_note, instruction_settings = self._relay_note_for_run(binding)
         prompt += relay_note
         try:
@@ -2706,10 +2719,16 @@ class Bridge:
                 binding.pop("_fork_reused_source", None)
                 self.bindings[key] = binding
                 self._save_state()
-            if (self.bindings.get(key) is binding
-                    and binding.get("relay_instruction_settings") != instruction_settings):
-                binding["relay_instruction_settings"] = instruction_settings
-                self._save_state()
+            if self.bindings.get(key) is binding:
+                changed = False
+                if started_with_developer and new_session_id:
+                    binding["relay_developer_installed"] = True
+                    changed = True
+                if binding.get("relay_instruction_settings") != instruction_settings:
+                    binding["relay_instruction_settings"] = instruction_settings
+                    changed = True
+                if changed:
+                    self._save_state()
             return "\n\n".join(reply_parts)
         finally:
             if tmpdir:

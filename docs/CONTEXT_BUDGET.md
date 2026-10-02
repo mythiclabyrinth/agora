@@ -1,7 +1,7 @@
 # Bridge context budget
 
-Status: approved by Tom 2026-10-02 for one PR covering A, B, and C below.
-Background: 30-day bridge usage analysis (`/tmp/headroom-analysis/report.md`).
+Status: approved by Tom 2026-10-02 for one PR covering A and B below.
+Background: 30-day bridge usage analysis of Claude and Codex sessions.
 Claude bridge sessions ≈ $2.3k API-equivalent/month; ≈ $575 of it is full cache
 re-writes when a 300k–966k session is resumed after >1h idle (cache TTL).
 Codex ≈ $132. Goal: cut waste with **zero regression in output quality**.
@@ -42,9 +42,10 @@ Changes (`bridges/codex-cli/bridge.py`):
    update the stored fingerprint. Applies to `/tldr` and bridge restarts with
    different flags.
 3. Sessions bound via `/use` that were started outside the bridge, or before this
-   change, have no developer_instructions of ours: treat their fingerprint as
-   unknown and append the full suffix once on the first bridge prompt, then
-   record it. (Pre-existing bridge sessions already have the notes in history.)
+   change, have no durable bridge developer instructions. Append the legacy
+   suffix on every prompt in these sessions so compaction cannot remove the
+   only copy. Record the developer-instruction marker only for new sessions
+   actually started by this bridge. Forks inherit their source's marker.
 4. Forks (`_fork_source`) inherit the source session's developer message —
    verify, and fall back to (3) if not.
 
@@ -54,7 +55,7 @@ Tests (`bridges/codex-cli/test_bridge.py`):
 - the TOML value round-trips (`tomllib.loads(f"x = {value}")["x"] == text`).
 - `/tldr off` on a live session → exactly one in-band note on the next prompt,
   none after.
-- `/use` of a foreign session → full suffix once, then none.
+- `/use` of a foreign or pre-upgrade session → full suffix on every turn.
 - Manual e2e (record result in the PR): new session, two follow-ups, `/tldr`
   toggle, and one session forced to compact with
   `-c model_auto_compact_token_limit=20000` → TL;DR/attach/history sentinels

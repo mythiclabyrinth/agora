@@ -1674,11 +1674,13 @@ class Bridge:
                  "output already acted on.")
         started = time.time()
         await self.forward_to_claude(key, frame, "/compact " + focus)
-        after = compacted_tokens(sid, self.projects_dir, started)
-        if after is None:
-            info = cold_resume_info(sid, self.projects_dir, 1, min_idle=0)
-            if info and info[2] >= started:
-                after = info[0]
+        current_sid = (self.bindings.get(key) or {}).get("session_id")
+        after = None
+        for candidate in dict.fromkeys((current_sid, sid)):
+            if candidate:
+                after = compacted_tokens(candidate, self.projects_dir, started)
+                if after is not None:
+                    break
         return after if after is not None and after < before else None
 
     def _needs_compaction(self, key: str, sid: str, tokens: int) -> bool:
@@ -1688,7 +1690,9 @@ class Bridge:
 
     async def _compact_and_report(self, key: str, frame: dict, sid: str,
                                   before: int, *, skip_if_activity: bool = True) -> bool:
-        after = await self._compact_session(key, {**frame, "_auto_compact": True}, sid, before)
+        auto_frame = {"channel_id": frame["channel_id"],
+                      "thread_id": frame.get("thread_id"), "_auto_compact": True}
+        after = await self._compact_session(key, auto_frame, sid, before)
         if after is None:
             log(f"auto compact for {key} could not verify a smaller context")
             return False
@@ -1697,7 +1701,11 @@ class Bridge:
         # the compacted size, so leave both the notice and baseline for later.
         if skip_if_activity and key in self.warm_activity_during_compaction:
             return True
-        self.warm_compacted_sizes[key] = (sid, after)
+        current_sid = (self.bindings.get(key) or {}).get("session_id")
+        if not current_sid:
+            log(f"auto compact for {key} lost its bound session")
+            return False
+        self.warm_compacted_sizes[key] = (current_sid, after)
         self.post(frame, f"Auto-compacted this session: {before // 1000}k → {after // 1000}k tokens.")
         return True
 
@@ -1741,18 +1749,23 @@ class Bridge:
         if (self.auto_compact_tokens <= 0 or self.account_auth_problem
                 or key in self.busy or key in self.warm_compacting):
             return False
-        binding = self.bindings.get(key) or {}
-        sid = binding.get("session_id")
-        live = self.live.get(key)
-        proc = self.procs.get(key)
-        if (not sid or binding.get("_fork_source") or frame.get("scheduled")
-                or (live is not None and live.alive)
-                or (proc is not None and proc.returncode is None)
-                or self.pending_turns.get(key) or self.pending_questions.get(key)):
+        try:
+            binding = self.bindings.get(key) or {}
+            sid = binding.get("session_id")
+            live = self.live.get(key)
+            proc = self.procs.get(key)
+            if (not sid or binding.get("_fork_source") or frame.get("scheduled")
+                    or (live is not None and live.alive)
+                    or (proc is not None and proc.returncode is None)
+                    or self.pending_turns.get(key) or self.pending_questions.get(key)):
+                return False
+            info = cold_resume_info(sid, self.projects_dir, self.auto_compact_tokens)
+            if not info or not self._needs_compaction(key, sid, info[0]):
+                return False
+        except Exception as exc:
+            log(f"cold compact size check for {key} failed: {exc!r}")
             return False
-        info = cold_resume_info(sid, self.projects_dir, self.auto_compact_tokens)
-        if not info or not self._needs_compaction(key, sid, info[0]):
-            return False
+        self.set_reaction(frame, "👀")
         self.warm_compacting.add(key)
         try:
             await self._compact_and_report(
@@ -3866,6 +3879,13 @@ class Bridge:
             return
         tool = req.get("tool_name") or "tool"
         tool_input = req.get("input") or {}
+        if frame.get("_auto_compact"):
+            # A hidden maintenance turn cannot ask the channel for approval or
+            # an answer. Deny promptly so the CLI can finish or fail cleanly.
+            await self._send_to_claude(proc, self._perm_response(
+                req_id, False, tool_input,
+                "Automatic compaction cannot request interactive input."))
+            return
         if tool == "AskUserQuestion":
             # Not a permission gate — the CLI is waiting for answers, so post
             # the questions as choice buttons instead of Approve/Reject.

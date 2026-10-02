@@ -847,9 +847,11 @@ class OutboundAttachmentTests(unittest.TestCase):
 
         for binding, subcommand in [({"cwd": "/tmp"}, None),
                                     ({"cwd": "/tmp", "session_id": "old-id",
+                                      "relay_developer_installed": True,
                                       "relay_instruction_settings": [False, False, True]}, "resume"),
                                     ({"cwd": "/tmp", "session_id": "old-id",
                                       "_fork_source": "old-id",
+                                      "relay_developer_installed": True,
                                       "relay_instruction_settings": [False, False, True]}, "fork")]:
             instance = make_bridge()
             instance.codex_bin = "codex"
@@ -861,6 +863,7 @@ class OutboundAttachmentTests(unittest.TestCase):
             instance.child_env = Mock(return_value={})
             instance.refresh_usage = AsyncMock()
             instance._save_state = Mock()
+            instance.bindings["c1"] = binding
             proc = Mock(returncode=0, stdout=events(), stdin=Mock())
             proc.wait = AsyncMock()
             proc.stderr.read = AsyncMock(return_value=b"")
@@ -873,6 +876,8 @@ class OutboundAttachmentTests(unittest.TestCase):
                 self.assertEqual(cmd[2], subcommand)
             self.assertIn("developer_instructions=", " ".join(cmd))
             proc.stdin.write.assert_called_once_with(b"prompt")
+            if subcommand is None:
+                self.assertTrue(binding["relay_developer_installed"])
 
     def test_developer_instructions_and_relay_changes(self):
         import tomllib
@@ -883,10 +888,15 @@ class OutboundAttachmentTests(unittest.TestCase):
         self.assertEqual(tomllib.loads("x = " + value)["x"],
                          instance._developer_instructions(binding))
         self.assertIn(bridge.TLDR_SENTINEL, instance._developer_instructions(binding))
+        with patch.object(bridge, "ATTACH_PROMPT_SUFFIX", "bad note"):
+            with self.assertRaisesRegex(ValueError, "unexpected relay instruction format"):
+                instance._developer_instructions(binding)
         self.assertEqual(instance._relay_note_for_run(binding)[0], "")
         binding["session_id"] = "existing"
         self.assertIn(bridge.TLDR_SENTINEL, instance._relay_note_for_run(binding)[0])
         binding["relay_instruction_settings"] = instance._instruction_settings(binding)
+        self.assertIn(bridge.TLDR_SENTINEL, instance._relay_note_for_run(binding)[0])
+        binding["relay_developer_installed"] = True
         self.assertEqual(instance._relay_note_for_run(binding)[0], "")
         binding["tldr"] = False
         self.assertIn("TL;DR summaries are off", instance._relay_note_for_run(binding)[0])
@@ -894,6 +904,65 @@ class OutboundAttachmentTests(unittest.TestCase):
         self.assertEqual(instance._relay_note_for_run(binding)[0], "")
         fork = dict(binding, _fork_source="existing")
         self.assertEqual(instance._relay_note_for_run(fork)[0], "")
+
+    def test_existing_and_foreign_sessions_keep_relay_suffix_after_compaction(self):
+        instance = make_bridge()
+        instance.tldr_default = True
+        for binding in ({"session_id": "pre-upgrade", "cwd": "/tmp",
+                         "relay_instruction_settings": [True, False, True]},
+                        {"session_id": "foreign", "cwd": "/tmp"}):
+            first, _ = instance._relay_note_for_run(binding)
+            binding["relay_instruction_settings"] = instance._instruction_settings(binding)
+            second, _ = instance._relay_note_for_run(binding)
+            self.assertEqual(first, second)
+            self.assertIn(bridge.TLDR_SENTINEL, second)
+            self.assertIn(bridge.HISTORY_SENTINEL, second)
+        own = {"session_id": "bridge-started", "cwd": "/tmp",
+               "relay_developer_installed": True,
+               "relay_instruction_settings": [True, False, True]}
+        self.assertEqual(instance._relay_note_for_run(own)[0], "")
+        own.pop("relay_instruction_settings")
+        self.assertIn(bridge.TLDR_SENTINEL, instance._relay_note_for_run(own)[0])
+        instance._save_state = Mock()
+        instance.bindings["c1"] = {"session_id": "bridge-started", "cwd": "/tmp",
+                                   "relay_developer_installed": True}
+        instance._set_binding("c1", "foreign", "/tmp")
+        self.assertNotIn("relay_developer_installed", instance.bindings["c1"])
+        self.assertIn(bridge.TLDR_SENTINEL,
+                      instance._relay_note_for_run(instance.bindings["c1"])[0])
+
+    def test_foreign_session_sends_suffix_on_every_run(self):
+        async def events():
+            yield b'{"type":"thread.started","thread_id":"foreign"}\n'
+            yield b'{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}\n'
+            yield b'{"type":"turn.completed"}\n'
+
+        instance = make_bridge()
+        instance.tldr_default = True
+        instance.codex_bin = "codex"
+        instance.timeout = 30
+        instance.default_sandbox = "read-only"
+        instance.base_codex_args = []
+        instance._resolved_model = Mock(return_value=None)
+        instance._stage_attachments = Mock(return_value=("prompt", [], None))
+        instance.child_env = Mock(return_value={})
+        instance.refresh_usage = AsyncMock()
+        instance._save_state = Mock()
+        binding = {"cwd": "/tmp", "session_id": "foreign"}
+        instance.bindings["c1"] = binding
+        procs = [Mock(returncode=0, stdout=events(), stdin=Mock()) for _ in range(2)]
+        for proc in procs:
+            proc.wait = AsyncMock()
+            proc.stderr.read = AsyncMock(return_value=b"")
+        with patch.object(bridge.asyncio, "create_subprocess_exec",
+                          AsyncMock(side_effect=procs)):
+            for _ in procs:
+                asyncio.run(instance.run_codex("c1", {"channel_id": "c1"}, binding, "prompt"))
+        for proc in procs:
+            sent = proc.stdin.write.call_args.args[0].decode()
+            self.assertIn(bridge.TLDR_SENTINEL, sent)
+            self.assertIn(bridge.HISTORY_SENTINEL, sent)
+        self.assertNotIn("relay_developer_installed", binding)
 
     def test_stop_flags_clear_when_run_raises(self):
         instance = make_bridge()

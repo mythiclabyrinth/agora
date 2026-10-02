@@ -789,6 +789,7 @@ class ColdResumeTests(unittest.TestCase):
         async def compact(*args):
             events.append("compact")
             self.assertEqual(args[2], "old-id")
+            self.assertNotIn("message_id", args[1])
             return 38000
         async def forward(*args, **kwargs):
             events.append("message")
@@ -800,6 +801,34 @@ class ColdResumeTests(unittest.TestCase):
         instance.forward_to_claude.assert_awaited_once_with("c1", frame, "work")
         self.assertIn("410k → 38k", instance.post.call_args.args[1])
         self.assertNotIn("Reply", instance.post.call_args.args[1])
+
+    def test_cold_size_scan_failure_still_forwards_message(self):
+        instance = make_bridge()
+        instance.auto_compact_tokens = 300000
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        frame = {"channel_id": "c1", "author": {"type": "user"}, "text": "work"}
+        with patch.object(bridge, "cold_resume_info", side_effect=AttributeError("bad record")):
+            asyncio.run(instance.handle_inbound(frame))
+        instance.forward_to_claude.assert_awaited_once_with("c1", frame, "work")
+        instance.post.assert_not_called()
+
+    def test_cold_compaction_reacts_before_hidden_run(self):
+        instance = make_bridge()
+        instance.auto_compact_tokens = 300000
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        frame = {"channel_id": "c1", "message_id": 1,
+                 "author": {"type": "user"}, "text": "work"}
+        events = []
+        instance.set_reaction.side_effect = lambda _frame, emoji, **_kw: events.append(emoji)
+
+        async def compact(*_args):
+            events.append("compact")
+            return 38000
+
+        instance._compact_session = AsyncMock(side_effect=compact)
+        with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
+            asyncio.run(instance.handle_inbound(frame))
+        self.assertEqual(events[:2], ["👀", "compact"])
 
     def test_cold_skips_peer_and_scheduled_messages(self):
         instance = make_bridge(peer_agents="codex-cli")
@@ -1049,6 +1078,66 @@ class WarmCompactTests(unittest.TestCase):
             self.assertTrue(args[2].startswith("/compact Summarise"))
             self.assertEqual(instance.bindings["c1"]["model"], "opus")
         asyncio.run(run())
+
+    def test_changed_session_id_uses_new_compaction_record_and_baseline(self):
+        instance = self._bridge()
+        del instance._compact_session
+
+        async def forward(*_args):
+            instance.bindings["c1"]["session_id"] = "new-id"
+
+        instance.forward_to_claude = AsyncMock(side_effect=forward)
+        frame = {"channel_id": "c1"}
+        with patch.object(bridge, "compacted_tokens",
+                          side_effect=lambda sid, *_: 38000 if sid == "new-id" else None) as scan:
+            result = asyncio.run(instance._compact_and_report(
+                "c1", frame, "old-id", 410000))
+        self.assertTrue(result)
+        self.assertEqual(scan.call_args_list[0].args[0], "new-id")
+        self.assertEqual(instance.warm_compacted_sizes["c1"], ("new-id", 38000))
+        self.assertIn("410k → 38k", instance.post.call_args.args[1])
+
+    def test_missing_compaction_metadata_does_not_use_usage_fallback(self):
+        instance = self._bridge()
+        del instance._compact_session
+        with patch.object(bridge, "compacted_tokens", return_value=None), patch.object(
+                bridge, "cold_resume_info") as usage:
+            result = asyncio.run(instance._compact_session(
+                "c1", {"channel_id": "c1", "_auto_compact": True}, "old-id", 410000))
+        self.assertIsNone(result)
+        usage.assert_not_called()
+
+    def test_changed_session_id_can_use_old_compaction_record(self):
+        instance = self._bridge()
+        del instance._compact_session
+
+        async def forward(*_args):
+            instance.bindings["c1"]["session_id"] = "new-id"
+
+        instance.forward_to_claude = AsyncMock(side_effect=forward)
+        with patch.object(bridge, "compacted_tokens",
+                          side_effect=lambda sid, *_: 38000 if sid == "old-id" else None) as scan:
+            result = asyncio.run(instance._compact_and_report(
+                "c1", {"channel_id": "c1"}, "old-id", 410000))
+        self.assertTrue(result)
+        self.assertEqual([call.args[0] for call in scan.call_args_list],
+                         ["new-id", "old-id"])
+        self.assertEqual(instance.warm_compacted_sizes["c1"], ("new-id", 38000))
+
+    def test_hidden_compaction_does_not_post_permission_or_question(self):
+        instance = self._bridge()
+        instance._send_to_claude = AsyncMock()
+        instance.send = Mock()
+        frame = {"channel_id": "c1", "_auto_compact": True}
+        for tool in ("Bash", "AskUserQuestion"):
+            request = {"request_id": "req", "request": {
+                "subtype": "can_use_tool", "tool_name": tool, "input": {}}}
+            asyncio.run(instance._handle_control_request(
+                "c1", frame, Mock(), request, []))
+        self.assertEqual(instance._send_to_claude.await_count, 2)
+        for call in instance._send_to_claude.await_args_list:
+            self.assertEqual(call.args[1]["response"]["response"]["behavior"], "deny")
+        instance.send.assert_not_called()
 
     def test_queued_human_gets_typing_after_hidden_compaction(self):
         instance = self._bridge()

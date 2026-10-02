@@ -346,6 +346,11 @@ removes the capability entirely.
 
 ## Options
 
+For sessions the bridge starts, relay rules are supplied through Codex
+`developer_instructions`. This overrides any `developer_instructions` set in
+`~/.codex/config.toml` for those runs. Sessions attached with `/use` or created
+before this bridge version receive the relay rules in each prompt instead.
+
 Everything is env-overridable (flags take precedence): `AGORA_URL`,
 `AGORA_PAIRING_TOKEN`, `AGENT_ID` / `AGENT_NAME`, `AGENT_AVATAR`, `CODEX_BIN`,
 `CODEX_HOME` (Codex CLI home directory; defaults to `~/.codex` and its
