@@ -58,7 +58,7 @@ describe("conversationSections", () => {
       .toEqual([1]);
   });
 
-  it("keeps roster colours fixed across message order and pagination", () => {
+  it("keeps colours independent of message order and pagination for one roster", () => {
     const roster = ["alpha", "beta", "gamma", "delta"].map(id => ({ id, rail_marker: true }));
     const forward = agentRailColors(roster);
     const reversed = agentRailColors([...roster].reverse());
@@ -70,5 +70,13 @@ describe("conversationSections", () => {
       { ...message(1, "agent"), author_id: "beta" },
     ], forward);
     expect(forward.get(early[0].agentId!)).toBe(forward.get(paged[1].agentId!));
+  });
+
+  it("reuses palette colours after six flagged agents", () => {
+    const roster = Array.from({ length: 7 }, (_, i) => ({ id: `agent-${i}`, rail_marker: true }));
+    const colors = agentRailColors(roster);
+    expect(colors.size).toBe(7);
+    expect(new Set(colors.values()).size).toBe(6);
+    expect([...colors.values()].slice(0, 6)).toContain(colors.get("agent-6"));
   });
 });

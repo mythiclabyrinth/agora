@@ -23,7 +23,8 @@ function hashId(id: string): number {
   return hash >>> 0;
 }
 
-/** Resolve colours against the full roster, independent of message order. */
+/** Resolve colours against the current roster, independent of message order.
+ * Changing the roster can shift colours when hash slots collide. */
 export function agentRailColors(agents: Pick<AgentInfo, "id" | "rail_marker">[]): Map<string, string> {
   const colors = new Map<string, string>();
   const used = new Set<number>();
@@ -33,6 +34,7 @@ export function agentRailColors(agents: Pick<AgentInfo, "id" | "rail_marker">[])
       while (used.has(slot)) slot = (slot + 1) % RAIL_AGENT_COLORS.length;
       used.add(slot);
     }
+    // Beyond the palette size, colours wrap and some agents share a hue.
     colors.set(id, RAIL_AGENT_COLORS[slot]);
   }
   return colors;

@@ -1,6 +1,7 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import type { Message } from "@agora/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiClient, ApiProvider, keys, type Message } from "@agora/core";
 import {
   createSectionJumpController,
   MAX_VISIBLE_SECTION_DOTS,
@@ -22,11 +23,25 @@ const message = (id: number, authorType: "user" | "agent"): Message => ({
   attachments: [],
 });
 
+class FixtureApi extends ApiClient {
+  override async get<T>(path: string): Promise<T> {
+    if (path === "/api/agents") return { agents: [] } as T;
+    throw new Error(`Unexpected API request: ${path}`);
+  }
+}
+
 function render(messages: Message[], activeMessageId: number | null, onJump = jest.fn()) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
+  queryClient.setQueryData(keys.agents, []);
+  const api = new FixtureApi({ baseUrl: "https://agora.example", token: "test" });
   let tree!: TestRenderer.ReactTestRenderer;
   act(() => {
     tree = TestRenderer.create(
-      React.createElement(SectionRail, { messages, activeMessageId, onJump }),
+      React.createElement(QueryClientProvider, { client: queryClient },
+        React.createElement(ApiProvider, { client: api },
+          React.createElement(SectionRail, { messages, activeMessageId, onJump }),
+        ),
+      ),
     );
   });
   return { tree, onJump };

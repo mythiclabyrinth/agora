@@ -121,9 +121,10 @@ export const AgentThread: Story = {
     expect(dots[1].classList.contains("agent")).toBe(true);
     expect(dots[2].getAttribute("aria-label")).toContain("(agent)");
     expect(getComputedStyle(dots[1]).backgroundColor).toBe("rgba(0, 0, 0, 0)");
-    expect(getComputedStyle(dots[1]).borderTopWidth).toBe("1.5px");
+    expect(getComputedStyle(dots[1]).borderTopStyle).toBe("solid");
+    expect(getComputedStyle(dots[1]).borderTopColor).toBe("rgb(217, 122, 54)");
     await userEvent.click(dots[2]);
     await waitFor(() => expect(dots[2].classList.contains("active")).toBe(true));
-    expect(getComputedStyle(dots[2]).backgroundColor).toBe(getComputedStyle(dots[2]).borderTopColor);
+    expect(getComputedStyle(dots[2]).backgroundColor).toBe("rgb(210, 85, 133)");
   },
 };

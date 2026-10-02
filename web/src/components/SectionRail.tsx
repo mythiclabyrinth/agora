@@ -1,12 +1,12 @@
 /* The section-navigation dot rail (.ago-section-rail): a vertical column of
    clickable dots pinned to the right edge of a message log. One dot per
-   conversational section — a user message plus the group of agent replies
-   that follow it, until the next user message (a leading agent group with no
-   preceding user message is its own section too). The dot for the section
+   conversational section — human posts and configured agent posts start
+   sections; other agent replies join the previous section. A leading agent
+   group without a preceding post gets a section too. The dot for the section
    currently in view is highlighted; clicking a dot scrolls that section to
    the top. Shared by the channel log (MessageLog) and the thread pane. */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { agentRailColors, conversationSections, useAgents, type Message } from "@agora/core";
 
 const ACTIVE_OFFSET_PX = 80; // a section counts as "in view" once its top passes this
@@ -20,6 +20,18 @@ export function SectionRail({ boxRef, messages }: {
   const agentColors = useMemo(() => agentRailColors(agents || []), [agents]);
   const sections = useMemo(() => conversationSections(messages, agentColors), [messages, agentColors]);
   const [active, setActive] = useState(0);
+  const railRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const rail = railRef.current;
+    const dot = rail?.querySelectorAll<HTMLElement>(".ago-rail-dot")[active];
+    if (!rail || !dot) return;
+    // Scroll only the rail. scrollIntoView can also move the message log/page.
+    if (dot.offsetTop < rail.scrollTop) rail.scrollTop = dot.offsetTop;
+    else if (dot.offsetTop + dot.offsetHeight > rail.scrollTop + rail.clientHeight) {
+      rail.scrollTop = dot.offsetTop + dot.offsetHeight - rail.clientHeight;
+    }
+  }, [active, sections]);
 
   useEffect(() => {
     const box = boxRef.current;
@@ -58,10 +70,10 @@ export function SectionRail({ boxRef, messages }: {
   };
 
   return (
-    <div className="ago-section-rail" role="navigation" aria-label="Jump to a section of the conversation">
+    <div ref={railRef} className="ago-section-rail" role="navigation" aria-label="Jump to a section of the conversation">
       {sections.map((s, i) => (
         <button key={s.mid} type="button"
-          className={`ago-rail-dot ${s.agentId ? "agent" : ""} ${i === active ? "active" : ""}`}
+          className={["ago-rail-dot", s.agentId && "agent", i === active && "active"].filter(Boolean).join(" ")}
           style={s.agentId ? { "--rail-c": agentColors.get(s.agentId) } as React.CSSProperties : undefined}
           title={s.label} aria-label={`Jump to: ${s.label}${s.agentId ? " (agent)" : ""}`}
           aria-current={i === active ? "true" : undefined}
