@@ -352,7 +352,8 @@ Everything is env-overridable (flags take precedence): `AGORA_URL`,
 `--dangerously-skip-permissions` for fully unattended runs — the permission mode
 here is just the **default**, overridable per channel with `/permissions`),
 `CLAUDE_MODEL` (default model for every run, e.g. `opus`; channels override with
-`/model`), `CLAUDE_ALLOW_PERMISSION_ESCALATION` (`1` to let `/permissions` raise
+`/model`), `CLAUDE_AUTO_WORKTREE` (`1` to give new repository sessions their own
+worktree; off by default), `CLAUDE_ALLOW_PERMISSION_ESCALATION` (`1` to let `/permissions` raise
 privilege above the default — off by default), `CLAUDE_TLDR` (`1` to add short
 summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TLDR_MIN_CHARS` (minimum reply length to summarize, default 1500),

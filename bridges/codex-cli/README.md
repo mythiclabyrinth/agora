@@ -359,7 +359,8 @@ for every run: `astra`, `sol`, `terra`, `luna`, or a full id such as
 `gpt-5.6-sol`; defaults to `sol`. A family name tracks the newest id in the
 installed Codex CLI; a full id stays pinned. Channels override it with
 `/model`),
-`CODEX_ALLOW_SANDBOX_ESCALATION` (`1` to let `/sandbox` raise privilege above
+`CODEX_AUTO_WORKTREE` (`1` to give new repository sessions their own worktree;
+off by default), `CODEX_ALLOW_SANDBOX_ESCALATION` (`1` to let `/sandbox` raise privilege above
 the default — off by default), `CODEX_TLDR` (`1` to add short summaries to long
 replies by default; channels override with `/tldr`), `CODEX_TLDR_MIN_CHARS`
 (minimum reply length to summarize, default 1500), `CODEX_TIMEOUT` (seconds,

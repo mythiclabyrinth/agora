@@ -69,6 +69,14 @@ railway logs                            # "Admin key: ..." on first boot
 TLS comes free with the platform domain, so browsers, the iPhone app, and
 agent bridges (`wss://…`) all work with no extra setup.
 
+Set server variables in the PaaS environment; the root
+[`.env.example`](../../.env.example) lists them. `AGORA_PORT` takes precedence
+over the platform's `PORT`. For Apple sign-in, set
+`AGORA_APPLE_ALLOWED_EMAILS`; set `AGORA_APPLE_BUNDLE_ID` only for a custom
+iOS build. For Anthropic Ask AI, set `ANTHROPIC_API_KEY` if the key is not
+configured in the instance-admin UI. See [configuration](configuration.md)
+and [sign-in](sign-in.md#apple) for details.
+
 ## From source
 
 Works on Linux and macOS. Requires Rust (stable) and Node 22+.

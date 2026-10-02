@@ -103,12 +103,18 @@ preflight limit and should match the server's `max_file_mb` (default 10).
 ## Configuration
 
 All options are available through `--help`. Common environment variables:
-`AGORA_URL`, `AGORA_PAIRING_TOKEN`, `AGENT_ID` / `AGENT_NAME`,
+`AGORA_URL`, `AGORA_PAIRING_TOKEN`, `AGORA_PAIRING_TOKEN_FILE` (path to a
+`chmod 600` token file), `AGORA_BRIDGE_ENV_FILE` (selects an alternate `.env`
+when set in the process environment, before that file is loaded),
+`AGENT_ID` / `AGENT_NAME`,
 `AGENT_AVATAR`, `CURSOR_BIN`, `CURSOR_MODEL`,
 `CURSOR_MODE`, `CURSOR_ARGS`, `CURSOR_ALLOWED_ROOTS`,
 `CURSOR_AUTO_WORKTREE`, `CURSOR_ALLOW_FORCE`, `CURSOR_DISABLE_SANDBOX`,
-`CURSOR_TIMEOUT`, `CURSOR_HISTORY` (default `1`; set to `0` or use
-`--no-history` to disable history fetches), `STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`,
+`CURSOR_TLDR` (`1` enables short summaries by default),
+`CURSOR_TLDR_MIN_CHARS` (default 1500), `CURSOR_TIMEOUT`,
+`CURSOR_HISTORY` (default `1`; set to `0` or use
+`--no-history` to disable history fetches), `SESSIONS_LIMIT` (default 10),
+`STATE_FILE`, `CONTEXT_BUFFER`, `AGORA_BOT_LOOP_LIMIT`,
 `AGORA_PEER_AGENTS`, and `AGORA_PEER_COMMANDS`. The optional loop limit requests
 this agent's relay cap; when unset it inherits the server default and is clamped
 by the server. `AGORA_PEER_COMMANDS` (empty by default) lists bridge commands,
