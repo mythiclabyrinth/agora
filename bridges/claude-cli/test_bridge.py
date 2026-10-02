@@ -815,6 +815,43 @@ class ColdResumeTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_after_cold_compaction_later_human_uses_queue_and_stop_drops_it(self):
+        async def run():
+            instance = make_bridge()
+            del instance.forward_to_claude
+            instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+            instance._compact_session = AsyncMock(return_value=38000)
+            instance._post_reply = Mock()
+            instance.claim = Mock()
+            instance.typing = Mock()
+            first = {"channel_id": "c1", "message_id": 1,
+                     "author": {"type": "user"}, "text": "first"}
+            second = dict(first, message_id=2, text="second")
+            run_started = asyncio.Event()
+            release_run = asyncio.Event()
+
+            async def run_claude(*_args):
+                run_started.set()
+                await release_run.wait()
+                return "done"
+
+            instance.run_claude = AsyncMock(side_effect=run_claude)
+            with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
+                first_task = asyncio.create_task(instance.handle_inbound(first))
+                await run_started.wait()
+                await instance.handle_inbound(second)
+                self.assertEqual(len(instance.pending_turns["c1"]), 1)
+                self.assertEqual(instance.pending_turns["c1"][0]["text"], "second")
+                instance.set_reaction.assert_any_call(second, "⏳")
+                self.assertIn("removed 1 queued message", instance._cmd_stop("c1"))
+                self.assertFalse(instance.pending_turns.get("c1"))
+                instance.clear_reaction.assert_any_call(second)
+                release_run.set()
+                await first_task
+            self.assertEqual(instance.run_claude.await_count, 1)
+
+        asyncio.run(run())
+
 
 class WarmCompactTests(unittest.TestCase):
     def _bridge(self):

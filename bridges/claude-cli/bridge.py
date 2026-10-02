@@ -1776,6 +1776,7 @@ class Bridge:
         else:
             first = False
         state["waiting"] += 1
+        forward_task: asyncio.Task | None = None
         try:
             async with state["lock"]:
                 if first:
@@ -1783,8 +1784,16 @@ class Bridge:
                     if not compacted:
                         # Ordinary turns keep the existing bridge queue path.
                         self.cold_compact_pending.pop(key, None)
-                await self.forward_to_claude(key, frame, text)
+                # Let forward_to_claude claim the first turn (or enqueue a
+                # later one) before releasing the ordering lock. The normal
+                # bridge queue then owns the turn, including /stop and limits.
+                forward_task = asyncio.create_task(
+                    self.forward_to_claude(key, frame, text))
+                await asyncio.sleep(0)
+            await forward_task
         finally:
+            if forward_task is not None and not forward_task.done():
+                forward_task.cancel()
             state["waiting"] -= 1
             if not state["waiting"] and self.cold_compact_pending.get(key) is state:
                 self.cold_compact_pending.pop(key, None)
