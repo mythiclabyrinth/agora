@@ -1664,9 +1664,18 @@ class Bridge:
         if key in self.cold_holds or lock.locked():
             async with lock:
                 if key in self.cold_holds:
-                    await self._resolve_cold_hold(key, frame, text, cmd)
+                    await self._resolve_cold_hold(key, frame, text, cmd, rest)
+                elif cmd in ("/fresh", "/continue"):
+                    self.post(frame, "Nothing is waiting. Send a message to continue this session.")
+                    self.set_reaction(frame, "✅", remember=False)
+                elif cmd.startswith("/"):
+                    await self._run_command(key, frame, cmd, rest, text)
                 else:
                     await self.forward_to_claude(key, frame, text)
+            return
+        if cmd in ("/fresh", "/continue"):
+            self.post(frame, "Nothing is waiting. Send a message to continue this session.")
+            self.set_reaction(frame, "✅", remember=False)
             return
         binding = self.bindings.get(key) or {}
         sid = binding.get("session_id")
@@ -1692,15 +1701,27 @@ class Bridge:
         await self._run_command(key, frame, cmd, rest, text)
 
     async def _resolve_cold_hold(self, key: str, frame: dict, text: str,
-                                 cmd: str) -> None:
+                                 cmd: str, rest: str = "") -> None:
         hold = self.cold_holds.get(key)
         if not hold:
+            return
+        if cmd == "/stop":
+            self.cold_holds.pop(key, None)
+            self.clear_reaction(hold["frame"])
+            await self._run_command(key, frame, cmd, "", text)
+            self.post(frame, "Held message discarded.")
+            return
+        if cmd.startswith("/") and cmd not in ("/compact", "/fresh", "/continue"):
+            await self._run_command(key, frame, cmd, rest, text)
             return
         binding = self.bindings.get(key) or {}
         if binding.get("session_id") != hold["session_id"]:
             self.cold_holds.pop(key, None)
             await self.forward_to_claude(key, hold["frame"], hold["text"])
-            await self.forward_to_claude(key, frame, text)
+            if cmd not in ("/compact", "/fresh", "/continue"):
+                await self.forward_to_claude(key, frame, text)
+            else:
+                self.set_reaction(frame, "✅", remember=False)
             return
         if cmd == "/compact":
             focus = ("Summarise for continuing this work. Keep verbatim: open tasks "
@@ -1709,6 +1730,12 @@ class Bridge:
                      "unresolved error messages. Drop resolved dead ends and tool "
                      "output already acted on.")
             await self.forward_to_claude(key, frame, "/compact " + focus)
+            after = cold_resume_info(hold["session_id"], self.projects_dir, 1,
+                                     min_idle=0)
+            if after and after[0] < hold["tokens"]:
+                self.post(frame, f"Compacted: {hold['tokens'] // 1000}k → {after[0] // 1000}k tokens.")
+            else:
+                self.post(frame, "Compaction requested; the new context size is not available yet.")
         elif cmd == "/fresh":
             old = binding["session_id"]
             binding = dict(binding)
@@ -1721,13 +1748,6 @@ class Bridge:
                       f"{old[:8]}…; use /use {old} to return).")
         self.cold_holds.pop(key, None)
         await self.forward_to_claude(key, hold["frame"], hold["text"])
-        if cmd == "/compact":
-            after = cold_resume_info(hold["session_id"], self.projects_dir, 1,
-                                     min_idle=0)
-            if after and after[0] < hold["tokens"]:
-                self.post(frame, f"Compacted: {hold['tokens'] // 1000}k → {after[0] // 1000}k tokens.")
-            else:
-                self.post(frame, "Compaction requested; the new context size is not available yet.")
         if cmd not in ("/compact", "/fresh", "/continue"):
             await self.forward_to_claude(key, frame, text)
         else:

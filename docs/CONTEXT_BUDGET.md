@@ -81,13 +81,17 @@ Choices (only meaningful while a message is held for that binding):
 - `/compact` → run `claude -p --resume <id> "/compact <FOCUS>"` with the same
   model / system args as normal runs, then run the held message on the same
   session. Post "Compacted: 412k → 38k tokens." (read from the transcript after).
+  Read the post-compaction size before running the held prompt.
 - `/fresh` → new session in the same cwd (same as `/new <current cwd>`; keep
   worktree/model/permissions overrides), then run the held message there.
   Remember the old session id in the binding and mention it in the reply
   ("previous session abc123… — `/use` to go back").
 - `/continue` → run the held message unchanged.
-- Any other new human message → treat as `/continue`: run the held message,
-  then the new one, in order.
+- Any other new human chat message → treat as `/continue`: run the held message,
+  then the new one, in order. Other slash commands run as bridge commands and
+  leave the message held; `/stop` discards it.
+- `/fresh` and `/continue` without a held message reply locally that nothing
+  is waiting.
 - `/compact` with no held message keeps today's behaviour (forwarded to Claude).
 
 Rules:

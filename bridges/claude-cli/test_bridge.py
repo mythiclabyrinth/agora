@@ -780,14 +780,59 @@ class ColdResumeTests(unittest.TestCase):
         choice = {"channel_id": "c1", "message_id": 2}
         instance.cold_holds["c1"] = {"frame": old, "text": "work",
                                       "session_id": "old-id", "tokens": 400000}
-        with patch.object(bridge, "cold_resume_info", return_value=(38000, 0, 1)):
+        events = []
+        async def forward(_key, _frame, prompt):
+            events.append("compact" if prompt.startswith("/compact") else "held")
+        def scan(*_args, **_kwargs):
+            events.append("scan")
+            return (38000, 0, 1)
+        instance.forward_to_claude = AsyncMock(side_effect=forward)
+        with patch.object(bridge, "cold_resume_info", side_effect=scan):
             asyncio.run(instance._resolve_cold_hold("c1", choice, "/compact", "/compact"))
+        self.assertEqual(events, ["compact", "scan", "held"])
         self.assertEqual(instance.forward_to_claude.await_count, 2)
         compact, held = instance.forward_to_claude.await_args_list
         self.assertEqual(compact.args[:2], ("c1", choice))
         self.assertTrue(compact.args[2].startswith("/compact Summarise"))
         self.assertEqual(held.args, ("c1", old, "work"))
         self.assertIn("400k → 38k", instance.post.call_args.args[1])
+
+    def test_bridge_commands_leave_hold_until_next_message(self):
+        for command in ("/new", "/use", "/model"):
+            instance = make_bridge()
+            instance._run_command = AsyncMock()
+            held = {"channel_id": "c1", "message_id": 1}
+            choice = {"channel_id": "c1", "message_id": 2}
+            instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+            instance.cold_holds["c1"] = {"frame": held, "text": "work",
+                                          "session_id": "old-id", "tokens": 400000}
+            asyncio.run(instance._resolve_cold_hold("c1", choice, command + " arg",
+                                                     command, "arg"))
+            instance._run_command.assert_awaited_once_with(
+                "c1", choice, command, "arg", command + " arg")
+            instance.forward_to_claude.assert_not_awaited()
+            self.assertIn("c1", instance.cold_holds)
+
+    def test_stop_discards_held_message(self):
+        instance = make_bridge()
+        instance._run_command = AsyncMock()
+        held = {"channel_id": "c1", "message_id": 1}
+        choice = {"channel_id": "c1", "message_id": 2}
+        instance.cold_holds["c1"] = {"frame": held, "text": "work",
+                                      "session_id": "old-id", "tokens": 400000}
+        asyncio.run(instance._resolve_cold_hold("c1", choice, "/stop", "/stop"))
+        self.assertNotIn("c1", instance.cold_holds)
+        instance.clear_reaction.assert_called_with(held)
+        instance.forward_to_claude.assert_not_awaited()
+        instance._run_command.assert_awaited_once()
+
+    def test_fresh_and_continue_without_hold_reply_locally(self):
+        for command in ("/fresh", "/continue"):
+            instance = make_bridge()
+            frame = {"channel_id": "c1", "author": {"type": "user"}, "text": command}
+            asyncio.run(instance.handle_inbound(frame))
+            self.assertIn("Nothing is waiting", instance.post.call_args.args[1])
+            instance.forward_to_claude.assert_not_awaited()
 
 
 class AppendSystemArgsTests(unittest.TestCase):

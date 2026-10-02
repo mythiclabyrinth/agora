@@ -131,8 +131,9 @@ context is at least 300,000 tokens, the bridge holds the next human message and
 offers `/compact`, `/fresh`, or `/continue`. `/compact` summarizes the session
 before sending the held message; `/fresh` starts a session in the same folder
 and retains the old session ID for `/use`; `/continue` resumes unchanged. A new
-human message also continues the held one first. Peer and scheduled messages
-are never held. Set `CLAUDE_COLD_RESUME_TOKENS=0` to disable the notice.
+human message also continues the held one first. Other bridge commands leave
+the message held; `/stop` discards it. Peer and scheduled messages are never
+held. Set `CLAUDE_COLD_RESUME_TOKENS=0` to disable the notice.
 
 `/model`, `/permissions`, and `/tldr` are **per channel/thread** — same as session
 bindings — so one channel can plan read-only on Sonnet while another auto-applies
