@@ -1,6 +1,6 @@
 # Bridge context budget
 
-Status: approved by Tom 2026-10-02 for one PR covering A and B below.
+Status: approved by Tom 2026-10-02 for one PR covering A, B, and C below.
 Background: 30-day bridge usage analysis (`/tmp/headroom-analysis/report.md`).
 Claude bridge sessions ≈ $2.3k API-equivalent/month; ≈ $575 of it is full cache
 re-writes when a 300k–966k session is resumed after >1h idle (cache TTL).
@@ -117,10 +117,22 @@ Tests (`bridges/claude-cli/test_bridge.py`):
 - peer-agent and background follow-up messages are never held.
 - only one notice per idle period.
 
-## Later: opt-in trial of warm compaction (not in this PR)
+## C. Warm idle compaction
 
-Per-channel `/autocompact on` (default off). When on, the bridge runs `/compact
-<FOCUS>` on a Claude session that is ≥ 400k tokens after 15 min of quiet (inside
-the 1h cache TTL), and the channel's Claude runs use auto-compact at ≈ 500k.
-Enable on 1–2 heavy channels for a week, compare ccusage numbers and output
-quality against untouched channels, then decide.
+`CLAUDE_COLD_RESUME_TOKENS` is the single threshold for both the cold-resume
+notice and warm idle compaction (default 300,000; `0` disables both). No new
+setting or per-channel command is needed.
+
+After a turn or command finishes, schedule a one-shot check after 15 minutes of
+quiet. New inbound activity cancels and resets the timer. At the deadline,
+compact only if the same session is still bound, its context meets the
+threshold, and it has no active run, live child, queued turn, held message,
+pending question, or account authentication problem. Fork sources are skipped.
+
+Run `/compact <FOCUS>` through the normal Claude turn path with the binding's
+model, system prompt, and permissions. Read `postTokens` from Claude's compact
+boundary record and post a single size summary. Don't auto-compact again until
+the session has both crossed the threshold and grown at least 50,000 tokens
+since the last compaction. A failed attempt posts nothing and is not retried
+until another turn. Timers are memory-only and disappear on restart. Claude's
+native mid-turn auto-compact settings are unchanged.
