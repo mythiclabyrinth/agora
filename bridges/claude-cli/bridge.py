@@ -991,6 +991,7 @@ class Bridge:
         self.warm_compacting: set[str] = set()
         self.warm_activity_during_compaction: set[str] = set()
         self.warm_compacted_sizes: dict[str, tuple[str, int]] = {}
+        self.cold_compact_pending: dict[str, dict] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
         self.deleted_thread_roots: dict[int, None] = {}
@@ -1685,7 +1686,7 @@ class Bridge:
                     and tokens - previous[1] < WARM_COMPACT_REGROW_TOKENS)
 
     async def _compact_and_report(self, key: str, frame: dict, sid: str,
-                                  before: int) -> bool:
+                                  before: int, *, skip_if_activity: bool = True) -> bool:
         after = await self._compact_session(key, {**frame, "_auto_compact": True}, sid, before)
         if after is None:
             log(f"auto compact for {key} could not verify a smaller context")
@@ -1693,7 +1694,7 @@ class Bridge:
         # A message queued during warm compaction can run in the same forward
         # loop. Its reply is already visible, and its tokens are not part of
         # the compacted size, so leave both the notice and baseline for later.
-        if key in self.warm_activity_during_compaction:
+        if skip_if_activity and key in self.warm_activity_during_compaction:
             return True
         self.warm_compacted_sizes[key] = (sid, after)
         self.post(frame, f"Auto-compacted this session: {before // 1000}k → {after // 1000}k tokens.")
@@ -1735,10 +1736,10 @@ class Bridge:
                 self.warm_activity_during_compaction.discard(key)
                 self._schedule_warm_timer(key, frame)
 
-    async def _compact_before_cold_resume(self, key: str, frame: dict) -> None:
+    async def _compact_before_cold_resume(self, key: str, frame: dict) -> bool:
         if (self.idle_compact_tokens <= 0 or self.account_auth_problem
                 or key in self.busy or key in self.warm_compacting):
-            return
+            return False
         binding = self.bindings.get(key) or {}
         sid = binding.get("session_id")
         live = self.live.get(key)
@@ -1747,18 +1748,46 @@ class Bridge:
                 or (live is not None and live.alive)
                 or (proc is not None and proc.returncode is None)
                 or self.pending_turns.get(key) or self.pending_questions.get(key)):
-            return
+            return False
         info = cold_resume_info(sid, self.projects_dir, self.idle_compact_tokens)
         if not info or not self._needs_compaction(key, sid, info[0]):
-            return
+            return False
         self.warm_compacting.add(key)
         try:
-            await self._compact_and_report(key, frame, sid, info[0])
+            await self._compact_and_report(
+                key, frame, sid, info[0], skip_if_activity=False)
         except Exception as exc:
             log(f"cold compact for {key} failed: {exc!r}")
         finally:
             self.warm_compacting.discard(key)
             self.warm_activity_during_compaction.discard(key)
+        return True
+
+    async def _forward_human_with_cold_compaction(self, key: str, frame: dict,
+                                                   text: str) -> None:
+        if self.idle_compact_tokens <= 0:
+            await self.forward_to_claude(key, frame, text)
+            return
+        state = self.cold_compact_pending.get(key)
+        if state is None:
+            state = {"lock": asyncio.Lock(), "waiting": 0}
+            self.cold_compact_pending[key] = state
+            first = True
+        else:
+            first = False
+        state["waiting"] += 1
+        try:
+            async with state["lock"]:
+                if first:
+                    compacted = await self._compact_before_cold_resume(key, frame)
+                    if not compacted:
+                        # Ordinary turns keep the existing bridge queue path.
+                        self.cold_compact_pending.pop(key, None)
+                await self.forward_to_claude(key, frame, text)
+        finally:
+            state["waiting"] -= 1
+            if not state["waiting"] and self.cold_compact_pending.get(key) is state:
+                self.cold_compact_pending.pop(key, None)
 
     async def handle_inbound(self, frame: dict) -> None:
         key = self.binding_key(frame)
@@ -1826,8 +1855,7 @@ class Bridge:
         cmd, _, rest = (cmd_text or "").partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
         if not cmd.startswith("/"):
-            await self._compact_before_cold_resume(key, frame)
-            await self.forward_to_claude(key, frame, text)
+            await self._forward_human_with_cold_compaction(key, frame, text)
             return
         await self._run_command(key, frame, cmd, rest, text)
 

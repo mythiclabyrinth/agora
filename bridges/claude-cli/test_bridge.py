@@ -145,6 +145,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.warm_compacting = set()
     instance.warm_activity_during_compaction = set()
     instance.warm_compacted_sizes = {}
+    instance.cold_compact_pending = {}
     instance.account_auth_problem = None
     instance.pending_updates = {}
     instance.pending_deletes = {}
@@ -776,6 +777,43 @@ class ColdResumeTests(unittest.TestCase):
         instance._compact_session.assert_awaited_once()
         self.assertEqual(instance.forward_to_claude.await_count, 2)
         instance.post.assert_not_called()
+
+    def test_human_arriving_during_cold_compaction_keeps_message_order(self):
+        async def run():
+            instance = make_bridge()
+            instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+            first = {"channel_id": "c1", "message_id": 1,
+                     "author": {"type": "user"}, "text": "first"}
+            second = dict(first, message_id=2, text="second")
+            compact_started = asyncio.Event()
+            release_compact = asyncio.Event()
+            order = []
+
+            async def compact(*_args):
+                order.append("compact")
+                compact_started.set()
+                await release_compact.wait()
+                return 38000
+
+            async def forward(_key, _frame, prompt):
+                order.append(prompt)
+
+            instance._compact_session = AsyncMock(side_effect=compact)
+            instance.forward_to_claude = AsyncMock(side_effect=forward)
+            with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
+                first_task = asyncio.create_task(instance.handle_inbound(first))
+                await compact_started.wait()
+                second_task = asyncio.create_task(instance.handle_inbound(second))
+                await asyncio.sleep(0)
+                self.assertEqual(order, ["compact"])
+                release_compact.set()
+                await asyncio.gather(first_task, second_task)
+            self.assertEqual(order, ["compact", "first", "second"])
+            self.assertIn("410k → 38k", instance.post.call_args.args[1])
+            self.assertFalse(instance.cold_compact_pending)
+            self.assertEqual(instance._compact_session.await_count, 1)
+
+        asyncio.run(run())
 
 
 class WarmCompactTests(unittest.TestCase):
