@@ -1673,7 +1673,7 @@ class Bridge:
                 else:
                     await self.forward_to_claude(key, frame, text)
             return
-        if cmd in ("/fresh", "/continue"):
+        if cmd == "/fresh" or cmd == "/continue":
             self.post(frame, "Nothing is waiting. Send a message to continue this session.")
             self.set_reaction(frame, "✅", remember=False)
             return
