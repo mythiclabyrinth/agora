@@ -319,6 +319,10 @@ BACKGROUND_SYSTEM_PROMPT = (
 # more than it buys — run_claude's fingerprint check applies it on the next spawn.
 REBINDING_COMMANDS = frozenset({"/use", "/new", "/worktree", "/model",
                                 "/permissions"})
+BRIDGE_COMMANDS = frozenset({"/commands", "/sessions", "/use", "/new",
+                             "/worktree", "/worktrees", "/model",
+                             "/permissions", "/tldr", "/switch", "/stop",
+                             "/status"})
 
 CLAUDE_CREDENTIAL_OVERRIDES = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
@@ -1694,7 +1698,7 @@ class Bridge:
                  "unresolved error messages. Drop resolved dead ends and tool "
                  "output already acted on.")
         started = time.time()
-        if key in self.busy or self.pending_turns.get(key):
+        if self.account_auth_problem or key in self.busy or self.pending_turns.get(key):
             raise CompactionDeferred
         if await self.forward_to_claude(key, frame, "/compact " + focus) is False:
             queue = self.pending_turns.get(key, [])
@@ -1763,7 +1767,10 @@ class Bridge:
                 self.auto_compact_tokens, min_idle=0)
             if (self.turn_activity.get(key, 0) != activity or key in self.busy
                     or self.pending_turns.get(key)
-                    or (self.bindings.get(key) or {}).get("session_id") != sid):
+                    or (self.bindings.get(key) or {}).get("session_id") != sid
+                    or self.account_auth_problem
+                    or ((proc := self.procs.get(key)) is not None and proc.returncode is None)
+                    or ((live := self.live.get(key)) is not None and live.alive)):
                 return
             if not info or info[1] < WARM_COMPACT_IDLE_SECONDS:
                 return
@@ -1904,10 +1911,7 @@ class Bridge:
         cmd_text = command_text(
             frame.get("text") or "", self._own_handles(), frame.get("thread_context_chars"))
         cmd = (cmd_text or "").partition(" ")[0].lower()
-        bridge_commands = {"/commands", "/sessions", "/use", "/new", "/worktree",
-                           "/worktrees", "/model", "/permissions", "/tldr",
-                           "/switch", "/stop", "/status"}
-        return not (cmd in bridge_commands and (not from_peer or cmd in self.peer_commands))
+        return not (cmd in BRIDGE_COMMANDS and (not from_peer or cmd in self.peer_commands))
 
     async def _handle_inbound_message(self, frame: dict) -> None:
         key = self.binding_key(frame)
@@ -1977,6 +1981,13 @@ class Bridge:
     ) -> None:
         """Run a slash command from a human or an allowlisted peer."""
         self.set_reaction(frame, "👀")
+        if cmd not in BRIDGE_COMMANDS:
+            # Claude CLI slash commands (/compact, /usage, …) are real turns.
+            await self.forward_to_claude(
+                key, frame, self._peer_prompt(frame, text) if from_peer else text,
+                from_peer=from_peer)
+            return
+        previous_sid = (self.bindings.get(key) or {}).get("session_id")
         if cmd == "/commands":
             self.post(frame, HELP)
         elif cmd == "/sessions":
@@ -2011,11 +2022,13 @@ class Bridge:
         elif cmd == "/status":
             self.post(frame, self._cmd_status(key))
         else:
-            # Claude CLI slash commands (/compact, /usage, …) are real turns.
-            await self.forward_to_claude(
-                key, frame, self._peer_prompt(frame, text) if from_peer else text,
-                from_peer=from_peer)
-            return
+            raise AssertionError(f"unhandled bridge command: {cmd}")
+        if cmd == "/switch":
+            for timer_key in list(self.warm_timers):
+                self._cancel_warm_timer(timer_key)
+        elif (self.bindings.get(key) or {}).get("session_id") != previous_sid:
+            self._cancel_warm_timer(key)
+            self._schedule_warm_timer(key, frame)
         if cmd in REBINDING_COMMANDS:
             # Retire a held child *now*, not when the next message happens to
             # arrive. run_claude checks the same fingerprint, but that only runs

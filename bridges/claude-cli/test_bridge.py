@@ -1162,6 +1162,36 @@ class WarmCompactTests(unittest.TestCase):
             instance._cancel_warm_timer("c1")
         asyncio.run(run())
 
+    def test_rebinding_session_arms_timer_for_new_session(self):
+        async def run():
+            instance = self._bridge()
+            instance.account_epoch = 0
+            instance._cmd_use = Mock(side_effect=lambda key, _arg, _epoch: (
+                instance.bindings[key].update(session_id="new-id") or "Bound"))
+            frame = {"channel_id": "c1", "author": {"type": "user"},
+                     "text": "/use new-id"}
+            instance._schedule_warm_timer("c1", frame)
+            original = instance.warm_timers["c1"]
+            with patch.object(instance, "_warm_compact_after_idle", new_callable=AsyncMock) as compact:
+                await instance.handle_inbound(frame)
+                self.assertEqual(compact.call_args.args[2], "new-id")
+            self.assertIsNot(instance.warm_timers["c1"], original)
+            instance._cancel_warm_timer("c1")
+        asyncio.run(run())
+
+    def test_peer_and_pending_question_turns_reset_timer(self):
+        instance = self._bridge()
+        instance.peer_agents = frozenset({"codex-cli"})
+        instance.peer_commands = frozenset({"/status"})
+        self.assertTrue(instance._starts_turn(peer_frame(), "c1"))
+        self.assertFalse(instance._starts_turn(
+            peer_frame(text="@claude /status"), "c1"))
+        instance.pending_questions["c1"] = ["waiting"]
+        self.assertTrue(instance._starts_turn({
+            "channel_id": "c1", "author": {"type": "user"},
+            "text": "answer", "any_mention": True, "mentioned": False,
+        }, "c1"))
+
     def test_turn_started_during_warm_size_scan_skips_compaction(self):
         async def run():
             instance = self._bridge()
