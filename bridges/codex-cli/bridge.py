@@ -212,6 +212,23 @@ HISTORY_PROMPT_SUFFIX = (
 )
 
 
+def _developer_note(suffix: str) -> str:
+    """Validate relay note formatting once when the module is loaded."""
+    wrapped = suffix.strip()
+    if not (wrapped.startswith("(") and wrapped.endswith(")") and ": " in wrapped):
+        raise ValueError("unexpected relay instruction format")
+    body = wrapped[1:-1].split(": ", 1)[1]
+    if not body:
+        raise ValueError("empty relay instruction")
+    return body[0].upper() + body[1:]
+
+
+DEVELOPER_NOTES = tuple(map(_developer_note, (
+    TLDR_PROMPT_SUFFIX, COLLAB_PROMPT_SUFFIX,
+    HISTORY_PROMPT_SUFFIX, ATTACH_PROMPT_SUFFIX,
+)))
+
+
 def parse_peer_agents(raw: str) -> frozenset[str]:
     """Normalize a comma-separated list of agent ids into a lowercase set."""
     return frozenset(t.strip().lower() for t in (raw or "").split(",") if t.strip())
@@ -1871,27 +1888,17 @@ class Bridge:
     def _developer_instructions(self, binding: dict) -> str:
         notes = []
         if self._tldr_enabled(binding):
-            notes.append(TLDR_PROMPT_SUFFIX)
+            notes.append(DEVELOPER_NOTES[0])
         if self.peer_agents:
-            notes.append(COLLAB_PROMPT_SUFFIX)
+            notes.append(DEVELOPER_NOTES[1])
         if self.history_enabled:
-            notes.append(HISTORY_PROMPT_SUFFIX)
-        notes.append(ATTACH_PROMPT_SUFFIX)
-        bodies = []
-        for note in notes:
-            wrapped = note.strip()
-            if not (wrapped.startswith("(") and wrapped.endswith(")")
-                    and ": " in wrapped):
-                raise ValueError("unexpected relay instruction format")
-            body = wrapped[1:-1].split(": ", 1)[1]
-            if not body:
-                raise ValueError("empty relay instruction")
-            bodies.append(body[0].upper() + body[1:])
-        return "\n\n".join(bodies)
+            notes.append(DEVELOPER_NOTES[2])
+        notes.append(DEVELOPER_NOTES[3])
+        return "\n\n".join(notes)
 
     def _relay_note_for_run(self, binding: dict) -> tuple[str, list[bool]]:
         current = self._instruction_settings(binding)
-        previous = binding.get("relay_instruction_settings")
+        previous = binding.get("relay_developer_settings")
         if not binding.get("session_id") and not binding.get("_fork_source"):
             return "", current
         if not binding.get("relay_developer_installed"):
@@ -2482,7 +2489,7 @@ class Bridge:
         stripped from the body so it never leaks into the visible message. A
         normal reply with no sentinel is returned untouched.
         """
-        if not enabled or not reply or TLDR_SENTINEL not in reply:
+        if not reply or TLDR_SENTINEL not in reply:
             return reply, None
         lines = reply.splitlines()
         idx = next(
@@ -2498,6 +2505,8 @@ class Bridge:
             return reply, None  # bare marker, nothing to summarize with
         if not body:
             return tldr, None  # reply was essentially just the summary line
+        if not enabled:
+            return body, None
         tldr = tldr[:MAX_TLDR_CHARS]
         # Drop (but still strip) the summary when the body is short enough to
         # read whole, or when the summary isn't strictly shorter than the body
@@ -2612,9 +2621,10 @@ class Bridge:
                 cmd += ["fork", binding["_fork_source"]]
             elif binding.get("session_id"):
                 cmd += ["resume", binding["session_id"]]
+            if started_with_developer or binding.get("relay_developer_installed"):
+                cmd += ["-c", "developer_instructions=" + json.dumps(
+                    self._developer_instructions(binding), ensure_ascii=False)]
             cmd += [
-                "-c", "developer_instructions=" + json.dumps(
-                    self._developer_instructions(binding), ensure_ascii=False),
                 "--json",
                 "--skip-git-repo-check",
                 *self._sandbox_args(mode),
@@ -2723,6 +2733,7 @@ class Bridge:
                 changed = False
                 if started_with_developer and new_session_id:
                     binding["relay_developer_installed"] = True
+                    binding["relay_developer_settings"] = instruction_settings
                     changed = True
                 if binding.get("relay_instruction_settings") != instruction_settings:
                     binding["relay_instruction_settings"] = instruction_settings

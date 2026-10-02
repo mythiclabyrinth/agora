@@ -992,6 +992,7 @@ class Bridge:
         self.warm_compacting: set[str] = set()
         self.warm_activity_during_compaction: set[str] = set()
         self.warm_compacted_sizes: dict[str, tuple[str, int]] = {}
+        self.cold_compact_failures: dict[str, tuple[str, int]] = {}
         self.cold_compact_pending: dict[str, dict] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
@@ -1678,7 +1679,8 @@ class Bridge:
         after = None
         for candidate in dict.fromkeys((current_sid, sid)):
             if candidate:
-                after = compacted_tokens(candidate, self.projects_dir, started)
+                after = await asyncio.to_thread(
+                    compacted_tokens, candidate, self.projects_dir, started)
                 if after is not None:
                     break
         return after if after is not None and after < before else None
@@ -1696,16 +1698,17 @@ class Bridge:
         if after is None:
             log(f"auto compact for {key} could not verify a smaller context")
             return False
-        # A message queued during warm compaction can run in the same forward
-        # loop. Its reply is already visible, and its tokens are not part of
-        # the compacted size, so leave both the notice and baseline for later.
-        if skip_if_activity and key in self.warm_activity_during_compaction:
-            return True
         current_sid = (self.bindings.get(key) or {}).get("session_id")
         if not current_sid:
             log(f"auto compact for {key} lost its bound session")
             return False
         self.warm_compacted_sizes[key] = (current_sid, after)
+        self.cold_compact_failures.pop(key, None)
+        # A queued message may have run in the same forward loop. Keep the
+        # confirmed baseline to prevent repeat compaction, but omit a notice
+        # that would arrive after that message's reply.
+        if skip_if_activity and key in self.warm_activity_during_compaction:
+            return True
         self.post(frame, f"Auto-compacted this session: {before // 1000}k → {after // 1000}k tokens.")
         return True
 
@@ -1724,8 +1727,9 @@ class Bridge:
                     or self.pending_questions.get(key)
                     or binding.get("session_id") != sid or binding.get("_fork_source")):
                 return
-            info = cold_resume_info(sid, self.projects_dir, self.auto_compact_tokens,
-                                    min_idle=0)
+            info = await asyncio.to_thread(
+                cold_resume_info, sid, self.projects_dir,
+                self.auto_compact_tokens, min_idle=0)
             if not info or info[1] < WARM_COMPACT_IDLE_SECONDS:
                 return
             before = info[0]
@@ -1759,7 +1763,12 @@ class Bridge:
                     or (proc is not None and proc.returncode is None)
                     or self.pending_turns.get(key) or self.pending_questions.get(key)):
                 return False
-            info = cold_resume_info(sid, self.projects_dir, self.auto_compact_tokens)
+            if self.cold_compact_failures.get(key, (None, 0))[0] != sid:
+                self.cold_compact_failures.pop(key, None)
+            if self.cold_compact_failures.get(key, (sid, 0))[1] >= 2:
+                return False
+            info = await asyncio.to_thread(
+                cold_resume_info, sid, self.projects_dir, self.auto_compact_tokens)
             if not info or not self._needs_compaction(key, sid, info[0]):
                 return False
         except Exception as exc:
@@ -1768,10 +1777,21 @@ class Bridge:
         self.set_reaction(frame, "👀")
         self.warm_compacting.add(key)
         try:
-            await self._compact_and_report(
+            confirmed = await self._compact_and_report(
                 key, frame, sid, info[0], skip_if_activity=False)
+            current_sid = (self.bindings.get(key) or {}).get("session_id") or sid
+            if confirmed:
+                self.cold_compact_failures.pop(key, None)
+            else:
+                previous = self.cold_compact_failures.get(key, (current_sid, 0))
+                count = previous[1] if previous[0] == current_sid else 0
+                self.cold_compact_failures[key] = (current_sid, count + 1)
         except Exception as exc:
             log(f"cold compact for {key} failed: {exc!r}")
+            current_sid = (self.bindings.get(key) or {}).get("session_id") or sid
+            previous = self.cold_compact_failures.get(key, (current_sid, 0))
+            count = previous[1] if previous[0] == current_sid else 0
+            self.cold_compact_failures[key] = (current_sid, count + 1)
         finally:
             self.warm_compacting.discard(key)
             self.warm_activity_during_compaction.discard(key)
@@ -1789,6 +1809,8 @@ class Bridge:
             first = True
         else:
             first = False
+            if state["lock"].locked():
+                self.set_reaction(frame, "⏳")
         state["waiting"] += 1
         forward_task: asyncio.Task | None = None
         try:
@@ -3274,6 +3296,9 @@ class Bridge:
         """Synchronous sweep for shutdown. A child held for background work has
         no in-flight turn to reap it, so without this it survives the bridge —
         and keeps applying edits under the channel's permission mode."""
+        for task in self.warm_timers.values():
+            task.cancel()
+        self.warm_timers.clear()
         held = [live.proc for live in self.live.values()]
         for proc in [*held, *self.procs.values()]:
             try:

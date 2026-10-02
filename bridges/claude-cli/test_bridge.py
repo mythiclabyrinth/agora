@@ -146,6 +146,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.warm_compacting = set()
     instance.warm_activity_during_compaction = set()
     instance.warm_compacted_sizes = {}
+    instance.cold_compact_failures = {}
     instance.cold_compact_pending = {}
     instance.account_auth_problem = None
     instance.pending_updates = {}
@@ -802,6 +803,27 @@ class ColdResumeTests(unittest.TestCase):
         self.assertIn("410k → 38k", instance.post.call_args.args[1])
         self.assertNotIn("Reply", instance.post.call_args.args[1])
 
+    def test_unconfirmed_cold_compaction_stops_after_two_attempts(self):
+        instance = make_bridge()
+        instance.auto_compact_tokens = 300000
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        instance._compact_session = AsyncMock(return_value=None)
+        instance.forward_to_claude = AsyncMock()
+        frame = {"channel_id": "c1", "message_id": 1,
+                 "author": {"type": "user"}, "text": "work"}
+        async def run():
+            with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
+                for _ in range(3):
+                    await instance.handle_inbound(frame)
+        asyncio.run(run())
+        self.assertEqual(instance._compact_session.await_count, 2)
+        self.assertEqual(instance.forward_to_claude.await_count, 3)
+        self.assertEqual(instance.cold_compact_failures["c1"], ("old-id", 2))
+        instance.bindings["c1"]["session_id"] = "new-id"
+        with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
+            asyncio.run(instance.handle_inbound(frame))
+        self.assertEqual(instance._compact_session.await_count, 3)
+
     def test_cold_size_scan_failure_still_forwards_message(self):
         instance = make_bridge()
         instance.auto_compact_tokens = 300000
@@ -887,6 +909,7 @@ class ColdResumeTests(unittest.TestCase):
                 second_task = asyncio.create_task(instance.handle_inbound(second))
                 await asyncio.sleep(0)
                 self.assertEqual(order, ["compact"])
+                instance.set_reaction.assert_any_call(second, "⏳")
                 release_compact.set()
                 await asyncio.gather(first_task, second_task)
             self.assertEqual(order, ["compact", "first", "second"])
@@ -967,6 +990,18 @@ class WarmCompactTests(unittest.TestCase):
         self.assertTrue(args[1]["_auto_compact"])
         self.assertIn("410k → 38k", instance.post.call_args.args[1])
         self.assertEqual(instance.warm_compacted_sizes["c1"], ("old-id", 38000))
+
+    def test_activity_during_compaction_keeps_baseline_without_notice(self):
+        instance = self._bridge()
+        async def compact(*_args):
+            instance.warm_activity_during_compaction.add("c1")
+            return 380000
+        instance._compact_session = AsyncMock(side_effect=compact)
+        self._fire(instance)
+        self.assertEqual(instance.warm_compacted_sizes["c1"], ("old-id", 380000))
+        instance.post.assert_not_called()
+        self._fire(instance, tokens=410000)
+        self.assertEqual(instance._compact_session.await_count, 1)
 
     def test_skips_unsafe_states_and_below_threshold(self):
         cases = (
@@ -1078,6 +1113,24 @@ class WarmCompactTests(unittest.TestCase):
             self.assertTrue(args[2].startswith("/compact Summarise"))
             self.assertEqual(instance.bindings["c1"]["model"], "opus")
         asyncio.run(run())
+
+    def test_transcript_scans_use_worker_thread(self):
+        instance = self._bridge()
+        del instance._compact_session
+        original = asyncio.to_thread
+        scanned = []
+        async def spy(func, *args, **kwargs):
+            scanned.append(func)
+            return await original(func, *args, **kwargs)
+        with patch.object(bridge.asyncio, "to_thread", side_effect=spy), patch.object(
+                bridge, "compacted_tokens", return_value=38000) as compact_scan, patch.object(
+                bridge, "cold_resume_info", return_value=(410000, 7200, 1)) as cold_scan:
+            asyncio.run(instance._compact_session(
+                "c1", {"channel_id": "c1", "_auto_compact": True}, "old-id", 410000))
+            asyncio.run(instance._compact_before_cold_resume(
+                "c1", {"channel_id": "c1"}))
+            self.assertIn(compact_scan, scanned)
+            self.assertIn(cold_scan, scanned)
 
     def test_changed_session_id_uses_new_compaction_record_and_baseline(self):
         instance = self._bridge()
