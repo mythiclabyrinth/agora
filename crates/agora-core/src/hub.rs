@@ -555,7 +555,7 @@ impl Hub {
         Self::new_with_options(store, max_attachment_bytes, streak_reset_agents)
     }
 
-    fn new_with_options(
+    pub(crate) fn new_with_options(
         store: Arc<Store>,
         max_attachment_bytes: usize,
         streak_reset_agents: HashSet<String>,
@@ -570,6 +570,10 @@ impl Hub {
             max_attachment_bytes,
             streak_reset_agents,
         }
+    }
+
+    pub(crate) fn is_streak_reset_agent(&self, id: &str) -> bool {
+        self.streak_reset_agents.contains(id)
     }
 
     /// Install the unfurl worker's queue (see [`crate::unfurl::spawn_worker`]).

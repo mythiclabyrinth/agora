@@ -864,6 +864,13 @@ select {
   opacity: 1; background: var(--a2); transform: scale(1.4);
   box-shadow: 0 0 0 3px rgba(139, 124, 255, .18);
 }
+.ago-rail-dot.agent {
+  background: transparent; border: 1.5px solid var(--rail-c); opacity: 1;
+}
+.ago-rail-dot.agent.active {
+  background: var(--rail-c); border-color: var(--rail-c);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rail-c) 28%, transparent);
+}
 
 .ago-av {
   display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;

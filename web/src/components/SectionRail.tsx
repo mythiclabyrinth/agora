@@ -7,7 +7,7 @@
    the top. Shared by the channel log (MessageLog) and the thread pane. */
 
 import { useEffect, useMemo, useState } from "react";
-import { conversationSections, type Message } from "@agora/core";
+import { agentRailColors, conversationSections, useAgents, type Message } from "@agora/core";
 
 const ACTIVE_OFFSET_PX = 80; // a section counts as "in view" once its top passes this
 const AT_BOTTOM_PX = 8;
@@ -16,7 +16,9 @@ export function SectionRail({ boxRef, messages }: {
   boxRef: React.RefObject<HTMLDivElement | null>;
   messages: Message[];
 }) {
-  const sections = useMemo(() => conversationSections(messages), [messages]);
+  const agents = useAgents().data;
+  const agentColors = useMemo(() => agentRailColors(agents || []), [agents]);
+  const sections = useMemo(() => conversationSections(messages, agentColors), [messages, agentColors]);
   const [active, setActive] = useState(0);
 
   useEffect(() => {
@@ -59,8 +61,9 @@ export function SectionRail({ boxRef, messages }: {
     <div className="ago-section-rail" role="navigation" aria-label="Jump to a section of the conversation">
       {sections.map((s, i) => (
         <button key={s.mid} type="button"
-          className={`ago-rail-dot ${i === active ? "active" : ""}`}
-          title={s.label} aria-label={`Jump to: ${s.label}`}
+          className={`ago-rail-dot ${s.agentId ? "agent" : ""} ${i === active ? "active" : ""}`}
+          style={s.agentId ? { "--rail-c": agentColors.get(s.agentId) } as React.CSSProperties : undefined}
+          title={s.label} aria-label={`Jump to: ${s.label}${s.agentId ? " (agent)" : ""}`}
           aria-current={i === active ? "true" : undefined}
           onClick={() => jump(s.mid)} />
       ))}
