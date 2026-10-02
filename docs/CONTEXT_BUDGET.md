@@ -33,7 +33,8 @@ Changes (`bridges/codex-cli/bridge.py`):
    `-c developer_instructions=<TOML string>` (new, resume and fork). Escape
    properly (use a TOML basic string with `\\`, `"`, newlines escaped — or
    `json.dumps`, which is a valid TOML basic string for this text; test it).
-   Stop appending the suffixes to the prompt.
+   Bridge-started sessions stop appending suffixes to each prompt; older and
+   foreign sessions keep them as described in step 3.
 2. Record in the binding the instruction "fingerprint" the session started with
    (`tldr`, peer agents, history enabled). Because a changed value is ignored on
    resume, when the current settings differ from the session's starting ones,
@@ -50,8 +51,9 @@ Changes (`bridges/codex-cli/bridge.py`):
    verify, and fall back to (3) if not.
 
 Tests (`bridges/codex-cli/test_bridge.py`):
-- new / resume / fork commands include `-c developer_instructions=…`; the prompt
-  sent on stdin has no relay suffix.
+- new / resume / fork commands include `-c developer_instructions=…`. The prompt
+  sent on stdin has no relay suffix for sessions started by the bridge; older
+  and foreign sessions keep the suffix on every prompt.
 - the TOML value round-trips (`tomllib.loads(f"x = {value}")["x"] == text`).
 - `/tldr off` on a live session → exactly one in-band note on the next prompt,
   none after.
