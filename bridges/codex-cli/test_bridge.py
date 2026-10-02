@@ -935,6 +935,7 @@ class OutboundAttachmentTests(unittest.TestCase):
         binding["tldr"] = False
         for _ in range(2):
             note, _ = instance._relay_note_for_run(binding)
+            self.assertTrue(note.startswith("\n\n[Relay settings update:"))
             self.assertIn("TL;DR summaries are off", note)
         body = "A long answer with detail."
         self.assertEqual(instance._split_tldr(

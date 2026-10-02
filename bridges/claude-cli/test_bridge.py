@@ -146,6 +146,8 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.warm_compacting = set()
     instance.warm_activity_during_compaction = set()
     instance.warm_compacted_sizes = {}
+    instance.turn_activity = {}
+    instance.run_generation = {}
     instance.cold_compact_failures = {}
     instance.cold_compact_pending = {}
     instance.account_auth_problem = None
@@ -916,6 +918,46 @@ class ColdResumeTests(unittest.TestCase):
         self.assertEqual(instance.forward_to_claude.await_count, 2)
         instance.post.assert_not_called()
 
+    def test_deferred_cold_compaction_does_not_count_as_failure(self):
+        instance = make_bridge()
+        instance.auto_compact_tokens = 300000
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        instance._compact_session = AsyncMock(side_effect=bridge.CompactionDeferred)
+        with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
+            result = asyncio.run(instance._compact_before_cold_resume(
+                "c1", {"channel_id": "c1"}))
+        self.assertFalse(result)
+        self.assertFalse(instance.cold_compact_failures)
+
+    def test_queued_hidden_compaction_is_removed(self):
+        instance = make_bridge()
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        async def queue(_key, frame, text):
+            instance.pending_turns["c1"] = [{"frame": frame, "text": text}]
+            return False
+        instance.forward_to_claude = AsyncMock(side_effect=queue)
+        async def run():
+            with self.assertRaises(bridge.CompactionDeferred):
+                await instance._compact_session(
+                    "c1", {"channel_id": "c1", "_auto_compact": True},
+                    "old-id", 410000)
+        asyncio.run(run())
+        self.assertFalse(instance.pending_turns.get("c1"))
+
+    def test_turn_started_during_cold_size_scan_skips_compaction(self):
+        instance = make_bridge()
+        instance.auto_compact_tokens = 300000
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        async def scan(func, *args, **kwargs):
+            instance.run_generation["c1"] = 1
+            return (410000, 7200, 1)
+        with patch.object(bridge.asyncio, "to_thread", side_effect=scan):
+            result = asyncio.run(instance._compact_before_cold_resume(
+                "c1", {"channel_id": "c1"}))
+        self.assertFalse(result)
+        self.assertFalse(instance.cold_compact_failures)
+        instance.forward_to_claude.assert_not_awaited()
+
     def test_human_arriving_during_cold_compaction_keeps_message_order(self):
         async def run():
             instance = make_bridge()
@@ -953,6 +995,35 @@ class ColdResumeTests(unittest.TestCase):
             self.assertFalse(instance.cold_compact_pending)
             self.assertEqual(instance._compact_session.await_count, 1)
 
+        asyncio.run(run())
+
+    def test_human_arriving_during_unneeded_cold_scan_keeps_order(self):
+        async def run():
+            instance = make_bridge()
+            instance.auto_compact_tokens = 300000
+            instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+            first = {"channel_id": "c1", "message_id": 1,
+                     "author": {"type": "user"}, "text": "first"}
+            second = dict(first, message_id=2, text="second")
+            scanning = asyncio.Event()
+            release_scan = asyncio.Event()
+            order = []
+            async def scan(*_args, **_kwargs):
+                scanning.set()
+                await release_scan.wait()
+                return None
+            async def forward(_key, _frame, prompt):
+                order.append(prompt)
+            instance.forward_to_claude = AsyncMock(side_effect=forward)
+            with patch.object(bridge.asyncio, "to_thread", side_effect=scan):
+                first_task = asyncio.create_task(instance.handle_inbound(first))
+                await scanning.wait()
+                second_task = asyncio.create_task(instance.handle_inbound(second))
+                await asyncio.sleep(0)
+                release_scan.set()
+                await asyncio.gather(first_task, second_task)
+            self.assertEqual(order, ["first", "second"])
+            self.assertFalse(instance.cold_compact_pending)
         asyncio.run(run())
 
     def test_after_cold_compaction_later_human_uses_queue_and_stop_drops_it(self):
@@ -1072,6 +1143,97 @@ class WarmCompactTests(unittest.TestCase):
             await asyncio.sleep(0)
             self.assertTrue(original.cancelled())
             instance._cancel_warm_timer("c1")
+        asyncio.run(run())
+
+    def test_ignored_traffic_and_bridge_commands_keep_idle_timer(self):
+        async def run():
+            instance = self._bridge()
+            instance._handle_inbound_message = AsyncMock()
+            instance._schedule_warm_timer("c1", {"channel_id": "c1"})
+            original = instance.warm_timers["c1"]
+            ignored = {"channel_id": "c1", "author": {"type": "agent"},
+                       "text": "status", "mentioned": False}
+            command = {"channel_id": "c1", "author": {"type": "user"},
+                       "text": "/status"}
+            await instance.handle_inbound(ignored)
+            await instance.handle_inbound(command)
+            self.assertIs(instance.warm_timers["c1"], original)
+            self.assertFalse(original.cancelled())
+            instance._cancel_warm_timer("c1")
+        asyncio.run(run())
+
+    def test_rebinding_session_arms_timer_for_new_session(self):
+        async def run():
+            instance = self._bridge()
+            instance.account_epoch = 0
+            instance._cmd_use = Mock(side_effect=lambda key, _arg, _epoch: (
+                instance.bindings[key].update(session_id="new-id") or "Bound"))
+            frame = {"channel_id": "c1", "author": {"type": "user"},
+                     "text": "/use new-id"}
+            instance._schedule_warm_timer("c1", frame)
+            original = instance.warm_timers["c1"]
+            with patch.object(instance, "_warm_compact_after_idle", new_callable=AsyncMock) as compact:
+                await instance.handle_inbound(frame)
+                self.assertEqual(compact.call_args.args[2], "new-id")
+            self.assertIsNot(instance.warm_timers["c1"], original)
+            instance._cancel_warm_timer("c1")
+        asyncio.run(run())
+
+    def test_peer_and_pending_question_turns_reset_timer(self):
+        instance = self._bridge()
+        instance.peer_agents = frozenset({"codex-cli"})
+        instance.peer_commands = frozenset({"/status"})
+        self.assertTrue(instance._starts_turn(peer_frame(), "c1"))
+        self.assertFalse(instance._starts_turn(
+            peer_frame(text="@claude /status"), "c1"))
+        instance.pending_questions["c1"] = ["waiting"]
+        self.assertTrue(instance._starts_turn({
+            "channel_id": "c1", "author": {"type": "user"},
+            "text": "answer", "any_mention": True, "mentioned": False,
+        }, "c1"))
+
+    def test_switch_listing_keeps_timer_real_switch_cancels_it(self):
+        async def run():
+            instance = self._bridge()
+            instance.account_epoch = 0
+            instance._schedule_warm_timer("c1", {"channel_id": "c1"})
+            original = instance.warm_timers["c1"]
+            async def switch(arg):
+                if arg:
+                    instance.account_epoch += 1
+                    instance.bindings["c1"]["session_id"] = None
+                return "accounts"
+            instance._cmd_switch = AsyncMock(side_effect=switch)
+            frame = {"channel_id": "c1", "author": {"type": "user"},
+                     "text": "/switch"}
+            await instance.handle_inbound(frame)
+            self.assertIs(instance.warm_timers["c1"], original)
+            self.assertFalse(original.cancelled())
+            await instance.handle_inbound(dict(frame, text="/switch another"))
+            await asyncio.sleep(0)
+            self.assertTrue(original.cancelled())
+            self.assertFalse(instance.warm_timers)
+        asyncio.run(run())
+
+    def test_bridge_command_set_matches_help(self):
+        import re
+        advertised = set(re.findall(r"(?m)^(/[a-z]+)", bridge.HELP))
+        self.assertEqual(bridge.BRIDGE_COMMANDS, advertised)
+
+    def test_turn_started_during_warm_size_scan_skips_compaction(self):
+        async def run():
+            instance = self._bridge()
+            frame = {"channel_id": "c1"}
+            async def scan(*_args, **_kwargs):
+                instance.turn_activity["c1"] = 1
+                return (410000, 900, 1)
+            with patch.object(bridge, "WARM_COMPACT_IDLE_SECONDS", 0), patch.object(
+                    bridge.asyncio, "to_thread", side_effect=scan):
+                task = asyncio.create_task(instance._warm_compact_after_idle(
+                    "c1", frame, "old-id"))
+                instance.warm_timers["c1"] = task
+                await task
+            instance._compact_session.assert_not_awaited()
         asyncio.run(run())
 
     def test_zero_disables_timer_and_cold_compaction(self):
