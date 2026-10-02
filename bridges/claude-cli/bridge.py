@@ -727,6 +727,41 @@ def find_session(session_id: str, projects_dir: Path | None = None) -> dict | No
     return None
 
 
+def cold_resume_info(session_id: str, projects_dir: Path, threshold: int,
+                     now: float | None = None, min_idle: float = 3600) -> tuple[int, float, float] | None:
+    """Read the last assistant usage and age; fail open if the log is unavailable."""
+    if threshold <= 0:
+        return None
+    for path in projects_dir.glob(f"*/{session_id}.jsonl"):
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as stream:
+                stream.seek(max(0, size - TAIL_BYTES))
+                if size > TAIL_BYTES:
+                    stream.readline()
+                lines = stream.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("type") != "assistant" or record.get("isSidechain"):
+                continue
+            usage = (record.get("message") or {}).get("usage") or {}
+            tokens = sum(usage.get(name, 0) or 0 for name in (
+                "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            timestamp = record.get("timestamp")
+            try:
+                last = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+            except (AttributeError, ValueError):
+                return None
+            idle = (time.time() if now is None else now) - last
+            return (tokens, idle, last) if tokens >= threshold and idle >= min_idle else None
+    return None
+
+
 def _age(ts: float) -> str:
     delta = max(0, int(time.time() - ts))
     if delta < 3600:
@@ -919,6 +954,10 @@ class Bridge:
         self.busy: set[str] = set()
         self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
+        self.cold_holds: dict[str, dict] = {}
+        self.cold_resolution_locks: dict[str, asyncio.Lock] = {}
+        self.cold_resume_tokens = max(0, args.cold_resume_tokens)
+        self.cold_notified: dict[str, tuple[str, float]] = {}
         self.pending_updates: dict[int, str] = {}
         self.pending_deletes: dict[int, None] = {}
         self.deleted_thread_roots: dict[int, None] = {}
@@ -1621,10 +1660,78 @@ class Bridge:
             frame.get("text") or "", self._own_handles(), frame.get("thread_context_chars"))
         cmd, _, rest = (cmd_text or "").partition(" ")
         cmd, rest = cmd.lower(), rest.strip()
+        lock = self.cold_resolution_locks.setdefault(key, asyncio.Lock())
+        if key in self.cold_holds or lock.locked():
+            async with lock:
+                if key in self.cold_holds:
+                    await self._resolve_cold_hold(key, frame, text, cmd)
+                else:
+                    await self.forward_to_claude(key, frame, text)
+            return
+        binding = self.bindings.get(key) or {}
+        sid = binding.get("session_id")
+        if (not cmd.startswith("/") and sid and not binding.get("_fork_source")
+                and key not in self.busy and not frame.get("scheduled")
+                and not (self.live.get(key) and self.live[key].alive)):
+            info = cold_resume_info(sid, self.projects_dir, self.cold_resume_tokens)
+            if info and self.cold_notified.get(key) != (sid, info[2]):
+                tokens, idle, last = info
+                self.cold_holds[key] = {"frame": frame, "text": text,
+                                        "session_id": sid, "tokens": tokens}
+                self.cold_notified[key] = (sid, last)
+                self.set_reaction(frame, "⏳")
+                self.post(frame, f"This session is ~{tokens // 1000}k tokens and has been idle "
+                          f"{max(1, int(idle // 3600))}h, so its cache has expired. "
+                          "Reply /compact to summarise first, /fresh to start a new "
+                          "session in the same folder, or /continue to carry on. "
+                          "Your message will run after your choice.")
+                return
         if not cmd.startswith("/"):
             await self.forward_to_claude(key, frame, text)
             return
         await self._run_command(key, frame, cmd, rest, text)
+
+    async def _resolve_cold_hold(self, key: str, frame: dict, text: str,
+                                 cmd: str) -> None:
+        hold = self.cold_holds.get(key)
+        if not hold:
+            return
+        binding = self.bindings.get(key) or {}
+        if binding.get("session_id") != hold["session_id"]:
+            self.cold_holds.pop(key, None)
+            await self.forward_to_claude(key, hold["frame"], hold["text"])
+            await self.forward_to_claude(key, frame, text)
+            return
+        if cmd == "/compact":
+            focus = ("Summarise for continuing this work. Keep verbatim: open tasks "
+                     "and next steps, decisions and why, user preferences/constraints, "
+                     "file paths, branch and PR numbers, commands that worked, exact "
+                     "unresolved error messages. Drop resolved dead ends and tool "
+                     "output already acted on.")
+            await self.forward_to_claude(key, frame, "/compact " + focus)
+        elif cmd == "/fresh":
+            old = binding["session_id"]
+            binding = dict(binding)
+            binding["session_id"] = None
+            binding.pop("_fork_source", None)
+            binding["previous_session_id"] = old
+            self.bindings[key] = binding
+            self._save_state()
+            self.post(frame, f"Starting fresh in {binding['cwd']} (previous session "
+                      f"{old[:8]}…; use /use {old} to return).")
+        self.cold_holds.pop(key, None)
+        await self.forward_to_claude(key, hold["frame"], hold["text"])
+        if cmd == "/compact":
+            after = cold_resume_info(hold["session_id"], self.projects_dir, 1,
+                                     min_idle=0)
+            if after and after[0] < hold["tokens"]:
+                self.post(frame, f"Compacted: {hold['tokens'] // 1000}k → {after[0] // 1000}k tokens.")
+            else:
+                self.post(frame, "Compaction requested; the new context size is not available yet.")
+        if cmd not in ("/compact", "/fresh", "/continue"):
+            await self.forward_to_claude(key, frame, text)
+        else:
+            self.set_reaction(frame, "✅", remember=False)
 
     async def _run_command(
         self, key: str, frame: dict, cmd: str, rest: str, text: str,
@@ -4042,6 +4149,9 @@ def main() -> None:
                     help="only summarize replies at least this many chars long")
     ap.add_argument("--timeout", type=int, default=int(os.environ.get("CLAUDE_TIMEOUT", "1800")),
                     help="per-run timeout in seconds")
+    ap.add_argument("--cold-resume-tokens", type=int,
+                    default=int(os.environ.get("CLAUDE_COLD_RESUME_TOKENS", "300000")),
+                    help="notify before resuming a session idle at least one hour above this size; 0 disables")
     ap.add_argument("--async-followups", action=argparse.BooleanOptionalAction,
                     default=os.environ.get("CLAUDE_ASYNC_FOLLOWUPS", "0") in ("1", "true", "yes"),
                     help="let a run that backgrounded work post its findings "

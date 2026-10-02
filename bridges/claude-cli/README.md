@@ -126,6 +126,14 @@ follow-up machinery.
 | `/commands` | show this bridge command list |
 | anything else | forwarded to the bound session (plain text **and** Claude CLI slash commands the headless CLI supports, e.g. `/compact`, `/usage`, `/context`) |
 
+When a bound session has been idle at least an hour and its last recorded
+context is at least 300,000 tokens, the bridge holds the next human message and
+offers `/compact`, `/fresh`, or `/continue`. `/compact` summarizes the session
+before sending the held message; `/fresh` starts a session in the same folder
+and retains the old session ID for `/use`; `/continue` resumes unchanged. A new
+human message also continues the held one first. Peer and scheduled messages
+are never held. Set `CLAUDE_COLD_RESUME_TOKENS=0` to disable the notice.
+
 `/model`, `/permissions`, and `/tldr` are **per channel/thread** — same as session
 bindings — so one channel can plan read-only on Sonnet while another auto-applies
 on Opus. All persist in `state.json`. Bridge `/model` is intentional (not Claude's
@@ -345,6 +353,8 @@ here is just the **default**, overridable per channel with `/permissions`),
 privilege above the default — off by default), `CLAUDE_TLDR` (`1` to add short
 summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TLDR_MIN_CHARS` (minimum reply length to summarize, default 1500),
+`CLAUDE_COLD_RESUME_TOKENS` (cold-resume notice threshold, default 300000;
+`0` disables it),
 `CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`1` to let
 backgrounded work post its findings as a later message — off by default),
 `CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (settle window in seconds once nothing is

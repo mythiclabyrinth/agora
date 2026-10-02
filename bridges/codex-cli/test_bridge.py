@@ -195,6 +195,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.deleted_thread_roots = {}
     instance.active_message_ids = set()
     instance.history_enabled = True
+    instance.tldr_default = False
     instance.pending_history = {}
     instance.stop_requested = set()
     instance.stopped_processes = set()
@@ -838,6 +839,62 @@ class PromptSuffixTests(unittest.TestCase):
 
 
 class OutboundAttachmentTests(unittest.TestCase):
+    def test_new_resume_and_fork_pass_developer_config_without_prompt_suffix(self):
+        async def events():
+            yield b'{"type":"thread.started","thread_id":"new-id"}\n'
+            yield b'{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}\n'
+            yield b'{"type":"turn.completed"}\n'
+
+        for binding, subcommand in [({"cwd": "/tmp"}, None),
+                                    ({"cwd": "/tmp", "session_id": "old-id",
+                                      "relay_instruction_settings": [False, False, True]}, "resume"),
+                                    ({"cwd": "/tmp", "session_id": "old-id",
+                                      "_fork_source": "old-id",
+                                      "relay_instruction_settings": [False, False, True]}, "fork")]:
+            instance = make_bridge()
+            instance.codex_bin = "codex"
+            instance.timeout = 30
+            instance.default_sandbox = "read-only"
+            instance.base_codex_args = []
+            instance._resolved_model = Mock(return_value=None)
+            instance._stage_attachments = Mock(return_value=("prompt", [], None))
+            instance.child_env = Mock(return_value={})
+            instance.refresh_usage = AsyncMock()
+            instance._save_state = Mock()
+            proc = Mock(returncode=0, stdout=events(), stdin=Mock())
+            proc.wait = AsyncMock()
+            proc.stderr.read = AsyncMock(return_value=b"")
+            with patch.object(bridge.asyncio, "create_subprocess_exec",
+                              AsyncMock(return_value=proc)) as spawn:
+                asyncio.run(instance.run_codex("c1", {"channel_id": "c1"}, binding, "prompt"))
+            cmd = spawn.await_args.args
+            self.assertEqual(cmd[0:2], ("codex", "exec"))
+            if subcommand:
+                self.assertEqual(cmd[2], subcommand)
+            self.assertIn("developer_instructions=", " ".join(cmd))
+            proc.stdin.write.assert_called_once_with(b"prompt")
+
+    def test_developer_instructions_and_relay_changes(self):
+        import tomllib
+        instance = make_bridge()
+        instance.tldr_default = True
+        binding = {"cwd": "/tmp"}
+        value = json.dumps(instance._developer_instructions(binding), ensure_ascii=False)
+        self.assertEqual(tomllib.loads("x = " + value)["x"],
+                         instance._developer_instructions(binding))
+        self.assertIn(bridge.TLDR_SENTINEL, instance._developer_instructions(binding))
+        self.assertEqual(instance._relay_note_for_run(binding)[0], "")
+        binding["session_id"] = "existing"
+        self.assertIn(bridge.TLDR_SENTINEL, instance._relay_note_for_run(binding)[0])
+        binding["relay_instruction_settings"] = instance._instruction_settings(binding)
+        self.assertEqual(instance._relay_note_for_run(binding)[0], "")
+        binding["tldr"] = False
+        self.assertIn("TL;DR summaries are off", instance._relay_note_for_run(binding)[0])
+        binding["relay_instruction_settings"] = instance._instruction_settings(binding)
+        self.assertEqual(instance._relay_note_for_run(binding)[0], "")
+        fork = dict(binding, _fork_source="existing")
+        self.assertEqual(instance._relay_note_for_run(fork)[0], "")
+
     def test_stop_flags_clear_when_run_raises(self):
         instance = make_bridge()
         instance.codex_bin = "codex"

@@ -150,7 +150,7 @@ def read_codex_usage(thread_id: str | None = None, sessions_dir: Path | None = N
 # TL;DR support. When enabled for a run we ask Codex to end a long reply with a
 # sentinel line the bridge lifts into the post frame's `tldr` field (a short
 # summary clients can toggle to). Codex has no --append-system-prompt, so the
-# instruction rides as a suffix on the prompt itself. The sentinel is
+# instruction is supplied as developer_instructions. The sentinel is
 # deliberately obscure so a literal occurrence in normal prose is vanishingly
 # unlikely to be stripped.
 TLDR_SENTINEL = "<<<AGORA_TLDR>>>"
@@ -163,7 +163,7 @@ TLDR_PROMPT_SUFFIX = (
     "replies. Never mention this note or the sentinel anywhere else.)"
 )
 
-# Multi-agent etiquette. Appended to every prompt when this bridge accepts
+# Multi-agent etiquette. Included in developer instructions when this bridge accepts
 # peer-agent @mentions (--peer-agents), so the model only tags a fellow agent
 # when the humans actually asked for a hand-off — an unnecessary tag burns a
 # turn of the server's limited agent-to-agent relay budget.
@@ -1854,9 +1854,7 @@ class Bridge:
         return self.tldr_default if choice is None else bool(choice)
 
     def _prompt_suffixes(self, binding: dict) -> str:
-        """Standing relay notes appended to every prompt (Codex has no
-        --append-system-prompt): TL;DR formatting when enabled, multi-agent
-        etiquette when peer @mentions are allowed."""
+        """Legacy relay notes for sessions without our developer instructions."""
         parts = []
         if self._tldr_enabled(binding):
             parts.append(TLDR_PROMPT_SUFFIX)
@@ -1866,6 +1864,35 @@ class Bridge:
             parts.append(HISTORY_PROMPT_SUFFIX)
         parts.append(ATTACH_PROMPT_SUFFIX)
         return "".join(parts)
+
+    def _instruction_settings(self, binding: dict) -> list[bool]:
+        return [self._tldr_enabled(binding), bool(self.peer_agents), self.history_enabled]
+
+    def _developer_instructions(self, binding: dict) -> str:
+        source = self._prompt_suffixes(binding).strip()
+        if not source:
+            return ""
+        notes = source.split("\n\n")
+        bodies = []
+        for note in notes:
+            body = note.split(": ", 1)[1].removesuffix(")")
+            bodies.append(body[0].upper() + body[1:])
+        return "\n\n".join(bodies)
+
+    def _relay_note_for_run(self, binding: dict) -> tuple[str, list[bool]]:
+        current = self._instruction_settings(binding)
+        previous = binding.get("relay_instruction_settings")
+        if not binding.get("session_id") and not binding.get("_fork_source"):
+            return "", current
+        if previous is None:
+            return self._prompt_suffixes(binding), current
+        if previous == current:
+            return "", current
+        labels = ("TL;DR summaries", "peer agent etiquette", "history requests")
+        changes = [f"{label} are {'on' if enabled else 'off'}"
+                   for label, before, enabled in zip(labels, previous, current)
+                   if before != enabled]
+        return "\n\n[Relay settings update: " + "; ".join(changes) + ".]", current
 
     def _cmd_tldr(self, key: str, arg: str) -> str:
         b = self.bindings.get(key)
@@ -2564,7 +2591,8 @@ class Bridge:
         # before the allowlist; those that still match are kept, the rest fall
         # back to the bridge default.
         model = self._resolved_model(binding.get("model"))
-        prompt += self._prompt_suffixes(binding)
+        relay_note, instruction_settings = self._relay_note_for_run(binding)
+        prompt += relay_note
         try:
             cmd = [self.codex_bin, "exec"]
             if binding.get("_fork_source"):
@@ -2572,6 +2600,8 @@ class Bridge:
             elif binding.get("session_id"):
                 cmd += ["resume", binding["session_id"]]
             cmd += [
+                "-c", "developer_instructions=" + json.dumps(
+                    self._developer_instructions(binding), ensure_ascii=False),
                 "--json",
                 "--skip-git-repo-check",
                 *self._sandbox_args(mode),
@@ -2675,6 +2705,10 @@ class Bridge:
                 binding.pop("_fork_source", None)
                 binding.pop("_fork_reused_source", None)
                 self.bindings[key] = binding
+                self._save_state()
+            if (self.bindings.get(key) is binding
+                    and binding.get("relay_instruction_settings") != instruction_settings):
+                binding["relay_instruction_settings"] = instruction_settings
                 self._save_state()
             return "\n\n".join(reply_parts)
         finally:

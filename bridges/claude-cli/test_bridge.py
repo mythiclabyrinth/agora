@@ -132,12 +132,18 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance = bridge.Bridge.__new__(bridge.Bridge)
     instance.agent_id = "claude-cli"
     instance.agent_name = "Claude"
+    instance.accounts = {"test": Path("/tmp")}
+    instance.account = "test"
     instance.peer_agents = bridge.parse_peer_agents(peer_agents)
     instance.peer_commands = bridge.parse_peer_commands(peer_commands)
     instance.context_buffer = {}
     instance.context_buffer_limit = 50
     instance.busy = set()
     instance.pending_turns = {}
+    instance.cold_holds = {}
+    instance.cold_resolution_locks = {}
+    instance.cold_notified = {}
+    instance.cold_resume_tokens = 300000
     instance.pending_updates = {}
     instance.pending_deletes = {}
     instance.deleted_thread_roots = {}
@@ -690,6 +696,98 @@ class PeerForwardTests(unittest.TestCase):
                                          "message_id": 7, "text": "latest"})
         entry = instance._pending_entry({"channel_id": "c1", "message_id": 7}, "old")
         self.assertEqual(entry["text"], "latest")
+
+
+class ColdResumeTests(unittest.TestCase):
+    def test_threshold_and_idle_from_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "project"
+            folder.mkdir()
+            record = {"type": "assistant", "timestamp": "2026-10-02T00:00:00Z",
+                      "message": {"usage": {"input_tokens": 2,
+                                            "cache_creation_input_tokens": 100000,
+                                            "cache_read_input_tokens": 300000}}}
+            (folder / "session.jsonl").write_text(json.dumps(record) + "\n")
+            now = bridge.datetime.fromisoformat("2026-10-02T02:00:00+00:00").timestamp()
+            self.assertEqual(bridge.cold_resume_info("session", Path(tmp), 300000, now),
+                             (400002, 7200, now - 7200))
+            self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 500000, now))
+            self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 300000, now - 5400))
+            self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 0, now))
+
+    def test_hold_and_continue_preserves_message_order(self):
+        instance = make_bridge()
+        instance.cold_holds = {}
+        instance.cold_notified = {}
+        instance.cold_resume_tokens = 300000
+        instance.accounts = {"test": Path("/tmp")}
+        instance.account = "test"
+        instance.bindings["c1"] = {"session_id": "session", "cwd": "/tmp"}
+        first = {"channel_id": "c1", "message_id": 1,
+                 "author": {"type": "user"}, "text": "work"}
+        second = dict(first, message_id=2, text="/continue")
+        with patch.object(bridge, "cold_resume_info", return_value=(400000, 7200, 1)):
+            asyncio.run(instance.handle_inbound(first))
+        instance.forward_to_claude.assert_not_awaited()
+        self.assertIn("c1", instance.cold_holds)
+        asyncio.run(instance.handle_inbound(second))
+        self.assertNotIn("c1", instance.cold_holds)
+        instance.forward_to_claude.assert_awaited_once_with("c1", first, "work")
+        with patch.object(bridge, "cold_resume_info", return_value=(400000, 7200, 1)):
+            asyncio.run(instance.handle_inbound(dict(first, message_id=3, text="next")))
+        self.assertNotIn("c1", instance.cold_holds)
+        self.assertEqual(instance.forward_to_claude.await_count, 2)
+
+    def test_scheduled_human_message_is_not_held(self):
+        instance = make_bridge()
+        instance.bindings["c1"] = {"session_id": "session", "cwd": "/tmp"}
+        frame = {"channel_id": "c1", "author": {"type": "user"},
+                 "text": "background follow-up", "scheduled": True}
+        with patch.object(bridge, "cold_resume_info", return_value=(400000, 7200, 1)) as scan:
+            asyncio.run(instance.handle_inbound(frame))
+        scan.assert_not_called()
+        instance.forward_to_claude.assert_awaited_once()
+
+    def test_peer_bypasses_hold(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        instance.cold_holds = {"c1": {"frame": {}, "text": "held", "session_id": "s1"}}
+        asyncio.run(instance.handle_inbound(peer_frame()))
+        self.assertIn("c1", instance.cold_holds)
+        instance.forward_to_claude.assert_awaited_once()
+
+    def test_fresh_keeps_folder_and_previous_session(self):
+        instance = make_bridge()
+        instance._save_state = Mock()
+        old = {"channel_id": "c1", "message_id": 1}
+        choice = {"channel_id": "c1", "message_id": 2}
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp/project",
+                                    "model": "opus", "permission_mode": "acceptEdits",
+                                    "worktree": {"path": "/tmp/project"}}
+        instance.cold_holds["c1"] = {"frame": old, "text": "work",
+                                      "session_id": "old-id", "tokens": 400000}
+        asyncio.run(instance._resolve_cold_hold("c1", choice, "/fresh", "/fresh"))
+        binding = instance.bindings["c1"]
+        self.assertIsNone(binding["session_id"])
+        self.assertEqual(binding["cwd"], "/tmp/project")
+        self.assertEqual(binding["model"], "opus")
+        self.assertEqual(binding["previous_session_id"], "old-id")
+        instance.forward_to_claude.assert_awaited_once_with("c1", old, "work")
+
+    def test_compact_runs_before_held_message(self):
+        instance = make_bridge()
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        old = {"channel_id": "c1", "message_id": 1}
+        choice = {"channel_id": "c1", "message_id": 2}
+        instance.cold_holds["c1"] = {"frame": old, "text": "work",
+                                      "session_id": "old-id", "tokens": 400000}
+        with patch.object(bridge, "cold_resume_info", return_value=(38000, 0, 1)):
+            asyncio.run(instance._resolve_cold_hold("c1", choice, "/compact", "/compact"))
+        self.assertEqual(instance.forward_to_claude.await_count, 2)
+        compact, held = instance.forward_to_claude.await_args_list
+        self.assertEqual(compact.args[:2], ("c1", choice))
+        self.assertTrue(compact.args[2].startswith("/compact Summarise"))
+        self.assertEqual(held.args, ("c1", old, "work"))
+        self.assertIn("400k → 38k", instance.post.call_args.args[1])
 
 
 class AppendSystemArgsTests(unittest.TestCase):
