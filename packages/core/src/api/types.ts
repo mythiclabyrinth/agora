@@ -474,6 +474,7 @@ export interface InstanceMembership extends Member {
 
 export interface AgentInfo {
   id: string;
+  rail_marker?: boolean;
   name: string;
   source: string;
   requires_mention: boolean;

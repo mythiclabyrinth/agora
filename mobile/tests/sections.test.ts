@@ -5,6 +5,7 @@ import {
 } from "@agora/core/testing/fixtures";
 import {
   activeSectionIndex,
+  agentDotStyle,
   messageRowIndex,
   pickActiveMessageId,
   sectionDotCapacity,
@@ -12,6 +13,13 @@ import {
 } from "../src/components/SectionRail";
 
 describe("conversation sections", () => {
+  it("renders marked agents as outlined rings until selected", () => {
+    expect(agentDotStyle("#abc123", false)).toEqual({
+      backgroundColor: "transparent", borderWidth: 1.5, borderColor: "#abc123", opacity: 1,
+    });
+    expect(agentDotStyle("#abc123", true)).toEqual({ backgroundColor: "#abc123" });
+    expect(agentDotStyle(undefined, false)).toBeUndefined();
+  });
   it("handles an empty timeline", () => {
     expect(conversationSections([])).toEqual([]);
   });

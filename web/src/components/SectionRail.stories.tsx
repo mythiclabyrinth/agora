@@ -9,8 +9,14 @@ import {
 } from "@agora/core/testing/fixtures";
 import { SectionRail } from "./SectionRail";
 import { MessageItem } from "./MessageItem";
+import { agentRailColors, type Message } from "@agora/core";
 
-const messages = [
+const markedAgents = fixtureAgents.map(agent => ({ ...agent, rail_marker: true }));
+const expectedAgentColors = agentRailColors(markedAgents);
+const cssRgb = (hex: string) =>
+  `rgb(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
+
+const messages: Message[] = [
   fixtureRootMessage,
   fixtureAgentMessage,
   { ...fixtureRootMessage, id: 46, author_id: "alice", author_name: "Alice", text: "How does the tablet thread overlay behave?" },
@@ -19,20 +25,28 @@ const messages = [
   { ...fixtureAgentMessage, id: 49, text: "Yes. Click any dot to jump between these three conversational sections." },
 ];
 
-function RailSurface() {
+const agentThread: Message[] = [
+  { ...fixtureRootMessage, id: 100, text: "Can we review this thread?" },
+  { ...fixtureAgentMessage, id: 101, thread_id: 100, text: "I reviewed the first part." },
+  { ...fixtureAgentMessage, id: 102, thread_id: 100, author_id: "claude", author_name: "Claude", text: "I checked the second part." },
+  { ...fixtureRootMessage, id: 103, thread_id: 100, text: "Please check the final result." },
+  { ...fixtureAgentMessage, id: 104, thread_id: 100, text: "The final result is ready." },
+];
+
+function RailSurface({ messages: rows = messages, viewportHeight = 520 }: { messages?: Message[]; viewportHeight?: number }) {
   const boxRef = useRef<HTMLDivElement>(null);
   return (
     <div
       className="ago-log-wrap"
       style={{
         width: "min(720px, 100%)",
-        height: "min(520px, calc(100vh - 40px))",
+        height: `min(${viewportHeight}px, calc(100vh - 40px))`,
         flex: "0 0 auto",
         overflow: "hidden",
       }}
     >
       <div ref={boxRef} className="ago-log" style={{ height: "100%", minHeight: 0 }}>
-        {messages.map((message) => (
+        {rows.map((message) => (
           <MessageItem
             key={message.id}
             message={message}
@@ -42,8 +56,8 @@ function RailSurface() {
             onOpenThread={fn()}
           />
         ))}
-        <SectionRail boxRef={boxRef} messages={messages} />
       </div>
+      <SectionRail boxRef={boxRef} messages={rows} />
     </div>
   );
 }
@@ -96,5 +110,26 @@ export const MultipleSections: Story = {
     const lowerPosition = await settled();
     await userEvent.click(dots[0]);
     await waitFor(() => expect(log.scrollTop).toBeLessThan(lowerPosition));
+  },
+};
+
+export const AgentThread: Story = {
+  args: { messages: agentThread, viewportHeight: 360 },
+  parameters: {
+    apiRoutes: { "GET /api/agents": { agents: markedAgents } },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const navigation = await canvas.findByRole("navigation", { name: "Jump to a section of the conversation" });
+    await waitFor(() => expect(within(navigation).getAllByRole("button")).toHaveLength(5));
+    const dots = within(navigation).getAllByRole("button");
+    expect(dots[1].classList.contains("agent")).toBe(true);
+    expect(dots[2].getAttribute("aria-label")).toContain("(agent)");
+    expect(getComputedStyle(dots[1]).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(getComputedStyle(dots[1]).borderTopStyle).toBe("solid");
+    expect(getComputedStyle(dots[1]).borderTopColor).toBe(cssRgb(expectedAgentColors.get("codex")!));
+    await userEvent.click(dots[2]);
+    await waitFor(() => expect(dots[2].classList.contains("active")).toBe(true));
+    expect(getComputedStyle(dots[2]).backgroundColor).toBe(cssRgb(expectedAgentColors.get("claude")!));
   },
 };

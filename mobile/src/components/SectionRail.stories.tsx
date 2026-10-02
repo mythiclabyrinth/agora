@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 import type { Meta, StoryObj } from "@storybook/react-native";
 import {
   fixtureAgentMessage,
+  fixtureAgents,
   fixtureRootMessage,
 } from "@agora/core/testing/fixtures";
 import type { Message } from "@agora/core";
@@ -17,8 +18,8 @@ const turns: Message[] = Array.from({ length: 40 }, (_, index) => ({
     index % 2 === 0 ? `Question ${index / 2 + 1}` : `Answer ${(index + 1) / 2}`,
 }));
 
-function Surface({ messages = turns }: { messages?: Message[] }) {
-  const [active, setActive] = useState(messages[0]?.id ?? null);
+function Surface({ messages = turns, initialActiveId }: { messages?: Message[]; initialActiveId?: number }) {
+  const [active, setActive] = useState(initialActiveId ?? messages[0]?.id ?? null);
   return (
     <View style={styles.surface}>
       <Text style={styles.copy}>
@@ -70,6 +71,19 @@ export const ThreadWithUserTurns: Story = {
         { ...fixtureAgentMessage, id: 204, thread_id: 200, text: "Follow-up answer" },
       ]}
     />
+  ),
+};
+export const AgentThread: Story = {
+  parameters: {
+    apiRoutes: { "GET /api/agents": { agents: fixtureAgents.map(agent => ({ ...agent, rail_marker: true })) } },
+  },
+  render: () => (
+    <Surface initialActiveId={302} messages={[
+      { ...fixtureRootMessage, id: 300, text: "Thread root" },
+      { ...fixtureAgentMessage, id: 301, thread_id: 300, text: "Codex reply" },
+      { ...fixtureAgentMessage, id: 302, thread_id: 300, author_id: "claude", author_name: "Claude", text: "Claude reply" },
+      { ...fixtureRootMessage, id: 303, thread_id: 300, text: "Human follow-up" },
+    ]} />
   ),
 };
 

@@ -235,6 +235,8 @@ protocol `post` frame carries `scheduled: true`; the post then counts as the
 first turn of the new streak. Leave the variable unset to disable scheduled
 resets. The server trusts the connected agent identity, not an id supplied by
 another client.
+Every message from a listed agent also gets a coloured navigation-rail dot in
+channels and threads, whether or not the post carries `scheduled: true`.
 
 ## Notifications
 

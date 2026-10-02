@@ -3201,6 +3201,9 @@ async fn available_agents(
         .map(|mut a| {
             let id = a["id"].as_str().unwrap_or_default().to_string();
             a["live"] = json!(live.contains(&id));
+            // Rail markers follow allowlist membership for every post. Streak
+            // resets additionally require the post's `scheduled` flag.
+            a["rail_marker"] = json!(state.hub.is_streak_reset_agent(&id));
             a["avatar"] = agent_avatar_path(&a);
             let source = a["source"].as_str().unwrap_or_default();
             let remote = crate::config::agent_tts_is_remote(
@@ -6087,6 +6090,26 @@ mod tests {
         assert_eq!(bot["tts_editable"], true);
         assert_eq!(bot["tts_accent_label"], "British English");
         assert_eq!(mimir["tts_editable"], false);
+    }
+
+    #[tokio::test]
+    async fn agent_roster_marks_streak_reset_agents_for_rail() {
+        let (mut state, _dir) = test_state();
+        let store = Arc::clone(&state.hub.store);
+        state.hub = Arc::new(Hub::new_with_options(
+            store,
+            10 * 1024 * 1024,
+            ["marked".to_string()].into(),
+        ));
+        state.hub.store.upsert_agent("marked", "Marked", "test", false, false, 0);
+        state.hub.store.upsert_agent("ordinary", "Ordinary", "test", false, false, 0);
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+        let roster = available_agents(State(state), Query(HashMap::new()), headers)
+            .await.unwrap().0;
+        let agents = roster["agents"].as_array().unwrap();
+        assert_eq!(agents.iter().find(|a| a["id"] == "marked").unwrap()["rail_marker"], true);
+        assert_eq!(agents.iter().find(|a| a["id"] == "ordinary").unwrap()["rail_marker"], false);
     }
 
     #[tokio::test]

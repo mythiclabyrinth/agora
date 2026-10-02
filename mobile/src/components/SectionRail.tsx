@@ -6,6 +6,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Pressable, StyleSheet, View } from "react-native";
 import {
   conversationSections,
+  agentRailColors,
+  useAgents,
   type ConversationSection,
   type Message,
 } from "@agora/core";
@@ -13,6 +15,13 @@ import { colors } from "../lib/theme";
 
 export const MAX_VISIBLE_SECTION_DOTS = 12;
 const SECTION_DOT_PITCH = 26;
+
+export function agentDotStyle(color: string | undefined, selected: boolean) {
+  if (!color) return undefined;
+  return selected
+    ? { backgroundColor: color }
+    : { backgroundColor: "transparent", borderWidth: 1.5, borderColor: color, opacity: 1 };
+}
 
 export function sectionDotCapacity(height: number): number {
   return Math.min(
@@ -229,7 +238,9 @@ export function SectionRail({
   bottomInset?: number;
 }) {
   const [maxVisible, setMaxVisible] = useState(MAX_VISIBLE_SECTION_DOTS);
-  const sections = useMemo(() => conversationSections(messages), [messages]);
+  const agents = useAgents().data;
+  const agentColors = useMemo(() => agentRailColors(agents || []), [agents]);
+  const sections = useMemo(() => conversationSections(messages, agentColors), [messages, agentColors]);
   const active = activeSectionIndex(sections, activeMessageId);
   const visible = visibleSectionWindow(sections, active, maxVisible);
 
@@ -243,17 +254,18 @@ export function SectionRail({
     >
       {visible.map((section) => {
         const selected = section.mid === sections[active]?.mid;
+        const agentColor = section.agentId ? agentColors.get(section.agentId) : undefined;
         return (
           <Pressable
             key={section.mid}
             accessibilityRole="button"
-            accessibilityLabel={`Jump to: ${section.label}`}
+            accessibilityLabel={`Jump to: ${section.label}${agentColor ? " (agent)" : ""}`}
             accessibilityState={{ selected }}
             hitSlop={{ top: 3, bottom: 3, left: 6, right: 6 }}
             onPress={() => onJump(section.mid)}
             style={styles.slot}
           >
-            <View style={[styles.dot, selected && styles.dotActive]} />
+            <View style={[styles.dot, selected && styles.dotActive, agentDotStyle(agentColor, selected)]} />
           </Pressable>
         );
       })}

@@ -1,6 +1,8 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import type { Message } from "@agora/core";
+import { StyleSheet } from "react-native";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { agentRailColors, ApiClient, ApiProvider, keys, type AgentInfo, type Message } from "@agora/core";
 import {
   createSectionJumpController,
   MAX_VISIBLE_SECTION_DOTS,
@@ -22,13 +24,39 @@ const message = (id: number, authorType: "user" | "agent"): Message => ({
   attachments: [],
 });
 
-function render(messages: Message[], activeMessageId: number | null, onJump = jest.fn()) {
+class FixtureApi extends ApiClient {
+  constructor(private readonly agents: AgentInfo[]) {
+    super({ baseUrl: "https://agora.example", token: "test" });
+  }
+  override async get<T>(path: string): Promise<T> {
+    if (path === "/api/agents") return { agents: this.agents } as T;
+    throw new Error(`Unexpected API request: ${path}`);
+  }
+}
+
+const trees: TestRenderer.ReactTestRenderer[] = [];
+const queryClients: QueryClient[] = [];
+afterEach(() => {
+  act(() => { for (const tree of trees.splice(0)) tree.unmount(); });
+  for (const client of queryClients.splice(0)) client.clear();
+});
+
+function render(messages: Message[], activeMessageId: number | null, onJump = jest.fn(), agents: AgentInfo[] = []) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } });
+  queryClient.setQueryData(keys.agents, agents);
+  const api = new FixtureApi(agents);
   let tree!: TestRenderer.ReactTestRenderer;
   act(() => {
     tree = TestRenderer.create(
-      React.createElement(SectionRail, { messages, activeMessageId, onJump }),
+      React.createElement(QueryClientProvider, { client: queryClient },
+        React.createElement(ApiProvider, { client: api },
+          React.createElement(SectionRail, { messages, activeMessageId, onJump }),
+        ),
+      ),
     );
   });
+  trees.push(tree);
+  queryClients.push(queryClient);
   return { tree, onJump };
 }
 
@@ -39,6 +67,25 @@ const dots = (tree: TestRenderer.ReactTestRenderer) =>
   );
 
 describe("SectionRail", () => {
+  it("shows a marked agent as an outlined ring and fills it when selected", () => {
+    const agents = [{ id: "helper", rail_marker: true }] as AgentInfo[];
+    const color = agentRailColors(agents).get("helper");
+    const messages = [message(1, "user"), message(2, "agent"), message(3, "user")];
+    const dotStyle = (tree: TestRenderer.ReactTestRenderer) => {
+      const agentDot = dots(tree)[1];
+      expect(agentDot.props.accessibilityLabel).toMatch(/\(agent\)$/);
+      return StyleSheet.flatten(agentDot.findAll(node => {
+        const width = StyleSheet.flatten(node.props?.style)?.width;
+        return width === 7 || width === 9;
+      }, { deep: true })[0].props.style);
+    };
+    expect(dotStyle(render(messages, 1, jest.fn(), agents).tree)).toMatchObject({
+      backgroundColor: "transparent", borderColor: color, borderWidth: 1.5,
+    });
+    expect(dotStyle(render(messages, 2, jest.fn(), agents).tree)).toMatchObject({
+      backgroundColor: color, width: 9,
+    });
+  });
   it("hides below two sections", () => {
     expect(render([message(1, "user"), message(2, "agent")], 1).tree.toJSON()).toBeNull();
   });
@@ -158,7 +205,7 @@ describe("useSectionJump", () => {
       return null;
     }
     act(() => {
-      TestRenderer.create(React.createElement(Harness));
+      trees.push(TestRenderer.create(React.createElement(Harness)));
     });
     return { get hook() { return hook; }, scrollToIndex, atBottom };
   }
