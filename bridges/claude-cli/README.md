@@ -126,18 +126,14 @@ follow-up machinery.
 | `/commands` | show this bridge command list |
 | anything else | forwarded to the bound session (plain text **and** Claude CLI slash commands the headless CLI supports, e.g. `/compact`, `/usage`, `/context`) |
 
-When a bound session has been idle at least an hour and its last recorded
-context is at least 300,000 tokens, the bridge holds the next human message and
-offers `/compact`, `/fresh`, or `/continue`. `/compact` summarizes the session
-before sending the held message; `/fresh` starts a session in the same folder
-and retains the old session ID for `/use`; `/continue` resumes unchanged. A new
-human message also continues the held one first. Other bridge commands leave
-the message held; `/stop` discards it. Peer and scheduled messages are never
-held. After 15 minutes with no activity, the bridge also compacts an idle
-session at the same token threshold, while its prompt cache is still warm. It
-skips active or queued work and waits for at least 50,000 tokens of regrowth
-before compacting the same session again. Set `CLAUDE_COLD_RESUME_TOKENS=0` to
-disable both the idle compaction and cold-resume notice.
+When a session reaches `CLAUDE_IDLE_COMPACT_TOKENS` (default 300,000), the
+bridge automatically compacts it after 15 minutes of quiet. If the bridge was
+not running during that window, it compacts before the next human message when
+the session has been idle at least an hour. The message then runs immediately;
+no choice or reply is required. Peer and scheduled messages do not trigger
+cold compaction. Active or queued work is skipped. The session must grow at
+least 50,000 tokens after compaction before another automatic compact.
+Set `CLAUDE_IDLE_COMPACT_TOKENS=0` to disable both automatic paths.
 
 `/model`, `/permissions`, and `/tldr` are **per channel/thread** — same as session
 bindings — so one channel can plan read-only on Sonnet while another auto-applies
@@ -358,8 +354,8 @@ here is just the **default**, overridable per channel with `/permissions`),
 privilege above the default — off by default), `CLAUDE_TLDR` (`1` to add short
 summaries to long replies by default; channels override with `/tldr`),
 `CLAUDE_TLDR_MIN_CHARS` (minimum reply length to summarize, default 1500),
-`CLAUDE_COLD_RESUME_TOKENS` (shared threshold for warm idle compaction and the
-cold-resume notice, default 300000; `0` disables both),
+`CLAUDE_IDLE_COMPACT_TOKENS` (threshold for warm idle and cold-resume
+automatic compaction, default 300000; `0` disables both),
 `CLAUDE_TIMEOUT` (seconds, default 1800), `CLAUDE_ASYNC_FOLLOWUPS` (`1` to let
 backgrounded work post its findings as a later message — off by default),
 `CLAUDE_FOLLOWUP_IDLE_TIMEOUT` (settle window in seconds once nothing is

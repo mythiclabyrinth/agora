@@ -60,79 +60,32 @@ Tests (`bridges/codex-cli/test_bridge.py`):
   `-c model_auto_compact_token_limit=20000` → TL;DR/attach/history sentinels
   still honoured after compaction.
 
-## B. Claude: cold-resume notice (no automatic action)
+## B. Claude: automatic idle compaction
 
-When a **human** message arrives for a bound Claude session that is both
-- idle ≥ 60 min since its last assistant entry (transcript mtime / last
-  timestamp), and
-- large: last assistant `usage` in the transcript has
-  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`
-  ≥ 300,000 (`--cold-resume-tokens`, env `CLAUDE_COLD_RESUME_TOKENS`;
-  `0` disables the feature),
+`CLAUDE_IDLE_COMPACT_TOKENS` is the one threshold for both paths (default
+300,000; `0` disables both). No new setting or per-channel command is needed.
 
-the bridge **holds** the message and posts:
+After a turn or command finishes, the bridge schedules a one-shot check after
+15 minutes of quiet. New inbound activity cancels and resets the timer. At the
+deadline, it compacts only if the same session is bound, the context meets the
+threshold, and it has no active run, live child, queued turn, pending question,
+or account authentication problem. Fork sources are skipped.
 
-> This session is ~412k tokens and has been idle 2h, so its cache has expired
-> and the next turn re-reads all of it. Reply **/compact** to summarise first,
-> **/fresh** to start a new session in the same folder, or **/continue** to
-> carry on as is. (Held message will run after your choice.)
+If the timer was missed, for example after a bridge restart, a human message
+arriving after 60 minutes idle triggers compaction before that message runs.
+The message proceeds in the same sequence without waiting for a choice. Peer
+and scheduled messages never trigger the cold path.
 
-Choices (only meaningful while a message is held for that binding):
-- `/compact` → run `claude -p --resume <id> "/compact <FOCUS>"` with the same
-  model / system args as normal runs, then run the held message on the same
-  session. Post "Compacted: 412k → 38k tokens." (read from the transcript after).
-  Read the post-compaction size before running the held prompt.
-- `/fresh` → new session in the same cwd (same as `/new <current cwd>`; keep
-  worktree/model/permissions overrides), then run the held message there.
-  Remember the old session id in the binding and mention it in the reply
-  ("previous session abc123… — `/use` to go back").
-- `/continue` → run the held message unchanged.
-- Any other new human chat message → treat as `/continue`: run the held message,
-  then the new one, in order. Other slash commands run as bridge commands and
-  leave the message held; `/stop` discards it.
-- `/fresh` and `/continue` without a held message reply locally that nothing
-  is waiting.
-- `/compact` with no held message keeps today's behaviour (forwarded to Claude).
+Both paths send `/compact <FOCUS>` through the ordinary Claude turn path with
+the binding's model, system prompt, and permissions. The focus keeps open
+tasks, decisions, constraints, file paths, branch and PR numbers, commands that
+worked, and exact unresolved errors. The bridge reads `postTokens` from the
+compact boundary and posts `Auto-compacted this session: 412k → 38k tokens.`
+A failed attempt posts nothing; the cold path still runs the human message.
+The session must grow at least 50,000 tokens after a successful compaction
+before another automatic compact. Timers are memory-only and disappear on
+restart. Claude's native mid-turn auto-compact settings are unchanged.
 
-Rules:
-- Never hold messages from peer agents or injected background follow-ups —
-  they run as today.
-- Prompt at most once per idle period per binding.
-- The hold lives in memory; a bridge restart drops it and the next message
-  behaves as today (it'll get the notice again if still cold).
-- Use the existing per-binding lock/queue so nothing runs concurrently.
-
-FOCUS text:
-"Summarise for continuing this work. Keep verbatim: open tasks and next steps,
-decisions and why, user preferences/constraints, file paths, branch and PR
-numbers, commands that worked, exact unresolved error messages. Drop resolved
-dead ends and tool output already acted on."
-
-Tests (`bridges/claude-cli/test_bridge.py`):
-- threshold/idle detection from a fixture transcript (below/above, idle/fresh,
-  disabled with 0).
-- hold → `/compact` runs compact then held prompt with identical model and
-  `--append-system-prompt`; `/fresh` creates a new session in the same cwd and
-  records the previous id; `/continue` and any-other-message paths.
-- peer-agent and background follow-up messages are never held.
-- only one notice per idle period.
-
-## C. Warm idle compaction
-
-`CLAUDE_COLD_RESUME_TOKENS` is the single threshold for both the cold-resume
-notice and warm idle compaction (default 300,000; `0` disables both). No new
-setting or per-channel command is needed.
-
-After a turn or command finishes, schedule a one-shot check after 15 minutes of
-quiet. New inbound activity cancels and resets the timer. At the deadline,
-compact only if the same session is still bound, its context meets the
-threshold, and it has no active run, live child, queued turn, held message,
-pending question, or account authentication problem. Fork sources are skipped.
-
-Run `/compact <FOCUS>` through the normal Claude turn path with the binding's
-model, system prompt, and permissions. Read `postTokens` from Claude's compact
-boundary record and post a single size summary. Don't auto-compact again until
-the session has both crossed the threshold and grown at least 50,000 tokens
-since the last compaction. A failed attempt posts nothing and is not retried
-until another turn. Timers are memory-only and disappear on restart. Claude's
-native mid-turn auto-compact settings are unchanged.
+Tests cover the warm and cold paths, skipped unsafe states, cancellation by new
+activity, threshold zero, the regrowth guard, peer and scheduled messages, and
+use of the normal model and system arguments.

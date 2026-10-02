@@ -140,10 +140,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.context_buffer_limit = 50
     instance.busy = set()
     instance.pending_turns = {}
-    instance.cold_holds = {}
-    instance.cold_resolution_locks = {}
-    instance.cold_notified = {}
-    instance.cold_resume_tokens = 300000
+    instance.idle_compact_tokens = 300000
     instance.warm_timers = {}
     instance.warm_compacting = set()
     instance.warm_activity_during_compaction = set()
@@ -732,124 +729,53 @@ class ColdResumeTests(unittest.TestCase):
             self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 300000, now - 5400))
             self.assertIsNone(bridge.cold_resume_info("session", Path(tmp), 0, now))
 
-    def test_hold_and_continue_preserves_message_order(self):
-        instance = make_bridge()
-        instance.cold_holds = {}
-        instance.cold_notified = {}
-        instance.cold_resume_tokens = 300000
-        instance.accounts = {"test": Path("/tmp")}
-        instance.account = "test"
-        instance.bindings["c1"] = {"session_id": "session", "cwd": "/tmp"}
-        first = {"channel_id": "c1", "message_id": 1,
-                 "author": {"type": "user"}, "text": "work"}
-        second = dict(first, message_id=2, text="/continue")
-        with patch.object(bridge, "cold_resume_info", return_value=(400000, 7200, 1)):
-            asyncio.run(instance.handle_inbound(first))
-        instance.forward_to_claude.assert_not_awaited()
-        self.assertIn("c1", instance.cold_holds)
-        asyncio.run(instance.handle_inbound(second))
-        self.assertNotIn("c1", instance.cold_holds)
-        instance.forward_to_claude.assert_awaited_once_with("c1", first, "work")
-        with patch.object(bridge, "cold_resume_info", return_value=(400000, 7200, 1)):
-            asyncio.run(instance.handle_inbound(dict(first, message_id=3, text="next")))
-        self.assertNotIn("c1", instance.cold_holds)
-        self.assertEqual(instance.forward_to_claude.await_count, 2)
-
-    def test_scheduled_human_message_is_not_held(self):
-        instance = make_bridge()
-        instance.bindings["c1"] = {"session_id": "session", "cwd": "/tmp"}
-        frame = {"channel_id": "c1", "author": {"type": "user"},
-                 "text": "background follow-up", "scheduled": True}
-        with patch.object(bridge, "cold_resume_info", return_value=(400000, 7200, 1)) as scan:
-            asyncio.run(instance.handle_inbound(frame))
-        scan.assert_not_called()
-        instance.forward_to_claude.assert_awaited_once()
-
-    def test_peer_bypasses_hold(self):
-        instance = make_bridge(peer_agents="codex-cli")
-        instance.cold_holds = {"c1": {"frame": {}, "text": "held", "session_id": "s1"}}
-        asyncio.run(instance.handle_inbound(peer_frame()))
-        self.assertIn("c1", instance.cold_holds)
-        instance.forward_to_claude.assert_awaited_once()
-
-    def test_fresh_keeps_folder_and_previous_session(self):
-        instance = make_bridge()
-        instance._save_state = Mock()
-        old = {"channel_id": "c1", "message_id": 1}
-        choice = {"channel_id": "c1", "message_id": 2}
-        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp/project",
-                                    "model": "opus", "permission_mode": "acceptEdits",
-                                    "worktree": {"path": "/tmp/project"}}
-        instance.cold_holds["c1"] = {"frame": old, "text": "work",
-                                      "session_id": "old-id", "tokens": 400000}
-        asyncio.run(instance._resolve_cold_hold("c1", choice, "/fresh", "/fresh"))
-        binding = instance.bindings["c1"]
-        self.assertIsNone(binding["session_id"])
-        self.assertEqual(binding["cwd"], "/tmp/project")
-        self.assertEqual(binding["model"], "opus")
-        self.assertEqual(binding["previous_session_id"], "old-id")
-        instance.forward_to_claude.assert_awaited_once_with("c1", old, "work")
-
-    def test_compact_runs_before_held_message(self):
+    def test_cold_compacts_before_human_message_without_question(self):
         instance = make_bridge()
         instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
-        old = {"channel_id": "c1", "message_id": 1}
-        choice = {"channel_id": "c1", "message_id": 2}
-        instance.cold_holds["c1"] = {"frame": old, "text": "work",
-                                      "session_id": "old-id", "tokens": 400000}
+        frame = {"channel_id": "c1", "message_id": 1,
+                 "author": {"type": "user"}, "text": "work"}
         events = []
-        async def forward(_key, _frame, prompt):
-            events.append("compact" if prompt.startswith("/compact") else "held")
-        def scan(*_args, **_kwargs):
-            events.append("scan")
+        async def compact(*args):
+            events.append("compact")
+            self.assertEqual(args[2], "old-id")
             return 38000
+        async def forward(*args, **kwargs):
+            events.append("message")
+        instance._compact_session = AsyncMock(side_effect=compact)
         instance.forward_to_claude = AsyncMock(side_effect=forward)
-        with patch.object(bridge, "compacted_tokens", side_effect=scan):
-            asyncio.run(instance._resolve_cold_hold("c1", choice, "/compact", "/compact"))
-        self.assertEqual(events, ["compact", "scan", "held"])
-        self.assertEqual(instance.forward_to_claude.await_count, 2)
-        compact, held = instance.forward_to_claude.await_args_list
-        self.assertEqual(compact.args[:2], ("c1", choice))
-        self.assertTrue(compact.args[2].startswith("/compact Summarise"))
-        self.assertEqual(held.args, ("c1", old, "work"))
-        self.assertIn("400k → 38k", instance.post.call_args.args[1])
-
-    def test_bridge_commands_leave_hold_until_next_message(self):
-        for command in ("/new", "/use", "/model"):
-            instance = make_bridge()
-            instance._run_command = AsyncMock()
-            held = {"channel_id": "c1", "message_id": 1}
-            choice = {"channel_id": "c1", "message_id": 2}
-            instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
-            instance.cold_holds["c1"] = {"frame": held, "text": "work",
-                                          "session_id": "old-id", "tokens": 400000}
-            asyncio.run(instance._resolve_cold_hold("c1", choice, command + " arg",
-                                                     command, "arg"))
-            instance._run_command.assert_awaited_once_with(
-                "c1", choice, command, "arg", command + " arg")
-            instance.forward_to_claude.assert_not_awaited()
-            self.assertIn("c1", instance.cold_holds)
-
-    def test_stop_discards_held_message(self):
-        instance = make_bridge()
-        instance._run_command = AsyncMock()
-        held = {"channel_id": "c1", "message_id": 1}
-        choice = {"channel_id": "c1", "message_id": 2}
-        instance.cold_holds["c1"] = {"frame": held, "text": "work",
-                                      "session_id": "old-id", "tokens": 400000}
-        asyncio.run(instance._resolve_cold_hold("c1", choice, "/stop", "/stop"))
-        self.assertNotIn("c1", instance.cold_holds)
-        instance.clear_reaction.assert_called_with(held)
-        instance.forward_to_claude.assert_not_awaited()
-        instance._run_command.assert_awaited_once()
-
-    def test_fresh_and_continue_without_hold_reply_locally(self):
-        for command in ("/fresh", "/continue"):
-            instance = make_bridge()
-            frame = {"channel_id": "c1", "author": {"type": "user"}, "text": command}
+        with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
             asyncio.run(instance.handle_inbound(frame))
-            self.assertIn("Nothing is waiting", instance.post.call_args.args[1])
-            instance.forward_to_claude.assert_not_awaited()
+        self.assertEqual(events, ["compact", "message"])
+        instance.forward_to_claude.assert_awaited_once_with("c1", frame, "work")
+        self.assertIn("410k → 38k", instance.post.call_args.args[1])
+        self.assertNotIn("Reply", instance.post.call_args.args[1])
+
+    def test_cold_skips_peer_and_scheduled_messages(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        scheduled = {"channel_id": "c1", "author": {"type": "user"},
+                     "text": "follow up", "scheduled": True}
+        with patch.object(bridge, "cold_resume_info") as scan:
+            asyncio.run(instance.handle_inbound(scheduled))
+            asyncio.run(instance.handle_inbound(peer_frame()))
+        scan.assert_not_called()
+        self.assertEqual(instance.forward_to_claude.await_count, 2)
+
+    def test_cold_regrowth_guard_and_failure_still_runs_message(self):
+        instance = make_bridge()
+        instance.bindings["c1"] = {"session_id": "old-id", "cwd": "/tmp"}
+        instance.warm_compacted_sizes["c1"] = ("old-id", 370000)
+        instance._compact_session = AsyncMock(return_value=38000)
+        frame = {"channel_id": "c1", "author": {"type": "user"}, "text": "work"}
+        with patch.object(bridge, "cold_resume_info", return_value=(410000, 7200, 1)):
+            asyncio.run(instance.handle_inbound(frame))
+        instance._compact_session.assert_not_called()
+        instance._compact_session = AsyncMock(return_value=None)
+        with patch.object(bridge, "cold_resume_info", return_value=(420000, 7200, 1)):
+            asyncio.run(instance.handle_inbound(frame))
+        instance._compact_session.assert_awaited_once()
+        self.assertEqual(instance.forward_to_claude.await_count, 2)
+        instance.post.assert_not_called()
 
 
 class WarmCompactTests(unittest.TestCase):
@@ -890,7 +816,6 @@ class WarmCompactTests(unittest.TestCase):
             lambda b: b.procs.update({"c1": Mock(returncode=None)}),
             lambda b: b.live.update({"c1": Mock(alive=True)}),
             lambda b: b.pending_turns.update({"c1": [{"text": "waiting"}]}),
-            lambda b: b.cold_holds.update({"c1": {"text": "held"}}),
             lambda b: setattr(b, "account_auth_problem", "sign in"),
             lambda b: b.bindings["c1"].update({"_fork_source": "source"}),
         )
@@ -920,21 +845,20 @@ class WarmCompactTests(unittest.TestCase):
             instance._cancel_warm_timer("c1")
         asyncio.run(run())
 
-    def test_zero_disables_timer_and_cold_hold(self):
+    def test_zero_disables_timer_and_cold_compaction(self):
         async def run():
             instance = self._bridge()
-            instance.cold_resume_tokens = 0
+            instance.idle_compact_tokens = 0
             frame = {"channel_id": "c1", "author": {"type": "user"}, "text": "work"}
             with patch.object(bridge, "cold_resume_info") as scan:
                 await instance.handle_inbound(frame)
             scan.assert_not_called()
             self.assertFalse(instance.warm_timers)
-            self.assertFalse(instance.cold_holds)
             instance.forward_to_claude.assert_awaited_once()
             instance.forward_to_claude.reset_mock()
-            await instance.handle_inbound(dict(frame, text="/fresh"))
+            await instance.handle_inbound(dict(frame, text="/compact"))
             instance.forward_to_claude.assert_awaited_once_with(
-                "c1", dict(frame, text="/fresh"), "/fresh", from_peer=False)
+                "c1", dict(frame, text="/compact"), "/compact", from_peer=False)
         asyncio.run(run())
 
     def test_requires_fifty_thousand_tokens_of_regrowth(self):
@@ -988,6 +912,30 @@ class WarmCompactTests(unittest.TestCase):
             self.assertTrue(args[2].startswith("/compact Summarise"))
             self.assertEqual(instance.bindings["c1"]["model"], "opus")
         asyncio.run(run())
+
+    def test_queued_human_gets_typing_after_hidden_compaction(self):
+        instance = self._bridge()
+        del instance.forward_to_claude
+        instance.typing = Mock()
+        instance.claim = Mock()
+        instance._post_reply = Mock()
+        auto = {"channel_id": "c1", "_auto_compact": True}
+        human = {"channel_id": "c1", "message_id": 7,
+                 "author": {"type": "user"}, "text": "next"}
+
+        async def run(_key, _frame, _binding, prompt):
+            if prompt.startswith("/compact"):
+                instance.pending_turns["c1"] = [
+                    {"frame": human, "text": "next", "from_peer": False, "queued": True}]
+            return "done"
+
+        instance.run_claude = AsyncMock(side_effect=run)
+        asyncio.run(instance.forward_to_claude("c1", auto, "/compact focus"))
+        self.assertEqual(instance.run_claude.await_count, 2)
+        self.assertTrue(any(call.args[0].get("message_id") == 7 and call.args[1]
+                            for call in instance.typing.call_args_list))
+        self.assertTrue(any(call.args[0].get("message_id") == 7 and not call.args[1]
+                            for call in instance.typing.call_args_list))
 
 
 class AppendSystemArgsTests(unittest.TestCase):
