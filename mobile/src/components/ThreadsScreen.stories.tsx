@@ -28,6 +28,9 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const UnreadThread: Story = {};
+export const ThreadsAtRest: Story = {
+  render: () => <GestureHandlerRootView style={{ flex: 1 }}><ThreadsScreen /></GestureHandlerRootView>,
+};
 /* Dialog opens prefilled with the thread's current alias. */
 export const RenameDialog: Story = {
   render: () => (
@@ -47,12 +50,12 @@ export const Empty: Story = {
 export const Populated: Story = {
   parameters: { apiRoutes: { "GET /api/threads?limit=100": { threads: inboxThreads } } },
 };
-export const SwipeRemove: Story = {
+export const ThreadsSwipeLeftRemove: Story = {
   render: () => <GestureHandlerRootView style={{ flex: 1 }}>
     <ThreadsScreen initialSwipe="left" />
   </GestureHandlerRootView>,
 };
-export const SwipeRename: Story = {
+export const ThreadsSwipeRightRename: Story = {
   render: () => <GestureHandlerRootView style={{ flex: 1 }}>
     <ThreadsScreen initialSwipe="right" />
   </GestureHandlerRootView>,

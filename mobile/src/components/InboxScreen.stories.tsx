@@ -22,10 +22,15 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Populated: Story = {};
+export const UnreadsAtRest: Story = {
+  render: () => <GestureHandlerRootView style={{ flex: 1 }}>
+    <InboxScreen initialTab="unreads" />
+  </GestureHandlerRootView>,
+};
 export const Limited: Story = {
   parameters: { apiRoutes: { "GET /api/unreads": { items: [item], total: 245 } } },
 };
-export const SwipeMarkRead: Story = {
+export const UnreadsSwipeLeftMarkRead: Story = {
   render: () => <GestureHandlerRootView style={{ flex: 1 }}>
     <InboxScreen initialTab="unreads" initialSwipe="left" />
   </GestureHandlerRootView>,

@@ -18,7 +18,13 @@ export interface SwipeRowController {
   opened: (row: SwipeableMethods) => void;
   closed: (row: SwipeableMethods) => void;
   close: () => void;
+  isOpen: (row: SwipeableMethods) => boolean;
   consumeTap: () => boolean;
+}
+
+export function shouldIgnoreSwipeRelease(dragged: boolean, row: SwipeableMethods | null,
+  controller: SwipeRowController): boolean {
+  return !!(dragged && row && controller.isOpen(row));
 }
 
 export function createSwipeRowController(): SwipeRowController {
@@ -30,6 +36,7 @@ export function createSwipeRowController(): SwipeRowController {
     },
     closed(row) { if (open === row) open = null; },
     close() { open?.close(); open = null; },
+    isOpen(row) { return open === row; },
     consumeTap() {
       if (!open) return false;
       open.close();
@@ -98,8 +105,12 @@ export function SwipeRow({
         const action = [swipeLeft, swipeRight].find(a => a?.name === event.nativeEvent.actionName);
         if (action) activate(action);
       }}
-      onPressIn={() => { dragged.current = false; }}
-      onPress={() => { if (dragged.current) return; if (!controller.consumeTap()) onPress(); }}
+      onPress={() => {
+        const wasDragged = dragged.current;
+        dragged.current = false;
+        if (shouldIgnoreSwipeRelease(wasDragged, row.current, controller)) return;
+        if (!controller.consumeTap()) onPress();
+      }}
       onLongPress={() => { controller.close(); onLongPress?.(); }}
       delayLongPress={350}>
       {children}
