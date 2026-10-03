@@ -4,6 +4,7 @@ import { StyleSheet, Text } from "react-native";
 import { colors } from "../src/lib/theme";
 import { SwipeRow, createSwipeRowController, shouldIgnoreSwipeRelease } from "../src/components/SwipeRow";
 const { __setSwipeProgress } = require("./mocks/reanimatedSwipeable");
+afterEach(() => __setSwipeProgress(0, 0));
 
 const Glyph = (() => null) as any;
 const row = () => ({ close: jest.fn(), openLeft: jest.fn(), openRight: jest.fn(), reset: jest.fn() });
@@ -131,19 +132,85 @@ it("ignores the release after opening, closes on the next tap, then navigates", 
   const content = tree.root.findAll(node => node.props.accessibilityRole === "button" &&
     node.props.accessibilityLabel === "Thread card" && typeof node.props.onPress === "function")[0]!;
   const methods = swipe.props.testSwipeMethods;
+  act(() => content.props.onPressIn());
   act(() => swipe.props.onSwipeableOpenStartDrag("right"));
   act(() => swipe.props.onSwipeableWillOpen());
-  // No onPressIn: the release event itself must be ignored and clear the drag flag.
+  // The release event is ignored and clears the drag flag.
   act(() => content.props.onPress());
   expect(open).not.toHaveBeenCalled();
   expect(methods.close).not.toHaveBeenCalled();
 
   // The next tap closes only; another tap navigates.
+  act(() => content.props.onPressIn());
   act(() => content.props.onPress());
   expect(methods.close).toHaveBeenCalledTimes(1);
   expect(open).not.toHaveBeenCalled();
+  act(() => content.props.onPressIn());
   act(() => content.props.onPress());
   expect(open).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+it("lets a screen-reader tap work without a preceding onPressIn", () => {
+  const open = jest.fn();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(SwipeRow, {
+    controller: createSwipeRowController(), onPress: open, accessibilityLabel: "Thread card",
+  }, React.createElement(Text, null, "Thread"))); });
+  const content = tree.root.findAll(node => node.props.accessibilityRole === "button" &&
+    node.props.accessibilityLabel === "Thread card" && typeof node.props.onPress === "function")[0]!;
+  act(() => content.props.onPress());
+  expect(open).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+it("resets the drag flag on a fresh touch after a swipe opened without a release press", () => {
+  const controller = createSwipeRowController();
+  const open = jest.fn();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(SwipeRow, {
+    controller, onPress: open, accessibilityLabel: "Thread card",
+    swipeLeft: { name: "remove", label: "Remove", icon: Glyph, color: "red", onPress: jest.fn() },
+  }, React.createElement(Text, null, "Thread"))); });
+  const swipe = tree.root.findByProps({ testID: "mock-swipe" });
+  const content = tree.root.findAll(node => node.props.accessibilityRole === "button" &&
+    node.props.accessibilityLabel === "Thread card" && typeof node.props.onPress === "function")[0]!;
+  const methods = swipe.props.testSwipeMethods;
+  act(() => {
+    content.props.onPressIn();
+    swipe.props.onSwipeableOpenStartDrag("right");
+    swipe.props.onSwipeableWillOpen();
+  });
+  // No release onPress occurred. A new physical touch must reset the old drag.
+  act(() => {
+    content.props.onPressIn();
+    content.props.onPress();
+  });
+  expect(methods.close).toHaveBeenCalledTimes(1);
+  expect(open).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});
+
+it("marks a swipe-to-close release as a gesture instead of navigating", () => {
+  const controller = createSwipeRowController();
+  const open = jest.fn();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(SwipeRow, {
+    controller, onPress: open, accessibilityLabel: "Thread card",
+    swipeLeft: { name: "remove", label: "Remove", icon: Glyph, color: "red", onPress: jest.fn() },
+  }, React.createElement(Text, null, "Thread"))); });
+  const swipe = tree.root.findByProps({ testID: "mock-swipe" });
+  const content = tree.root.findAll(node => node.props.accessibilityRole === "button" &&
+    node.props.accessibilityLabel === "Thread card" && typeof node.props.onPress === "function")[0]!;
+  const methods = swipe.props.testSwipeMethods;
+  act(() => swipe.props.onSwipeableWillOpen());
+  act(() => {
+    content.props.onPressIn();
+    swipe.props.onSwipeableCloseStartDrag();
+    content.props.onPress();
+  });
+  expect(open).not.toHaveBeenCalled();
+  expect(methods.close).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
 

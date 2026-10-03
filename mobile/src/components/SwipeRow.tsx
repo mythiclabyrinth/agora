@@ -111,6 +111,7 @@ export function SwipeRow({
         if (shouldIgnoreSwipeRelease(wasDragged, row.current, controller)) return;
         if (!controller.consumeTap()) onPress();
       }}
+      onPressIn={() => { dragged.current = false; }}
       onLongPress={() => { controller.close(); onLongPress?.(); }}
       delayLongPress={350}>
       {children}
@@ -124,7 +125,8 @@ function SwipeActionButton({ action, progress, onPress }: {
   action: SwipeAction; progress: SharedValue<number>; onPress: () => void;
 }) {
   const revealed = useAnimatedStyle(() => ({ opacity: progress.value > 0 ? 1 : 0 }));
-  return <Animated.View style={[styles.actionWrap, revealed]}>
+  return <Animated.View style={[styles.actionWrap, revealed]}
+    accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
     <Pressable accessibilityRole="button" accessibilityLabel={action.label}
       style={[styles.action, { backgroundColor: action.color }]} onPress={onPress}>
       <Icon icon={action.icon} size={19} color={colors.onAccent} />
