@@ -20,6 +20,20 @@ export const colors = {
   onAccent: "#0a0c14",
 } as const;
 
-export const radius = 16;
+export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, section: 32 } as const;
+export const radii = { sm: 8, md: 12, lg: 16, xl: 24, pill: 999 } as const;
+// Keep the original scalar export compatible with existing screens.
+export const radius = radii.lg;
+
+export const type = {
+  caption: { fontSize: 12, lineHeight: 16, fontWeight: "500" },
+  meta: { fontSize: 13, lineHeight: 18, fontWeight: "400" },
+  bodySm: { fontSize: 14, lineHeight: 20, fontWeight: "400" },
+  body: { fontSize: 16, lineHeight: 24, fontWeight: "400" },
+  title: { fontSize: 18, lineHeight: 24, fontWeight: "600" },
+  display: { fontSize: 28, lineHeight: 34, fontWeight: "700" },
+} as const;
+
+export const control = { minTouchSize: 44 } as const;
 
 export const mono = { fontFamily: "Menlo" } as const;
