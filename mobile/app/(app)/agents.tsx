@@ -11,13 +11,14 @@ import {
   View,
 } from "react-native";
 import { Link, Stack } from "expo-router";
-import { Plus } from "lucide-react-native";
+import { Bot, Plus } from "lucide-react-native";
 import { useAgents, useForgetAgent } from "@agora/core";
+import { EmptyState } from "../../src/components/EmptyState";
 import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { ArmedButton } from "../../src/components/ArmedButton";
 import { toastErr } from "../../src/components/Toast";
 import { fmtTs } from "@agora/core";
-import { colors } from "../../src/lib/theme";
+import { colors, typography, weight } from "../../src/lib/theme";
 import { useSession } from "../../src/state/session";
 
 export default function AgentsScreen() {
@@ -87,13 +88,11 @@ export default function AgentsScreen() {
           </View>
         ))}
         {agents.isSuccess && agents.data.length === 0 ? (
-          <Text style={styles.empty}>
-            {!adminKnown
+          <EmptyState icon={Bot} title="No agents yet" description={!adminKnown
               ? "Checking whether you can add agents…"
               : admin
                 ? "No agents yet. Use Add agent to connect one; it will appear here when it dials in."
-                : "No agents are available yet. Ask an instance admin to connect one."}
-          </Text>
+                : "No agents are available yet. Ask an instance admin to connect one."} />
         ) : null}
         {admin ? (
           <Link href="/(app)/add-agent" asChild>
@@ -131,8 +130,8 @@ const styles = StyleSheet.create({
   dot: { width: 9, height: 9, borderRadius: 5 },
   dotOn: { backgroundColor: colors.green },
   dotOff: { backgroundColor: colors.faint },
-  name: { color: colors.text, fontSize: 14.5, fontWeight: "700" },
-  meta: { color: colors.dim, fontSize: 12 },
+  name: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
+  meta: { color: colors.dim, fontSize: typography.caption.fontSize },
   empty: {
     color: colors.dim,
     textAlign: "center",
@@ -145,7 +144,7 @@ const styles = StyleSheet.create({
     gap: 3,
     minHeight: 40,
   },
-  addHeaderText: { color: colors.a1, fontSize: 14, fontWeight: "700" },
+  addHeaderText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   addCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -158,5 +157,5 @@ const styles = StyleSheet.create({
     padding: 14,
     minHeight: 66,
   },
-  addTitle: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
+  addTitle: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
 });

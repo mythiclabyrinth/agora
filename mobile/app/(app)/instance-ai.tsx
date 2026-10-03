@@ -25,7 +25,7 @@ import {
   type InstanceAiUpdate,
 } from "@agora/core";
 import { toast, toastErr } from "../../src/components/Toast";
-import { colors } from "../../src/lib/theme";
+import { colors, typography, weight } from "../../src/lib/theme";
 import * as Linking from "expo-linking";
 
 type SelectOption = { id: string; label: string };
@@ -135,7 +135,7 @@ function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Voice — speech to text</Text>
         </View>
-        <Switch
+        <Switch trackColor={{ false: colors.panelStrong, true: colors.a1 }}
           value={data.stt_enabled}
           onValueChange={(stt_enabled) => save({ stt_enabled })}
         />
@@ -214,7 +214,7 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
         <View style={{ flex: 1 }}>
           <Text style={styles.cardTitle}>Voice — text to speech</Text>
         </View>
-        <Switch
+        <Switch trackColor={{ false: colors.panelStrong, true: colors.a1 }}
           value={data.tts_enabled}
           onValueChange={(tts_enabled) => save({ tts_enabled })}
         />
@@ -561,7 +561,7 @@ export default function InstanceAiScreen() {
   if (me.isSuccess && !isAdmin) {
     return (
       <>
-        <Stack.Screen options={{ title: "Settings", headerShown: true }} />
+        <Stack.Screen options={{ title: "Instance settings", headerShown: true }} />
         <View style={[styles.root, styles.content]}>
           <Text style={styles.hint}>Instance admin access required.</Text>
         </View>
@@ -571,7 +571,7 @@ export default function InstanceAiScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "Settings", headerShown: true }} />
+      <Stack.Screen options={{ title: "Instance settings", headerShown: true }} />
       <ScrollView
         style={styles.root}
         contentContainerStyle={styles.content}
@@ -614,7 +614,7 @@ export default function InstanceAiScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 16, gap: 14, paddingBottom: 40 },
-  hint: { color: colors.dim, fontSize: 13, lineHeight: 19 },
+  hint: { color: colors.dim, fontSize: typography.meta.fontSize, lineHeight: 19 },
   card: {
     backgroundColor: colors.panel,
     borderWidth: 1,
@@ -624,9 +624,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cardHead: { flexDirection: "row", alignItems: "center", gap: 12 },
-  cardTitle: { color: colors.text, fontWeight: "700", fontSize: 16 },
-  meta: { color: colors.dim, fontSize: 12, lineHeight: 17 },
-  label: { color: colors.dim, fontSize: 12, fontWeight: "600", marginTop: 4 },
+  cardTitle: { color: colors.text, fontWeight: weight.bold, fontSize: typography.body.fontSize },
+  meta: { color: colors.dim, fontSize: typography.caption.fontSize, lineHeight: 17 },
+  label: { color: colors.dim, fontSize: typography.caption.fontSize, fontWeight: weight.semibold, marginTop: 4 },
   input: {
     borderWidth: 1,
     borderColor: colors.borderStrong,
@@ -635,7 +635,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     color: colors.text,
-    fontSize: 14,
+    fontSize: typography.bodySm.fontSize,
   },
   rowBtns: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
   select: {
@@ -650,11 +650,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 11,
   },
-  selectValue: { flex: 1, color: colors.text, fontSize: 14, fontWeight: "600" },
-  selectChevron: { color: colors.dim, fontSize: 12 },
+  selectValue: { flex: 1, color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  selectChevron: { color: colors.dim, fontSize: typography.caption.fontSize },
   selectModal: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "center",
     padding: 24,
   },
@@ -668,8 +668,8 @@ const styles = StyleSheet.create({
   },
   selectSheetTitle: {
     color: colors.dim,
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     letterSpacing: 0.4,
     paddingHorizontal: 8,
     paddingVertical: 6,
@@ -677,8 +677,8 @@ const styles = StyleSheet.create({
   selectList: { maxHeight: 360 },
   selectOption: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12 },
   selectOptionActive: { backgroundColor: colors.panelStrong },
-  selectOptionText: { color: colors.text, fontSize: 15, fontWeight: "500" },
-  selectOptionTextActive: { color: colors.text, fontSize: 15, fontWeight: "700" },
+  selectOptionText: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.medium },
+  selectOptionTextActive: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
   btn: {
     borderWidth: 1,
     borderColor: colors.borderStrong,
@@ -687,10 +687,10 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   btnPrimary: { backgroundColor: colors.text, borderColor: colors.text },
-  btnPrimaryText: { color: colors.bg, fontWeight: "700", fontSize: 13 },
-  btnText: { color: colors.text, fontWeight: "600", fontSize: 13 },
+  btnPrimaryText: { color: colors.bg, fontWeight: weight.bold, fontSize: typography.meta.fontSize },
+  btnText: { color: colors.text, fontWeight: weight.semibold, fontSize: typography.meta.fontSize },
   btnDanger: { borderColor: colors.red },
-  btnDangerText: { color: colors.red, fontWeight: "600", fontSize: 13 },
+  btnDangerText: { color: colors.red, fontWeight: weight.semibold, fontSize: typography.meta.fontSize },
   btnDisabled: { opacity: 0.4 },
   keysSection: { gap: 10 },
   keysHead: { gap: 4, marginBottom: 2 },
@@ -704,15 +704,15 @@ const styles = StyleSheet.create({
   },
   envName: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: typography.meta.fontSize,
+    fontWeight: weight.bold,
     letterSpacing: 0.2,
   },
   oauthSection: { marginTop: 8, gap: 10 },
   oauthHead: {
     color: colors.text,
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     letterSpacing: 1.4,
     textTransform: "uppercase",
     borderLeftWidth: 3,
@@ -735,8 +735,8 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     paddingHorizontal: 9,
     paddingVertical: 3,
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
   },
   oauthBadgeOn: {
     color: "#6ecbf5",

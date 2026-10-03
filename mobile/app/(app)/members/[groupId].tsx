@@ -7,7 +7,7 @@
 import React, { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Link, Stack, useLocalSearchParams } from "expo-router";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, User, X } from "lucide-react-native";
+import { Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, User, X } from "lucide-react-native";
 import {
   canManageMembershipScope,
   hasChannelScope,
@@ -22,11 +22,12 @@ import {
   visibleMembershipScopes,
 } from "@agora/core";
 import type { AgentInfo, Member, UserInfo } from "@agora/core";
+import { EmptyState } from "../../../src/components/EmptyState";
 import { AgentAvatar } from "../../../src/components/AgentAvatar";
 import { ArmedButton } from "../../../src/components/ArmedButton";
 import { Icon } from "../../../src/components/Icon";
 import { toast, toastErr } from "../../../src/components/Toast";
-import { colors } from "../../../src/lib/theme";
+import { colors, typography, weight } from "../../../src/lib/theme";
 import { useSession } from "../../../src/state/session";
 import { RoleDropdown } from "../../../src/components/RoleDropdown";
 
@@ -565,7 +566,7 @@ export default function MembersScreen() {
           />
         ))}
         {members.isSuccess && visibleAgentGroups.length === 0 ? (
-          <Text style={styles.empty}>No agents in this group yet.</Text>
+          <EmptyState icon={Bot} title="No agents in this group yet." />
         ) : null}
 
         {admin && !adding ? (
@@ -602,8 +603,8 @@ const styles = StyleSheet.create({
   content: { padding: 14, gap: 8, paddingBottom: 40 },
   section: {
     color: colors.dim,
-    fontSize: 11.5,
-    fontWeight: "800",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     letterSpacing: 1,
     textTransform: "uppercase",
     marginTop: 8,
@@ -621,12 +622,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   dot: { width: 9, height: 9, borderRadius: 5 },
-  name: { color: colors.text, fontSize: 14.5, fontWeight: "600" },
-  meta: { color: colors.dim, fontSize: 12 },
+  name: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
+  meta: { color: colors.dim, fontSize: typography.caption.fontSize },
   offline: { color: colors.amber },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 14 },
   addBtn: { alignItems: "center", paddingVertical: 12 },
-  addBtnText: { color: colors.a1, fontSize: 14.5, fontWeight: "700" },
+  addBtnText: { color: colors.a1, fontSize: typography.message.fontSize, fontWeight: weight.bold },
   addBox: {
     backgroundColor: colors.panel,
     borderWidth: 1,
@@ -636,7 +637,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 6,
   },
-  addTitle: { color: colors.text, fontSize: 14.5, fontWeight: "700" },
+  addTitle: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
   scopeChips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   scopeChip: {
     backgroundColor: "rgba(139,124,255,0.15)",
@@ -646,7 +647,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
   },
-  scopeText: { color: colors.a1, fontSize: 13.5, fontWeight: "600" },
+  scopeText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 2 },
   channelScopeList: { gap: 6, marginTop: 2 },
   channelScopeItem: { gap: 3 },
@@ -665,8 +666,8 @@ const styles = StyleSheet.create({
   },
   tagFlex: { flex: 1, minWidth: 0 },
   tagMuted: { opacity: 0.75 },
-  tagText: { color: colors.a1, fontSize: 12, fontWeight: "600", flexShrink: 1 },
-  tagTextWrap: { color: colors.a1, fontSize: 12, fontWeight: "600", flexShrink: 1, flexWrap: "wrap" },
+  tagText: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.semibold, flexShrink: 1 },
+  tagTextWrap: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.semibold, flexShrink: 1, flexWrap: "wrap" },
   inlineRemoveRow: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -684,8 +685,8 @@ const styles = StyleSheet.create({
   scopeRow: { gap: 7, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border },
   scopeInfo: { flexShrink: 1 },
   scopeActions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 7 },
-  scopeName: { color: colors.text, fontSize: 13.5, fontWeight: "600", flexShrink: 1 },
-  roleLabel: { color: colors.a1, fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
+  scopeName: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold, flexShrink: 1 },
+  roleLabel: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.bold, textTransform: "capitalize" },
   iconAction: { padding: 7 },
   personFooter: { alignItems: "flex-end", paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.border },
   optionList: { gap: 6 },
@@ -694,7 +695,7 @@ const styles = StyleSheet.create({
   roleOption: { borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10, padding: 12, gap: 2 },
   cancelBtn: { alignItems: "center", paddingVertical: 8 },
   cancelRow: { flexDirection: "row", alignItems: "center", gap: 3 },
-  cancelText: { color: colors.dim, fontSize: 13.5, fontWeight: "600" },
-  hint: { color: colors.faint, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 2 },
+  cancelText: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  hint: { color: colors.faint, fontSize: typography.meta.fontSize, lineHeight: 18, paddingHorizontal: 2 },
   hintLink: { color: colors.a2, textDecorationLine: "underline" },
 });

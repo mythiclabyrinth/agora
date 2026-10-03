@@ -39,7 +39,9 @@ import { Icon } from "../../src/components/Icon";
 import { useSession } from "../../src/state/session";
 import type { Session } from "@agora/core";
 import { fmtTs } from "@agora/core";
-import { colors } from "../../src/lib/theme";
+import { EmptyState } from "../../src/components/EmptyState";
+import { SheetHeader } from "../../src/components/SheetHeader";
+import { colors, typography, weight } from "../../src/lib/theme";
 
 /** Value that lags `value` by `ms` — keeps /api/search off the hot path
     while the user is still typing. */
@@ -69,17 +71,17 @@ function ScopeSheet({
 }) {
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
-        <View style={styles.sheet}>
-          <Text style={styles.sheetTitle}>Search in</Text>
+      <Pressable accessible={false} style={styles.sheetBackdrop} onPress={onClose}>
+        <View accessibilityViewIsModal style={styles.sheet}>
+          <SheetHeader title="Search in" onClose={onClose} />
           <ScrollView>
-            <Pressable style={styles.sheetItem} onPress={() => onPick(null)}>
+            <Pressable accessibilityRole="button" style={styles.sheetItem} onPress={() => onPick(null)}>
               <Text style={styles.sheetItemText}>Everywhere</Text>
             </Pressable>
             {groups.map((g) => (
               <React.Fragment key={g.id}>
                 <Pressable
-                  style={styles.sheetItem}
+                  accessibilityRole="button" style={styles.sheetItem}
                   onPress={() => onPick({ groupId: g.id, label: `All of ${g.name}` })}
                 >
                   <Text style={styles.sheetItemText}>All of {g.name}</Text>
@@ -87,7 +89,7 @@ function ScopeSheet({
                 {g.channels.map((c) => (
                   <Pressable
                     key={c.id}
-                    style={[styles.sheetItem, styles.sheetItemIndent]}
+                    accessibilityRole="button" style={[styles.sheetItem, styles.sheetItemIndent]}
                     onPress={() => onPick({ channelId: c.id, label: `#${c.name}` })}
                   >
                     <Text style={styles.sheetItemText}>
@@ -128,15 +130,15 @@ function FileSheet({
 }) {
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
-        <View style={styles.sheet}>
-          <Text style={styles.sheetTitle}>Filter by attachment</Text>
+      <Pressable accessible={false} style={styles.sheetBackdrop} onPress={onClose}>
+        <View accessibilityViewIsModal style={styles.sheet}>
+          <SheetHeader title="Filter by attachment" onClose={onClose} />
           <ScrollView>
-            <Pressable style={styles.sheetItem} onPress={() => onPick("")}>
+            <Pressable accessibilityRole="button" style={styles.sheetItem} onPress={() => onPick("")}>
               <Text style={styles.sheetItemText}>Any content</Text>
             </Pressable>
             {FILE_OPTS.map((o) => (
-              <Pressable key={o.value} style={styles.sheetItem} onPress={() => onPick(o.value)}>
+              <Pressable key={o.value} accessibilityRole="button" style={styles.sheetItem} onPress={() => onPick(o.value)}>
                 <Text style={styles.sheetItemText}>{o.label}</Text>
               </Pressable>
             ))}
@@ -592,10 +594,8 @@ export default function SearchScreen() {
             keyboardDismissMode="on-drag"
             ListEmptyComponent={
               query || file ? null : (
-                <Text style={styles.notice}>
-                  Search message history, channel names and topics, and groups —
-                  or filter by attachment.
-                </Text>
+                <EmptyState icon={SearchIcon} title="Find a conversation"
+                  description="Search message history, channels and groups, or filter by attachment." />
               )
             }
           />
@@ -625,7 +625,7 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     color: colors.text,
-    fontSize: 15,
+    fontSize: typography.message.fontSize,
     paddingVertical: 9,
   },
   filterRow: {
@@ -653,14 +653,14 @@ const styles = StyleSheet.create({
   },
   filterChipText: {
     color: colors.dim,
-    fontSize: 12.5,
-    fontWeight: "700",
+    fontSize: typography.meta.fontSize,
+    fontWeight: weight.bold,
     flexShrink: 1,
   },
   filterChipTextActive: { color: colors.a1 },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   sheet: {
@@ -672,18 +672,17 @@ const styles = StyleSheet.create({
     paddingBottom: 34,
     maxHeight: "70%",
   },
-  sheetTitle: { color: colors.text, fontSize: 16, fontWeight: "800", marginBottom: 8 },
   sheetItem: {
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
   sheetItemIndent: { paddingLeft: 18 },
-  sheetItemText: { color: colors.text, fontSize: 14.5 },
+  sheetItemText: { color: colors.text, fontSize: typography.message.fontSize },
   section: {
     color: colors.faint,
-    fontSize: 11.5,
-    fontWeight: "800",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     textTransform: "uppercase",
     letterSpacing: 0.8,
     marginTop: 6,
@@ -698,18 +697,18 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   cardTop: { flexDirection: "row", alignItems: "baseline", gap: 8 },
-  title: { color: colors.text, fontSize: 14.5, fontWeight: "700" },
-  sub: { color: colors.dim, fontSize: 13 },
+  title: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
+  sub: { color: colors.dim, fontSize: typography.meta.fontSize },
   hash: { color: colors.faint },
-  crumbSuffix: { color: colors.faint, fontWeight: "400", fontSize: 12.5 },
-  author: { color: colors.a1, fontSize: 13, fontWeight: "700", flex: 1 },
-  ts: { color: colors.faint, fontSize: 11 },
-  crumb: { color: colors.faint, fontSize: 12 },
-  snippet: { color: colors.dim, fontSize: 13.5, lineHeight: 19 },
-  snippetHit: { color: colors.a1, fontWeight: "700" },
+  crumbSuffix: { color: colors.faint, fontWeight: weight.regular, fontSize: typography.meta.fontSize },
+  author: { color: colors.a1, fontSize: typography.meta.fontSize, fontWeight: weight.bold, flex: 1 },
+  ts: { color: colors.faint, fontSize: typography.caption.fontSize },
+  crumb: { color: colors.faint, fontSize: typography.caption.fontSize },
+  snippet: { color: colors.dim, fontSize: typography.bodySm.fontSize, lineHeight: 19 },
+  snippetHit: { color: colors.a1, fontWeight: weight.bold },
   moreRow: { alignItems: "center", paddingVertical: 10 },
-  moreText: { color: colors.a1, fontSize: 14, fontWeight: "700" },
-  notice: { color: colors.dim, fontSize: 13.5, textAlign: "center", paddingVertical: 24 },
+  moreText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  notice: { color: colors.dim, fontSize: typography.bodySm.fontSize, textAlign: "center", paddingVertical: 24 },
   askRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -721,7 +720,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  askRowText: { color: colors.text, fontSize: 14, fontWeight: "700", flex: 1 },
+  askRowText: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold, flex: 1 },
   askRowQuery: { color: colors.a1 },
   askCard: {
     backgroundColor: "rgba(139,124,255,0.08)",
@@ -733,11 +732,11 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   askHead: { flexDirection: "row", alignItems: "center", gap: 8 },
-  askTitle: { color: colors.text, fontSize: 14.5, fontWeight: "700", flex: 1 },
+  askTitle: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold, flex: 1 },
   askThinking: { flexDirection: "row", alignItems: "center", gap: 10 },
-  askThinkingText: { color: colors.dim, fontSize: 13.5 },
-  askAnswer: { color: colors.text, fontSize: 14.5, lineHeight: 21 },
-  askError: { color: colors.red, fontSize: 13.5 },
-  cite: { color: colors.a1, fontWeight: "700" },
-  citeBadge: { color: colors.a1, fontSize: 12, fontWeight: "800" },
+  askThinkingText: { color: colors.dim, fontSize: typography.bodySm.fontSize },
+  askAnswer: { color: colors.text, fontSize: typography.message.fontSize, lineHeight: 21 },
+  askError: { color: colors.red, fontSize: typography.bodySm.fontSize },
+  cite: { color: colors.a1, fontWeight: weight.bold },
+  citeBadge: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
 });

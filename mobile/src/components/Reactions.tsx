@@ -68,6 +68,9 @@ export function QuickReactions({
         return (
           <Pressable
             key={emoji}
+            accessibilityRole="button"
+            accessibilityLabel={`React with ${emoji}`}
+            accessibilityState={{ selected: mine }}
             style={[styles.quick, mine && styles.chipMine]}
             onPress={() => {
               react(message, emoji);
@@ -78,7 +81,7 @@ export function QuickReactions({
           </Pressable>
         );
       })}
-      <Pressable style={styles.quick} onPress={onMore}>
+      <Pressable accessibilityRole="button" accessibilityLabel="More reactions" style={styles.quick} onPress={onMore}>
         <Icon icon={Smile} size={20} color={colors.dim} />
       </Pressable>
     </View>

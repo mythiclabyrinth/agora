@@ -17,13 +17,14 @@ import { Link, Stack } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { WEBSITE_URL, keys, useApi } from "@agora/core";
 import type { Me } from "@agora/core";
+import { SectionHeader } from "../../src/components/SectionHeader";
 import { ArmedButton } from "../../src/components/ArmedButton";
 import { LinkPreferences } from "../../src/components/LinkPreferences";
 import { toast, toastErr } from "../../src/components/Toast";
 import { compareVersions, lookupStoreVersion } from "../../src/lib/appVersion";
 import { openLink } from "../../src/lib/openLink";
 import { openWriteReviewUrl } from "../../src/lib/storeReview";
-import { colors } from "../../src/lib/theme";
+import { colors, typography, weight } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 import { useSession } from "../../src/state/session";
 
@@ -36,7 +37,7 @@ function Section({
 }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <SectionHeader title={title} />
       {children}
     </View>
   );
@@ -262,21 +263,6 @@ export default function SettingsScreen() {
               onConfirm={() => void forgetServer()}
             />
           </View>
-          <View style={styles.row}>
-            <Text style={[styles.meta, { flex: 1 }]}>
-              Permanently delete your data on this server and sign out
-              everywhere.
-            </Text>
-            <Pressable
-              style={styles.linkBtn}
-              onPress={deleteAccount}
-              disabled={deleting}
-            >
-              <Text style={[styles.deleteText, deleting && { opacity: 0.4 }]}>
-                {deleting ? "Deleting…" : "Delete account"}
-              </Text>
-            </Pressable>
-          </View>
         </Section>
 
         <Section title="Links">
@@ -355,6 +341,17 @@ export default function SettingsScreen() {
             </Pressable>
           </View>
         </Section>
+        <Section title="Delete account">
+          <View style={styles.dangerCard}>
+            <Text style={styles.meta}>Permanently delete your data on this server and sign out everywhere. This cannot be undone.</Text>
+            <Pressable accessibilityRole="button" accessibilityState={{ disabled: deleting }}
+              style={styles.deleteButton} onPress={deleteAccount} disabled={deleting}>
+              <Text style={[styles.deleteText, deleting && { opacity: 0.4 }]}>
+                {deleting ? "Deleting…" : "Delete account"}
+              </Text>
+            </Pressable>
+          </View>
+        </Section>
       </ScrollView>
     </>
   );
@@ -364,13 +361,6 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 14, gap: 20, paddingBottom: 40 },
   section: { gap: 8 },
-  sectionTitle: {
-    color: colors.dim,
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -382,8 +372,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
   },
-  name: { color: colors.text, fontSize: 14, fontWeight: "700" },
-  meta: { color: colors.dim, fontSize: 12 },
+  name: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  meta: { color: colors.dim, fontSize: typography.caption.fontSize },
   input: {
     backgroundColor: colors.panelStrong,
     borderWidth: 1,
@@ -392,12 +382,14 @@ const styles = StyleSheet.create({
     color: colors.text,
     paddingHorizontal: 12,
     paddingVertical: 9,
-    fontSize: 14,
+    fontSize: typography.bodySm.fontSize,
   },
-  linkBtn: { paddingVertical: 10, alignItems: "center" },
-  linkBtnText: { color: colors.a1, fontSize: 14, fontWeight: "700" },
-  linkBtnDim: { color: colors.dim, fontSize: 14, fontWeight: "600" },
-  deleteText: { color: colors.red, fontSize: 14, fontWeight: "700" },
+  linkBtn: { minHeight: 44, justifyContent: "center", paddingVertical: 10, alignItems: "center" },
+  linkBtnText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  linkBtnDim: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  dangerCard: { padding: 16, gap: 16, borderWidth: 1, borderColor: colors.red, borderRadius: 12, backgroundColor: colors.panel },
+  deleteButton: { minHeight: 44, padding: 12, alignItems: "center", borderRadius: 8, backgroundColor: colors.red },
+  deleteText: { color: colors.onAccent, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   agentHub: {
     flexDirection: "row",
     alignItems: "center",
@@ -406,14 +398,14 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(56,225,200,0.22)",
-    backgroundColor: "rgba(56,225,200,0.06)",
+    borderColor: colors.accentBorder,
+    backgroundColor: colors.accentSoft,
   },
   agentHubTitle: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: "800",
+    fontSize: typography.body.fontSize,
+    fontWeight: weight.bold,
     marginBottom: 3,
   },
-  agentHubArrow: { color: colors.a2, fontSize: 28, lineHeight: 30 },
+  agentHubArrow: { color: colors.a1, fontSize: typography.display.fontSize, lineHeight: 30 },
 });

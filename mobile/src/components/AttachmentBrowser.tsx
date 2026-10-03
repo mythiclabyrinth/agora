@@ -21,8 +21,9 @@ import {
   type AttachmentBrowserItem,
   type Session,
 } from "@agora/core";
-import { colors } from "../lib/theme";
+import { colors, typography, weight } from "../lib/theme";
 import { downloadAndShare } from "./Attachments";
+import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
 import { toastErr } from "./Toast";
 
@@ -70,12 +71,8 @@ export function AttachmentBrowser({
 
   if (query.isLoading) return <View style={styles.center}><ActivityIndicator color={colors.a1} /></View>;
   if (query.isError) return (
-    <View style={styles.center}>
-      <Text style={styles.empty}>Couldn’t load attachments.</Text>
-      <Pressable accessibilityRole="button" accessibilityLabel="Retry attachments" onPress={() => query.refetch()}>
-        <Text style={styles.retry}>Retry</Text>
-      </Pressable>
-    </View>
+    <EmptyState icon={FileText} title="Couldn’t load attachments."
+      action={{ label: "Retry", accessibilityLabel: "Retry attachments", onPress: () => void query.refetch() }} />
   );
 
   return (
@@ -86,7 +83,7 @@ export function AttachmentBrowser({
       refreshControl={<RefreshControl refreshing={query.isRefetching && !query.isFetchingNextPage} onRefresh={() => query.refetch()} tintColor={colors.a1} />}
       onEndReached={() => { if (query.hasNextPage && !query.isFetchingNextPage) void query.fetchNextPage(); }}
       onEndReachedThreshold={0.35}
-      ListEmptyComponent={<Text style={styles.empty}>No attachments yet.</Text>}
+      ListEmptyComponent={<EmptyState icon={FileText} title="No attachments yet." description="Files shared in this conversation will appear here." />}
       ListFooterComponent={query.isFetchingNextPage ? <ActivityIndicator style={styles.footer} color={colors.a1} /> : null}
       renderItem={({ item }) => {
         const isImage = item.mime?.startsWith("image/") && !failed.has(item.id);
@@ -109,10 +106,10 @@ export function AttachmentBrowser({
                 ) : null}
               </View>
             </Pressable>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Download ${item.filename}`} hitSlop={8} disabled={downloading === item.id} onPress={() => void download(item)}>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Download ${item.filename}`} hitSlop={13} disabled={downloading === item.id} onPress={() => void download(item)}>
               {downloading === item.id ? <ActivityIndicator size="small" color={colors.dim} /> : <Icon icon={Download} size={19} />}
             </Pressable>
-            {item.can_delete ? <Pressable accessibilityRole="button" accessibilityLabel={`Delete ${item.filename}`} hitSlop={8} disabled={deleting === item.id} onPress={() => confirmDelete(item)}>
+            {item.can_delete ? <Pressable accessibilityRole="button" accessibilityLabel={`Delete ${item.filename}`} hitSlop={13} disabled={deleting === item.id} onPress={() => confirmDelete(item)}>
               {deleting === item.id ? <ActivityIndicator size="small" color={colors.dim} /> : <Icon icon={Trash2} size={19} />}
             </Pressable> : null}
           </View>
@@ -131,11 +128,11 @@ const styles = StyleSheet.create({
   preview: { width: 58, height: 54, alignItems: "center", justifyContent: "center", overflow: "hidden", borderRadius: 10, backgroundColor: colors.panelStrong },
   image: { width: "100%", height: "100%" },
   details: { flex: 1, minWidth: 0, gap: 3 },
-  filename: { color: colors.text, fontSize: 15, fontWeight: "600" },
-  meta: { color: colors.dim, fontSize: 12 },
+  filename: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
+  meta: { color: colors.dim, fontSize: typography.caption.fontSize },
   thread: { flexDirection: "row", alignItems: "center", gap: 5 },
-  threadText: { flexShrink: 1, color: colors.dim, fontSize: 12 },
+  threadText: { flexShrink: 1, color: colors.dim, fontSize: typography.caption.fontSize },
   empty: { color: colors.dim, textAlign: "center" },
-  retry: { color: colors.a1, fontWeight: "600" },
+  retry: { color: colors.a1, fontWeight: weight.semibold },
   footer: { padding: 18 },
 });

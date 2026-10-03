@@ -758,7 +758,7 @@ export function Composer({
         ) : null}
         <PasteAwareInput
           enabled={nativePasteInput}
-          style={[focused ? styles.pasteWrapFocused : styles.pasteWrap, { height: Math.min(inputHeight, focused ? 150 : 130) }]}
+          style={focused ? styles.pasteWrapFocused : styles.pasteWrap}
           onPaste={(payload) => void onNativePaste(payload)}
         >
           <TextInput
@@ -786,7 +786,6 @@ export function Composer({
             placeholder={placeholder}
             placeholderTextColor={colors.faint}
             multiline
-            scrollEnabled={inputHeight >= (focused ? 150 : 130)}
             maxLength={MAX_MESSAGE_CHARS}
           />
         </PasteAwareInput>
@@ -1098,7 +1097,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "flex-end", padding: 10, gap: 8 },
   colFocused: { flexShrink: 0, marginHorizontal: 12, marginTop: 8, borderWidth: 1, borderColor: colors.accentBorder, borderRadius: 12, backgroundColor: colors.bg },
   pasteWrap: { flex: 1 },
-  pasteWrapFocused: { alignSelf: "stretch", flexShrink: 0 },
+  pasteWrapFocused: { alignSelf: "stretch" },
   iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   input: {
     flex: 1,

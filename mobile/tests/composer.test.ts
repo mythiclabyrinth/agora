@@ -107,8 +107,8 @@ test("successful send clears its draft while a failed send retains it", async ()
   act(() => input().props.onContentSizeChange({ nativeEvent: { contentSize: { width: 300, height: 120 } } }));
   expect(StyleSheet.flatten(input().props.style).height).toBe(120);
   act(() => input().props.onFocus());
-  expect(StyleSheet.flatten(tree.root.findByProps({ testID: "paste-aware-input" }).props.style).height).toBe(120);
-  expect(input().props.scrollEnabled).toBe(false);
+  expect(StyleSheet.flatten(tree.root.findByProps({ testID: "paste-aware-input" }).props.style).height).toBeUndefined();
+  expect(input().props.scrollEnabled).toBeUndefined();
   await act(async () => { await labelled(tree.root, "Send message").props.onPress(); });
   expect(useMessageDrafts.getState().byConvo["channel-a"]).toBe("keep me");
   expect(StyleSheet.flatten(input().props.style).height).toBe(120);

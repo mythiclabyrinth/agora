@@ -145,3 +145,9 @@ export const NarrowViewport: Story = {
     byConvo: { general: "Check the toolbar with the keyboard open." },
   }) },
 };
+
+export const SixLineDraft: Story = {
+  parameters: { setup: () => useMessageDrafts.setState({
+    byConvo: { general: "Line one of the draft\nLine two\nLine three\nLine four\nLine five\nLine six" },
+  }) },
+};

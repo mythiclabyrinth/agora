@@ -25,7 +25,7 @@ import { runGoogleFlow } from "../src/lib/googleAuth";
 import { openLink } from "../src/lib/openLink";
 import { forgetRecentServer, loadRecentServers } from "../src/state/servers";
 import { useSession } from "../src/state/session";
-import { colors, radius } from "../src/lib/theme";
+import { colors, radius, typography, weight } from "../src/lib/theme";
 import {
   ServerSetupHelp,
   shouldShowServerSetupHelp,
@@ -354,15 +354,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius,
-    padding: 24,
-    gap: 14,
+    padding: 20,
+    gap: 16,
   },
   brand: { alignItems: "center", gap: 10, marginBottom: 2 },
   logo: { width: 72, height: 72, borderRadius: 18 },
-  brandName: { color: colors.text, fontSize: 24, fontWeight: "800", letterSpacing: 0.5 },
-  hint: { color: colors.dim, fontSize: 13.5, lineHeight: 19, textAlign: "center" },
-  serverChip: { color: colors.dim, fontSize: 13.5, textAlign: "center" },
-  serverHost: { color: colors.text, fontWeight: "700" },
+  brandName: { color: colors.text, fontSize: typography.display.fontSize, fontWeight: weight.bold, letterSpacing: 0.5 },
+  hint: { color: colors.dim, fontSize: typography.bodySm.fontSize, lineHeight: 19, textAlign: "center" },
+  serverChip: { color: colors.dim, fontSize: typography.bodySm.fontSize, textAlign: "center" },
+  serverHost: { color: colors.text, fontWeight: weight.bold },
   input: {
     backgroundColor: colors.panelStrong,
     borderWidth: 1,
@@ -371,17 +371,18 @@ const styles = StyleSheet.create({
     color: colors.text,
     paddingHorizontal: 12,
     paddingVertical: 11,
-    fontSize: 15,
+    fontSize: typography.message.fontSize,
   },
-  error: { color: colors.red, fontSize: 13, textAlign: "center" },
+  error: { color: colors.red, fontSize: typography.meta.fontSize, textAlign: "center" },
   btn: {
+    minHeight: 44,
     backgroundColor: colors.accent,
     borderRadius: 10,
     alignItems: "center",
     paddingVertical: 12,
   },
   btnOff: { opacity: 0.4 },
-  btnText: { color: colors.onAccent, fontSize: 15, fontWeight: "700" },
+  btnText: { color: colors.onAccent, fontSize: typography.message.fontSize, fontWeight: weight.bold },
   // Apple's native button draws itself; we only size it to match our rows.
   btnApple: { width: "100%", height: 44 },
   btnGoogle: {
@@ -394,7 +395,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   googleG: { width: 18, height: 18 },
-  btnGoogleText: { color: "#1f1f1f", fontSize: 15, fontWeight: "700" },
+  btnGoogleText: { color: "#1f1f1f", fontSize: typography.message.fontSize, fontWeight: weight.bold },
   // Secondary: bordered button, one visual step below the primary/Google.
   btnGhost: {
     backgroundColor: colors.panelStrong,
@@ -404,12 +405,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 12,
   },
-  btnGhostText: { color: colors.text, fontSize: 14.5, fontWeight: "600" },
+  btnGhostText: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
   recent: { gap: 6, marginTop: 2 },
   recentTitle: {
     color: colors.dim,
-    fontSize: 12,
-    fontWeight: "600",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.semibold,
     textTransform: "uppercase",
     letterSpacing: 0.6,
     marginBottom: 2,
@@ -424,23 +425,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  recentPickText: { color: colors.text, fontSize: 13.5, fontWeight: "600" },
+  recentPickText: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
   recentRemove: {
-    width: 32,
+    width: 44,
+    minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 8,
     borderRadius: 10,
   },
-  recentRemoveText: { color: colors.dim, fontSize: 17, lineHeight: 18 },
+  recentRemoveText: { color: colors.dim, fontSize: typography.title.fontSize, lineHeight: 18 },
   // Tertiary: quiet but still a full-width tappable button.
   btnSubtle: {
+    minHeight: 44,
     borderRadius: 10,
     alignItems: "center",
     paddingVertical: 10,
     marginTop: 2,
   },
-  btnSubtleText: { color: colors.dim, fontSize: 13.5, fontWeight: "600" },
-  siteLink: { alignItems: "center", paddingVertical: 6, marginTop: 2 },
-  siteLinkText: { color: colors.dim, fontSize: 12.5, fontWeight: "600" },
+  btnSubtleText: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  siteLink: { minHeight: 44, justifyContent: "center", alignItems: "center", paddingVertical: 6, marginTop: 2 },
+  siteLinkText: { color: colors.dim, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
 });

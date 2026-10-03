@@ -41,10 +41,10 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
       { text: "Cancel", style: "cancel" },
     ])}>
     <View style={styles.cardTop}>
-      <Text style={styles.source} numberOfLines={1}>
+      <Text style={styles.source} numberOfLines={2}>
         {item.group_id === "__dms" ? "" : "#"}{item.channel_name} · {item.group_name}
       </Text>
-      <Text style={styles.time}>{fmtRelative(item.latest_ts)}</Text>
+      <Text maxFontSizeMultiplier={1.3} style={styles.time}>{fmtRelative(item.latest_ts)}</Text>
       <Text maxFontSizeMultiplier={1.3} style={styles.count}>{formatUnreadCount(item.unread)}{item.mentions > 0 ? `  @${item.mentions}` : ""}</Text>
     </View>
     {item.kind === "thread" ? <Text style={styles.threadTitle} numberOfLines={2}>{previewText(item.title || "") || "Thread"}</Text> : null}
@@ -141,8 +141,8 @@ const styles = StyleSheet.create({
   limit: { color: colors.dim, fontSize: typography.caption.fontSize },
   error: { color: colors.text, marginBottom: 8 },
   list: { flex: 1 },
-  listContent: { padding: space.lg, gap: space.md, paddingBottom: 40 },
-  card: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 13, padding: 12, gap: 3 },
+  listContent: { padding: space.md, gap: space.sm, paddingBottom: 40 },
+  card: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, padding: 10, gap: 2 },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   source: { fontSize: typography.meta.fontSize, flex: 1, color: colors.dim, fontWeight: weight.semibold },
   threadTitle: { fontSize: typography.body.fontSize, color: colors.text, fontWeight: weight.semibold },

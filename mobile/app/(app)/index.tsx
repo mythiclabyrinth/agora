@@ -48,7 +48,6 @@ import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { AgentStatus } from "../../src/components/AgentStatus";
 import { toastErr } from "../../src/components/Toast";
 import { headerActions } from "../../src/lib/headerItems";
-import { SectionHeader } from "../../src/components/SectionHeader";
 import { colors, typography, space, radii, weight } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 
@@ -173,6 +172,7 @@ function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
   return (
     <View>
       <Pressable
+        hitSlop={{ top: 2, bottom: 2 }}
         style={({ pressed }) => [styles.channelRow, pressed && styles.rowPressed]}
         accessibilityRole="button"
         onPress={() =>
@@ -551,7 +551,7 @@ export default function Home() {
           >
             <View style={styles.inboxIcon}><Icon icon={MessagesSquare} size={23} color={colors.a1} /></View>
             <View style={styles.inboxCopy}>
-              <Text style={styles.threadsLabel}>Inbox</Text>
+              <Text maxFontSizeMultiplier={1.5} numberOfLines={2} style={styles.threadsLabel}>Inbox</Text>
             </View>
             {inboxUnread > 0 ? (
               <View style={[styles.badge, inboxMentions > 0 ? styles.badgeMention : styles.badgeThread]}
@@ -562,8 +562,7 @@ export default function Home() {
               </View>
             ) : null}
           </Pressable>
-        </View>
-        <SectionHeader title="Your spaces" action={<Pressable
+          <Pressable
             accessibilityRole="button"
             accessibilityLabel="Show unread channels only"
             accessibilityState={{ selected: unreadsOnly }}
@@ -571,10 +570,11 @@ export default function Home() {
             onPress={() => setUnreadsOnly(!unreadsOnly)}
             hitSlop={6}
           >
-            <Text style={[styles.filterText, unreadsOnly ? styles.filterTextOn : null]}>
+            <Text maxFontSizeMultiplier={1.5} style={[styles.filterText, unreadsOnly ? styles.filterTextOn : null]}>
               Unreads
             </Text>
-          </Pressable>} />
+          </Pressable>
+        </View>
         {[...(groups.data ?? []).filter(g => g.kind !== "agent_dms"), ...(groups.data ?? []).filter(g => g.kind === "agent_dms")]
           .filter((g) => !g.hidden)
           .map((g) => (
@@ -618,10 +618,10 @@ export default function Home() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: space.lg, gap: space.lg, paddingBottom: 40 },
+  content: { padding: space.md, gap: space.sm, paddingBottom: 40 },
   headerBtns: { flexDirection: "row", gap: 0 },
   headerAction: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  inboxIcon: { width: 44, height: 44, borderRadius: radii.md, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
+  inboxIcon: { width: 32, height: 32, borderRadius: radii.md, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
   inboxCopy: { flex: 1, gap: space.xs },
   rowPressed: { backgroundColor: colors.panelStrong },
   channelUnread: { color: colors.text, fontWeight: weight.semibold },
@@ -635,8 +635,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   threadsLabel: { fontSize: typography.title.fontSize, fontWeight: typography.title.fontWeight, color: colors.text },
   filterChip: {
@@ -656,7 +656,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 14,
-    paddingVertical: 6,
+    paddingVertical: 2,
   },
   groupHead: {
     flexDirection: "row",
@@ -675,8 +675,8 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingLeft: 34,
     paddingRight: 14,
-    paddingVertical: 8,
-    minHeight: 44,
+    paddingVertical: 6,
+    minHeight: 40,
   },
   hash: { color: colors.faint, fontSize: typography.bodySm.fontSize },
   channelName: { fontSize: typography.message.fontSize, fontWeight: typography.message.fontWeight, color: colors.dim, flex: 1 },
@@ -734,7 +734,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderStyle: "dashed",
     borderRadius: 14,
-    paddingVertical: 6,
+    paddingVertical: 2,
   },
   hiddenHead: {
     flexDirection: "row",

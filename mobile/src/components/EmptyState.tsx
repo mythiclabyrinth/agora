@@ -6,13 +6,14 @@ import { Icon } from "./Icon";
 
 export function EmptyState({ icon, title, description, action }: {
   icon: LucideIcon; title: string; description?: string;
-  action?: { label: string; onPress: () => void; disabled?: boolean };
+  action?: { label: string; accessibilityLabel?: string; onPress: () => void; disabled?: boolean };
 }) {
   return <View style={styles.root}>
     <View accessible={false} style={styles.mark}><Icon icon={icon} size={24} color={colors.a1} /></View>
     <Text accessibilityRole="header" style={styles.title}>{title}</Text>
     {description ? <Text style={styles.description}>{description}</Text> : null}
     {action ? <Pressable accessibilityRole="button" disabled={action.disabled}
+      accessibilityLabel={action.accessibilityLabel}
       accessibilityState={{ disabled: !!action.disabled }} onPress={action.onPress}
       style={({ pressed }) => [styles.action, pressed && styles.pressed, action.disabled && styles.disabled]}>
       <Text style={styles.actionText}>{action.label}</Text>
