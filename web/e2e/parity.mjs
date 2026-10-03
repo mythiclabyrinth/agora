@@ -150,6 +150,11 @@ async function main() {
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
+  const openThreads = async () => {
+    await page.locator(".ago-inbox-item", { hasText: "Inbox" }).click();
+    await page.getByRole("tab", { name: "Threads" }).click();
+    await page.waitForSelector(".ago-inbox-list .ago-inbox-row", { timeout: 5000 });
+  };
 
   await check("auth: ?token= is consumed and stripped from the URL", async () => {
     await page.goto(appUrl(`?token=${TOKEN}`));
@@ -159,6 +164,22 @@ async function main() {
     if (page.url().includes("token=")) throw new Error(`token still in URL: ${page.url()}`);
     const stored = await page.evaluate(() => localStorage.getItem("agora_token"));
     if (stored !== TOKEN) throw new Error("token not in localStorage");
+  });
+
+  await check("navigation: legacy /threads opens Inbox's Threads tab", async () => {
+    await page.goto(BASE + "/threads");
+    await page.waitForURL(/\/inbox\/threads$/);
+    if (await page.getByRole("tab", { name: "Threads" }).getAttribute("aria-selected") !== "true") {
+      throw new Error("legacy Threads route did not select the Threads tab");
+    }
+  });
+
+  await check("navigation: direct Inbox Threads URL survives a hard load", async () => {
+    await page.goto(BASE + "/inbox/threads");
+    await page.getByRole("tab", { name: "Threads" }).waitFor();
+    if (await page.getByRole("tab", { name: "Threads" }).getAttribute("aria-selected") !== "true") {
+      throw new Error("direct Inbox Threads URL did not select the Threads tab");
+    }
   });
 
   await check("sidebar: group renders, expands, channel selects", async () => {
@@ -456,8 +477,7 @@ async function main() {
   });
 
   await check("threads: inbox lists, opens, reply works", async () => {
-    await page.locator(".ago-inbox-item", { hasText: "Threads" }).click();
-    await page.waitForSelector(".ago-inbox-list .ago-inbox-row", { timeout: 5000 });
+    await openThreads();
     await page.locator(".ago-inbox-row", { hasText: "seed thread root alpha" }).first().click();
     await page.waitForSelector("#ago-thread-log .bubble", { timeout: 5000 });
     await page.locator("#ago-thread-log .bubble", { hasText: "seed reply 3" }).waitFor();
@@ -489,11 +509,11 @@ async function main() {
   });
 
   await check("history: Back restores the threads inbox", async () => {
-    await page.locator(".ago-inbox-item", { hasText: "Threads" }).click();
-    await page.waitForURL(/\/threads$/);
+    await openThreads();
+    await page.waitForURL(/\/inbox\/threads$/);
     await page.locator(".ago-chan", { hasText: "general" }).first().click();
     await page.goBack();
-    await page.waitForURL(/\/threads$/);
+    await page.waitForURL(/\/inbox\/threads$/);
     await page.waitForSelector(".ago-inbox-list .ago-inbox-row", { timeout: 5000 });
   });
 
@@ -520,7 +540,7 @@ async function main() {
   await check("threads: pin from pane; pin bar appears in channel", async () => {
     // Be independent of the preceding history check, which intentionally
     // leaves the UI in the inbox after navigating Back.
-    await page.locator(".ago-inbox-item", { hasText: "Threads" }).click();
+    await openThreads();
     await page.locator(".ago-inbox-row", { hasText: "seed thread root alpha" }).first().click();
     await page.waitForSelector("#ago-thread-log .bubble", { timeout: 5000 });
     await page.locator('.agora-thread .ago-head-actions button[title="Pin this thread for quick access"]').click();
@@ -533,8 +553,7 @@ async function main() {
   });
 
   await check("threads: hide is two-step and preserves inbox scroll", async () => {
-    await page.locator(".ago-inbox-item", { hasText: "Threads" }).click();
-    await page.waitForSelector(".ago-inbox-list .ago-inbox-row", { timeout: 5000 });
+    await openThreads();
     await page.$eval(".ago-inbox-list", el => { el.scrollTop = 120; });
     const before = await page.$eval(".ago-inbox-list", el => el.scrollTop);
     const row = page.locator(".ago-inbox-row", { hasText: "seed thread root 6" }).first();

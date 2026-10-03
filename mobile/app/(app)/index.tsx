@@ -48,7 +48,6 @@ import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { AgentStatus } from "../../src/components/AgentStatus";
 import { toastErr } from "../../src/components/Toast";
 import { headerActions } from "../../src/lib/headerItems";
-import { totalThreadUnread } from "@agora/core";
 import { colors } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 
@@ -479,7 +478,16 @@ export default function Home() {
     if (prefsLoaded && groupId) expandGroup(groupId);
   }, [prefsLoaded, groupId, expandGroup]);
 
-  const threadUnread = totalThreadUnread(threads.data ?? []);
+  const visibleGroups = (groups.data ?? []).filter(group => !group.hidden);
+  const visibleChannels = new Set(visibleGroups.flatMap(group => (group.channels || [])
+    .filter(channel => !channel.hidden).map(channel => channel.id)));
+  const countedUnread = visibleGroups.reduce((sum, group) => sum + (group.channels || [])
+    .filter(channel => !channel.hidden).reduce((n, channel) => n + (channel.unread ?? 0), 0), 0)
+    + (threads.data ?? []).reduce((sum, thread) => sum +
+      (visibleChannels.has(thread.channel_id) ? thread.unread ?? 0 : 0), 0);
+  const inboxMentions = visibleGroups.reduce((sum, group) => sum + (group.channels || [])
+    .filter(channel => !channel.hidden).reduce((n, channel) => n + (channel.mentions ?? 0), 0), 0);
+  const inboxUnread = Math.max(countedUnread, inboxMentions);
 
   const header = useMemo(
     () => ({
@@ -533,14 +541,15 @@ export default function Home() {
         <View style={styles.topRow}>
           <Pressable
             style={styles.threadsRow}
-            onPress={() => router.push("/(app)/threads")}
+            onPress={() => router.push("/(app)/inbox")}
           >
             <Icon icon={MessagesSquare} size={17} color={colors.a1} />
-            <Text style={styles.threadsLabel}>Threads</Text>
-            {threadUnread > 0 ? (
-              <View style={[styles.badge, styles.badgeThread]}>
+            <Text style={styles.threadsLabel}>Inbox</Text>
+            {inboxUnread > 0 ? (
+              <View style={[styles.badge, inboxMentions > 0 ? styles.badgeMention : styles.badgeThread]}
+                accessibilityLabel={`${inboxUnread} unread messages, ${inboxMentions} mentions`}>
                 <Text style={styles.badgeText}>
-                  {threadUnread > 99 ? "99+" : threadUnread}
+                  {inboxMentions > 0 ? "@ " : ""}{inboxUnread > 99 ? "99+" : inboxUnread}
                 </Text>
               </View>
             ) : null}

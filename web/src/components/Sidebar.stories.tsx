@@ -12,6 +12,7 @@ const routes = {
   "GET /api/me": fixtureMe,
   "GET /api/groups": { groups: fixtureGroups },
   "GET /api/threads?limit=100": { threads: fixtureThreads },
+  "GET /api/unreads": { items: [] },
   "PATCH /api/threads/42": { ok: true },
 };
 const groupsWithoutMentions = fixtureGroups.map(group => ({

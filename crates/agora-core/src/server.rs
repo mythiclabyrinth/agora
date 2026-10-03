@@ -455,6 +455,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/search", get(search))
         .route("/api/search/ask", post(search_ask))
         .route("/api/threads", get(list_threads))
+        .route("/api/unreads", get(list_unreads))
+        .route("/api/unreads/read", put(mark_unreads_read))
         .route("/api/threads/{thread_id}", patch(update_thread))
         .route("/api/threads/{thread_id}/read", put(mark_thread_read))
         .route(
@@ -540,6 +542,14 @@ pub fn router(state: AppState) -> Router {
         );
         app = app.route_service(
             "/threads",
+            tower_http::services::ServeFile::new(dir.join("index.html")),
+        );
+        app = app.route_service(
+            "/inbox",
+            tower_http::services::ServeFile::new(dir.join("index.html")),
+        );
+        app = app.route_service(
+            "/inbox/{*path}",
             tower_http::services::ServeFile::new(dir.join("index.html")),
         );
         app = app.fallback_service(
@@ -2636,6 +2646,66 @@ async fn list_threads(
         .unwrap_or(100)
         .clamp(1, 500);
     Ok(Json(json!({"threads": state.hub.store.my_threads(&user.username, limit)})))
+}
+
+fn visible_inbox_channels(state: &AppState, user: &AuthedUser) -> Vec<String> {
+    state.hub.store.visible_inbox_channels(&user.username, user.instance_admin)
+}
+
+async fn list_unreads(
+    State(state): State<AppState>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let limit = q.get("limit").and_then(|s| s.parse::<usize>().ok()).unwrap_or(200).clamp(1, 2000);
+    let (items, total) = tokio::task::spawn_blocking(move || {
+        let ids = visible_inbox_channels(&state, &user);
+        state.hub.store.unread_inbox_page(&user.username, &ids, limit)
+    }).await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Unread query failed"))?;
+    Ok(Json(json!({"items": items, "total": total})))
+}
+
+async fn mark_unreads_read(
+    State(state): State<AppState>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let requested = payload["items"].as_array().ok_or_else(|| err(StatusCode::BAD_REQUEST, "items array required"))?;
+    if requested.len() > 500 {
+        return Err(err(StatusCode::BAD_REQUEST, "Too many unread items"));
+    }
+    let mut requested_markers: HashMap<(String, String), i64> = HashMap::new();
+    for item in requested {
+        let Some(kind) = item["kind"].as_str() else { continue; };
+        let id = match kind {
+            "channel" => item["id"].as_str().filter(|id| !id.is_empty()).map(str::to_string),
+            "thread" => item["id"].as_i64().filter(|id| *id > 0).map(|id| id.to_string()),
+            _ => None,
+        };
+        let (Some(id), Some(last)) = (id, item["ack_through_id"].as_i64().filter(|id| *id > 0)) else { continue; };
+        requested_markers.entry((kind.to_string(), id)).and_modify(|old| *old = (*old).max(last)).or_insert(last);
+    }
+    let marked = tokio::task::spawn_blocking(move || {
+        if requested_markers.is_empty() { return Ok(0); }
+        let ids = visible_inbox_channels(&state, &user);
+        let requested: Vec<_> = requested_markers.into_iter()
+            .map(|((kind, id), ack)| (kind, id, ack)).collect();
+        let applied = state.hub.store.mark_unreads_read_batch(&user.username, &ids, &requested)?;
+        for (kind, id, channel_id, last) in &applied {
+            if kind == "channel" {
+                state.hub.publish_read_marker(&user.username, channel_id, *last);
+            } else if let Ok(thread_id) = id.parse::<i64>() {
+                state.hub.publish_thread_read_marker(&user.username, thread_id, *last);
+            }
+        }
+        Ok::<_, String>(applied.len())
+    }).await.map_err(|e| {
+        tracing::error!(error = %e, "unread read task failed");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "Unread read update failed")
+    })?.map_err(|e| {
+        tracing::error!(error = %e, "unread read batch failed");
+        err(StatusCode::INTERNAL_SERVER_ERROR, "Unread read update failed")
+    })?;
+    Ok(Json(json!({"ok": true, "marked": marked})))
 }
 
 /// Give a thread a display alias (or clear it with an empty string) so the
@@ -5551,7 +5621,7 @@ mod tests {
         state.ui_dir = Some(ui);
         let app = router(state);
 
-        for path in ["/g/team/c/general/t/42", "/threads"] {
+        for path in ["/g/team/c/general/t/42", "/threads", "/inbox", "/inbox/unreads", "/inbox/threads"] {
             let deep = app
                 .clone()
                 .oneshot(Request::get(path).body(Body::empty()).unwrap())
@@ -6386,6 +6456,128 @@ mod tests {
     }
 
     #[test]
+    fn unread_inbox_visibility_excludes_hidden_and_non_member_channels() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "", None, "member").unwrap();
+        let visible = store.create_group("Visible", "", Some("ana"));
+        let visible_id = visible["id"].as_str().unwrap();
+        store.add_member(visible_id, "user", "ana", "member", None);
+        let channel = store.create_channel(visible_id, "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let hidden = store.create_channel(visible_id, "hidden", "");
+        let hidden_id = hidden["id"].as_str().unwrap();
+        store.set_pref_hidden("ana", "channel", hidden_id, true);
+        let other = store.create_group("Other", "", Some("other"));
+        let other_channel = store.create_channel(other["id"].as_str().unwrap(), "secret", "");
+        let private = store.create_group("Private scoped", "", Some("other"));
+        let private_id = private["id"].as_str().unwrap();
+        let scoped = store.create_channel(private_id, "allowed", "");
+        let scoped_id = scoped["id"].as_str().unwrap();
+        let sibling = store.create_channel(private_id, "sibling", "");
+        let sibling_id = sibling["id"].as_str().unwrap();
+        store.add_member(private_id, "user", "ana", "member", Some(scoped_id));
+        store.add_message(scoped_id, "allowed preview", "agent", "bot", None, None, &[]);
+        store.add_message(sibling_id, "private sibling preview", "agent", "bot", None, None, &[]);
+        let public = store.create_group("Public", "", Some("other"));
+        let public_id = public["id"].as_str().unwrap();
+        store.set_group_public(public_id, true);
+        let public_channel = store.create_channel(public_id, "open", "");
+        let public_id_channel = public_channel["id"].as_str().unwrap();
+        store.add_message(public_id_channel, "public preview", "agent", "bot", None, None, &[]);
+        let user = AuthedUser { username: "ana".into(), display_name: "ana".into(), instance_admin: false };
+        let ids = visible_inbox_channels(&state, &user);
+        assert!(ids.contains(&cid.to_string()));
+        assert!(ids.contains(&scoped_id.to_string()));
+        assert!(!ids.contains(&sibling_id.to_string()));
+        assert!(ids.contains(&public_id_channel.to_string()));
+        assert!(!ids.contains(&hidden_id.to_string()));
+        assert!(!ids.contains(&other_channel["id"].as_str().unwrap().to_string()));
+        let inbox = store.unread_inbox("ana", &ids, 10);
+        assert!(inbox.iter().any(|item| item["previews"][0]["text"] == "allowed preview"));
+        assert!(inbox.iter().any(|item| item["previews"][0]["text"] == "public preview"));
+        assert!(!inbox.iter().any(|item| item["previews"][0]["text"] == "private sibling preview"));
+        store.set_pref_hidden("ana", "group", visible_id, true);
+        assert!(!visible_inbox_channels(&state, &user).contains(&cid.to_string()));
+    }
+
+    #[tokio::test]
+    async fn mark_unreads_read_uses_the_client_snapshot_marker() {
+        let (state, _dir) = test_state();
+        let username = state.config.username();
+        let group = state.hub.store.create_group("Inbox", "", Some(&username));
+        let channel = state.hub.store.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let before = state.hub.store.add_message(cid, "before", "agent", "bot", None, None, &[]);
+        let before_id = before["id"].as_i64().unwrap();
+        let after = state.hub.store.add_message(cid, "after", "agent", "bot", None, None, &[]);
+        let other_channel = state.hub.store.create_channel(group["id"].as_str().unwrap(), "other", "");
+        let other_id = other_channel["id"].as_str().unwrap();
+        state.hub.store.add_message(other_id, "keep unread", "agent", "bot", None, None, &[]);
+        let mut page_headers = HeaderMap::new();
+        page_headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+        let page = list_unreads(State(state.clone()), Query(HashMap::from([("limit".into(), "1".into())])),
+            page_headers).await.unwrap().0;
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+        let result = mark_unreads_read(State(state.clone()), Query(HashMap::new()), headers,
+            Json(json!({"items": [
+                {"kind": "thread", "id": "invalid", "ack_through_id": before_id},
+                {"kind": "channel", "id": cid, "ack_through_id": before_id}
+            ]})))
+            .await.unwrap().0;
+        assert_eq!(result["marked"], 1);
+        let remaining = state.hub.store.unread_inbox(&username, &[cid.to_string()], 10);
+        assert_eq!(remaining[0]["first_unread_id"], after["id"]);
+        let other = state.hub.store.unread_inbox(&username, &[other_id.to_string()], 10);
+        assert_eq!(other[0]["unread"], 1, "a filtered subset must leave other items unread");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+        let empty = mark_unreads_read(State(state.clone()), Query(HashMap::new()), headers,
+            Json(json!({"items": []}))).await.unwrap().0;
+        assert_eq!(empty["marked"], 0);
+        assert_eq!(state.hub.store.unread_inbox(&username, &[other_id.to_string()], 10)[0]["unread"], 1);
+        let root = state.hub.store.add_message(cid, "my thread", "user", &username, None, None, &[]);
+        let tid = root["id"].as_i64().unwrap();
+        let reply = state.hub.store.add_message(cid, "thread reply", "agent", "bot", None, Some(tid), &[]);
+        let reply_id = reply["id"].as_i64().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+        let thread_result = mark_unreads_read(State(state.clone()), Query(HashMap::new()), headers,
+            Json(json!({"items": [{"kind": "thread", "id": tid, "ack_through_id": reply_id}]})))
+            .await.unwrap().0;
+        assert_eq!(thread_result["marked"], 1);
+        assert!(!state.hub.store.unread_inbox(&username, &[cid.to_string()], 10).iter()
+            .any(|item| item["thread_id"] == tid));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+        let too_new = mark_unreads_read(State(state.clone()), Query(HashMap::new()), headers,
+            Json(json!({"items": [{"kind": "channel", "id": other_id, "ack_through_id": reply_id + 1000}]})))
+            .await.unwrap().0;
+        assert_eq!(too_new["marked"], 1);
+        assert!(state.hub.store.unread_inbox(&username, &[other_id.to_string()], 10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn mark_unreads_read_rejects_oversized_batch() {
+        let (state, _dir) = test_state();
+        let headers = {
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", format!("Bearer {}", state.config.admin_key()).parse().unwrap());
+            headers
+        };
+        let items: Vec<_> = (0..501).map(|_| json!({
+            "kind": "channel", "id": "missing", "ack_through_id": 1,
+        })).collect();
+        let result = mark_unreads_read(State(state), Query(HashMap::new()), headers,
+            Json(json!({"items": items}))).await;
+        assert_eq!(result.unwrap_err().0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
     fn agent_dm_is_owner_only_even_for_instance_admin_and_revokes_to_read_only() {
         let (state, _dir) = test_state(); let store=&state.hub.store;
         store.create_user("alice","Alice",None,"member").unwrap();
@@ -6398,6 +6590,10 @@ mod tests {
         assert!(require_channel_member(&state,&alice,cid).is_ok());
         assert!(require_channel_postable(&state,&alice,cid).is_ok());
         assert!(require_channel_member(&state,&operator,cid).is_err());
+        store.add_message(cid, "private unread", "agent", "codex", None, None, &[]);
+        assert!(visible_inbox_channels(&state, &alice).contains(&cid.to_string()));
+        assert!(!visible_inbox_channels(&state, &operator).contains(&cid.to_string()));
+        assert!(store.unread_inbox(&operator.username, &visible_inbox_channels(&state, &operator), 10).is_empty());
         store.set_agent_dm_policy("codex",false,&[]);
         assert!(require_channel_member(&state,&alice,cid).is_ok());
         assert!(require_channel_postable(&state,&alice,cid).is_err());

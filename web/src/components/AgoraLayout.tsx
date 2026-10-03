@@ -10,7 +10,7 @@ import { useAgoraSocket } from "../hooks/useAgoraSocket";
 import { useUiState } from "../state/ui";
 import { Sidebar } from "./Sidebar";
 import { ChannelPane } from "./ChannelPane";
-import { ThreadsInbox } from "./ThreadsInbox";
+import { Inbox } from "./Inbox";
 import { ThreadPane } from "./ThreadPane";
 import { GroupOverview } from "./GroupOverview";
 import { MembersPanel } from "./MembersPanel";
@@ -58,6 +58,9 @@ export function AgoraLayout() {
     if (!groups || !groups.length) return;
     const location = `${locationKey}:${window.location.pathname}`;
     if (window.location.pathname === "/threads") {
+      history.replaceState(null, "", "/inbox/threads");
+    }
+    if (window.location.pathname === "/inbox" || window.location.pathname.startsWith("/inbox/")) {
       if (ui.view.kind !== "inbox" || ui.threadRoot != null) {
         resolvedLocation.current = location;
         ui.openInbox("none");
@@ -154,7 +157,7 @@ export function AgoraLayout() {
         id="agora-layout">
         <Sidebar />
         {ui.view.kind === "channel" && <ChannelPane />}
-        {ui.view.kind === "inbox" && <ThreadsInbox />}
+        {ui.view.kind === "inbox" && <Inbox />}
         {ui.view.kind === "group" && <GroupOverview />}
         {ui.threadRoot != null
           ? <ThreadPane />

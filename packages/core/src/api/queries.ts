@@ -50,6 +50,8 @@ import type {
   SearchResponse,
   StarredMessage,
   ThreadRow,
+  UnreadItem,
+  UnreadInboxPage,
   UserInfo,
 } from "./types";
 
@@ -169,7 +171,10 @@ export function useDeleteGroup() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (groupId: string) => api.delete(`/api/groups/${groupId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.groups }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.groups });
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+    },
   });
 }
 
@@ -180,7 +185,10 @@ export function useSetGroupHidden() {
   return useMutation({
     mutationFn: (v: { groupId: string; hidden: boolean }) =>
       api.patch(`/api/groups/${v.groupId}`, { hidden: v.hidden }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.groups }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.groups });
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+    },
   });
 }
 
@@ -192,7 +200,10 @@ export function useSetGroupPublic() {
   return useMutation({
     mutationFn: (v: { groupId: string; isPublic: boolean }) =>
       api.patch(`/api/groups/${v.groupId}`, { is_public: v.isPublic }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.groups }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.groups });
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+    },
   });
 }
 
@@ -225,6 +236,7 @@ export function useUpdateChannel() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: keys.threads });
+      void qc.invalidateQueries({ queryKey: keys.unreads });
     },
   });
 }
@@ -256,7 +268,10 @@ export function useDeleteChannel() {
   return useMutation({
     mutationFn: (v: { groupId: string; channelId: string }) =>
       api.delete(`/api/groups/${v.groupId}/channels/${v.channelId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.groups }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.groups });
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+    },
   });
 }
 
@@ -800,6 +815,48 @@ export function useAskAi() {
 
 /* ------------------------------------------------------------- threads */
 
+export function useUnreads() {
+  const api = useApi();
+  const query = useQuery({
+    queryKey: keys.unreads,
+    queryFn: async () => api.get<UnreadInboxPage>("/api/unreads"),
+  });
+  return { ...query, data: query.data?.items, total: query.data?.total ?? query.data?.items?.length ?? 0 };
+}
+
+export function unreadReadPayload(items: UnreadItem[]) {
+  return { items: items.map(item => ({
+    kind: item.kind,
+    id: item.kind === "channel" ? item.channel_id : item.thread_id,
+    ack_through_id: item.ack_through_id,
+  })) };
+}
+
+export function useMarkUnreadsRead() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (items: UnreadItem[]) => api.put("/api/unreads/read", unreadReadPayload(items)),
+    onMutate: async (items) => {
+      await qc.cancelQueries({ queryKey: keys.unreads });
+      qc.setQueryData<UnreadInboxPage>(keys.unreads, page => {
+        if (!page) return page;
+        const rows = page.items.filter(row => !items.some(item =>
+          item.kind === row.kind &&
+          (row.kind === "channel" ? item.channel_id === row.channel_id : item.thread_id === row.thread_id) &&
+          item.ack_through_id >= row.ack_through_id));
+        return { items: rows, total: Math.max(rows.length, page.total - (page.items.length - rows.length)) };
+      });
+    },
+    onError: () => { void qc.invalidateQueries({ queryKey: keys.unreads }); },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.groups });
+      void qc.invalidateQueries({ queryKey: keys.threads });
+    },
+  });
+}
+
 /** The threads inbox: every thread the user participates in, newest first.
     Live updates arrive via the WS reducer. */
 export function useThreads() {
@@ -845,7 +902,23 @@ export function useHideThread() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (threadId: number) => api.put(`/api/threads/${threadId}/hide`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.threads }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.threads });
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+    },
+  });
+}
+
+/** Restore a thread dismissed from the user's inbox. */
+export function useUnhideThread() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: number) => api.delete(`/api/threads/${threadId}/hide`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.threads });
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+    },
   });
 }
 

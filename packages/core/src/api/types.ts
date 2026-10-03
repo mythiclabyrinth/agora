@@ -446,6 +446,27 @@ export interface ThreadRow {
   unread: number;
 }
 
+export interface UnreadItem {
+  kind: "channel" | "thread";
+  channel_id: string;
+  channel_name: string;
+  group_id: string;
+  group_name: string;
+  thread_id: number | null;
+  title: string | null;
+  unread: number;
+  mentions: number;
+  first_unread_id: number;
+  ack_through_id: number;
+  latest_ts: number;
+  previews: Message[];
+}
+
+export interface UnreadInboxPage {
+  items: UnreadItem[];
+  total: number;
+}
+
 export interface StarredMessage extends Message {
   starred_at: number;
   root: Message | null;
@@ -554,6 +575,9 @@ export interface ReadEvent {
   type: "read";
   channel_id: string;
   last_read_id: number;
+  unread?: number;
+  mentions?: number;
+  from_post?: boolean;
 }
 
 export interface ThreadReadEvent {
@@ -561,6 +585,9 @@ export interface ThreadReadEvent {
   thread_id: number;
   channel_id: string;
   last_read_id: number;
+  unread?: number;
+  mentions?: number;
+  from_post?: boolean;
 }
 
 export interface ThreadRenamedEvent {

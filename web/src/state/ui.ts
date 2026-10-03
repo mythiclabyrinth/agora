@@ -129,7 +129,7 @@ export const useUiState = create<UiState>((set, get) => ({
       filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
   openInbox: (history = "push") => {
-    writeHistory("/threads", history);
+    writeHistory("/inbox/unreads", history);
     set({ view: { kind: "inbox" }, threadRoot: null, mobileView: "main" });
   },
   openGroupPage: (g, history = "push") => set((s) => {
@@ -217,7 +217,7 @@ export const useUiState = create<UiState>((set, get) => ({
   openPanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
 }));
 
-function writeHistory(path: string, mode: "push" | "replace" | "none"): void {
+export function writeHistory(path: string, mode: "push" | "replace" | "none"): void {
   if (mode === "none" || window.location.pathname === path) return;
   window.history[mode === "replace" ? "replaceState" : "pushState"]({}, "", path);
 }

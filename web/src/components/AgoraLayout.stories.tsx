@@ -32,6 +32,7 @@ const routes = {
   "GET /api/me": staticMe,
   "GET /api/groups": { groups: fixtureGroups },
   "GET /api/threads?limit=100": { threads: fixtureThreads },
+  "GET /api/unreads": { items: [] },
   "GET /api/agents": { agents: fixtureAgents },
   "GET /api/users": { users: fixtureUsers },
   "GET /api/groups/product/members": { members: fixtureMembers },

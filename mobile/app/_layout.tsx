@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import { Stack } from "expo-router";
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { ApiError, resetSeenMessageIds } from "@agora/core";
 import { onUnauthorized, useSession } from "../src/state/session";
 import { ToastHost } from "../src/components/Toast";
@@ -42,15 +43,17 @@ export default function RootLayout() {
   }, [client, status]);
 
   return (
-    <QueryClientProvider client={client}>
-      <StatusBar style="light" />
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: colors.bg },
-        }}
-      />
-      <ToastHost />
-    </QueryClientProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <QueryClientProvider client={client}>
+        <StatusBar style="light" />
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: colors.bg },
+          }}
+        />
+        <ToastHost />
+      </QueryClientProvider>
+    </GestureHandlerRootView>
   );
 }
