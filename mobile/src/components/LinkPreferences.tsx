@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Switch, Text, View } from "react-native";
+import { StyleSheet, Switch, Text, View } from "react-native";
 import { isChromeAvailable } from "../lib/openLink";
-import { colors } from "../lib/theme";
+import { colors, surfaces, typography, space } from "../lib/theme";
+import { SelectDropdown } from "./SelectDropdown";
 import type { LinkBrowser } from "../state/prefs";
 
 export function LinkPreferences({
@@ -18,6 +19,7 @@ export function LinkPreferences({
   chromeAvailable?: boolean;
 }) {
   const [detectedChrome, setDetectedChrome] = useState(false);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
     if (givenChromeAvailable !== undefined) return;
     void isChromeAvailable().then(setDetectedChrome).catch(() => setDetectedChrome(false));
@@ -47,44 +49,27 @@ export function LinkPreferences({
           <Text style={styles.meta}>Use Google Maps or YouTube when supported and installed.</Text>
         </View>
         <Switch
+          accessibilityLabel="Open supported links in apps"
           value={preferNativeApps}
           onValueChange={onPreferNativeAppsChange}
           trackColor={{ false: colors.borderStrong, true: colors.a1 }}
         />
       </View>
-      <Text style={styles.heading}>Browser fallback</Text>
-      {choices.map((choice) => {
-        const selected = choice.value === browser;
-        return (
-          <Pressable
-            key={choice.value}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: selected, disabled: choice.disabled }}
-            disabled={choice.disabled}
-            style={[styles.choice, choice.disabled && styles.choiceDisabled]}
-            onPress={() => onBrowserChange(choice.value)}
-          >
-            <View style={[styles.radio, selected && styles.radioSelected]} />
-            <View style={styles.copy}>
-              <Text style={styles.name}>{choice.label}</Text>
-              <Text style={styles.meta}>{choice.detail}</Text>
-            </View>
-          </Pressable>
-        );
-      })}
+      <View style={styles.browser}>
+        <SelectDropdown label="Browser fallback" value={browser} options={choices}
+          open={open} inlineMenu onToggle={() => setOpen(value => !value)}
+          onChange={value => { setOpen(false); onBrowserChange(value); }} />
+        <Text style={styles.meta}>{choices.find(choice => choice.value === browser)?.detail}</Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: colors.panel, borderColor: colors.border, borderWidth: 1, borderRadius: 12, overflow: "hidden" },
+  card: { ...surfaces.card, overflow: "hidden" },
   nativeRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14 },
-  heading: { color: colors.dim, fontSize: 11, fontWeight: "800", textTransform: "uppercase", paddingHorizontal: 14, paddingTop: 6 },
-  choice: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 14, paddingVertical: 11 },
-  choiceDisabled: { opacity: 0.45 },
+  browser: { padding: space.lg, gap: space.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   copy: { flex: 1 },
   name: { color: colors.text, fontSize: 14, fontWeight: "700" },
   meta: { color: colors.dim, fontSize: 12, marginTop: 2 },
-  radio: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: colors.borderStrong },
-  radioSelected: { borderWidth: 5, borderColor: colors.a1 },
 });

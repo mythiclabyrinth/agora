@@ -8,7 +8,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Headphones, Mic, MicOff } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "./Icon";
-import { colors } from "../lib/theme";
+import { colors, typography, radii, space } from "../lib/theme";
 
 export type LiveStatus = "starting" | "listening" | "recording" | "thinking" | "speaking" | "error";
 
@@ -72,6 +72,8 @@ export function LiveVoiceView({
         </View>
       )}
       <View style={styles.center}>
+        <View style={styles.orbit}>
+        <View style={styles.orbitInner} />
         <View
           style={[
             styles.orb,
@@ -80,7 +82,8 @@ export function LiveVoiceView({
             status === "speaking" && styles.orbSpeaking,
             { transform: [{ scale }] },
           ]}
-        />
+        ><Icon icon={muted ? MicOff : Mic} size={38} color={colors.onAccent} /></View>
+        </View>
         {/* The Mute control already shows muted-ness; the status line only
             changes when muted actually alters what talking does (idle). */}
         <Text style={styles.status}>
@@ -126,18 +129,23 @@ const styles = StyleSheet.create({
     textAlign: "center",
     opacity: 0.8,
   },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 34 },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.section },
+  orbit: { width: 206, height: 206, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.accentBorder,
+    backgroundColor: colors.accentWash, alignItems: "center", justifyContent: "center" },
+  orbitInner: { position: "absolute", width: 168, height: 168, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.accentBorder },
   orb: {
     width: 130,
     height: 130,
     borderRadius: 65,
     backgroundColor: colors.accent,
     opacity: 0.9,
+    alignItems: "center",
+    justifyContent: "center",
   },
   orbRecording: { backgroundColor: colors.red },
   orbThinking: { backgroundColor: colors.amber, opacity: 0.6 },
   orbSpeaking: { backgroundColor: colors.a1 },
-  status: { color: colors.text, fontSize: 16.5, fontWeight: "600" },
+  status: { color: colors.text, ...typography.title, textAlign: "center", paddingHorizontal: space.lg },
   errorHint: {
     color: colors.dim,
     fontSize: 13.5,

@@ -26,7 +26,8 @@ export function RoleDropdown({ value, onChange }: {
       {(["member", "admin"] as const).map(role => <Pressable
         key={role}
         accessibilityRole="menuitem"
-        style={styles.option}
+        accessibilityState={{ selected: role === value }}
+        style={[styles.option, role === value && styles.selectedOption]}
         onPress={() => { setOpen(false); if (role !== value) onChange(role); }}
       >
         <Text style={[styles.optionText, role === value && styles.selectedText]}>{role === "admin" ? "Admin" : "Member"}</Text>
@@ -38,9 +39,10 @@ export function RoleDropdown({ value, onChange }: {
 
 const styles = StyleSheet.create({
   root: { position: "relative", alignSelf: "flex-start" },
-  trigger: { flexDirection: "row", alignItems: "center", gap: 5, minWidth: 88, justifyContent: "space-between", paddingVertical: 7, paddingHorizontal: 9, borderRadius: 8, borderWidth: 1, borderColor: "rgba(139,124,255,0.35)", backgroundColor: "rgba(139,124,255,0.12)" },
+  trigger: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 44, minWidth: 96, justifyContent: "space-between", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.accentBorder, backgroundColor: colors.accentSoft },
   triggerText: { color: colors.a1, fontSize: 12, fontWeight: "700" },
   menu: { marginTop: 4, minWidth: 116, padding: 4, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 9, backgroundColor: colors.sheet },
-  option: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingVertical: 8, paddingHorizontal: 9, borderRadius: 6 },
+  option: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingVertical: 8, paddingHorizontal: 9, borderRadius: 8 },
+  selectedOption: { backgroundColor: colors.accentSoft },
   optionText: { color: colors.text, fontSize: 12.5 }, selectedText: { color: colors.a1, fontWeight: "700" },
 });

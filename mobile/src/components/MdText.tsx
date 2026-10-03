@@ -2,7 +2,7 @@ import React from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { normalizeEChart, parseMd, type NormalizedEChart, type Span } from "@agora/core";
 import { openLink } from "../lib/openLink";
-import { colors, mono } from "../lib/theme";
+import { colors, mono, typography, weight } from "../lib/theme";
 import { columnWidths } from "../lib/tableLayout";
 import { MermaidBlock } from "./Mermaid";
 import { ChartModal, EChartBlock } from "./EChart";
@@ -171,20 +171,20 @@ function alignStyle(a: "" | "left" | "center" | "right") {
 
 const styles = StyleSheet.create({
   root: { gap: 6 },
-  para: { color: colors.text, fontSize: 15, lineHeight: 21 },
-  bold: { fontWeight: "700", color: colors.text },
+  para: { color: colors.text, ...typography.message },
+  bold: { fontWeight: weight.bold, color: colors.text },
   italic: { fontStyle: "italic" },
   code: {
     ...mono,
-    fontSize: 13,
+    fontSize: typography.meta.fontSize,
     color: colors.a2,
     backgroundColor: colors.panelStrong,
   },
-  link: { color: colors.a2, fontWeight: "500", textDecorationLine: "underline" },
+  link: { color: colors.a2, fontWeight: weight.medium, textDecorationLine: "underline" },
   mention: {
     color: "#b3a8ff",
-    fontWeight: "600",
-    backgroundColor: "rgba(139,124,255,0.18)",
+    fontWeight: weight.semibold,
+    backgroundColor: colors.accentSoft,
   },
   pre: {
     backgroundColor: colors.panelStrong,
@@ -192,7 +192,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
   },
-  preText: { ...mono, fontSize: 13, color: colors.text, padding: 10 },
+  preText: { ...mono, fontSize: typography.meta.fontSize, color: colors.text, padding: 10 },
   tableWrap: {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,
@@ -211,7 +211,7 @@ const styles = StyleSheet.create({
   // value wider than its column wraps, growing the row.
   cell: {
     color: colors.text,
-    fontSize: 13.5,
+    fontSize: typography.bodySm.fontSize,
     paddingVertical: 6,
     paddingHorizontal: 10,
   },

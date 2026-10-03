@@ -577,7 +577,7 @@ const styles = StyleSheet.create({
     borderColor: colors.borderStrong,
     backgroundColor: colors.panelStrong,
   },
-  chipOn: { borderColor: colors.a1, backgroundColor: "rgba(139,124,255,.22)" },
+  chipOn: { borderColor: colors.a1, backgroundColor: colors.accentSoft },
   chipText: { color: colors.text, fontSize: 11 },
   unsupported: {
     padding: 12,
@@ -638,7 +638,7 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", gap: 18 },
   link: { color: colors.a1, fontSize: 12, fontWeight: "700" },
   placeRow: { flexDirection: "row", gap: 9, padding: 8, borderRadius: 7 },
-  placeOn: { backgroundColor: "rgba(139,124,255,.16)" },
+  placeOn: { backgroundColor: colors.accentSoft },
   placeNum: { color: colors.a2, width: 18, fontWeight: "800" },
   empty: {
     minHeight: 100,

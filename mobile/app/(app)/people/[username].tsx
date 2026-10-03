@@ -6,7 +6,7 @@ import { useAddMember, useAllMemberships, useGroups, useMe, useRemoveMember, use
 import type { Group, InstanceMembership } from "@agora/core";
 import { Icon } from "../../../src/components/Icon";
 import { toast, toastErr } from "../../../src/components/Toast";
-import { colors } from "../../../src/lib/theme";
+import { colors, typography, weight } from "../../../src/lib/theme";
 import { RoleDropdown } from "../../../src/components/RoleDropdown";
 
 type ScopeChoice = { groupId: string; channelId: string | null; label: string };
@@ -114,14 +114,14 @@ function RoleChoice({ label, detail, onPress }: { label: string; detail: string;
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg }, content: { padding: 16, gap: 10, paddingBottom: 50 }, hint: { color: colors.dim },
   profile: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 6 }, avatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.panelStrong, alignItems: "center", justifyContent: "center" },
-  title: { color: colors.text, fontSize: 18, fontWeight: "800" }, meta: { color: colors.dim, fontSize: 12, marginTop: 2 },
-  section: { color: colors.dim, fontSize: 11.5, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase", marginTop: 8 },
-  card: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 13, padding: 12, gap: 2 }, groupName: { color: colors.text, fontSize: 15, fontWeight: "700", marginBottom: 4 },
-  scopeRow: { flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 9, borderTopWidth: 1, borderTopColor: colors.border }, scopeName: { color: colors.text, fontSize: 13.5, fontWeight: "600" },
+  title: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold }, meta: { color: colors.dim, fontSize: typography.caption.fontSize, marginTop: 2 },
+  section: { color: colors.dim, fontSize: typography.caption.fontSize, fontWeight: weight.bold, letterSpacing: 1, textTransform: "uppercase", marginTop: 8 },
+  card: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 13, padding: 12, gap: 2 }, groupName: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold, marginBottom: 4 },
+  scopeRow: { flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 9, borderTopWidth: 1, borderTopColor: colors.border }, scopeName: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
   removeButton: { padding: 8 }, empty: { color: colors.faint, textAlign: "center", paddingVertical: 18 },
-  staticRole: { color: colors.a1, fontWeight: "700", fontSize: 12, textTransform: "capitalize" },
-  addButton: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, padding: 13 }, addText: { color: colors.a1, fontWeight: "700" },
-  addCard: { borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panel, borderRadius: 14, padding: 12, gap: 7 }, addTitle: { color: colors.text, fontWeight: "700", fontSize: 15, marginBottom: 3 },
-  option: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 12 }, optionDisabled: { opacity: 0.55 }, convertRow: { alignItems: "flex-end", paddingVertical: 5, paddingRight: 4 }, convertText: { color: colors.a2, fontSize: 12, fontWeight: "600" },
-  roleChoice: { borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10, padding: 12 }, cancel: { alignItems: "center", padding: 9 }, cancelText: { color: colors.dim, fontWeight: "600" },
+  staticRole: { color: colors.a1, fontWeight: weight.bold, fontSize: typography.caption.fontSize, textTransform: "capitalize" },
+  addButton: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, padding: 13 }, addText: { color: colors.a1, fontWeight: weight.bold },
+  addCard: { borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panel, borderRadius: 14, padding: 12, gap: 7 }, addTitle: { color: colors.text, fontWeight: weight.bold, fontSize: typography.message.fontSize, marginBottom: 3 },
+  option: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 12 }, optionDisabled: { opacity: 0.55 }, convertRow: { alignItems: "flex-end", paddingVertical: 5, paddingRight: 4 }, convertText: { color: colors.a2, fontSize: typography.caption.fontSize, fontWeight: weight.semibold },
+  roleChoice: { borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10, padding: 12 }, cancel: { alignItems: "center", padding: 9 }, cancelText: { color: colors.dim, fontWeight: weight.semibold },
 });

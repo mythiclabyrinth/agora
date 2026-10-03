@@ -5,12 +5,13 @@
    MessageActions. */
 
 import React from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useAgents, useAgentUsage, useUsers } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtTs } from "@agora/core";
-import { colors } from "../lib/theme";
+import { colors, surfaces } from "../lib/theme";
 import { AgentAvatar } from "./AgentAvatar";
+import { SheetHeader } from "./SheetHeader";
 
 function Row({ k, v }: { k: string; v: string }) {
   return (
@@ -63,8 +64,10 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
 
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.sheet}>
+      <Pressable accessible={false} style={styles.backdrop} onPress={onClose}>
+        <Pressable accessible={false} accessibilityViewIsModal style={[styles.sheet, { maxHeight: "85%" }]} onPress={event => event.stopPropagation()}>
+          <SheetHeader title="Profile" onClose={onClose} />
+          <ScrollView>
           <View style={styles.top}>
             {isAgent ? (
               <AgentAvatar agentId={message.author_id} size={64} />
@@ -104,7 +107,8 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
               <Row k="Joined" v={fmtTs(user.created_at)} />
             </View>
           ) : null}
-        </View>
+          </ScrollView>
+        </Pressable>
       </Pressable>
     </Modal>
   );
@@ -129,14 +133,11 @@ function AgentUsageBlock({ data, live, refreshing }: { data: ReturnType<typeof u
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 20,
+    ...surfaces.sheet,
     paddingBottom: 40,
     gap: 16,
   },

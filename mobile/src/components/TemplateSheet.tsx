@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "./ThemedInput";
 /* Message templates: a bottom sheet matching the composer's "Talk to" and
    attach sheets. One Modal holds both views (list ⇄ editor) — presenting a
    second Modal while this one dismisses is silently dropped on iOS. */
@@ -13,7 +14,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { Pencil, Plus, Trash2, X } from "lucide-react-native";
@@ -26,7 +26,7 @@ import {
   useUpdateTemplate,
   type MessageTemplate,
 } from "@agora/core";
-import { colors } from "../lib/theme";
+import { colors, surfaces } from "../lib/theme";
 import { Icon } from "./Icon";
 
 function alertErr(title: string, error: unknown) {
@@ -203,10 +203,7 @@ const s = StyleSheet.create({
   keyboard: { flex: 1 },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,.58)", justifyContent: "flex-end" },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 18,
+    ...surfaces.sheet,
     paddingBottom: 32,
     maxHeight: "78%",
   },

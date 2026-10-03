@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "../../src/components/ThemedInput";
 /* Account, server session, and app settings. Agent administration has one
    dedicated surface, linked here for instance admins. */
 
@@ -9,7 +10,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import * as Application from "expo-application";
@@ -17,15 +17,19 @@ import { Link, Stack } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { WEBSITE_URL, keys, useApi } from "@agora/core";
 import type { Me } from "@agora/core";
+import { SectionHeader } from "../../src/components/SectionHeader";
 import { ArmedButton } from "../../src/components/ArmedButton";
 import { LinkPreferences } from "../../src/components/LinkPreferences";
 import { toast, toastErr } from "../../src/components/Toast";
 import { compareVersions, lookupStoreVersion } from "../../src/lib/appVersion";
 import { openLink } from "../../src/lib/openLink";
 import { openWriteReviewUrl } from "../../src/lib/storeReview";
-import { colors } from "../../src/lib/theme";
+import { colors, typography, weight } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 import { useSession } from "../../src/state/session";
+import { Icon } from "../../src/components/Icon";
+import { Bot, SlidersHorizontal, ChevronRight, ShieldCheck, Users } from "lucide-react-native";
+import { layout, radii, space, surfaces } from "../../src/lib/theme";
 
 function Section({
   title,
@@ -36,7 +40,7 @@ function Section({
 }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <Text accessibilityRole="header" style={styles.sectionTitle}>{title}</Text>
       {children}
     </View>
   );
@@ -209,29 +213,47 @@ export default function SettingsScreen() {
     <>
       <Stack.Screen options={{ title: "Settings", headerShown: true }} />
       <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+        <View style={styles.profileCard}>
+          <View style={styles.profileAvatar}><Text style={styles.profileInitial}>{(me.data?.display_name || me.data?.username || "A").slice(0, 1).toUpperCase()}</Text></View>
+          <View style={{ flex: 1, gap: space.xs }}>
+            <Text style={styles.profileName}>{me.data?.display_name || me.data?.username || "Your account"}</Text>
+            <Text style={styles.meta}>{me.data?.username ? `@${me.data.username}` : "Connected to Agora"}</Text>
+          </View>
+          {instanceAdmin ? <View style={styles.role}><Icon icon={ShieldCheck} size={14} color={colors.a2} /><Text style={styles.roleText}>Admin</Text></View> : null}
+        </View>
+        {instanceAdmin ? <Link href="/(app)/people" asChild>
+          <Pressable style={styles.agentHub} accessibilityRole="button">
+            <View style={styles.hubIcon}><Icon icon={Users} size={22} color={colors.accentText} /></View>
+            <View style={{ flex: 1 }}><Text style={styles.agentHubTitle}>People & access</Text>
+              <Text style={styles.meta}>Manage people, group roles and channel access.</Text></View>
+            <Icon icon={ChevronRight} size={18} color={colors.faint} />
+          </Pressable>
+        </Link> : null}
         {instanceAdmin ? (
           <Link href="/(app)/add-agent" asChild>
             <Pressable style={styles.agentHub} accessibilityRole="button">
+              <View style={styles.hubIcon}><Icon icon={Bot} size={22} color={colors.accentText} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.agentHubTitle}>Agents & connections</Text>
                 <Text style={styles.meta}>
                   Guided setup for coding agents, integrations, and Pantheo.
                 </Text>
               </View>
-              <Text style={styles.agentHubArrow}>›</Text>
+              <Icon icon={ChevronRight} size={18} color={colors.faint} />
             </Pressable>
           </Link>
         ) : null}
         {instanceAdmin ? (
           <Link href="/(app)/instance-ai" asChild>
             <Pressable style={styles.agentHub} accessibilityRole="button">
+              <View style={styles.hubIcon}><Icon icon={SlidersHorizontal} size={22} color={colors.accentText} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.agentHubTitle}>Instance settings</Text>
                 <Text style={styles.meta}>
                   Voice, Ask AI providers, and credentials for this Agora.
                 </Text>
               </View>
-              <Text style={styles.agentHubArrow}>›</Text>
+              <Icon icon={ChevronRight} size={18} color={colors.faint} />
             </Pressable>
           </Link>
         ) : null}
@@ -261,21 +283,6 @@ export default function SettingsScreen() {
               label="Switch server"
               onConfirm={() => void forgetServer()}
             />
-          </View>
-          <View style={styles.row}>
-            <Text style={[styles.meta, { flex: 1 }]}>
-              Permanently delete your data on this server and sign out
-              everywhere.
-            </Text>
-            <Pressable
-              style={styles.linkBtn}
-              onPress={deleteAccount}
-              disabled={deleting}
-            >
-              <Text style={[styles.deleteText, deleting && { opacity: 0.4 }]}>
-                {deleting ? "Deleting…" : "Delete account"}
-              </Text>
-            </Pressable>
           </View>
         </Section>
 
@@ -355,6 +362,17 @@ export default function SettingsScreen() {
             </Pressable>
           </View>
         </Section>
+        <Section title="Delete account">
+          <View style={styles.dangerCard}>
+            <Text style={styles.meta}>Permanently delete your data on this server and sign out everywhere. This cannot be undone.</Text>
+            <Pressable accessibilityRole="button" accessibilityState={{ disabled: deleting }}
+              style={styles.deleteButton} onPress={deleteAccount} disabled={deleting}>
+              <Text style={[styles.deleteText, deleting && { opacity: 0.4 }]}>
+                {deleting ? "Deleting…" : "Delete account"}
+              </Text>
+            </Pressable>
+          </View>
+        </Section>
       </ScrollView>
     </>
   );
@@ -362,29 +380,27 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 14, gap: 20, paddingBottom: 40 },
-  section: { gap: 8 },
-  sectionTitle: {
-    color: colors.dim,
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-  },
+  content: { paddingHorizontal: layout.gutter, gap: space.md, paddingBottom: layout.contentBottom },
+  section: { gap: space.sm, marginTop: space.md },
+  sectionTitle: { ...typography.eyebrow, color: colors.faint, textTransform: "uppercase", marginBottom: space.xs },
+  profileCard: { ...surfaces.card, padding: space.lg, flexDirection: "row", alignItems: "center", gap: space.md, marginBottom: space.sm },
+  profileAvatar: { width: 52, height: 52, borderRadius: radii.lg, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
+  profileInitial: { ...typography.display, color: colors.accentText },
+  profileName: { ...typography.title, color: colors.text },
+  role: { flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, paddingVertical: space.xs, borderRadius: radii.pill, backgroundColor: colors.mintSoft },
+  roleText: { ...typography.caption, color: colors.a2 },
+  hubIcon: { width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: radii.md, backgroundColor: colors.accentSoft },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: colors.panel,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    ...surfaces.card,
+    padding: space.lg,
   },
-  name: { color: colors.text, fontSize: 14, fontWeight: "700" },
-  meta: { color: colors.dim, fontSize: 12 },
+  name: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  meta: { color: colors.dim, ...typography.caption },
   input: {
+    ...surfaces.field,
     backgroundColor: colors.panelStrong,
     borderWidth: 1,
     borderColor: colors.borderStrong,
@@ -392,12 +408,14 @@ const styles = StyleSheet.create({
     color: colors.text,
     paddingHorizontal: 12,
     paddingVertical: 9,
-    fontSize: 14,
+    fontSize: typography.bodySm.fontSize,
   },
-  linkBtn: { paddingVertical: 10, alignItems: "center" },
-  linkBtnText: { color: colors.a1, fontSize: 14, fontWeight: "700" },
-  linkBtnDim: { color: colors.dim, fontSize: 14, fontWeight: "600" },
-  deleteText: { color: colors.red, fontSize: 14, fontWeight: "700" },
+  linkBtn: { minHeight: 44, justifyContent: "center", paddingVertical: 10, alignItems: "center" },
+  linkBtnText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  linkBtnDim: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  dangerCard: { padding: space.lg, gap: space.lg, borderWidth: 1, borderColor: colors.dangerBorder, borderRadius: radii.lg, backgroundColor: colors.dangerSoft },
+  deleteButton: { minHeight: 44, padding: space.md, alignItems: "center", borderRadius: radii.md, backgroundColor: colors.red },
+  deleteText: { color: colors.onAccent, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   agentHub: {
     flexDirection: "row",
     alignItems: "center",
@@ -406,14 +424,14 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(56,225,200,0.22)",
-    backgroundColor: "rgba(56,225,200,0.06)",
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
   },
   agentHubTitle: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: "800",
+    fontSize: typography.body.fontSize,
+    fontWeight: weight.bold,
     marginBottom: 3,
   },
-  agentHubArrow: { color: colors.a2, fontSize: 28, lineHeight: 30 },
+  agentHubArrow: { color: colors.a1, fontSize: typography.display.fontSize, lineHeight: 30 },
 });

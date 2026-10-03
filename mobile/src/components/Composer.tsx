@@ -1,3 +1,5 @@
+import { SheetHeader } from "./SheetHeader";
+import { useSession } from "../state/session";
 /* Message composer: text, attachments (max 5, like the server), voice notes
    (🎤 → transcribed server-side), @mention autocomplete over the channel's
    live agents + group members, and a "talk to" multi-select that prepends
@@ -59,7 +61,7 @@ import {
 } from "@agora/core";
 import { toOutgoing, type LocalFile } from "../api/voice";
 import { useKeyboardVisible } from "../lib/keyboard";
-import { colors } from "../lib/theme";
+import { colors, typography, weight, surfaces, composerSizing } from "../lib/theme";
 import { useAddressed, useMessageDrafts } from "@agora/core";
 import { usePrefs } from "../state/prefs";
 import { AgentAvatar } from "./AgentAvatar";
@@ -75,7 +77,6 @@ const MAX_FILES = 5;
 
 /** Keep-awake tag for voice notes: the screen must not auto-lock mid-take. */
 const REC_KEEP_AWAKE = "composer-voice-note";
-const COMPOSER_INPUT_MIN_HEIGHT = 40;
 
 export function appendVoiceTranscript(
   addressKey: string | undefined,
@@ -247,7 +248,7 @@ export function Composer({
   const filesRef = useRef<LocalFile[]>(initialFiles);
   const [preview, setPreview] = useState<LocalFile | null>(null);
   const [focused, setFocused] = useState(false);
-  const [inputHeight, setInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT);
+  const [inputAtMaxHeight, setInputAtMaxHeight] = useState(false);
   const [attachSheet, setAttachSheet] = useState(false);
   const [pasteOps, setPasteOps] = useState(0);
   const pasteGeneration = useRef(0);
@@ -281,11 +282,12 @@ export function Composer({
   const hasSelection = useRef(false);
   const inputRef = useRef<TextInput>(null);
 
-  /* iOS multiline inputs do not reliably shrink after a controlled clear.
-     Track their content height explicitly and restore the one-line baseline
-     whenever the actual draft becomes empty. */
+  /* Keep native intrinsic measurement in charge. Fabric emits content-size
+     events from layout updates: feeding those events into a fixed height can
+     lock the input at its initial height. Only use layout to enable scrolling
+     once the native input reaches its cap, never to dictate its height. */
   useEffect(() => {
-    if (!text) setInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+    if (!text) setInputAtMaxHeight(false);
   }, [text]);
 
   /* A native paste finishes asynchronously. Invalidate in-flight work when
@@ -411,12 +413,14 @@ export function Composer({
     return m ? m[2].toLowerCase() : null;
   }, [text]);
 
+  const username = useSession(s => s.username);
   const candidates = useMemo(() => {
     if (mentionQuery === null) return [];
     return mentions
+      .filter(c => c.id !== username)
       .filter((c) => slugify(c.name).startsWith(mentionQuery) || c.id.toLowerCase().startsWith(mentionQuery))
       .slice(0, 6);
-  }, [mentionQuery, mentions]);
+  }, [mentionQuery, mentions, username]);
 
   const insertMention = (c: MentionCandidate) => {
     const at = selection.current.start || text.length;
@@ -598,7 +602,7 @@ export function Composer({
     if (pasteOps > 0) return;
     const sentText = text;
     const body = text.trim();
-    if (!body && files.length === 0) return;
+    if ((!body || body === "@") && files.length === 0) return;
     const prefix = addressedAgents.map((a) => `@${slugify(a.name)}`).join(", ");
     try {
       await onSend({
@@ -636,6 +640,7 @@ export function Composer({
           <Pressable
             onPress={cancelRec}
             disabled={recPhase === "uploading"}
+            accessibilityRole="button"
             accessibilityLabel="Discard recording"
             style={[styles.recCancel, recPhase === "uploading" && styles.sendOff]}
           >
@@ -644,6 +649,7 @@ export function Composer({
           {onTranscribeVoice ? <Pressable
             onPress={() => finishRec("draft")}
             disabled={recPhase === "uploading"}
+            accessibilityRole="button"
             accessibilityLabel="Stop and add to message"
             style={[styles.stopBtn, recPhase === "uploading" && styles.sendOff]}
           >
@@ -652,6 +658,7 @@ export function Composer({
           <Pressable
             onPress={() => finishRec("send")}
             disabled={recPhase === "uploading"}
+            accessibilityRole="button"
             accessibilityLabel="Stop and send"
             style={[styles.sendBtn, recPhase === "uploading" && styles.sendOff]}
           >
@@ -685,10 +692,12 @@ export function Composer({
         </ScrollView>
       ) : null}
       {focused && candidates.length > 0 ? (
-        <ScrollView horizontal keyboardShouldPersistTaps="always" style={styles.mentionBar}>
+        <ScrollView horizontal keyboardShouldPersistTaps="always" style={styles.mentionBar} contentContainerStyle={styles.mentionContent}>
           {candidates.map((c) => (
-            <Pressable key={c.id} style={styles.mentionChip} onPress={() => insertMention(c)}>
-              <Text style={styles.mentionText}>@{slugify(c.name)}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Mention ${c.name}`} key={c.id} style={styles.mentionChip} onPress={() => insertMention(c)}>
+              {agents.some(agent => agent.id === c.id) ? <AgentAvatar agentId={c.id} size={20} /> :
+                <View style={styles.mentionAvatar}><Text maxFontSizeMultiplier={1.2} style={styles.mentionInitial}>{c.name[0]?.toUpperCase()}</Text></View>}
+              <Text maxFontSizeMultiplier={1.5} style={styles.mentionText}>{c.name}{agents.some(agent => agent.id === c.id) ? " · agent" : ""}</Text>
             </Pressable>
           ))}
         </ScrollView>
@@ -743,7 +752,7 @@ export function Composer({
           would drop the keyboard). */}
       <View style={focused ? styles.colFocused : styles.row}>
         {!focused ? (
-          <Pressable onPress={() => setAttachSheet(true)} hitSlop={8} style={styles.plusBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Add attachment" onPress={() => setAttachSheet(true)} style={styles.plusBtn}>
             <Text style={styles.plusText}>+</Text>
           </Pressable>
         ) : null}
@@ -753,18 +762,17 @@ export function Composer({
           onPaste={(payload) => void onNativePaste(payload)}
         >
           <TextInput
+            accessibilityLabel={placeholder}
             key="composer-input"
             ref={inputRef}
             style={[
               focused ? styles.inputFocused : styles.input,
               nativePasteInput && !focused ? styles.inputWrapped : null,
-              { height: inputHeight },
+              { minHeight: composerSizing.minHeight, maxHeight: composerSizing.maxHeight },
             ]}
             value={text}
             onChangeText={setText}
-            onContentSizeChange={(e) => {
-              setInputHeight(Math.max(COMPOSER_INPUT_MIN_HEIGHT, e.nativeEvent.contentSize.height));
-            }}
+            onLayout={({ nativeEvent }) => setInputAtMaxHeight(nativeEvent.layout.height >= composerSizing.maxHeight - 1)}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onSelectionChange={(e) => {
@@ -776,6 +784,8 @@ export function Composer({
             placeholder={placeholder}
             placeholderTextColor={colors.faint}
             multiline
+            scrollEnabled={inputAtMaxHeight}
+            textAlignVertical="top"
             maxLength={MAX_MESSAGE_CHARS}
           />
         </PasteAwareInput>
@@ -784,7 +794,7 @@ export function Composer({
         {!focused && (text.trim() || files.length > 0) ? (
           <Pressable
             onPress={send}
-            disabled={sending || pasteOps > 0}
+            disabled={sending || pasteOps > 0 || (text.trim() === "@" && files.length === 0)}
             accessibilityRole="button"
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
             style={[styles.sendBtn, (sending || pasteOps > 0) && styles.sendOff]}
@@ -796,18 +806,18 @@ export function Composer({
             )}
           </Pressable>
         ) : !focused && onSendVoice ? (
-          <Pressable onPress={startRec} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Record voice message" onPress={startRec} style={styles.iconBtn}>
             <Icon icon={Mic} size={22} />
           </Pressable>
         ) : null}
       </View>
       {focused ? (
         <View style={styles.toolbar}>
-          <Pressable onPress={() => setAttachSheet(true)} hitSlop={8} style={styles.plusBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Add attachment" onPress={() => setAttachSheet(true)} style={styles.plusBtn}>
             <Text style={styles.plusText}>+</Text>
           </Pressable>
           {agents.length > 0 && addressKey ? (
-            <Pressable onPress={() => setAddrSheet(true)} hitSlop={8} style={styles.toolBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Choose addressed agents" onPress={() => setAddrSheet(true)} style={styles.toolBtn}>
               <View style={styles.addrBtn}>
                 <View style={addressedAgents.length === 0 && styles.addrIdle}>
                   <Icon icon={Bot} size={22} color={addressedAgents.length > 0 ? colors.a1 : colors.dim} />
@@ -820,11 +830,11 @@ export function Composer({
               </View>
             </Pressable>
           ) : null}
-          <Pressable onPress={pickPhotos} hitSlop={8} style={styles.toolBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Attach photos" onPress={pickPhotos} style={styles.toolBtn}>
             <Icon icon={ImageIcon} size={22} />
           </Pressable>
           {onSendVoice ? (
-            <Pressable onPress={startRec} hitSlop={8} style={styles.toolBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Record voice message" onPress={startRec} style={styles.toolBtn}>
               <Icon icon={Mic} size={22} />
             </Pressable>
           ) : null}
@@ -859,7 +869,9 @@ export function Composer({
               onPress={() => setReplyInThread((v) => !v)}
               hitSlop={8}
               style={styles.toolBtn}
-              accessibilityLabel="Agents answer this message in a thread under it"
+              accessibilityRole="button"
+            accessibilityState={{ selected: replyInThread }}
+            accessibilityLabel="Agents answer this message in a thread under it"
             >
               <Icon
                 icon={MessageSquareReply}
@@ -870,12 +882,12 @@ export function Composer({
           ) : null}
           <Pressable
             onPress={send}
-            disabled={sending || pasteOps > 0 || (!text.trim() && files.length === 0)}
+            disabled={sending || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)}
             accessibilityRole="button"
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
             style={[
               styles.sendBtn,
-              (sending || pasteOps > 0 || (!text.trim() && files.length === 0)) && styles.sendOff,
+              (sending || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)) && styles.sendOff,
             ]}
           >
             {sending || pasteOps > 0 ? (
@@ -942,9 +954,10 @@ export function Composer({
         onRequestClose={() => closeSheet()}
         onDismiss={onSheetDismissed}
       >
-        <Pressable style={styles.sheetBackdrop} onPress={() => closeSheet()}>
-          <View style={styles.sheet}>
-            <Pressable style={styles.sheetBtn} onPress={() => closeSheet(() => void pickPhotos())}>
+        <Pressable accessible={false} style={styles.sheetBackdrop} onPress={() => closeSheet()}>
+          <View accessibilityViewIsModal style={styles.sheet}>
+            <SheetHeader title="Add attachment" onClose={() => closeSheet()} />
+            <Pressable accessibilityRole="button" style={styles.sheetBtn} onPress={() => closeSheet(() => void pickPhotos())}>
               <Icon icon={ImageIcon} size={19} color={colors.text} />
               <Text style={styles.sheetText}>Photo library</Text>
             </Pressable>
@@ -965,16 +978,19 @@ export function Composer({
 
 const styles = StyleSheet.create({
   wrap: {
+    flexShrink: 0,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    backgroundColor: colors.bg,
+    borderTopColor: colors.borderStrong,
+    backgroundColor: colors.panel,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
   },
   addrBar: { paddingHorizontal: 12, paddingTop: 8 },
   addrLabelBtn: { alignSelf: "center", marginRight: 8 },
   addrLabel: {
     color: colors.faint,
-    fontSize: 10.5,
-    fontWeight: "800",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     letterSpacing: 1,
     textTransform: "uppercase",
   },
@@ -982,9 +998,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "rgba(139,124,255,0.12)",
+    backgroundColor: colors.accentSoft,
     borderWidth: 1,
-    borderColor: "rgba(139,124,255,0.35)",
+    borderColor: colors.accentBorder,
     borderRadius: 999,
     paddingVertical: 3,
     paddingLeft: 4,
@@ -992,7 +1008,7 @@ const styles = StyleSheet.create({
     marginRight: 6,
     maxWidth: 180,
   },
-  addrChipText: { color: "#cfc8ff", fontSize: 12.5, fontWeight: "600", flexShrink: 1 },
+  addrChipText: { color: colors.accentText, fontSize: typography.meta.fontSize, fontWeight: weight.semibold, flexShrink: 1 },
   addrBtn: { flexDirection: "row", alignItems: "flex-start" },
   addrIdle: { opacity: 0.6 },
   addrBadge: {
@@ -1006,15 +1022,15 @@ const styles = StyleSheet.create({
     marginLeft: -3,
     marginTop: -3,
   },
-  addrBadgeText: { color: colors.onAccent, fontSize: 9.5, fontWeight: "800" },
+  addrBadgeText: { color: colors.onAccent, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
   addrHead: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 4,
   },
-  addrTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },
-  addrClear: { color: colors.dim, fontSize: 13, fontWeight: "600" },
+  addrTitle: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold },
+  addrClear: { color: colors.dim, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
   addrList: { maxHeight: 320 },
   addrRow: {
     flexDirection: "row",
@@ -1024,7 +1040,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  addrRowName: { color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 },
+  addrRowName: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold, flex: 1 },
   addrCheck: {
     width: 22,
     height: 22,
@@ -1042,16 +1058,20 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     alignItems: "center",
   },
-  addrDoneText: { color: colors.onAccent, fontSize: 15, fontWeight: "800" },
-  mentionBar: { paddingHorizontal: 12, paddingTop: 8 },
+  addrDoneText: { color: colors.onAccent, fontSize: typography.message.fontSize, fontWeight: weight.bold },
+  mentionBar: { flexGrow: 0, paddingTop: 8 },
+  mentionContent: { paddingHorizontal: 12, gap: 6 },
+  mentionAvatar: { width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.panelStrong },
+  mentionInitial: { fontSize: 12, color: colors.text },
   mentionChip: {
-    backgroundColor: "rgba(139,124,255,0.15)",
+    flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44,
+    backgroundColor: colors.accentSoft,
     borderRadius: 8,
     paddingVertical: 5,
     paddingHorizontal: 10,
     marginRight: 6,
   },
-  mentionText: { color: colors.a1, fontSize: 13, fontWeight: "600" },
+  mentionText: { color: colors.a1, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
   fileBar: { paddingHorizontal: 12, paddingTop: 8 },
   fileChip: {
     flexDirection: "row",
@@ -1068,26 +1088,25 @@ const styles = StyleSheet.create({
   fileThumb: { width: 72, height: 54, borderRadius: 7, backgroundColor: colors.panel },
   fileIcon: {
     width: 40, height: 42, borderRadius: 7, alignItems: "center", justifyContent: "center",
-    backgroundColor: "rgba(139,124,255,0.15)",
+    backgroundColor: colors.accentSoft,
   },
   fileMeta: { flex: 1, minWidth: 0 },
-  fileText: { color: colors.text, fontSize: 12.5, fontWeight: "600" },
-  fileSize: { marginTop: 2, color: colors.faint, fontSize: 10.5 },
+  fileText: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
+  fileSize: { marginTop: 2, color: colors.faint, fontSize: typography.caption.fontSize },
   fileRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   row: { flexDirection: "row", alignItems: "flex-end", padding: 10, gap: 8 },
-  colFocused: { paddingHorizontal: 12, paddingTop: 8 },
+  colFocused: { flexShrink: 0, marginHorizontal: 12, marginTop: 12, borderWidth: 1, borderColor: colors.accentBorder, borderRadius: 16, backgroundColor: colors.bg },
   pasteWrap: { flex: 1 },
   pasteWrapFocused: { alignSelf: "stretch" },
-  iconBtn: { paddingBottom: 9 },
+  iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   input: {
     flex: 1,
     color: colors.text,
-    fontSize: 15,
-    maxHeight: 130,
-    backgroundColor: colors.panel,
+    fontSize: typography.message.fontSize,
+    backgroundColor: colors.bg,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 20,
+    borderColor: colors.borderStrong,
+    borderRadius: 16,
     paddingHorizontal: 14,
     paddingTop: 9,
     paddingBottom: 9,
@@ -1100,27 +1119,26 @@ const styles = StyleSheet.create({
      move into the toolbar row below (Slack's expanded composer). */
   inputFocused: {
     color: colors.text,
-    fontSize: 15.5,
-    minHeight: 40,
-    maxHeight: 150,
-    paddingHorizontal: 4,
+    fontSize: typography.body.fontSize,
+    paddingHorizontal: 12,
     paddingTop: 6,
     paddingBottom: 6,
   },
   toolbar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    paddingHorizontal: 12,
+    gap: 0,
+    flexWrap: "wrap",
+    paddingHorizontal: 8,
     paddingTop: 2,
     paddingBottom: 8,
   },
-  toolBtn: { padding: 2 },
+  toolBtn: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   plusBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.panelStrong,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: colors.accentSoft,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: "center",
@@ -1128,25 +1146,22 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
     marginBottom: 2,
   },
-  plusText: { color: colors.dim, fontSize: 20, fontWeight: "600", lineHeight: 24 },
+  plusText: { color: colors.accentText, fontSize: typography.title.fontSize, fontWeight: weight.semibold, lineHeight: 24 },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 16,
+    ...surfaces.sheet,
     gap: 4,
     paddingBottom: 34,
   },
   sheetBtn: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
-  sheetText: { color: colors.text, fontSize: 15.5 },
+  sheetText: { color: colors.text, fontSize: typography.body.fontSize },
   sendBtn: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     backgroundColor: colors.accent,
     alignItems: "center",
@@ -1163,14 +1178,14 @@ const styles = StyleSheet.create({
   },
   recTime: {
     color: colors.text,
-    fontSize: 15,
+    fontSize: typography.message.fontSize,
     fontVariant: ["tabular-nums"],
     alignSelf: "center",
     marginLeft: 8,
   },
   recCancel: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,
@@ -1178,8 +1193,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   stopBtn: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,

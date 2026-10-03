@@ -3,8 +3,9 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import { Stack, router } from "expo-router";
 import { ChevronRight, Search, User } from "lucide-react-native";
 import { useAllMemberships, useMe, useUsers } from "@agora/core";
+import { EmptyState } from "../../src/components/EmptyState";
 import { Icon } from "../../src/components/Icon";
-import { colors } from "../../src/lib/theme";
+import { colors, typography, weight } from "../../src/lib/theme";
 
 export default function PeopleScreen() {
   const me = useMe();
@@ -50,19 +51,19 @@ export default function PeopleScreen() {
         </View>
         <Icon icon={ChevronRight} size={18} color={colors.faint} />
       </Pressable>)}
-      {users.isSuccess && filtered.length === 0 ? <Text style={styles.empty}>No people match your search.</Text> : null}
+      {users.isSuccess && filtered.length === 0 ? <EmptyState icon={Search} title="No people match your search." description="Try a different name or username." /> : null}
     </ScrollView>
   </>;
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg }, content: { padding: 16, gap: 10, paddingBottom: 40 },
-  hint: { color: colors.dim, fontSize: 13, lineHeight: 19, marginBottom: 2 },
+  hint: { color: colors.dim, fontSize: typography.meta.fontSize, lineHeight: 19, marginBottom: 2 },
   searchBox: { flexDirection: "row", alignItems: "center", gap: 9, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panel, borderRadius: 12, paddingHorizontal: 12 },
-  searchInput: { flex: 1, color: colors.text, fontSize: 14, paddingVertical: 11 },
+  searchInput: { flex: 1, color: colors.text, fontSize: typography.bodySm.fontSize, paddingVertical: 11 },
   card: { flexDirection: "row", alignItems: "center", gap: 12, padding: 13, borderRadius: 12, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   avatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.panelStrong, alignItems: "center", justifyContent: "center" },
-  details: { flex: 1, gap: 2 }, name: { color: colors.text, fontWeight: "700", fontSize: 15 },
-  username: { color: colors.dim, fontSize: 12 }, accessCount: { color: colors.faint, fontSize: 12, marginTop: 2 },
+  details: { flex: 1, gap: 2 }, name: { color: colors.text, fontWeight: weight.bold, fontSize: typography.message.fontSize },
+  username: { color: colors.dim, fontSize: typography.caption.fontSize }, accessCount: { color: colors.faint, fontSize: typography.caption.fontSize, marginTop: 2 },
   empty: { color: colors.faint, textAlign: "center", paddingVertical: 24 },
 });

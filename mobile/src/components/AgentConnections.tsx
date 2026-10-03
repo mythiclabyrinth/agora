@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "./ThemedInput";
 /* Native connection catalog and credential manager. The route owns only the
    app chrome; keeping this flow here makes every state available to Storybook. */
 
@@ -9,7 +10,6 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -899,8 +899,8 @@ const styles = StyleSheet.create({
     fontSize: 10.5,
     fontWeight: "700",
     borderWidth: 1,
-    borderColor: "rgba(56,225,200,0.28)",
-    backgroundColor: "rgba(56,225,200,0.08)",
+    borderColor: colors.mintBorder,
+    backgroundColor: colors.mintSoft,
     paddingHorizontal: 8,
     paddingVertical: 5,
     borderRadius: 99,
@@ -918,9 +918,9 @@ const styles = StyleSheet.create({
   fallbackMark: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(56,225,200,0.08)",
+    backgroundColor: colors.mintSoft,
     borderWidth: 1,
-    borderColor: "rgba(56,225,200,0.18)",
+    borderColor: colors.mintBorder,
   },
   back: {
     minHeight: 44,
@@ -977,9 +977,9 @@ const styles = StyleSheet.create({
     gap: 9,
     padding: 13,
     borderRadius: 12,
-    backgroundColor: "rgba(56,225,200,0.06)",
+    backgroundColor: colors.mintSoft,
     borderWidth: 1,
-    borderColor: "rgba(56,225,200,0.16)",
+    borderColor: colors.mintBorder,
   },
   securityText: { flex: 1, color: colors.dim, fontSize: 12.5, lineHeight: 18 },
   success: { gap: 14, alignItems: "stretch", paddingVertical: 20 },
@@ -1065,7 +1065,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 99,
-    backgroundColor: "rgba(56,225,200,0.08)",
+    backgroundColor: colors.mintSoft,
   },
   tokenActions: {
     flexDirection: "row",

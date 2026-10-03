@@ -2,6 +2,12 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { LinkPreferences } from "../src/components/LinkPreferences";
 
+jest.mock("lucide-react-native", () => new Proxy({}, { get: () => () => null }));
+
+function openMenu(tree: TestRenderer.ReactTestRenderer) {
+  act(() => tree.root.findByProps({ accessibilityLabel: "Browser fallback: In-app browser" }).props.onPress());
+}
+
 it("reports browser selections and disables unavailable Chrome", () => {
   const change = jest.fn();
   let tree: TestRenderer.ReactTestRenderer;
@@ -14,12 +20,15 @@ it("reports browser selections and disables unavailable Chrome", () => {
       chromeAvailable: true,
     }));
   });
+  expect(tree!.root.findAllByProps({ accessibilityRole: "menuitem" })).toHaveLength(0);
+  openMenu(tree!);
   const radios = tree!.root.findAll((node) =>
-    node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function"
+    node.props.accessibilityRole === "menuitem" && typeof node.props.onPress === "function"
   );
   expect(radios).toHaveLength(3);
   act(() => radios[2].props.onPress());
   expect(change).toHaveBeenCalledWith("chrome");
+  expect(tree!.root.findAllByProps({ accessibilityRole: "menuitem" })).toHaveLength(0);
 
   act(() => {
     tree!.update(React.createElement(LinkPreferences, {
@@ -30,11 +39,16 @@ it("reports browser selections and disables unavailable Chrome", () => {
       chromeAvailable: false,
     }));
   });
+  openMenu(tree!);
   const unavailable = tree!.root.findAll((node) =>
-    node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function"
+    node.props.accessibilityRole === "menuitem" && typeof node.props.onPress === "function"
   );
   expect(unavailable).toHaveLength(3);
   expect(unavailable[2].props.accessibilityState).toMatchObject({ disabled: true });
+  change.mockClear();
+  act(() => unavailable[2].props.onPress());
+  expect(change).not.toHaveBeenCalled();
+  act(() => tree!.unmount());
 });
 
 it("keeps a stored Chrome choice selected when Chrome is unavailable", () => {
@@ -48,13 +62,15 @@ it("keeps a stored Chrome choice selected when Chrome is unavailable", () => {
       chromeAvailable: false,
     }));
   });
+  act(() => tree!.root.findByProps({ accessibilityLabel: "Browser fallback: Chrome" }).props.onPress());
   const chrome = tree!.root.findAll((node) =>
-    node.props.accessibilityRole === "radio" &&
+    node.props.accessibilityRole === "menuitem" &&
     typeof node.props.onPress === "function"
   )[2];
   expect(chrome.props.accessibilityState).toMatchObject({
-    checked: true,
+    selected: true,
     disabled: true,
   });
   expect(JSON.stringify(tree!.toJSON())).toContain("Not installed");
+  act(() => tree!.unmount());
 });

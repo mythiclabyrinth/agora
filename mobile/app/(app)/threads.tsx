@@ -1,3 +1,6 @@
+import { ThemedInput as TextInput } from "../../src/components/ThemedInput";
+import { previewText } from "../../src/lib/previewText";
+import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 /* Threads inbox: every thread you started or replied in, newest activity
    first, with per-thread unread badges — the mobile take on Slack's
    "Threads" view. Tapping a row opens the thread screen directly;
@@ -12,8 +15,6 @@ import {
   Pressable,
   RefreshControl,
   StyleSheet,
-  Text,
-  TextInput,
   View,
 } from "react-native";
 import { Redirect, Stack, router } from "expo-router";
@@ -35,7 +36,7 @@ import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } fro
 import { toastAction, toastErr } from "../../src/components/Toast";
 import { ThreadInboxFooter, ThreadRelativeTime } from "../../src/components/ThreadTimeMeta";
 import { headerActions } from "../../src/lib/headerItems";
-import { colors } from "../../src/lib/theme";
+import { colors, typography, weight, surfaces, layout, radii, space } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 
 const SORT_OPTIONS: { value: ThreadSort; label: string }[] = [
@@ -53,8 +54,8 @@ const FILTER_OPTIONS: { value: ThreadFilter; label: string }[] = [
 
 function snippet(t: ThreadRow): string {
   const alias = (t.root.alias ?? "").trim();
-  if (alias) return alias;
-  const text = t.root.text.replace(/\s+/g, " ").trim();
+  if (alias) return previewText(alias);
+  const text = previewText(t.root.text);
   return text || "(attachment)";
 }
 
@@ -114,6 +115,7 @@ function Row({
       onLongPress={onLongPress}
     >
       <View style={styles.top}>
+        {thread.unread > 0 ? <View style={styles.unreadDot} /> : null}
         <Text style={styles.chan} numberOfLines={1}>
           <Text style={styles.hash}># </Text>
           {thread.channel_name}
@@ -126,12 +128,8 @@ function Row({
         />
       </View>
       <View style={styles.mid}>
-        <Text style={styles.author} numberOfLines={1}>
-          {thread.root.author_name || thread.root.author_id}
-        </Text>
-        <Text style={styles.snippet} numberOfLines={1}>
-          {snippet(thread)}
-        </Text>
+        <Text style={styles.snippet} numberOfLines={1}>{snippet(thread)}</Text>
+        <Text style={styles.author} numberOfLines={1}>{thread.root.author_name || thread.root.author_id}</Text>
       </View>
       <ThreadInboxFooter
         replyCount={thread.reply_count}
@@ -404,40 +402,41 @@ export default function ThreadsRedirect() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  embeddedFilters: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 6, margin: 12, padding: 8, borderRadius: 9 },
-  embeddedFiltersText: { color: colors.a1, fontWeight: "700" },
+  embeddedFilters: { minHeight: 44, alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 12, marginVertical: 0, padding: 8, borderRadius: 9 },
+  embeddedFiltersText: { color: colors.a1, fontWeight: weight.bold },
   headerButton: { padding: 6, borderRadius: 9 },
-  headerButtonActive: { backgroundColor: "rgba(139,124,255,0.14)" },
-  content: { padding: 14, gap: 10, paddingBottom: 40 },
+  headerButtonActive: { backgroundColor: colors.accentSoft },
+  content: { paddingHorizontal: layout.gutter, paddingTop: space.sm, gap: space.md, paddingBottom: layout.contentBottom },
   row: {
     backgroundColor: colors.panel,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    gap: 4,
+    borderRadius: radii.lg,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.lg,
+    gap: space.sm,
   },
-  rowUnread: { borderColor: "rgba(139,124,255,0.45)" },
+  unreadDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.a1 },
+  rowUnread: { borderColor: colors.accentBorder, backgroundColor: colors.accentWash },
   top: { flexDirection: "row", alignItems: "center", gap: 10 },
-  chan: { color: colors.text, fontSize: 12.5, fontWeight: "700", flex: 1, minWidth: 0 },
+  chan: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.bold, flex: 1, minWidth: 0 },
   hash: { color: colors.faint },
-  grp: { color: colors.faint, fontWeight: "400" },
-  mid: { flexDirection: "row", alignItems: "baseline", gap: 8 },
-  author: { color: colors.a1, fontSize: 13, fontWeight: "700", flexShrink: 0 },
-  snippet: { color: colors.dim, fontSize: 13.5, flex: 1 },
+  grp: { color: colors.faint, fontWeight: weight.regular },
+  mid: { gap: 2, paddingVertical: 0 },
+  author: { fontSize: typography.meta.fontSize, fontWeight: typography.meta.fontWeight, color: colors.dim },
+  snippet: { fontSize: typography.message.fontSize, color: colors.text, fontWeight: weight.semibold },
   empty: { alignItems: "center", paddingVertical: 60, gap: 6 },
-  emptyText: { color: colors.dim, fontSize: 15, fontWeight: "600" },
+  emptyText: { color: colors.dim, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
   emptyHint: {
     color: colors.faint,
-    fontSize: 12.5,
+    fontSize: typography.meta.fontSize,
     textAlign: "center",
     paddingHorizontal: 40,
     lineHeight: 18,
   },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: colors.scrim,
     justifyContent: "center",
     padding: 28,
   },
@@ -449,8 +448,8 @@ const styles = StyleSheet.create({
     padding: 18,
     gap: 10,
   },
-  dialogTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },
-  dialogHint: { color: colors.faint, fontSize: 12.5 },
+  dialogTitle: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold },
+  dialogHint: { color: colors.faint, fontSize: typography.meta.fontSize },
   dialogInput: {
     backgroundColor: colors.bg,
     borderWidth: 1,
@@ -459,7 +458,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     color: colors.text,
-    fontSize: 15,
+    fontSize: typography.message.fontSize,
   },
   dialogBtns: {
     flexDirection: "row",
@@ -467,18 +466,15 @@ const styles = StyleSheet.create({
     gap: 22,
     marginTop: 4,
   },
-  dialogCancel: { color: colors.dim, fontSize: 15, fontWeight: "600" },
-  dialogOk: { color: colors.a1, fontSize: 15, fontWeight: "800" },
+  dialogCancel: { color: colors.dim, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
+  dialogOk: { color: colors.a1, fontSize: typography.message.fontSize, fontWeight: weight.bold },
   sheetBackdropBottom: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   viewSheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 18,
+    ...surfaces.sheet,
     paddingBottom: 34,
     gap: 12,
     maxHeight: "85%",
@@ -487,8 +483,8 @@ const styles = StyleSheet.create({
   viewControlsContent: { gap: 12 },
   sheetHead: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
   sheetTitleBlock: { flex: 1, gap: 3 },
-  sheetTitle: { color: colors.text, fontSize: 18, fontWeight: "800" },
-  sheetHint: { color: colors.faint, fontSize: 12.5 },
+  sheetTitle: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold },
+  sheetHint: { color: colors.faint, fontSize: typography.meta.fontSize },
   doneButton: {
     minHeight: 44,
     alignItems: "center",
@@ -497,5 +493,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.a1,
     marginTop: 2,
   },
-  doneText: { color: "#fff", fontSize: 14, fontWeight: "800" },
+  doneText: { color: colors.onAccent, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
 });

@@ -1,12 +1,13 @@
+import { ThemedInput as TextInput } from "./ThemedInput";
 /* Emoji picker sheet: the curated Unicode set from @agora/core with
    keyword search and a persisted "recently used" row (usePrefs). Used to
    pick a reaction from the message long-press sheet; the caller decides
    whether a pick closes the sheet. */
 
 import React, { useMemo, useState } from "react";
-import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { FlatList, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { EMOJI_CATEGORIES, EmojiEntry } from "@agora/core";
-import { colors } from "../lib/theme";
+import { colors, surfaces } from "../lib/theme";
 import { usePrefs } from "../state/prefs";
 
 const COLS = 8;
@@ -105,14 +106,11 @@ export function EmojiPicker({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 14,
+    ...surfaces.sheet,
     paddingBottom: 30,
     maxHeight: "62%",
   },

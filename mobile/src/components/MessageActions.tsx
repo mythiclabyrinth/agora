@@ -1,6 +1,7 @@
+import { ThemedInput as TextInput } from "./ThemedInput";
 import React, { useEffect, useState } from "react";
 import {
-  Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import {
@@ -13,10 +14,11 @@ import {
   type Message,
 } from "@agora/core";
 import { beginReviewUiBlock, endReviewUiBlock } from "../lib/storeReview";
-import { colors } from "../lib/theme";
+import { colors, typography, weight, surfaces } from "../lib/theme";
 import { copyDeepLink } from "../lib/deepLinks";
 import { speakMessage } from "../lib/nativeSpeech";
 import { Icon } from "./Icon";
+import { SheetHeader } from "./SheetHeader";
 import { QuickReactions } from "./Reactions";
 import { toastErr } from "./Toast";
 
@@ -95,8 +97,8 @@ export function MessageActions({
     if (reactions) details.push(["Reactions", String(reactions)]);
     return (
       <Modal transparent animationType="fade" onRequestClose={() => setShowingInfo(false)}>
-        <Pressable style={styles.infoBackdrop} onPress={() => setShowingInfo(false)}>
-          <Pressable style={styles.infoPanel} onPress={(event) => event.stopPropagation()}>
+        <Pressable accessible={false} style={styles.infoBackdrop} onPress={() => setShowingInfo(false)}>
+          <Pressable accessible={false} accessibilityViewIsModal style={styles.infoPanel} onPress={(event) => event.stopPropagation()}>
             <View style={styles.infoHead}>
               <Text accessibilityRole="header" style={styles.title}>Message info</Text>
               <Pressable accessibilityRole="button" accessibilityLabel="Close message info"
@@ -168,8 +170,10 @@ export function MessageActions({
 
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.sheet}>
+      <Pressable accessible={false} style={styles.backdrop} onPress={onClose}>
+        <View accessibilityViewIsModal style={styles.sheet}>
+          <SheetHeader title="Message actions" onClose={onClose} />
+          <ScrollView>
           <QuickReactions message={message} onDone={onClose} onMore={onReact} />
           {tldrOf(message) != null ? <Row icon={showingTldr ? Maximize2 : Minimize2}
             label={showingTldr ? "Show full message" : "Show TL;DR"}
@@ -199,6 +203,7 @@ export function MessageActions({
               { messageId: message.id, pinned: !pinned }, { onError: (e) => toastErr("Pin failed", e) },
             ))} /> : null}
           {canDelete ? <Row icon={Trash2} label="Delete" color={colors.red} danger onPress={confirmDelete} /> : null}
+          </ScrollView>
         </View>
       </Pressable>
     </Modal>
@@ -222,31 +227,31 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 function Row({ icon, label, onPress, color = colors.text, fill, danger = false }: {
   icon: LucideIcon; label: string; onPress: () => void; color?: string; fill?: string; danger?: boolean;
 }) {
-  return <Pressable style={styles.row} onPress={onPress}>
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} style={styles.row} onPress={onPress}>
     <Icon icon={icon} size={18} color={color} fill={fill} />
     <Text style={[styles.text, danger && styles.danger]}>{label}</Text>
   </Pressable>;
 }
 
 const styles = StyleSheet.create({
-  keyboard: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.sheet, borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 16, gap: 4, paddingBottom: 34 },
+  keyboard: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
+  backdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
+  sheet: { maxHeight: "85%", ...surfaces.sheet, gap: 4, paddingBottom: 34 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
-  text: { color: colors.text, fontSize: 15.5 }, danger: { color: colors.red },
-  editor: { backgroundColor: colors.sheet, borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 16, paddingBottom: 34, gap: 12 },
-  title: { color: colors.text, fontSize: 17, fontWeight: "800" },
-  input: { minHeight: 150, maxHeight: 360, borderWidth: 1, borderColor: colors.a1, borderRadius: 10, padding: 12, color: colors.text, backgroundColor: colors.bg, fontSize: 15, lineHeight: 21 },
+  text: { color: colors.text, fontSize: typography.body.fontSize }, danger: { color: colors.red },
+  editor: { ...surfaces.sheet, paddingBottom: 34, gap: 12 },
+  title: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold },
+  input: { minHeight: 150, maxHeight: 360, borderWidth: 1, borderColor: colors.a1, borderRadius: 10, padding: 12, color: colors.text, backgroundColor: colors.bg, fontSize: typography.message.fontSize, lineHeight: 21 },
   editorActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10 },
   editorBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 9 },
-  save: { backgroundColor: colors.accent }, saveText: { color: colors.onAccent, fontWeight: "800" },
-  infoBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.65)", justifyContent: "center", padding: 20 },
+  save: { backgroundColor: colors.accent }, saveText: { color: colors.onAccent, fontWeight: weight.bold },
+  infoBackdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "center", padding: 20 },
   infoPanel: { maxHeight: "82%", backgroundColor: colors.sheet, borderRadius: 16, overflow: "hidden" },
   infoHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-  close: { paddingHorizontal: 8, paddingVertical: 5 }, closeText: { color: colors.a1, fontSize: 14, fontWeight: "700" },
+  close: { paddingHorizontal: 8, paddingVertical: 5 }, closeText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   infoRow: { paddingHorizontal: 16, paddingVertical: 12, gap: 5, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-  infoLabel: { color: colors.faint, fontSize: 11.5, fontWeight: "700" },
-  infoValue: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  infoLabel: { color: colors.faint, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
+  infoValue: { color: colors.text, fontSize: typography.bodySm.fontSize, lineHeight: 20 },
   infoId: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  infoLink: { color: colors.a1, fontSize: 14, fontWeight: "700" },
+  infoLink: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
 });

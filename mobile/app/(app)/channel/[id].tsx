@@ -1,3 +1,6 @@
+import { useBottomViewport } from "../../../src/lib/useBottomViewport";
+import { SheetHeader } from "../../../src/components/SheetHeader";
+import { previewText } from "../../../src/lib/previewText";
 /* Channel view: inverted infinite list, "New" divider from the read marker,
    live typing/progress, mention-aware composer, pins/stars sheets, and
    long-press message actions (thread / star / pin). */
@@ -55,10 +58,12 @@ import { fmtTs } from "@agora/core";
 import { headerActions } from "../../../src/lib/headerItems";
 import { useHeaderKeyboardOffset } from "../../../src/lib/keyboard";
 import { enqueueSpeech, prepareSpeechAudio, stopSpeech } from "../../../src/lib/speech";
-import { colors } from "../../../src/lib/theme";
+import { colors, typography, weight, surfaces } from "../../../src/lib/theme";
 import { useChannelLive } from "@agora/core";
 import { usePrefs } from "../../../src/state/prefs";
 import { useSession } from "../../../src/state/session";
+import { ConversationTools } from "../../../src/components/ConversationTools";
+import { IconButton } from "../../../src/components/IconButton";
 
 type Row = { kind: "msg"; m: Message } | { kind: "divider" };
 const MAX_DEEP_LINK_PAGES = 10;
@@ -88,9 +93,9 @@ function ListSheet<T extends Message>({
 }) {
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
-        <View style={[styles.sheet, styles.listSheet]}>
-          <Text style={styles.sheetTitle}>{title}</Text>
+      <Pressable accessible={false} style={styles.sheetBackdrop} onPress={onClose}>
+        <View accessibilityViewIsModal style={[styles.sheet, styles.listSheet]}>
+          <SheetHeader title={title} onClose={onClose} />
           <ScrollView>
             {items.length === 0 ? <Text style={styles.sheetEmpty}>{emptyText}</Text> : null}
             {items.map((item) => (
@@ -99,7 +104,7 @@ function ListSheet<T extends Message>({
                   {item.author_name || item.author_id} · {subtitle(item)}
                 </Text>
                 <Text style={styles.sheetItemText} numberOfLines={2}>
-                  {item.text || "(attachment)"}
+                  {previewText(item.text) || "(attachment)"}
                 </Text>
               </Pressable>
             ))}
@@ -193,6 +198,7 @@ export default function ChannelScreen() {
   }, [latestId]);
 
   const listRef = useRef<FlashListRef<Row>>(null);
+  const onViewportLayout = useBottomViewport(listRef, atBottom);
   const [showJump, setShowJump] = useState(false);
   const [highlightedId, setHighlightedId] = useState<number | null>(null);
   const landedOnMessage = useRef<number | null>(null);
@@ -378,45 +384,16 @@ export default function ChannelScreen() {
           headerShown: true,
           ...headerActions(
             <View style={styles.headerBtns}>
-              <Pressable
-                accessibilityLabel="Channel attachments"
-                onPress={() => router.push({
-                  pathname: "/(app)/attachments/[channelId]",
-                  params: { channelId, channelName, groupId },
-                })}
-                hitSlop={8}
-              >
-                <Icon icon={Paperclip} size={20} color={colors.text} />
-              </Pressable>
-              {ttsOk ? (
-                <Pressable
-                  onPress={() => {
-                    if (speakAloud) stopSpeech();
-                    setSpeakAloud(!speakAloud);
-                  }}
-                  hitSlop={8}
-                >
-                  <View style={!speakAloud && styles.headerBtnOff}>
-                    <Icon icon={Volume2} size={20} color={colors.text} />
-                  </View>
-                </Pressable>
-              ) : null}
-              {sttOk && ttsOk ? (
-                <Pressable onPress={openLive} hitSlop={8}>
-                  <Icon icon={Headphones} size={20} color={colors.text} />
-                </Pressable>
-              ) : null}
-              <Pressable onPress={() => setSheet("pins")} hitSlop={8}>
-                <Icon icon={Pin} size={20} color={colors.text} />
-              </Pressable>
-              {FEATURES.stars ? <Pressable onPress={() => setSheet("stars")} hitSlop={8}>
-                <Icon icon={Star} size={20} color={colors.text} />
-              </Pressable> : null}
-              {groupId && groupId !== "__dms" ? (
-                <Pressable onPress={openMembers} hitSlop={8}>
-                  <Icon icon={Users} size={20} color={colors.text} />
-                </Pressable>
-              ) : null}
+              {sttOk && ttsOk ? <IconButton icon={Headphones} accessibilityLabel="Start live voice" onPress={openLive} /> : null}
+              <ConversationTools title={`# ${channelName}`} actions={[
+                { label: "Channel attachments", detail: "Files, images and shared media", icon: Paperclip,
+                  onPress: () => router.push({ pathname: "/(app)/attachments/[channelId]", params: { channelId, channelName, groupId } }) },
+                { label: "Pinned messages", detail: "The things worth keeping close", icon: Pin, onPress: () => setSheet("pins") },
+                ...(FEATURES.stars ? [{ label: "Starred messages", icon: Star, onPress: () => setSheet("stars") }] : []),
+                ...(groupId && groupId !== "__dms" ? [{ label: "Channel members", detail: "People and agents in this room", icon: Users, onPress: openMembers }] : []),
+                ...(ttsOk ? [{ label: "Read replies aloud", detail: speakAloud ? "On · tap to turn off" : "Off · tap to turn on", icon: Volume2, selected: speakAloud,
+                  onPress: () => { if (speakAloud) stopSpeech(); setSpeakAloud(!speakAloud); } }] : []),
+              ]} />
             </View>,
           ),
         }}
@@ -433,7 +410,7 @@ export default function ChannelScreen() {
             </Text>
           </Pressable>
         ) : null}
-        <View style={styles.listWrap}>
+        <View style={styles.listWrap} onLayout={onViewportLayout}>
           <FlashList
           ref={listRef}
           data={rows}
@@ -566,7 +543,7 @@ export default function ChannelScreen() {
       ) : null}
       {sheet === "pins" ? (
         <ListSheet<PinnedMessage>
-          title="Pinned threads"
+          title="Pinned messages"
           items={pins.data ?? []}
           emptyText="Nothing pinned in this channel."
           subtitle={(p) => `pinned ${fmtTs(p.pinned_at)}`}
@@ -598,19 +575,18 @@ export default function ChannelScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   listWrap: { flex: 1, position: "relative" },
-  // Five actions fit beside a short channel title at the 320pt compact width.
-  headerBtns: { flexDirection: "row", gap: 12 },
+  headerBtns: { flexDirection: "row", gap: 4 },
   headerBtnOff: { opacity: 0.35 },
-  deepLinkTarget: { backgroundColor: "rgba(139,124,255,0.16)", borderRadius: 8 },
+  deepLinkTarget: { backgroundColor: colors.accentSoft, borderRadius: 8 },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 40 },
   noAgents: {
-    backgroundColor: "rgba(251,191,36,0.08)",
+    backgroundColor: colors.warningSoft,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(251,191,36,0.35)",
+    borderBottomColor: colors.warningBorder,
     paddingHorizontal: 16,
     paddingVertical: 9,
   },
-  noAgentsText: { color: colors.amber, fontSize: 12.5, lineHeight: 17 },
+  noAgentsText: { color: colors.amber, fontSize: typography.meta.fontSize, lineHeight: 17 },
   divider: {
     flexDirection: "row",
     alignItems: "center",
@@ -619,7 +595,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   dividerLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.red },
-  dividerText: { color: colors.red, fontSize: 11.5, fontWeight: "800" },
+  dividerText: { color: colors.red, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
   jump: {
     position: "absolute",
     right: 16,
@@ -629,28 +605,25 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 14,
   },
-  jumpText: { color: colors.onAccent, fontSize: 12.5, fontWeight: "800" },
+  jumpText: { color: colors.onAccent, fontSize: typography.meta.fontSize, fontWeight: weight.bold },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 16,
+    ...surfaces.sheet,
     gap: 4,
     paddingBottom: 34,
   },
   listSheet: { maxHeight: "70%" },
-  sheetTitle: { color: colors.text, fontSize: 16, fontWeight: "800", marginBottom: 8 },
+  sheetTitle: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold, marginBottom: 8 },
   sheetEmpty: { color: colors.dim, paddingVertical: 20, textAlign: "center" },
   sheetItem: {
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  sheetItemAuthor: { color: colors.a1, fontSize: 12, fontWeight: "700", marginBottom: 2 },
-  sheetItemText: { color: colors.text, fontSize: 13.5 },
+  sheetItemAuthor: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.bold, marginBottom: 2 },
+  sheetItemText: { color: colors.text, fontSize: typography.bodySm.fontSize },
 });

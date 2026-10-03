@@ -104,16 +104,59 @@ test("successful send clears its draft while a failed send retains it", async ()
   });
   const input = () => tree.root.findByType(TextInput);
   act(() => input().props.onChangeText("keep me"));
-  act(() => input().props.onContentSizeChange({ nativeEvent: { contentSize: { width: 300, height: 120 } } }));
-  expect(StyleSheet.flatten(input().props.style).height).toBe(120);
+  expect(StyleSheet.flatten(input().props.style)).toMatchObject({ minHeight: 40, maxHeight: 150 });
+  expect(StyleSheet.flatten(input().props.style).height).toBeUndefined();
+  act(() => input().props.onLayout({ nativeEvent: { layout: { height: 120 } } }));
+  act(() => input().props.onFocus());
+  expect(StyleSheet.flatten(tree.root.findByProps({ testID: "paste-aware-input" }).props.style).height).toBeUndefined();
+  expect(input().props.scrollEnabled).toBe(false);
+  act(() => input().props.onLayout({ nativeEvent: { layout: { height: 150 } } }));
+  expect(input().props.scrollEnabled).toBe(true);
   await act(async () => { await labelled(tree.root, "Send message").props.onPress(); });
   expect(useMessageDrafts.getState().byConvo["channel-a"]).toBe("keep me");
-  expect(StyleSheet.flatten(input().props.style).height).toBe(120);
+  expect(input().props.scrollEnabled).toBe(true);
   await act(async () => { await labelled(tree.root, "Send message").props.onPress(); });
   expect(useMessageDrafts.getState().byConvo["channel-a"]).toBeUndefined();
   expect(input().props.value).toBe("");
-  expect(StyleSheet.flatten(input().props.style).height).toBe(40);
+  expect(input().props.scrollEnabled).toBe(false);
+  expect(StyleSheet.flatten(input().props.style).height).toBeUndefined();
   act(() => tree.unmount());
+});
+
+test.each(["ios", "android"])("%s composer leaves growth and contraction to native layout without remounting its input", (platform) => {
+  const previousPlatform = Platform.OS;
+  Object.defineProperty(Platform, "OS", { configurable: true, value: platform });
+  let tree!: TestRenderer.ReactTestRenderer;
+  try {
+    act(() => {
+      tree = TestRenderer.create(React.createElement(SafeAreaProvider,
+        { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+        React.createElement(Composer, { placeholder: "Message", mentions: [], sending: false, onSend: async () => {} }),
+      ));
+    });
+    const input = tree.root.findByType(TextInput);
+    const assertIntrinsic = () => {
+      expect(tree.root.findByType(TextInput)).toBe(input);
+      expect(StyleSheet.flatten(input.props.style)).toMatchObject({ minHeight: 40, maxHeight: 150 });
+      expect(StyleSheet.flatten(input.props.style).height).toBeUndefined();
+    };
+    assertIntrinsic();
+    act(() => input.props.onFocus());
+    act(() => input.props.onChangeText("One\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight"));
+    act(() => input.props.onLayout({ nativeEvent: { layout: { height: 150 } } }));
+    expect(input.props.scrollEnabled).toBe(true);
+    assertIntrinsic();
+    act(() => input.props.onBlur());
+    assertIntrinsic();
+    act(() => input.props.onChangeText("One"));
+    act(() => input.props.onLayout({ nativeEvent: { layout: { height: 40 } } }));
+    expect(input.props.scrollEnabled).toBe(false);
+    expect(input.props.value).toBe("One");
+    assertIntrinsic();
+  } finally {
+    act(() => tree?.unmount());
+    Object.defineProperty(Platform, "OS", { configurable: true, value: previousPlatform });
+  }
 });
 
 test("text typed while a send is pending survives when the earlier send completes", async () => {

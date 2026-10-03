@@ -39,3 +39,12 @@ export const Empty: Story = {
   render: () => <InboxScreen initialTab="unreads" />,
   parameters: { apiRoutes: { "GET /api/unreads": { items: [], total: 0 } } },
 };
+
+export const LongThreadTitle: Story = {
+  render: () => <InboxScreen initialTab="unreads" />,
+  parameters: { apiRoutes: { "GET /api/unreads": { items: [{ ...item,
+    kind: "thread", thread_id: 42,
+    title: "Customer interview synthesis and the decisions we need before the next release",
+    unread: 125, mentions: 12,
+  }], total: 1 } } },
+};

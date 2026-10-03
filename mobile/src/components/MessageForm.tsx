@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "./ThemedInput";
 /* An agent-authored interactive form inside a message bubble, mirroring the
    desktop's agoFormHTML: text inputs and checkboxes over one shared state
    (meta.form_state — every member edits the same values, synced live), plus
@@ -7,7 +8,7 @@
    agent and locks the form for everyone (meta.form_submitted). */
 
 import React, { useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { Check } from "lucide-react-native";
 import { useSubmitForm, useUpdateFormState } from "@agora/core";
 import type { Message } from "@agora/core";
@@ -203,8 +204,8 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   confirmBtn: {
-    width: 30,
-    height: 30,
+    width: 44,
+    height: 44,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(72,187,120,0.45)",
@@ -212,7 +213,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  checkRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 2 },
+  checkRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 2, minHeight: 44 },
   checkBox: {
     width: 18,
     height: 18,
@@ -230,6 +231,8 @@ const styles = StyleSheet.create({
   checkLabel: { color: colors.text, fontSize: 13, flexShrink: 1 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
   button: {
+    minHeight: 44,
+    justifyContent: "center",
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 8,

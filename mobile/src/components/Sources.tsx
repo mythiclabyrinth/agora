@@ -11,7 +11,7 @@ import { ChevronLeft, ChevronRight, ExternalLink, Link2, X } from "lucide-react-
 import { Image } from "expo-image";
 import type { LinkPreview, Message } from "@agora/core";
 import { openLink } from "../lib/openLink";
-import { colors, mono } from "../lib/theme";
+import { colors, mono, surfaces } from "../lib/theme";
 import { Icon } from "./Icon";
 
 /* The text a bubble renders: cut a server-detected trailing sources block
@@ -194,12 +194,9 @@ const styles = StyleSheet.create({
   },
   chipNumText: { color: colors.dim, fontSize: 10, fontWeight: "700" },
   chipLabel: { color: colors.dim, fontSize: 11.5, flexShrink: 1 },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
+  backdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 18,
+    ...surfaces.sheet,
     paddingBottom: 34,
     gap: 12,
   },
