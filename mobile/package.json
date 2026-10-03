@@ -89,6 +89,7 @@
     ],
     "moduleNameMapper": {
       "^react-native-gesture-handler/ReanimatedSwipeable$": "<rootDir>/tests/mocks/reanimatedSwipeable.js",
+      "^react-native-reanimated$": "<rootDir>/tests/mocks/reanimated.js",
       "^react-native-webview$": "<rootDir>/tests/mocks/webview.js",
       "^expo-video$": "<rootDir>/tests/mocks/expo-video.js",
       "^@agora/core$": "<rootDir>/../packages/core/src/index.ts",
