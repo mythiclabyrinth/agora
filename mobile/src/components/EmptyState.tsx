@@ -1,7 +1,7 @@
 import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
-import { colors, control, radii, space, type } from "../lib/theme";
+import { colors, control, radii, space, typography, weight } from "../lib/theme";
 import { Icon } from "./Icon";
 
 export function EmptyState({ icon, title, description, action }: {
@@ -23,11 +23,11 @@ export function EmptyState({ icon, title, description, action }: {
 const styles = StyleSheet.create({
   root: { alignItems: "center", padding: space.xxl, paddingVertical: space.section, gap: space.md },
   mark: { padding: space.lg, borderRadius: radii.lg, backgroundColor: colors.panelStrong },
-  title: { ...type.title, color: colors.text, textAlign: "center" },
-  description: { ...type.bodySm, color: colors.dim, textAlign: "center", maxWidth: 320 },
+  title: { ...typography.title, color: colors.text, textAlign: "center" },
+  description: { ...typography.bodySm, color: colors.dim, textAlign: "center", maxWidth: 320 },
   action: { minHeight: control.minTouchSize, justifyContent: "center", paddingHorizontal: space.lg,
     paddingVertical: space.sm, borderRadius: radii.md, backgroundColor: colors.panelStrong },
-  actionText: { ...type.bodySm, fontWeight: "600", color: colors.a1, textAlign: "center" },
+  actionText: { ...typography.bodySm, fontWeight: weight.semibold, color: colors.a1, textAlign: "center" },
   pressed: { opacity: 0.8 },
   disabled: { opacity: 0.5 },
 });

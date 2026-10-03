@@ -1,6 +1,6 @@
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { colors, space, type } from "../lib/theme";
+import { colors, space, typography } from "../lib/theme";
 
 export function SectionHeader({ title, subtitle, action }: {
   title: string; subtitle?: string; action?: React.ReactNode;
@@ -17,6 +17,6 @@ export function SectionHeader({ title, subtitle, action }: {
 const styles = StyleSheet.create({
   root: { flexDirection: "row", alignItems: "center", gap: space.md },
   copy: { flex: 1, gap: space.xs },
-  title: { ...type.title, color: colors.text },
-  subtitle: { ...type.bodySm, color: colors.dim },
+  title: { ...typography.title, color: colors.text },
+  subtitle: { ...typography.bodySm, color: colors.dim },
 });

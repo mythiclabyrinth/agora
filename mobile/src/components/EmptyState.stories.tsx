@@ -12,7 +12,7 @@ type Story = StoryObj<typeof meta>;
 export const CaughtUp: Story = {};
 export const NoResults: Story = { args: { icon: Search, title: "No messages found",
   description: "Try another search or change your filters." } };
-export const Error: Story = { args: { icon: WifiOff, title: "Couldn't load messages",
+export const LoadError: Story = { args: { icon: WifiOff, title: "Couldn't load messages",
   description: "Check your connection and try again.", action: { label: "Retry", onPress: fn() } } };
-export const Retrying: Story = { args: { ...Error.args,
+export const Retrying: Story = { args: { ...LoadError.args,
   action: { label: "Retrying…", onPress: fn(), disabled: true } } };
