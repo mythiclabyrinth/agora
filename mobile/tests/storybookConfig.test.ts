@@ -25,6 +25,13 @@ test("production excludes every Storybook-only native module", () => {
   }
 });
 
+test("production autolinks the native modules the app imports", () => {
+  const config = loadConfig();
+  for (const name of ["react-native-gesture-handler", "react-native-reanimated", "react-native-worklets"]) {
+    expect(config.dependencies[name]).toBeUndefined();
+  }
+});
+
 test("Storybook builds allow its native modules to autolink", () => {
   expect(loadConfig("true").dependencies).toEqual({});
 });

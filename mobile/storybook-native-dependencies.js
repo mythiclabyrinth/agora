@@ -5,7 +5,7 @@ module.exports = [
   "@react-native-async-storage/async-storage",
   "@react-native-community/datetimepicker",
   "@react-native-community/slider",
-  "react-native-gesture-handler",
-  "react-native-reanimated",
-  "react-native-worklets",
+  // react-native-gesture-handler, -reanimated and -worklets are NOT listed:
+  // the app itself imports them (root layout, SwipeRow), so they must
+  // autolink in production builds too.
 ];
