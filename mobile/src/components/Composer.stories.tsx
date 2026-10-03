@@ -1,3 +1,4 @@
+import { View } from "react-native";
 import type { Meta, StoryObj } from "@storybook/react-native";
 import { fn } from "storybook/test";
 import { useAddressed, useMessageDrafts } from "@agora/core";
@@ -135,4 +136,12 @@ export const RequireAgentDisabled: Story = {
   parameters: {
     setup: () => usePrefs.setState({ requireAgentOffThreads: ["general:t42"] }),
   },
+};
+
+
+export const NarrowViewport: Story = {
+  render: args => <View style={{ width: 320, maxWidth: "100%" }}><Composer {...args} /></View>,
+  parameters: { setup: () => useMessageDrafts.setState({
+    byConvo: { general: "Check the toolbar with the keyboard open." },
+  }) },
 };

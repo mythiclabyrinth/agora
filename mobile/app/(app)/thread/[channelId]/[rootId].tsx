@@ -54,7 +54,7 @@ import {
   prepareSpeechAudio,
   stopSpeech,
 } from "../../../../src/lib/speech";
-import { colors } from "../../../../src/lib/theme";
+import { colors, typography, weight } from "../../../../src/lib/theme";
 import { threadAddressKey } from "@agora/core";
 import { useChannelLive } from "@agora/core";
 import { usePrefs } from "../../../../src/state/prefs";
@@ -324,6 +324,7 @@ export default function ThreadScreen() {
           ...headerActions(
             <View style={styles.headerBtns}>
               <Pressable
+                accessibilityRole="button"
                 accessibilityLabel="Thread attachments"
                 onPress={() => router.push({
                   pathname: "/(app)/attachments/[channelId]",
@@ -335,6 +336,9 @@ export default function ThreadScreen() {
               </Pressable>
               {ttsOk ? (
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Read replies aloud"
+                  accessibilityState={{ selected: speakAloud }}
                   onPress={() => {
                     if (speakAloud) stopSpeech();
                     setSpeakAloud(!speakAloud);
@@ -347,7 +351,7 @@ export default function ThreadScreen() {
                 </Pressable>
               ) : null}
               {sttOk && ttsOk ? (
-                <Pressable onPress={openLive} hitSlop={8}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Start live voice" onPress={openLive} hitSlop={12}>
                   <Icon icon={Headphones} size={20} color={colors.text} />
                 </Pressable>
               ) : null}
@@ -480,10 +484,10 @@ const styles = StyleSheet.create({
   listWrap: { flex: 1, position: "relative" },
   headerBtns: { flexDirection: "row", gap: 16 },
   headerBtnOff: { opacity: 0.35 },
-  deepLinkTarget: { backgroundColor: "rgba(139,124,255,0.16)", borderRadius: 8 },
-  headerTitle: { color: colors.text, fontSize: 17, fontWeight: "700" },
+  deepLinkTarget: { backgroundColor: colors.accentSoft, borderRadius: 8 },
+  headerTitle: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold },
   headerTitleWrap: { alignItems: "center", maxWidth: 230, gap: 2 },
-  headerThreadName: { color: colors.dim, fontSize: 11.5, fontWeight: "500", maxWidth: 220 },
+  headerThreadName: { color: colors.dim, fontSize: typography.caption.fontSize, fontWeight: weight.medium, maxWidth: 220 },
   headerChan: { color: colors.dim },
   rootMsg: {
     borderBottomWidth: StyleSheet.hairlineWidth,

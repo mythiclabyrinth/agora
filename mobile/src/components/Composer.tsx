@@ -59,7 +59,7 @@ import {
 } from "@agora/core";
 import { toOutgoing, type LocalFile } from "../api/voice";
 import { useKeyboardVisible } from "../lib/keyboard";
-import { colors } from "../lib/theme";
+import { colors, typography, weight } from "../lib/theme";
 import { useAddressed, useMessageDrafts } from "@agora/core";
 import { usePrefs } from "../state/prefs";
 import { AgentAvatar } from "./AgentAvatar";
@@ -636,6 +636,7 @@ export function Composer({
           <Pressable
             onPress={cancelRec}
             disabled={recPhase === "uploading"}
+            accessibilityRole="button"
             accessibilityLabel="Discard recording"
             style={[styles.recCancel, recPhase === "uploading" && styles.sendOff]}
           >
@@ -644,6 +645,7 @@ export function Composer({
           {onTranscribeVoice ? <Pressable
             onPress={() => finishRec("draft")}
             disabled={recPhase === "uploading"}
+            accessibilityRole="button"
             accessibilityLabel="Stop and add to message"
             style={[styles.stopBtn, recPhase === "uploading" && styles.sendOff]}
           >
@@ -652,6 +654,7 @@ export function Composer({
           <Pressable
             onPress={() => finishRec("send")}
             disabled={recPhase === "uploading"}
+            accessibilityRole="button"
             accessibilityLabel="Stop and send"
             style={[styles.sendBtn, recPhase === "uploading" && styles.sendOff]}
           >
@@ -743,7 +746,7 @@ export function Composer({
           would drop the keyboard). */}
       <View style={focused ? styles.colFocused : styles.row}>
         {!focused ? (
-          <Pressable onPress={() => setAttachSheet(true)} hitSlop={8} style={styles.plusBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Add attachment" onPress={() => setAttachSheet(true)} style={styles.plusBtn}>
             <Text style={styles.plusText}>+</Text>
           </Pressable>
         ) : null}
@@ -753,6 +756,7 @@ export function Composer({
           onPaste={(payload) => void onNativePaste(payload)}
         >
           <TextInput
+            accessibilityLabel={placeholder}
             key="composer-input"
             ref={inputRef}
             style={[
@@ -796,18 +800,18 @@ export function Composer({
             )}
           </Pressable>
         ) : !focused && onSendVoice ? (
-          <Pressable onPress={startRec} hitSlop={8} style={styles.iconBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Record voice message" onPress={startRec} style={styles.iconBtn}>
             <Icon icon={Mic} size={22} />
           </Pressable>
         ) : null}
       </View>
       {focused ? (
         <View style={styles.toolbar}>
-          <Pressable onPress={() => setAttachSheet(true)} hitSlop={8} style={styles.plusBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Add attachment" onPress={() => setAttachSheet(true)} style={styles.plusBtn}>
             <Text style={styles.plusText}>+</Text>
           </Pressable>
           {agents.length > 0 && addressKey ? (
-            <Pressable onPress={() => setAddrSheet(true)} hitSlop={8} style={styles.toolBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Choose addressed agents" onPress={() => setAddrSheet(true)} style={styles.toolBtn}>
               <View style={styles.addrBtn}>
                 <View style={addressedAgents.length === 0 && styles.addrIdle}>
                   <Icon icon={Bot} size={22} color={addressedAgents.length > 0 ? colors.a1 : colors.dim} />
@@ -820,11 +824,11 @@ export function Composer({
               </View>
             </Pressable>
           ) : null}
-          <Pressable onPress={pickPhotos} hitSlop={8} style={styles.toolBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Attach photos" onPress={pickPhotos} style={styles.toolBtn}>
             <Icon icon={ImageIcon} size={22} />
           </Pressable>
           {onSendVoice ? (
-            <Pressable onPress={startRec} hitSlop={8} style={styles.toolBtn}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Record voice message" onPress={startRec} style={styles.toolBtn}>
               <Icon icon={Mic} size={22} />
             </Pressable>
           ) : null}
@@ -859,7 +863,9 @@ export function Composer({
               onPress={() => setReplyInThread((v) => !v)}
               hitSlop={8}
               style={styles.toolBtn}
-              accessibilityLabel="Agents answer this message in a thread under it"
+              accessibilityRole="button"
+            accessibilityState={{ selected: replyInThread }}
+            accessibilityLabel="Agents answer this message in a thread under it"
             >
               <Icon
                 icon={MessageSquareReply}
@@ -967,14 +973,16 @@ const styles = StyleSheet.create({
   wrap: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
-    backgroundColor: colors.bg,
+    backgroundColor: colors.panel,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
   },
   addrBar: { paddingHorizontal: 12, paddingTop: 8 },
   addrLabelBtn: { alignSelf: "center", marginRight: 8 },
   addrLabel: {
     color: colors.faint,
-    fontSize: 10.5,
-    fontWeight: "800",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     letterSpacing: 1,
     textTransform: "uppercase",
   },
@@ -982,9 +990,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "rgba(139,124,255,0.12)",
+    backgroundColor: colors.accentSoft,
     borderWidth: 1,
-    borderColor: "rgba(139,124,255,0.35)",
+    borderColor: colors.accentBorder,
     borderRadius: 999,
     paddingVertical: 3,
     paddingLeft: 4,
@@ -992,7 +1000,7 @@ const styles = StyleSheet.create({
     marginRight: 6,
     maxWidth: 180,
   },
-  addrChipText: { color: "#cfc8ff", fontSize: 12.5, fontWeight: "600", flexShrink: 1 },
+  addrChipText: { color: colors.accentText, fontSize: typography.meta.fontSize, fontWeight: weight.semibold, flexShrink: 1 },
   addrBtn: { flexDirection: "row", alignItems: "flex-start" },
   addrIdle: { opacity: 0.6 },
   addrBadge: {
@@ -1006,15 +1014,15 @@ const styles = StyleSheet.create({
     marginLeft: -3,
     marginTop: -3,
   },
-  addrBadgeText: { color: colors.onAccent, fontSize: 9.5, fontWeight: "800" },
+  addrBadgeText: { color: colors.onAccent, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
   addrHead: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 4,
   },
-  addrTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },
-  addrClear: { color: colors.dim, fontSize: 13, fontWeight: "600" },
+  addrTitle: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold },
+  addrClear: { color: colors.dim, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
   addrList: { maxHeight: 320 },
   addrRow: {
     flexDirection: "row",
@@ -1024,7 +1032,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  addrRowName: { color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 },
+  addrRowName: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold, flex: 1 },
   addrCheck: {
     width: 22,
     height: 22,
@@ -1042,7 +1050,7 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     alignItems: "center",
   },
-  addrDoneText: { color: colors.onAccent, fontSize: 15, fontWeight: "800" },
+  addrDoneText: { color: colors.onAccent, fontSize: typography.message.fontSize, fontWeight: weight.bold },
   mentionBar: { paddingHorizontal: 12, paddingTop: 8 },
   mentionChip: {
     backgroundColor: "rgba(139,124,255,0.15)",
@@ -1051,7 +1059,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     marginRight: 6,
   },
-  mentionText: { color: colors.a1, fontSize: 13, fontWeight: "600" },
+  mentionText: { color: colors.a1, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
   fileBar: { paddingHorizontal: 12, paddingTop: 8 },
   fileChip: {
     flexDirection: "row",
@@ -1071,23 +1079,23 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(139,124,255,0.15)",
   },
   fileMeta: { flex: 1, minWidth: 0 },
-  fileText: { color: colors.text, fontSize: 12.5, fontWeight: "600" },
-  fileSize: { marginTop: 2, color: colors.faint, fontSize: 10.5 },
+  fileText: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
+  fileSize: { marginTop: 2, color: colors.faint, fontSize: typography.caption.fontSize },
   fileRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   row: { flexDirection: "row", alignItems: "flex-end", padding: 10, gap: 8 },
-  colFocused: { paddingHorizontal: 12, paddingTop: 8 },
+  colFocused: { paddingHorizontal: 16, paddingTop: 12 },
   pasteWrap: { flex: 1 },
   pasteWrapFocused: { alignSelf: "stretch" },
-  iconBtn: { paddingBottom: 9 },
+  iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   input: {
     flex: 1,
     color: colors.text,
-    fontSize: 15,
+    fontSize: typography.message.fontSize,
     maxHeight: 130,
-    backgroundColor: colors.panel,
+    backgroundColor: colors.bg,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 20,
+    borderColor: colors.borderStrong,
+    borderRadius: 16,
     paddingHorizontal: 14,
     paddingTop: 9,
     paddingBottom: 9,
@@ -1100,7 +1108,7 @@ const styles = StyleSheet.create({
      move into the toolbar row below (Slack's expanded composer). */
   inputFocused: {
     color: colors.text,
-    fontSize: 15.5,
+    fontSize: typography.body.fontSize,
     minHeight: 40,
     maxHeight: 150,
     paddingHorizontal: 4,
@@ -1110,16 +1118,17 @@ const styles = StyleSheet.create({
   toolbar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    paddingHorizontal: 12,
+    gap: 0,
+    flexWrap: "wrap",
+    paddingHorizontal: 8,
     paddingTop: 2,
     paddingBottom: 8,
   },
-  toolBtn: { padding: 2 },
+  toolBtn: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   plusBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     backgroundColor: colors.panelStrong,
     borderWidth: 1,
     borderColor: colors.border,
@@ -1128,10 +1137,10 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
     marginBottom: 2,
   },
-  plusText: { color: colors.dim, fontSize: 20, fontWeight: "600", lineHeight: 24 },
+  plusText: { color: colors.dim, fontSize: typography.title.fontSize, fontWeight: weight.semibold, lineHeight: 24 },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   sheet: {
@@ -1143,10 +1152,10 @@ const styles = StyleSheet.create({
     paddingBottom: 34,
   },
   sheetBtn: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
-  sheetText: { color: colors.text, fontSize: 15.5 },
+  sheetText: { color: colors.text, fontSize: typography.body.fontSize },
   sendBtn: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     backgroundColor: colors.accent,
     alignItems: "center",
@@ -1163,14 +1172,14 @@ const styles = StyleSheet.create({
   },
   recTime: {
     color: colors.text,
-    fontSize: 15,
+    fontSize: typography.message.fontSize,
     fontVariant: ["tabular-nums"],
     alignSelf: "center",
     marginLeft: 8,
   },
   recCancel: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,
@@ -1178,8 +1187,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   stopBtn: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,

@@ -9,7 +9,7 @@ import type { Session } from "@agora/core";
 import { FEATURES, useSelectOption } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtLastReply, fmtLastReplyFull, fmtTs, validLastReplyTs } from "@agora/core";
-import { colors } from "../lib/theme";
+import { colors, typography, weight } from "../lib/theme";
 import { useSession } from "../state/session";
 import { tldrOf, useTldrView } from "@agora/core";
 import { AgentAvatar } from "./AgentAvatar";
@@ -210,7 +210,7 @@ export function MessageItem({
           <Reactions message={message} />
           <View style={styles.foot}>
             {flags}
-            <Text style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
+            <Text maxFontSizeMultiplier={1.3} style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
           </View>
           {threadFoot}
         </View>
@@ -241,7 +241,7 @@ export function MessageItem({
             ) : null}
           </Text>
           {flags}
-          <Text style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
+          <Text maxFontSizeMultiplier={1.3} style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
         </View>
         <MdText text={body} onPressIn={pressIn} onPress={openThread} onLongPress={longPress} />
         <ArtifactList artifacts={message.meta?.artifacts} />
@@ -273,12 +273,12 @@ const styles = StyleSheet.create({
   avatar: {
     width: 30,
     height: 30,
-    borderRadius: 9,
+    borderRadius: 15,
     backgroundColor: colors.panelStrong,
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarInitial: { color: colors.a2, fontSize: 14, fontWeight: "700" },
+  avatarInitial: { color: colors.a2, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   bubble: {
     maxWidth: "86%",
     borderRadius: 16,
@@ -287,19 +287,19 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   bubbleMine: {
-    backgroundColor: "rgba(139,124,255,0.22)",
+    backgroundColor: colors.ownMessage,
     borderWidth: 1,
-    borderColor: "rgba(139,124,255,0.3)",
+    borderColor: colors.accentBorder,
     borderBottomRightRadius: 5,
   },
   bubbleOther: {
-    backgroundColor: colors.panelStrong,
+    backgroundColor: colors.panel,
     borderWidth: 1,
     borderColor: colors.border,
     borderBottomLeftRadius: 5,
     flexShrink: 1,
   },
-  head: { flexDirection: "row", alignItems: "baseline", gap: 8 },
+  head: { flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", columnGap: 8, rowGap: 2 },
   foot: {
     flexDirection: "row",
     alignItems: "center",
@@ -309,16 +309,16 @@ const styles = StyleSheet.create({
   },
   author: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: typography.meta.fontSize,
+    fontWeight: weight.bold,
     flexShrink: 1,
   },
-  agentTag: { color: colors.faint, fontSize: 11, fontWeight: "600" },
-  ts: { color: colors.faint, fontSize: 10.5 },
+  agentTag: { color: colors.faint, fontSize: typography.caption.fontSize, fontWeight: weight.semibold },
+  ts: { color: colors.faint, fontSize: typography.caption.fontSize },
   replies: {
     color: colors.a1,
-    fontSize: 12.5,
-    fontWeight: "600",
+    fontSize: typography.meta.fontSize,
+    fontWeight: weight.semibold,
     marginTop: 4,
   },
   /* RN defaults flexShrink to 0: the count keeps its width, while the meta
@@ -336,15 +336,15 @@ const styles = StyleSheet.create({
   },
   threadAlias: {
     color: colors.faint,
-    fontSize: 10.5,
-    fontWeight: "600",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.semibold,
     textAlign: "right",
     alignSelf: "stretch",
   },
   lastReply: {
     color: colors.faint,
-    fontSize: 9.5,
-    lineHeight: 11.5,
+    fontSize: typography.caption.fontSize,
+    lineHeight: typography.caption.lineHeight,
     textAlign: "right",
     alignSelf: "stretch",
   },
@@ -365,16 +365,16 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(239,68,68,0.14)",
     borderColor: "rgba(239,68,68,0.4)",
   },
-  optionLabel: { color: colors.text, fontSize: 13, fontWeight: "600" },
+  optionLabel: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
   optionPrimaryLabel: { color: "#6ee7a0" },
   optionDangerLabel: { color: "#fca5a5" },
-  optionResult: { color: colors.faint, fontSize: 12, fontWeight: "600" },
+  optionResult: { color: colors.faint, fontSize: typography.caption.fontSize, fontWeight: weight.semibold },
   tldrMark: {
     color: colors.a1,
-    fontSize: 9,
-    fontWeight: "700",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     letterSpacing: 0.4,
-    backgroundColor: "rgba(139,124,255,0.16)",
+    backgroundColor: colors.accentSoft,
     borderRadius: 4,
     paddingHorizontal: 5,
     paddingVertical: 1,
