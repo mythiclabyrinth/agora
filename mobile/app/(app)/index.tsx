@@ -48,7 +48,8 @@ import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { AgentStatus } from "../../src/components/AgentStatus";
 import { toastErr } from "../../src/components/Toast";
 import { headerActions } from "../../src/lib/headerItems";
-import { colors } from "../../src/lib/theme";
+import { SectionHeader } from "../../src/components/SectionHeader";
+import { colors, typography, space, radii, weight } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 
 function isGroupAdmin(group: Group): boolean {
@@ -172,7 +173,8 @@ function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
   return (
     <View>
       <Pressable
-        style={styles.channelRow}
+        style={({ pressed }) => [styles.channelRow, pressed && styles.rowPressed]}
+        accessibilityRole="button"
         onPress={() =>
           router.push({
             pathname: "/(app)/channel/[id]",
@@ -183,7 +185,7 @@ function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
         delayLongPress={350}
       >
         <Text style={styles.hash}>#</Text>
-        <Text style={styles.channelName} numberOfLines={1}>
+        <Text style={[styles.channelName, (channel.unread ?? 0) > 0 && styles.channelUnread]} numberOfLines={1} maxFontSizeMultiplier={1.5}>
           {channel.name}
         </Text>
         <UnreadBadge count={channel.unread ?? 0} mentions={channel.mentions ?? 0} />
@@ -294,6 +296,8 @@ function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean 
     <View style={styles.groupCard}>
       <Pressable
         style={styles.groupHead}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
         onPress={() => toggleGroup(group.id)}
         onLongPress={onLongPress}
         delayLongPress={350}
@@ -305,7 +309,7 @@ function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean 
           {group.name}
         </Text>
         {!expanded ? <UnreadBadge count={unread} mentions={mentions} /> : null}
-        <Pressable onPress={() => setCreating((c) => !c)} hitSlop={10} style={styles.plusBtn}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`Create channel in ${group.name}`} onPress={() => setCreating((c) => !c)} style={styles.plusBtn}>
           <Text style={styles.plus}>＋</Text>
         </Pressable>
       </Pressable>
@@ -492,26 +496,27 @@ export default function Home() {
   const header = useMemo(
     () => ({
       title: "Agora",
+      headerTitleAlign: "left" as const,
       headerShown: true,
       ...headerActions(
         <View style={styles.headerBtns}>
           <Link href="/(app)/search" asChild>
-            <Pressable hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Search messages" style={styles.headerAction}>
               <Icon icon={Search} size={21} color={colors.text} />
             </Pressable>
           </Link>
           <Link href="/(app)/agents" asChild>
-            <Pressable hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Agents" style={styles.headerAction}>
               <Icon icon={Bot} size={21} color={colors.text} />
             </Pressable>
           </Link>
           {me.data?.instance_admin ? <Link href="/(app)/people" asChild>
-            <Pressable accessibilityLabel="People" hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel="People" style={styles.headerAction}>
               <Icon icon={Users} size={21} color={colors.text} />
             </Pressable>
           </Link> : null}
           <Link href="/(app)/settings" asChild>
-            <Pressable hitSlop={8}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Settings" style={styles.headerAction}>
               <Icon icon={Settings} size={21} color={colors.text} />
             </Pressable>
           </Link>
@@ -538,23 +543,36 @@ export default function Home() {
           />
         }
       >
+        <View style={styles.intro}>
+          <Text style={styles.eyebrow}>YOUR WORKSPACE</Text>
+          <Text accessibilityRole="header" style={styles.display}>Conversations</Text>
+          <Text style={styles.introHint}>Your people and agents, together.</Text>
+        </View>
         <View style={styles.topRow}>
           <Pressable
+            accessibilityRole="button"
             style={styles.threadsRow}
             onPress={() => router.push("/(app)/inbox")}
           >
-            <Icon icon={MessagesSquare} size={17} color={colors.a1} />
-            <Text style={styles.threadsLabel}>Inbox</Text>
+            <View style={styles.inboxIcon}><Icon icon={MessagesSquare} size={23} color={colors.a1} /></View>
+            <View style={styles.inboxCopy}>
+              <Text style={styles.threadsLabel}>Inbox</Text>
+              <Text style={styles.inboxHint}>Catch up on messages and threads</Text>
+            </View>
             {inboxUnread > 0 ? (
               <View style={[styles.badge, inboxMentions > 0 ? styles.badgeMention : styles.badgeThread]}
                 accessibilityLabel={`${inboxUnread} unread messages, ${inboxMentions} mentions`}>
-                <Text style={styles.badgeText}>
-                  {inboxMentions > 0 ? "@ " : ""}{inboxUnread > 99 ? "99+" : inboxUnread}
+                <Text maxFontSizeMultiplier={1.3} style={[styles.badgeText, inboxMentions > 0 && { color: colors.onAccent }]}>
+                  {inboxUnread > 99 ? "99+" : inboxUnread}{inboxMentions > 0 ? ` · @${inboxMentions > 99 ? "99+" : inboxMentions}` : ""}
                 </Text>
               </View>
             ) : null}
           </Pressable>
-          <Pressable
+        </View>
+        <SectionHeader title="Your spaces" action={<Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Show unread channels only"
+            accessibilityState={{ selected: unreadsOnly }}
             style={[styles.filterChip, unreadsOnly ? styles.filterChipOn : null]}
             onPress={() => setUnreadsOnly(!unreadsOnly)}
             hitSlop={6}
@@ -562,8 +580,7 @@ export default function Home() {
             <Text style={[styles.filterText, unreadsOnly ? styles.filterTextOn : null]}>
               Unreads
             </Text>
-          </Pressable>
-        </View>
+          </Pressable>} />
         {[...(groups.data ?? []).filter(g => g.kind !== "agent_dms"), ...(groups.data ?? []).filter(g => g.kind === "agent_dms")]
           .filter((g) => !g.hidden)
           .map((g) => (
@@ -607,8 +624,18 @@ export default function Home() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 14, gap: 12, paddingBottom: 40 },
-  headerBtns: { flexDirection: "row", gap: 16 },
+  content: { padding: space.lg, gap: space.lg, paddingBottom: 40 },
+  headerBtns: { flexDirection: "row", gap: 0 },
+  headerAction: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  intro: { gap: space.xs, paddingTop: space.sm, paddingBottom: space.sm },
+  eyebrow: { ...typography.caption, color: colors.a2, letterSpacing: 1.6 },
+  display: { ...typography.display, color: colors.text, letterSpacing: -0.6 },
+  introHint: { ...typography.bodySm, color: colors.dim },
+  inboxIcon: { width: 44, height: 44, borderRadius: radii.md, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
+  inboxCopy: { flex: 1, gap: space.xs },
+  inboxHint: { ...typography.meta, color: colors.dim },
+  rowPressed: { backgroundColor: colors.panelStrong },
+  channelUnread: { color: colors.text, fontWeight: weight.semibold },
   topRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   threadsRow: {
     flex: 1,
@@ -622,18 +649,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  threadsLabel: { color: colors.text, fontSize: 15, fontWeight: "700", flex: 1 },
+  threadsLabel: { ...typography.title, color: colors.text },
   filterChip: {
+    minHeight: 44, justifyContent: "center",
     borderWidth: 1,
     borderColor: colors.borderStrong,
     borderRadius: 999,
     paddingHorizontal: 13,
     paddingVertical: 8,
   },
-  filterChipOn: { backgroundColor: "rgba(139,124,255,0.16)", borderColor: colors.a1 },
-  filterText: { color: colors.dim, fontSize: 12.5, fontWeight: "700" },
+  filterChipOn: { backgroundColor: colors.accentSoft, borderColor: colors.a1 },
+  filterText: { color: colors.dim, fontSize: typography.meta.fontSize, fontWeight: weight.bold },
   filterTextOn: { color: colors.a1 },
-  filterHint: { color: colors.faint, fontSize: 12, textAlign: "center" },
+  filterHint: { color: colors.faint, fontSize: typography.caption.fontSize, textAlign: "center" },
   groupCard: {
     backgroundColor: colors.panel,
     borderWidth: 1,
@@ -649,31 +677,32 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   chevron: { width: 14, alignItems: "center" },
-  groupName: { color: colors.text, fontSize: 15.5, fontWeight: "700", flex: 1 },
-  plusBtn: { paddingLeft: 8 },
-  plus: { color: colors.dim, fontSize: 17 },
+  groupName: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold, flex: 1 },
+  plusBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  plus: { color: colors.dim, fontSize: typography.title.fontSize },
   channelRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     paddingLeft: 34,
     paddingRight: 14,
-    paddingVertical: 9,
+    paddingVertical: 11,
+    minHeight: 44,
   },
-  hash: { color: colors.faint, fontSize: 14 },
-  channelName: { color: colors.text, fontSize: 14.5, flex: 1 },
+  hash: { color: colors.faint, fontSize: typography.bodySm.fontSize },
+  channelName: { ...typography.message, color: colors.dim, flex: 1 },
   dmModalScrim: { flex: 1, justifyContent: "center", padding: 20, backgroundColor: "rgba(4,6,10,0.78)" },
   dmModalCard: { width: "100%", maxWidth: 440, maxHeight: "78%", alignSelf: "center", padding: 18, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 18, backgroundColor: colors.sheet },
   dmModalHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 14 },
   dmModalTitleBlock: { flex: 1, gap: 3 },
-  dmModalTitle: { color: colors.text, fontSize: 18, fontWeight: "800" },
-  dmModalHint: { color: colors.dim, fontSize: 12.5 },
+  dmModalTitle: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold },
+  dmModalHint: { color: colors.dim, fontSize: typography.meta.fontSize },
   dmModalClose: { borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 9, paddingHorizontal: 11, paddingVertical: 6 },
-  dmModalCloseText: { color: colors.text, fontSize: 12.5, fontWeight: "700" },
+  dmModalCloseText: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.bold },
   dmModalList: { marginTop: 16 },
   dmModalListContent: { gap: 8 },
   dmAgentRow: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 11, backgroundColor: colors.panel },
-  dmAgentRowPressed: { backgroundColor: "rgba(139,124,255,0.12)" },
+  dmAgentRowPressed: { backgroundColor: colors.accentSoft },
   dmModalEmpty: { color: colors.dim, padding: 14, textAlign: "center", lineHeight: 19 },
   badge: {
     backgroundColor: "rgba(255,255,255,0.14)",
@@ -683,10 +712,10 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
     alignItems: "center",
   },
-  badgeText: { color: colors.text, fontSize: 11.5, fontWeight: "800" },
+  badgeText: { color: colors.text, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
   badgeMention: { backgroundColor: colors.red },
-  badgeMentionText: { color: "#fff", fontSize: 11.5, fontWeight: "800" },
-  badgeThread: { backgroundColor: "rgba(139,124,255,0.35)" },
+  badgeMentionText: { color: colors.onAccent, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
+  badgeThread: { backgroundColor: colors.accentBorder },
   inlineCreate: {
     flexDirection: "row",
     alignItems: "center",
@@ -703,13 +732,13 @@ const styles = StyleSheet.create({
     color: colors.text,
     paddingHorizontal: 10,
     paddingVertical: 7,
-    fontSize: 14,
+    fontSize: typography.bodySm.fontSize,
   },
-  inlineOk: { color: colors.a2, fontSize: 13.5, fontWeight: "700" },
-  emptyChannels: { color: colors.faint, fontSize: 13, paddingLeft: 34, paddingVertical: 8 },
-  empty: { color: colors.dim, textAlign: "center", paddingVertical: 30, fontSize: 14 },
+  inlineOk: { color: colors.a2, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  emptyChannels: { color: colors.faint, fontSize: typography.meta.fontSize, paddingLeft: 34, paddingVertical: 8 },
+  empty: { color: colors.dim, textAlign: "center", paddingVertical: 30, fontSize: typography.bodySm.fontSize },
   newGroup: { alignItems: "center", paddingVertical: 12 },
-  newGroupText: { color: colors.a1, fontSize: 14.5, fontWeight: "700" },
+  newGroupText: { color: colors.a1, fontSize: typography.message.fontSize, fontWeight: weight.bold },
   hiddenCard: {
     backgroundColor: "transparent",
     borderWidth: 1,
@@ -725,11 +754,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
-  hiddenTitle: { color: colors.dim, fontSize: 13.5, fontWeight: "700", flex: 1 },
+  hiddenTitle: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold, flex: 1 },
   hiddenCount: {
     color: colors.faint,
-    fontSize: 11.5,
-    fontWeight: "800",
+    fontSize: typography.caption.fontSize,
+    fontWeight: weight.bold,
     backgroundColor: "rgba(255,255,255,0.08)",
     borderRadius: 9,
     minWidth: 20,
@@ -747,6 +776,6 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   hiddenChanBtn: { flex: 1 },
-  hiddenName: { color: colors.dim, fontSize: 14, flex: 1 },
-  hiddenGroupSuffix: { color: colors.faint, fontSize: 12.5 },
+  hiddenName: { color: colors.dim, fontSize: typography.bodySm.fontSize, flex: 1 },
+  hiddenGroupSuffix: { color: colors.faint, fontSize: typography.meta.fontSize },
 });

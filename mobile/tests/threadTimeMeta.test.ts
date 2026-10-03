@@ -52,7 +52,8 @@ it("shows the accessible compact last-reply label in the footer beside replies",
     expect(lastReply?.props.numberOfLines).toBe(1);
     expect(lastReply?.props.maxFontSizeMultiplier).toBe(1.2);
     const labelStyle = StyleSheet.flatten(lastReply?.props.style);
-    expect(labelStyle.fontSize).toBe(9.5);
+    expect(labelStyle.fontSize).toBe(12);
+    expect(labelStyle.lineHeight).toBeGreaterThanOrEqual(labelStyle.fontSize);
     expect(labelStyle.marginLeft).toBe("auto");
     expect(labelStyle.textAlign).toBe("right");
     act(() => tree.unmount());
