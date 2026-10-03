@@ -4,6 +4,7 @@ import { StyleSheet, TextInput } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiClient, ApiProvider, type ThreadRow } from "@agora/core";
 import { RenameModal, ThreadViewSheet } from "../app/(app)/threads";
+import { SelectDropdown } from "../src/components/SelectDropdown";
 import { colors } from "../src/lib/theme";
 
 jest.mock("lucide-react-native", () => new Proxy({}, { get: () => () => null }));
@@ -75,6 +76,11 @@ it("applies thread view choices immediately and closes from its controls", () =>
   const sheet = tree.root.findByProps({ testID: "thread-view-sheet" });
   expect(sheet.props.accessibilityViewIsModal).toBe(true);
   expect(sheet.props.accessibilityLabel).toBe("Thread view options");
+  act(() => {
+    tree.root.findByProps({ testID: "thread-view-controls" }).props.onLayout({ nativeEvent: { layout: { y: 70 } } });
+    tree.root.findAllByType(SelectDropdown).forEach((control, index) =>
+      control.props.onLayout({ nativeEvent: { layout: { y: index * 74, height: 62 } } }));
+  });
 
   const trigger = (label: string) => tree.root.find((node) => node.props.accessibilityRole === "button"
     && typeof node.props.accessibilityLabel === "string"
@@ -84,17 +90,23 @@ it("applies thread view choices immediately and closes from its controls", () =>
   expect(trigger("Sort by").props.accessibilityState).toEqual({ expanded: false });
   act(() => trigger("Sort by").props.onPress());
   expect(trigger("Sort by").props.accessibilityState).toEqual({ expanded: true });
-  const oldest = option("Oldest");
-  act(() => oldest.props.onPress());
+  const az = option("A–Z");
+  act(() => az.props.onPress());
   expect(trigger("Sort by").props.accessibilityState).toEqual({ expanded: false });
   act(() => trigger("Show").props.onPress());
   const saved = option("Saved Threads");
   act(() => saved.props.onPress());
-  expect(onSort).toHaveBeenCalledWith("oldest");
+  expect(onSort).toHaveBeenCalledWith("az");
   expect(onFilter).toHaveBeenCalledWith("saved");
   act(() => trigger("Group").props.onPress());
   act(() => option("Product").props.onPress());
   expect(onGroup).toHaveBeenCalledWith("product");
+  act(() => {
+    tree.root.findByProps({ testID: "thread-view-controls" }).props.onLayout({ nativeEvent: { layout: { y: 0 } } });
+    tree.root.findAllByType(SelectDropdown)[2].props.onLayout({ nativeEvent: { layout: { y: 0, height: 62 } } });
+  });
+  act(() => trigger("Group").props.onPress());
+  expect(option("Product")).toBeTruthy();
 
   const done = tree.root.find((node) => node.props.accessibilityRole === "button"
     && node.findAll((child) => child.props.children === "Done").length > 0);

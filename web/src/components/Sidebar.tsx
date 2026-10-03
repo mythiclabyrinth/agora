@@ -3,7 +3,7 @@
    section, unreads-only filter, collapse rail, and inline create rows —
    the React port of agoDrawSide. */
 
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   FEATURES,
   useCreateChannel, useCreateGroup, useDeleteChannel, useGroups, useHideThread,
@@ -20,11 +20,14 @@ import { PromptDialog } from "./PromptDialog";
 
 const SEARCH_KEY = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl+K";
 
-function Badge({ n, mentions }: { n: number; mentions: number }) {
+function Badge({ n, mentions, totalWithMention = false }: { n: number; mentions: number; totalWithMention?: boolean }) {
   if (mentions > 0) {
+    const value = totalWithMention ? n : mentions;
     return (
-      <span className="ago-unread-badge mention" title={`${mentions} mention${mentions === 1 ? "" : "s"}`}>
-        @ {mentions > 99 ? "99+" : mentions}
+      <span className="ago-unread-badge mention"
+        title={totalWithMention ? `${n} unread messages, ${mentions} mentions` : `${mentions} mention${mentions === 1 ? "" : "s"}`}
+        aria-label={totalWithMention ? `${n} unread messages, ${mentions} mentions` : `${mentions} mentions`}>
+        @ {value > 99 ? "99+" : value}
       </span>
     );
   }
@@ -165,9 +168,14 @@ export function Sidebar() {
     (g.channels || []).filter(c => !c.hidden).reduce((n, c) => n + unreadOf(c), 0);
   const groupMentions = (g: Group) =>
     (g.channels || []).filter(c => !c.hidden).reduce((n, c) => n + mentionsOf(c), 0);
-  const threadTotal = useMemo(() => threads.reduce((n, t) => n + (t.unread || 0), 0), [threads]);
-  const anyUnread = groups.some(g => groupUnread(g) > 0) || threadTotal > 0;
-  const anyMention = groups.some(g => groupMentions(g) > 0);
+  const visibleGroups = groups.filter(g => !g.hidden);
+  const visibleChannels = new Set(visibleGroups.flatMap(g => (g.channels || []).filter(c => !c.hidden).map(c => c.id)));
+  const threadTotal = threads.reduce((n, t) => n + (visibleChannels.has(t.channel_id) ? t.unread || 0 : 0), 0);
+  const inboxMentions = visibleGroups.reduce((n, g) => n + groupMentions(g), 0);
+  const inboxTotal = Math.max(visibleGroups.reduce((n, g) => n + groupUnread(g), 0) + threadTotal,
+    inboxMentions);
+  const anyUnread = inboxTotal > 0;
+  const anyMention = inboxMentions > 0;
 
   const submitCreate = () => {
     const name = createName.trim();
@@ -221,10 +229,10 @@ export function Sidebar() {
       <button className="ago-side-toggle expand" title="Show groups"
         onClick={() => ui.toggleSide()}><Icon name="chevrons-right" /></button>
       {anyUnread && <span className={`ago-side-dot ${anyMention ? "mention" : ""}`} title="Unread messages"></span>}
-      <div className={`ago-inbox-item ${ui.view.kind === "inbox" ? "active" : ""} ${threadTotal ? "unread" : ""}`}
+      <div className={`ago-inbox-item ${ui.view.kind === "inbox" ? "active" : ""} ${inboxTotal ? "unread" : ""}`}
         onClick={() => ui.openInbox()}>
-        <span className="tico"><Icon name="messages-square" /></span><span className="nm">Threads</span>
-        <Badge n={threadTotal} mentions={0} />
+        <span className="tico"><Icon name="messages-square" /></span><span className="nm">Inbox</span>
+        <Badge n={inboxTotal} mentions={inboxMentions} totalWithMention />
       </div>
       <div className="ago-groups">
         {orderedGroups.filter(g => !g.hidden).map(g => {

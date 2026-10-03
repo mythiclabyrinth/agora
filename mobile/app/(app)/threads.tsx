@@ -11,27 +11,28 @@ import {
   Modal,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { Stack, router } from "expo-router";
-import { ListFilter, MessagesSquare, X } from "lucide-react-native";
+import { Redirect, Stack, router } from "expo-router";
+import { ListFilter, MessagesSquare, Pencil, Trash2, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
   threadActivityTs,
   resolveThreadGroupSelection,
   useGroups,
   useHideThread,
+  useUnhideThread,
   useRenameThread,
   useThreads,
 } from "@agora/core";
 import type { ThreadFilter, ThreadRow, ThreadSort } from "@agora/core";
 import { Icon } from "../../src/components/Icon";
-import { SelectDropdown } from "../../src/components/SelectDropdown";
-import { toastErr } from "../../src/components/Toast";
+import { SelectDropdown, SelectDropdownMenu } from "../../src/components/SelectDropdown";
+import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } from "../../src/components/SwipeRow";
+import { toastAction, toastErr } from "../../src/components/Toast";
 import { ThreadInboxFooter, ThreadRelativeTime } from "../../src/components/ThreadTimeMeta";
 import { headerActions } from "../../src/lib/headerItems";
 import { colors } from "../../src/lib/theme";
@@ -57,21 +58,36 @@ function snippet(t: ThreadRow): string {
   return text || "(attachment)";
 }
 
+export function threadSwipeActions(thread: ThreadRow, onRename: (thread: ThreadRow) => void,
+  onRemove: () => void): { swipeLeft: SwipeAction; swipeRight: SwipeAction } {
+  return {
+    swipeLeft: { name: "remove", label: "Remove", icon: Trash2, color: colors.red, onPress: onRemove },
+    swipeRight: { name: "rename", label: "Rename", icon: Pencil, color: colors.a1,
+      onPress: () => onRename(thread) },
+  };
+}
+
 function Row({
   thread,
   onRename,
+  controller,
+  initialSwipe,
 }: {
   thread: ThreadRow;
   onRename: (t: ThreadRow) => void;
+  controller: SwipeRowController;
+  initialSwipe?: "left" | "right";
 }) {
   const hideThread = useHideThread();
+  const unhideThread = useUnhideThread();
+  const remove = () => hideThread.mutate(thread.root.id, {
+    onSuccess: () => toastAction("Thread removed from Inbox", "Undo", () =>
+      unhideThread.mutate(thread.root.id, { onError: e => toastErr("Undo failed", e) })),
+    onError: (e) => toastErr("Remove failed", e),
+  });
   const onLongPress = () => {
     // Removing a thread from the inbox is per-user server-side (the
     // messages stay in the channel), so anyone may do it.
-    const remove = () =>
-      hideThread.mutate(thread.root.id, {
-        onError: (e) => toastErr("Remove failed", e),
-      });
     Alert.alert("Thread", snippet(thread), [
       { text: "Rename…", onPress: () => onRename(thread) },
       { text: "Remove", style: "destructive" as const, onPress: remove },
@@ -80,8 +96,11 @@ function Row({
   };
   const activityTs = threadActivityTs(thread);
   return (
-    <Pressable
+    <SwipeRow
       style={[styles.row, thread.unread > 0 ? styles.rowUnread : null]}
+      controller={controller} initialOpen={initialSwipe}
+      accessibilityLabel={`Thread ${snippet(thread)} in ${thread.channel_name}`}
+      {...threadSwipeActions(thread, onRename, remove)}
       onPress={() =>
         router.push({
           pathname: "/(app)/thread/[channelId]/[rootId]",
@@ -93,7 +112,6 @@ function Row({
         })
       }
       onLongPress={onLongPress}
-      delayLongPress={350}
     >
       <View style={styles.top}>
         <Text style={styles.chan} numberOfLines={1}>
@@ -120,7 +138,7 @@ function Row({
         unread={thread.unread}
         lastReplyTs={thread.last_reply_ts}
       />
-    </Pressable>
+    </SwipeRow>
   );
 }
 
@@ -208,11 +226,25 @@ export function ThreadViewSheet({
   initialOpen?: "sort" | "filter" | "group" | null;
 }) {
   const [open, setOpen] = React.useState<"sort" | "filter" | "group" | null>(initialOpen);
-  const controlsRef = React.useRef<ScrollView>(null);
+  const [controlsY, setControlsY] = React.useState(0);
+  const [controlLayouts, setControlLayouts] = React.useState<Record<string, { y: number; height: number }>>({});
   const groupChoices = React.useMemo(() => [
     { value: "", label: "All groups" },
     ...groupOptions.map(group => ({ value: group.id, label: group.name })),
   ], [groupOptions]);
+  const openLayout = open ? controlLayouts[open] : undefined;
+  const menuOptions = open === "sort" ? SORT_OPTIONS : open === "filter" ? FILTER_OPTIONS : groupChoices;
+  const wantedHeight = Math.min(220, menuOptions.length * 44 + 2);
+  const rootTop = controlsY + (openLayout?.y ?? 0);
+  const menuTop = open === "group"
+    ? Math.max(4, rootTop - wantedHeight - 4)
+    : rootTop + (openLayout?.height ?? 0) + 4;
+  const menuMaxHeight = open === "group" ? Math.min(wantedHeight, Math.max(44, rootTop - 8)) : wantedHeight;
+  const recordLayout = (name: "sort" | "filter" | "group") => (event: { nativeEvent: { layout: { y: number; height: number } } }) => {
+    const { y, height } = event.nativeEvent.layout;
+    setControlLayouts(previous => previous[name]?.y === y && previous[name]?.height === height
+      ? previous : { ...previous, [name]: { y, height } });
+  };
 
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
@@ -234,30 +266,46 @@ export function ThreadViewSheet({
               <Icon icon={X} size={20} color={colors.dim} />
             </Pressable>
           </View>
-          <ScrollView ref={controlsRef} style={styles.viewControls} contentContainerStyle={styles.viewControlsContent}
-            nestedScrollEnabled keyboardShouldPersistTaps="handled"
-            onContentSizeChange={() => { if (open === "group") controlsRef.current?.scrollToEnd?.({ animated: true }); }}>
+          <View testID="thread-view-controls" style={[styles.viewControls, styles.viewControlsContent]}
+            onLayout={event => setControlsY(event.nativeEvent.layout.y)}>
             <SelectDropdown label="Sort by" value={sort} options={SORT_OPTIONS}
+              menuInSheet onLayout={recordLayout("sort")}
               open={open === "sort"} onToggle={() => setOpen(open === "sort" ? null : "sort")}
               onChange={value => { onSort(value); setOpen(null); }} />
             <SelectDropdown label="Show" value={filter} options={FILTER_OPTIONS}
+              menuInSheet onLayout={recordLayout("filter")}
               open={open === "filter"} onToggle={() => setOpen(open === "filter" ? null : "filter")}
               onChange={value => { onFilter(value); setOpen(null); }} />
             <SelectDropdown label="Group" value={groupId ?? ""} options={groupChoices}
+              menuInSheet onLayout={recordLayout("group")}
               open={open === "group"} onToggle={() => setOpen(open === "group" ? null : "group")}
               onChange={value => { onGroup(value || null); setOpen(null); }} />
-          </ScrollView>
+          </View>
           <Pressable accessibilityRole="button" style={styles.doneButton} onPress={onClose}>
             <Text style={styles.doneText}>Done</Text>
           </Pressable>
+          {open && openLayout ? <SelectDropdownMenu
+            value={open === "sort" ? sort : open === "filter" ? filter : groupId ?? ""}
+            options={menuOptions}
+            style={{ top: menuTop, left: 18, right: 18, maxHeight: menuMaxHeight }}
+            onToggle={() => setOpen(null)}
+            onChange={value => {
+              if (open === "sort") onSort(value as ThreadSort);
+              else if (open === "filter") onFilter(value as ThreadFilter);
+              else onGroup(value || null);
+              setOpen(null);
+            }} /> : null}
         </Pressable>
       </Pressable>
     </Modal>
   );
 }
 
-export default function ThreadsScreen() {
+export function ThreadsScreen({ embedded = false, initialSwipe }: {
+  embedded?: boolean; initialSwipe?: "left" | "right";
+}) {
   const threads = useThreads();
+  const swipeRows = useSwipeRows();
   const groups = useGroups();
   const [renaming, setRenaming] = React.useState<ThreadRow | null>(null);
   const [viewOptionsOpen, setViewOptionsOpen] = React.useState(false);
@@ -281,7 +329,7 @@ export default function ThreadsScreen() {
   const optionsActive = sort !== "recent" || filter !== "all" || effectiveGroupId !== null;
   return (
     <>
-      <Stack.Screen options={{
+      {!embedded && <Stack.Screen options={{
         title: "Threads",
         headerShown: true,
         ...headerActions(
@@ -290,12 +338,18 @@ export default function ThreadsScreen() {
             accessibilityLabel={`Thread view options${optionsActive ? ", filters active" : ""}`}
             hitSlop={10}
             style={[styles.headerButton, optionsActive ? styles.headerButtonActive : null]}
-            onPress={() => setViewOptionsOpen(true)}
+            onPress={() => { swipeRows.close(); setViewOptionsOpen(true); }}
           >
             <Icon icon={ListFilter} size={21} color={optionsActive ? colors.a1 : colors.text} />
           </Pressable>,
         ),
-      }} />
+      }} />}
+      {embedded && <Pressable accessibilityRole="button" accessibilityLabel="Thread view options"
+        style={[styles.embeddedFilters, optionsActive && styles.headerButtonActive]}
+        onPress={() => { swipeRows.close(); setViewOptionsOpen(true); }}>
+        <Icon icon={ListFilter} size={18} color={colors.a1} />
+        <Text style={styles.embeddedFiltersText}>Thread view</Text>
+      </Pressable>}
       <RenameModal thread={renaming} onClose={() => setRenaming(null)} />
       {viewOptionsOpen ? (
         <ThreadViewSheet sort={sort} filter={filter} groupId={effectiveGroupId} groupOptions={groupSelection.options}
@@ -304,11 +358,13 @@ export default function ThreadsScreen() {
       ) : null}
       <FlatList
         style={styles.root}
+        onScrollBeginDrag={swipeRows.close}
         contentContainerStyle={styles.content}
         data={displayedThreads}
         keyExtractor={(t) => String(t.root.id)}
-        renderItem={({ item }) => (
-          <Row thread={item} onRename={setRenaming} />
+        renderItem={({ item, index }) => (
+          <Row thread={item} onRename={setRenaming} controller={swipeRows}
+            initialSwipe={index === 0 ? initialSwipe : undefined} />
         )}
         refreshControl={
           <RefreshControl
@@ -342,8 +398,14 @@ export default function ThreadsScreen() {
   );
 }
 
+export default function ThreadsRedirect() {
+  return <Redirect href="/(app)/inbox?tab=threads" />;
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
+  embeddedFilters: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 6, margin: 12, padding: 8, borderRadius: 9 },
+  embeddedFiltersText: { color: colors.a1, fontWeight: "700" },
   headerButton: { padding: 6, borderRadius: 9 },
   headerButtonActive: { backgroundColor: "rgba(139,124,255,0.14)" },
   content: { padding: 14, gap: 10, paddingBottom: 40 },

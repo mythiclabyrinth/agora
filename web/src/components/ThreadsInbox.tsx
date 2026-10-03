@@ -126,7 +126,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
   );
 }
 
-export function ThreadsInbox() {
+export function ThreadsInbox({ embedded = false }: { embedded?: boolean }) {
   const ui = useUiState();
   const qc = useQueryClient();
   const threadsQuery = useThreads();
@@ -155,15 +155,15 @@ export function ThreadsInbox() {
   );
 
   return (
-    <div className="agora-main" id="agora-main">
+    <div className={embedded ? "ago-inbox-content" : "agora-main"} id={embedded ? undefined : "agora-main"}>
       <div className="ago-head">
-        <button className="btn sm ago-back" title="Back to groups" onClick={() => ui.backToGroups()}>
+        {!embedded && <button className="btn sm ago-back" title="Back to groups" onClick={() => ui.backToGroups()}>
           <Icon name="chevron-left" />
-        </button>
-        <div className="ago-head-text">
+        </button>}
+        {!embedded && <div className="ago-head-text">
           <span className="ago-chan-name"><Icon name="messages-square" /> Threads</span>
           <span className="dim">conversations you're part of</span>
-        </div>
+        </div>}
         <button className="btn sm ago-pane-tools-toggle" aria-label="Thread filters" aria-expanded={toolsOpen}
           onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>
         <div className={`ago-head-actions ago-inbox-tools ${toolsOpen ? "open" : ""}`}>

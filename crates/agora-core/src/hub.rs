@@ -1082,9 +1082,22 @@ impl Hub {
 
     pub fn mark_read(&self, username: &str, channel_id: &str, message_id: Option<i64>) -> i64 {
         let last = self.store.mark_read(username, channel_id, message_id);
+        self.publish_read_marker(username, channel_id, last);
+        last
+    }
+
+    pub fn publish_read_marker(&self, username: &str, channel_id: &str, last: i64) {
+        self.publish_read_marker_inner(username, channel_id, last, false);
+    }
+
+    fn publish_read_marker_inner(&self, username: &str, channel_id: &str, last: i64, from_post: bool) {
+        let counts = self.store.unread_counts(username, &[channel_id.to_string()]);
+        let unread = counts[channel_id]["count"].as_i64().unwrap_or(0);
+        let mentions = counts[channel_id]["mentions"].as_i64().unwrap_or(0);
         self.send_to_user(
             username,
-            &json!({"type": "read", "channel_id": channel_id, "last_read_id": last}),
+            &json!({"type": "read", "channel_id": channel_id, "last_read_id": last,
+                "unread": unread, "mentions": mentions, "from_post": from_post}),
         );
         if let Some(notify) = self.read_notifier.lock().unwrap().as_ref() {
             notify(ReadNotifyEvent {
@@ -1093,7 +1106,6 @@ impl Hub {
                 last_read_id: last,
             });
         }
-        last
     }
 
     /// Advance a per-thread read marker and tell the user's other devices.
@@ -1104,16 +1116,29 @@ impl Hub {
         message_id: Option<i64>,
     ) -> i64 {
         let last = self.store.mark_thread_read(username, thread_id, message_id);
+        self.publish_thread_read_marker(username, thread_id, last);
+        last
+    }
+
+    pub fn publish_thread_read_marker(&self, username: &str, thread_id: i64, last: i64) {
+        self.publish_thread_read_marker_inner(username, thread_id, last, false);
+    }
+
+    fn publish_thread_read_marker_inner(&self, username: &str, thread_id: i64, last: i64, from_post: bool) {
         let channel_id = self
             .store
             .message(thread_id)
             .and_then(|m| m["channel_id"].as_str().map(str::to_string))
             .unwrap_or_default();
+        let counts = self.store.unread_counts(username, &[channel_id.clone()]);
+        let mentions = counts[&channel_id]["mentions"].as_i64().unwrap_or(0);
+        let unread = self.store.thread_unread_count(username, thread_id);
         self.send_to_user(
             username,
             &json!({
                 "type": "thread_read", "thread_id": thread_id,
                 "channel_id": channel_id, "last_read_id": last,
+                "unread": unread, "mentions": mentions, "from_post": from_post,
             }),
         );
         if let Some(notify) = self.read_notifier.lock().unwrap().as_ref() {
@@ -1123,7 +1148,6 @@ impl Hub {
                 last_read_id: last,
             });
         }
-        last
     }
 
     /// Persist @user mentions so unread badges can distinguish "spoken to
@@ -1229,12 +1253,14 @@ impl Hub {
             st.bot_streak
                 .remove(&(channel_id.to_string(), thread_id.unwrap_or(0)));
         }
-        // Your own message is never unread to you.
-        self.store
-            .mark_read(username, channel_id, message["id"].as_i64());
+        // A reply must not advance the channel's top-level read marker.
+        if thread_id.is_none() {
+            let last = self.store.mark_read(username, channel_id, message["id"].as_i64());
+            self.publish_read_marker_inner(username, channel_id, last, true);
+        }
         if let Some(tid) = thread_id {
-            self.store
-                .mark_thread_read(username, tid, message["id"].as_i64());
+            let last = self.store.mark_thread_read(username, tid, message["id"].as_i64());
+            self.publish_thread_read_marker_inner(username, tid, last, true);
             // Continuing a dismissed thread restores it to the inbox before
             // the message broadcast so clients' threads-cache invalidation
             // refetches a list that already includes the row.
@@ -3922,6 +3948,7 @@ mod tests {
         h.attach_socket("root", true, tx_root);
         h.attach_socket("alice", false, tx_scoped);
         h.post_user_message(&cid, "hi", "tom", None, None, vec![]);
+        assert_eq!(rx_member.try_recv().unwrap()["type"], "read");
         assert_eq!(rx_member.try_recv().unwrap()["type"], "message");
         assert!(rx_out.try_recv().is_err());
         assert_eq!(rx_root.try_recv().unwrap()["type"], "message");
@@ -3950,6 +3977,7 @@ mod tests {
         h.attach_socket("alice", false, owner_tx);
         h.attach_socket("root", true, admin_tx);
         h.post_user_message(&cid, "hello without a mention", "alice", Some("Alice"), None, vec![]);
+        assert_eq!(owner_rx.try_recv().unwrap()["type"], "read");
         assert_eq!(owner_rx.try_recv().unwrap()["type"], "message");
         assert!(admin_rx.try_recv().is_err());
         let inbound = last_frame(&mut agent_rx, "inbound").unwrap();
@@ -4585,11 +4613,45 @@ mod tests {
         h.attach_socket("tom", false, tx_tom);
         h.attach_socket("alice", false, tx_alice);
         h.post_user_message(&cid, "hi", "tom", None, None, vec![]);
+        assert_eq!(rx_tom.try_recv().unwrap()["type"], "read");
         rx_tom.try_recv().unwrap();
         rx_alice.try_recv().unwrap();
         h.mark_read("alice", &cid, None);
         assert_eq!(rx_alice.try_recv().unwrap()["type"], "read");
         assert!(rx_tom.try_recv().is_err());
+    }
+
+    #[test]
+    fn posting_emits_authoritative_read_counts_to_the_author() {
+        let h = hub();
+        let cid = setup_channel(&h, &[]);
+        let mentioned = h.store.add_message(&cid, "hello @tom", "agent", "bot", None, None, &[]);
+        h.record_mentions(&mentioned);
+        assert_eq!(h.store.unread_counts("tom", &[cid.clone()])[&cid]["mentions"], 1);
+        let (tx, mut rx) = unbounded_channel();
+        h.attach_socket("tom", false, tx);
+        h.post_user_message(&cid, "thanks", "tom", None, None, vec![]);
+        let read = rx.try_recv().unwrap();
+        assert_eq!(read["type"], "read");
+        assert_eq!(read["unread"], 0);
+        assert_eq!(read["mentions"], 0);
+        assert_eq!(rx.try_recv().unwrap()["type"], "message");
+    }
+
+    #[test]
+    fn replying_to_thread_does_not_mark_top_level_channel_messages_read() {
+        let h = hub();
+        let cid = setup_channel(&h, &[]);
+        let root = h.post_user_message(&cid, "root", "tom", None, None, vec![]);
+        let unread = h.store.add_message(&cid, "still waiting", "agent", "bot", None, None, &[]);
+        assert_eq!(h.store.unread_counts("tom", &[cid.clone()])[&cid]["count"], 1);
+
+        h.post_user_message(&cid, "reply", "tom", None, root["id"].as_i64(), vec![]);
+
+        assert_eq!(h.store.unread_counts("tom", &[cid.clone()])[&cid]["count"], 1);
+        let items = h.store.unread_inbox("tom", &[cid], 10);
+        let channel = items.iter().find(|item| item["kind"] == "channel").unwrap();
+        assert_eq!(channel["first_unread_id"], unread["id"]);
     }
 
     #[test]

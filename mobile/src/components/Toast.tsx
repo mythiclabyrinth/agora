@@ -12,11 +12,12 @@ interface ToastItem {
   id: number;
   message: string;
   variant?: "warn";
+  action?: { label: string; onPress: () => void };
 }
 
 interface ToastState {
   items: ToastItem[];
-  show: (message: string, variant?: "warn") => void;
+  show: (message: string, variant?: "warn", action?: ToastItem["action"]) => void;
   dismiss: (id: number) => void;
 }
 
@@ -24,15 +25,17 @@ let nextId = 1;
 
 export const useToasts = create<ToastState>((set, get) => ({
   items: [],
-  show(message, variant) {
-    const existing = get().items.find(
-      (t) => t.message === message && t.variant === variant,
+  show(message, variant, action) {
+    // Action toasts carry distinct callbacks (such as Undo for a thread).
+    // Keep each one even when its visible message matches another toast.
+    const existing = action ? undefined : get().items.find(
+      (t) => !t.action && t.message === message && t.variant === variant,
     );
     if (existing) {
       // Refresh auto-dismiss by replacing with a new id.
       const id = nextId++;
       set((s) => ({
-        items: s.items.map((t) => (t.id === existing.id ? { ...t, id } : t)),
+        items: s.items.map((t) => (t.id === existing.id ? { ...t, id, action } : t)),
       }));
       setTimeout(() => {
         set((s) => ({ items: s.items.filter((t) => t.id !== id) }));
@@ -40,7 +43,7 @@ export const useToasts = create<ToastState>((set, get) => ({
       return;
     }
     const id = nextId++;
-    set((s) => ({ items: [...s.items, { id, message, variant }] }));
+    set((s) => ({ items: [...s.items, { id, message, variant, action }] }));
     setTimeout(() => {
       set((s) => ({ items: s.items.filter((t) => t.id !== id) }));
     }, 6000);
@@ -52,6 +55,10 @@ export const useToasts = create<ToastState>((set, get) => ({
 
 export function toast(message: string, variant?: "warn") {
   useToasts.getState().show(message, variant);
+}
+
+export function toastAction(message: string, label: string, onPress: () => void) {
+  useToasts.getState().show(message, undefined, { label, onPress });
 }
 
 /** `${msg}: ${detail}` warn toast — the desktop's agoErr. */
@@ -71,6 +78,10 @@ function ToastCard({ item }: { item: ToastItem }) {
       <Text style={styles.msg} numberOfLines={4}>
         {item.message}
       </Text>
+      {item.action && <Pressable accessibilityRole="button" accessibilityLabel={item.action.label}
+        onPress={() => { dismiss(item.id); item.action?.onPress(); }}>
+        <Text style={styles.action}>{item.action.label}</Text>
+      </Pressable>}
       <Pressable onPress={() => dismiss(item.id)} hitSlop={8}>
         <Icon icon={X} size={14} />
       </Pressable>
@@ -131,4 +142,5 @@ const styles = StyleSheet.create({
   },
   warn: { borderColor: "rgba(248,113,113,0.5)" },
   msg: { color: colors.text, fontSize: 13.5, flexShrink: 1 },
+  action: { color: colors.a1, fontSize: 13.5, fontWeight: "800" },
 });

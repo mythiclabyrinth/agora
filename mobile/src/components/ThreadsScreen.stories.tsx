@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-native";
 import { fixtureGroups, fixtureThreads } from "@agora/core/testing/fixtures";
-import ThreadsScreen, { RenameModal, ThreadViewSheet } from "../../app/(app)/threads";
+import { ThreadsScreen, RenameModal, ThreadViewSheet } from "../../app/(app)/threads";
 import { usePrefs } from "../state/prefs";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 const root = fixtureThreads[0].root;
 const now = Math.floor(Date.now() / 1000);
@@ -46,6 +47,16 @@ export const Empty: Story = {
 export const Populated: Story = {
   parameters: { apiRoutes: { "GET /api/threads?limit=100": { threads: inboxThreads } } },
 };
+export const SwipeRemove: Story = {
+  render: () => <GestureHandlerRootView style={{ flex: 1 }}>
+    <ThreadsScreen initialSwipe="left" />
+  </GestureHandlerRootView>,
+};
+export const SwipeRename: Story = {
+  render: () => <GestureHandlerRootView style={{ flex: 1 }}>
+    <ThreadsScreen initialSwipe="right" />
+  </GestureHandlerRootView>,
+};
 
 export const ViewOptionsSheet: Story = {
   render: () => (
@@ -68,6 +79,22 @@ export const ViewOptionsGroupOpen: Story = {
       groupOptions={[{ id: "product", name: "Product" }, { id: "design", name: "Design" }]}
       onSort={() => undefined} onFilter={() => undefined} onGroup={() => undefined}
       onClose={() => undefined} initialOpen="group" />
+  ),
+};
+
+export const ViewOptionsSortOpen: Story = {
+  render: () => (
+    <ThreadViewSheet sort="recent" filter="all" groupId={null} groupOptions={[]}
+      onSort={() => undefined} onFilter={() => undefined} onGroup={() => undefined}
+      onClose={() => undefined} initialOpen="sort" />
+  ),
+};
+
+export const ViewOptionsShowOpen: Story = {
+  render: () => (
+    <ThreadViewSheet sort="recent" filter="all" groupId={null} groupOptions={[]}
+      onSort={() => undefined} onFilter={() => undefined} onGroup={() => undefined}
+      onClose={() => undefined} initialOpen="filter" />
   ),
 };
 

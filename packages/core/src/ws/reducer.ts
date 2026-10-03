@@ -17,6 +17,8 @@ import type {
   ThreadReadEvent,
   ThreadRenamedEvent,
   ThreadRow,
+  UnreadItem,
+  UnreadInboxPage,
   StarredMessage,
   WsEvent,
 } from "../api/types";
@@ -25,6 +27,43 @@ import { mentionsMe } from "../lib/unread";
 import { useLive } from "../state/live";
 
 export type MessagePages = InfiniteData<Message[], unknown>;
+
+const unreadRefreshTimers = new WeakMap<QueryClient, { timer: ReturnType<typeof setTimeout>; firstAt: number }>();
+function refreshUnreads(qc: QueryClient) {
+  const pending = unreadRefreshTimers.get(qc);
+  if (pending) clearTimeout(pending.timer);
+  const firstAt = pending?.firstAt ?? Date.now();
+  const delay = Math.min(750, Math.max(0, 3000 - (Date.now() - firstAt)));
+  const timer = setTimeout(() => {
+    unreadRefreshTimers.delete(qc);
+    void qc.invalidateQueries({ queryKey: keys.unreads });
+  }, delay);
+  unreadRefreshTimers.set(qc, { timer, firstAt });
+}
+
+export function applyReadToUnreads(
+  rows: UnreadItem[] | undefined,
+  event: ReadEvent | ThreadReadEvent,
+): UnreadItem[] | undefined {
+  if (!rows) return undefined;
+  return rows.filter(item => {
+    const matches = event.type === "read"
+      ? item.kind === "channel" && item.channel_id === event.channel_id
+      : item.kind === "thread" && item.thread_id === event.thread_id;
+    // A partial ack changes the unread count and first unread message. Drop
+    // the cached card until the already-scheduled unread query can rebuild it.
+    return !matches || event.last_read_id < item.first_unread_id;
+  });
+}
+
+export function applyReadToUnreadPage(
+  page: UnreadInboxPage | undefined,
+  event: ReadEvent | ThreadReadEvent,
+): UnreadInboxPage | undefined {
+  if (!page) return undefined;
+  const items = applyReadToUnreads(page.items, event) ?? page.items;
+  return { items, total: Math.max(items.length, page.total - (page.items.length - items.length)) };
+}
 
 /** Append a message to its page set (newest page is pages[0], newest-last
     inside a page). No-op if the message is already present (e.g. our own
@@ -177,7 +216,7 @@ export function applyMessageToGroups(
     channels: g.channels.map((c) => {
       if (c.id !== message.channel_id) return c;
       if (own) {
-        return isReply ? c : { ...c, unread: 0, mentions: 0, last_read_id: message.id };
+        return isReply ? c : { ...c, unread: 0, last_read_id: message.id };
       }
       if (message.id <= (c.last_read_id ?? 0)) return c;
       const mention = mentionsMe(message.text, username);
@@ -198,11 +237,23 @@ export function applyReadToGroups(
   if (!groups) return undefined;
   return groups.map((g) => ({
     ...g,
-    channels: g.channels.map((c) =>
+    channels: (g.channels || []).map((c) =>
       c.id === ev.channel_id
-        ? { ...c, unread: 0, mentions: 0, last_read_id: ev.last_read_id }
+        ? { ...c, unread: ev.unread ?? 0, mentions: ev.mentions ?? c.mentions,
+            last_read_id: ev.last_read_id }
         : c,
     ),
+  }));
+}
+
+export function applyThreadReadToGroups(
+  groups: Group[] | undefined,
+  ev: ThreadReadEvent,
+): Group[] | undefined {
+  if (!groups || ev.mentions === undefined) return groups;
+  return groups.map(g => ({
+    ...g,
+    channels: (g.channels || []).map(c => c.id === ev.channel_id ? { ...c, mentions: ev.mentions } : c),
   }));
 }
 
@@ -239,7 +290,7 @@ export function applyThreadRead(
   if (!threads) return undefined;
   return threads.map((t) =>
     t.root.id === ev.thread_id && ev.last_read_id >= t.last_read_id
-      ? { ...t, unread: 0, last_read_id: ev.last_read_id }
+      ? { ...t, unread: ev.unread ?? 0, last_read_id: ev.last_read_id }
       : t,
   );
 }
@@ -424,6 +475,7 @@ export function applyWsEvent(
       // counters — appendMessage already dedupes the list, but the bump
       // helpers do not.
       if (!claimId(seenMessageIds, qc, message.id)) return;
+      if (!(message.author_type === "user" && message.author_id === ctx.username)) refreshUnreads(qc);
       qc.setQueryData<MessagePages>(
         keys.messages(message.channel_id, message.thread_id),
         (data) => appendMessage(data, message),
@@ -476,27 +528,39 @@ export function applyWsEvent(
       break;
     }
     case "message_delete": {
+      refreshUnreads(qc);
       applyMessageDelete(qc, ev);
       void qc.invalidateQueries({ queryKey: ["attachments", ev.channel_id] });
       break;
     }
     case "message_clear": {
+      refreshUnreads(qc);
       applyMessageClear(qc, ev);
       break;
     }
     case "read": {
+      const page = qc.getQueryData<UnreadInboxPage>(keys.unreads);
+      if (!ev.from_post || (ev.unread ?? 0) > 0 || (page && page.total > page.items.length)) refreshUnreads(qc);
+      qc.setQueryData<UnreadInboxPage>(keys.unreads, page => applyReadToUnreadPage(page, ev));
       qc.setQueryData<Group[]>(keys.groups, (groups) =>
         applyReadToGroups(groups, ev),
       );
+      if (ev.mentions === undefined) void qc.invalidateQueries({ queryKey: keys.groups });
       break;
     }
     case "thread_read": {
+      const page = qc.getQueryData<UnreadInboxPage>(keys.unreads);
+      if (!ev.from_post || (ev.unread ?? 0) > 0 || (page && page.total > page.items.length)) refreshUnreads(qc);
+      qc.setQueryData<UnreadInboxPage>(keys.unreads, page => applyReadToUnreadPage(page, ev));
       qc.setQueryData<ThreadRow[]>(keys.threads, (threads) =>
         applyThreadRead(threads, ev),
       );
+      qc.setQueryData<Group[]>(keys.groups, groups => applyThreadReadToGroups(groups, ev));
+      if (ev.mentions === undefined) void qc.invalidateQueries({ queryKey: keys.groups });
       break;
     }
     case "thread_renamed": {
+      refreshUnreads(qc);
       qc.setQueryData<ThreadRow[]>(keys.threads, (threads) =>
         applyThreadRename(threads, ev),
       );

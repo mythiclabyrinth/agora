@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_author_threads ON messages(author_type, author_id, thread_id, id);
 CREATE TABLE IF NOT EXISTS pins (
     channel_id TEXT NOT NULL,
     message_id INTEGER NOT NULL,
@@ -3253,8 +3254,12 @@ impl Store {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT c.id, COALESCE(r.last_read_id, 0), COUNT(m.id), \
-                   (SELECT COUNT(*) FROM mentions mn WHERE mn.channel_id = c.id \
-                     AND mn.username = ?1 AND mn.message_id > COALESCE(r.last_read_id, 0)) \
+                   (SELECT COUNT(*) FROM mentions mn \
+                     JOIN messages mm ON mm.id = mn.message_id \
+                     LEFT JOIN thread_reads tr ON tr.username = ?1 AND tr.thread_id = mm.thread_id \
+                     WHERE mn.channel_id = c.id AND mn.username = ?1 \
+                       AND mn.message_id > CASE WHEN mm.thread_id IS NULL \
+                         THEN COALESCE(r.last_read_id, 0) ELSE COALESCE(tr.last_read_id, 0) END) \
                  FROM channels c \
                  LEFT JOIN reads r ON r.username = ?1 AND r.channel_id = c.id \
                  LEFT JOIN messages m ON m.channel_id = c.id \
@@ -3288,6 +3293,249 @@ impl Store {
             );
         }
         Value::Object(out)
+    }
+
+    /// The channels represented in this user's visible sidebar, including only
+    /// agent DMs owned by this user even when they administer the instance.
+    pub fn visible_inbox_channels(&self, username: &str, instance_admin: bool) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT c.id FROM channels c \
+             LEFT JOIN groups g ON g.id = c.group_id \
+             LEFT JOIN user_prefs cp ON cp.username = ?1 AND cp.kind = 'channel' AND cp.item_id = c.id \
+             LEFT JOIN user_prefs gp ON gp.username = ?1 AND gp.kind = 'group' AND gp.item_id = g.id \
+             WHERE COALESCE(cp.hidden, 0) = 0 AND ( \
+               (c.kind = 'agent_dm' AND c.dm_user_id = ?1) OR \
+               (c.kind != 'agent_dm' AND g.id IS NOT NULL AND COALESCE(gp.hidden, 0) = 0 \
+                 AND (?2 = 1 OR g.is_public = 1 OR EXISTS ( \
+                   SELECT 1 FROM memberships m WHERE m.group_id = g.id \
+                     AND m.member_type = 'user' AND m.member_id = ?1 \
+                     AND (m.channel_id = '' OR m.channel_id = c.id)))))"
+        ).unwrap();
+        stmt.query_map(params![username, instance_admin as i64], |r| r.get(0))
+            .unwrap().filter_map(Result::ok).collect()
+    }
+
+    /// Unread conversations in the channels visible in the caller's sidebar.
+    /// Aggregate in SQLite before returning at most three previews per item.
+    /// This is independent of `my_threads` so its limit and participation
+    /// rules cannot hide a mention in another person's thread.
+    pub fn unread_inbox(&self, username: &str, channel_ids: &[String], limit: usize) -> Vec<Value> {
+        self.unread_inbox_page(username, channel_ids, limit).0
+    }
+
+    /// Return the bounded items and the full conversation count.
+    pub fn unread_inbox_page(&self, username: &str, channel_ids: &[String], limit: usize) -> (Vec<Value>, usize) {
+        if channel_ids.is_empty() || limit == 0 { return (Vec::new(), 0); }
+        let placeholders = (0..channel_ids.len()).map(|i| format!("?{}", i + 2))
+            .collect::<Vec<_>>().join(",");
+        let limit_param = channel_ids.len() + 2;
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "WITH visible_channels AS MATERIALIZED ( \
+               SELECT id FROM channels WHERE id IN ({placeholders}) \
+             ), participant_threads AS MATERIALIZED ( \
+               SELECT DISTINCT COALESCE(thread_id, id) AS thread_id FROM messages \
+               WHERE author_type = 'user' AND author_id = ?1 \
+             ), mentioned_threads AS MATERIALIZED ( \
+               SELECT DISTINCT m.thread_id FROM mentions mn \
+               JOIN messages m ON m.id = mn.message_id \
+               LEFT JOIN thread_reads tr ON tr.username = ?1 AND tr.thread_id = m.thread_id \
+               WHERE mn.username = ?1 AND m.thread_id IS NOT NULL \
+                 AND m.id > COALESCE(tr.last_read_id, 0) \
+             ), eligible_threads AS MATERIALIZED ( \
+               SELECT p.thread_id FROM participant_threads p \
+               LEFT JOIN thread_hides h ON h.username = ?1 AND h.thread_id = p.thread_id \
+               WHERE h.thread_id IS NULL \
+               UNION SELECT thread_id FROM mentioned_threads \
+             ), unread_messages AS MATERIALIZED ( \
+               SELECT m.id, m.channel_id, m.thread_id, m.ts \
+               FROM visible_channels vc \
+               LEFT JOIN reads r ON r.username = ?1 AND r.channel_id = vc.id \
+               CROSS JOIN messages m \
+               WHERE m.channel_id = vc.id AND m.thread_id IS NULL \
+                 AND m.id IN (SELECT recent.id FROM messages recent INDEXED BY idx_messages_channel \
+                   WHERE recent.channel_id = vc.id AND recent.thread_id IS NULL \
+                     AND recent.id > COALESCE(r.last_read_id, 0) \
+                     AND NOT (recent.author_type = 'user' AND recent.author_id = ?1) \
+                   ORDER BY recent.id DESC LIMIT 100) \
+               UNION ALL \
+               SELECT m.id, m.channel_id, m.thread_id, m.ts \
+               FROM eligible_threads et \
+               JOIN messages root ON root.id = et.thread_id \
+               JOIN visible_channels vc ON vc.id = root.channel_id \
+               LEFT JOIN thread_reads tr ON tr.username = ?1 AND tr.thread_id = et.thread_id \
+               CROSS JOIN messages m \
+               WHERE m.thread_id = et.thread_id AND m.channel_id = vc.id \
+                 AND m.id IN (SELECT recent.id FROM messages recent INDEXED BY idx_messages_thread \
+                   WHERE recent.thread_id = et.thread_id AND recent.channel_id = vc.id \
+                     AND recent.id > COALESCE(tr.last_read_id, 0) \
+                     AND NOT (recent.author_type = 'user' AND recent.author_id = ?1) \
+                   ORDER BY recent.id DESC LIMIT 100) \
+             ), totals_raw AS ( \
+               SELECT channel_id, thread_id, COUNT(*) AS unread, \
+                      MIN(id) AS first_unread_id, MAX(id) AS ack_through_id, MAX(ts) AS latest_ts \
+               FROM unread_messages GROUP BY channel_id, thread_id \
+             ), totals AS ( \
+               SELECT t.*, (SELECT COUNT(*) FROM mentions mn INDEXED BY idx_mentions_user_channel \
+                 JOIN messages mm ON mm.id = mn.message_id \
+                 WHERE mn.username = ?1 AND mn.channel_id = t.channel_id \
+                   AND mm.thread_id IS t.thread_id \
+                   AND mn.message_id > CASE WHEN t.thread_id IS NULL THEN \
+                     COALESCE((SELECT last_read_id FROM reads \
+                       WHERE username = ?1 AND channel_id = t.channel_id), 0) ELSE \
+                     COALESCE((SELECT last_read_id FROM thread_reads \
+                       WHERE username = ?1 AND thread_id = t.thread_id), 0) END \
+               ) AS mentions FROM totals_raw t \
+             ), top_items AS MATERIALIZED ( \
+               SELECT *, COUNT(*) OVER () AS total FROM totals \
+               ORDER BY (mentions > 0) DESC, latest_ts DESC LIMIT ?{limit_param} \
+             ) \
+             SELECT p.id, p.seq, p.channel_id, p.thread_id, p.author_type, p.author_id, \
+                    p.author_name, p.text, p.ts, p.meta, \
+                    a.unread, a.mentions, \
+                    CASE WHEN a.thread_id IS NULL THEN ( \
+                      SELECT first.id FROM messages first INDEXED BY idx_messages_channel \
+                      WHERE first.channel_id = a.channel_id AND first.thread_id IS NULL \
+                        AND first.id > COALESCE((SELECT last_read_id FROM reads \
+                          WHERE username = ?1 AND channel_id = a.channel_id), 0) \
+                        AND NOT (first.author_type = 'user' AND first.author_id = ?1) \
+                      ORDER BY first.id ASC LIMIT 1 \
+                    ) ELSE ( \
+                      SELECT first.id FROM messages first INDEXED BY idx_messages_thread \
+                      WHERE first.thread_id = a.thread_id \
+                        AND first.id > COALESCE((SELECT last_read_id FROM thread_reads \
+                          WHERE username = ?1 AND thread_id = a.thread_id), 0) \
+                        AND NOT (first.author_type = 'user' AND first.author_id = ?1) \
+                      ORDER BY first.id ASC LIMIT 1 \
+                    ) END, a.ack_through_id, a.latest_ts, \
+                    c.name, c.group_id, COALESCE(g.name, ''), c.kind, root.thread_alias, root.text, a.total \
+             FROM top_items a JOIN messages p ON p.id IN ( \
+               SELECT pm.id FROM messages pm \
+               WHERE pm.channel_id = a.channel_id AND pm.thread_id IS a.thread_id \
+                 AND pm.id BETWEEN a.first_unread_id AND a.ack_through_id \
+                 AND NOT (pm.author_type = 'user' AND pm.author_id = ?1) \
+               ORDER BY pm.id DESC LIMIT 3 \
+             ) \
+             JOIN channels c ON c.id = a.channel_id \
+             LEFT JOIN groups g ON g.id = c.group_id \
+             LEFT JOIN messages root ON root.id = a.thread_id \
+             ORDER BY (a.mentions > 0) DESC, a.latest_ts DESC, p.id ASC"
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(username.to_string())];
+        params.extend(channel_ids.iter().cloned().map(|id| Box::new(id) as Box<dyn rusqlite::ToSql>));
+        params.push(Box::new(limit.min(i64::MAX as usize) as i64));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows = stmt.query_map(params_from_iter(params.iter().map(|p| p.as_ref())), |r| {
+            let message = message_row(r, 0)?;
+            Ok((message, r.get::<_, i64>(10)?, r.get::<_, i64>(11)?,
+                r.get::<_, i64>(12)?, r.get::<_, i64>(13)?, r.get::<_, f64>(14)?,
+                r.get::<_, String>(15)?, r.get::<_, String>(16)?, r.get::<_, String>(17)?,
+                r.get::<_, String>(18)?, r.get::<_, Option<String>>(19)?,
+                r.get::<_, Option<String>>(20)?, r.get::<_, i64>(21)?))
+        }).unwrap();
+        let mut items: Vec<Value> = Vec::new();
+        let mut total = 0;
+        let mut indices: HashMap<String, usize> = HashMap::new();
+        for row in rows.filter_map(Result::ok) {
+            let (message, unread, mentions, first_id, last_id, latest_ts,
+                channel_name, group_id, group_name, channel_kind, alias, root_text, count) = row;
+            total = count as usize;
+            let thread_id = message["thread_id"].as_i64();
+            let key = format!("{}:{}", thread_id.map_or("channel", |_| "thread"), thread_id.map_or_else(
+                || message["channel_id"].as_str().unwrap_or_default().to_string(), |v| v.to_string()));
+            let index = *indices.entry(key).or_insert_with(|| {
+                items.push(json!({
+                    "kind": if thread_id.is_some() { "thread" } else { "channel" },
+                    "channel_id": message["channel_id"], "channel_name": channel_name,
+                    "group_id": if channel_kind == "agent_dm" { DM_GROUP_ID } else { &group_id },
+                    "group_name": if channel_kind == "agent_dm" { DM_GROUP_NAME } else { &group_name },
+                    "thread_id": thread_id,
+                    "title": alias.filter(|s| !s.trim().is_empty()).or(root_text)
+                        .map(|s| s.chars().take(200).collect::<String>()),
+                    "unread": unread, "mentions": mentions,
+                    "first_unread_id": first_id, "ack_through_id": last_id,
+                    "latest_ts": latest_ts, "previews": []
+                }));
+                items.len() - 1
+            });
+            let mut preview = message;
+            if let Some(s) = preview["text"].as_str() {
+                preview["text"] = json!(s.chars().take(200).collect::<String>());
+            }
+            items[index]["previews"].as_array_mut().unwrap().push(preview);
+        }
+        (items, total)
+    }
+
+    /// Validate only the requested conversations and advance all accepted
+    /// markers atomically. The returned rows are ready for per-item WS events.
+    pub fn mark_unreads_read_batch(
+        &self, username: &str, visible_ids: &[String], requested: &[(String, String, i64)],
+    ) -> Result<Vec<(String, String, String, i64)>, String> {
+        let visible: std::collections::HashSet<&str> = visible_ids.iter().map(String::as_str).collect();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut applied = Vec::new();
+        for (kind, id, ack) in requested {
+            let (channel_id, current, max_unread) = if kind == "channel" {
+                if !visible.contains(id.as_str()) { continue; }
+                let row: Option<(i64, i64)> = tx.query_row(
+                    "SELECT COALESCE(r.last_read_id, 0), COALESCE(MAX(m.id), 0) \
+                     FROM channels c LEFT JOIN reads r ON r.username = ?1 AND r.channel_id = c.id \
+                     LEFT JOIN messages m ON m.channel_id = c.id AND m.thread_id IS NULL \
+                       AND m.id > COALESCE(r.last_read_id, 0) \
+                       AND NOT (m.author_type = 'user' AND m.author_id = ?1) \
+                     WHERE c.id = ?2 GROUP BY c.id",
+                    params![username, id], |r| Ok((r.get(0)?, r.get(1)?)),
+                ).optional().map_err(|e| e.to_string())?;
+                let Some((current, maximum)) = row else { continue; };
+                (id.clone(), current, maximum)
+            } else if kind == "thread" {
+                let Ok(thread_id) = id.parse::<i64>() else { continue; };
+                let row: Option<(String, i64, i64)> = tx.query_row(
+                    "SELECT root.channel_id, COALESCE(tr.last_read_id, 0), COALESCE(MAX(m.id), 0) \
+                     FROM messages root \
+                     LEFT JOIN thread_reads tr ON tr.username = ?1 AND tr.thread_id = root.id \
+                     LEFT JOIN thread_hides h ON h.username = ?1 AND h.thread_id = root.id \
+                     LEFT JOIN messages m ON m.thread_id = root.id \
+                       AND m.id > COALESCE(tr.last_read_id, 0) \
+                       AND NOT (m.author_type = 'user' AND m.author_id = ?1) \
+                     WHERE root.id = ?2 AND root.thread_id IS NULL \
+                       AND ((h.thread_id IS NULL AND ( \
+                         (root.author_type = 'user' AND root.author_id = ?1) OR EXISTS ( \
+                           SELECT 1 FROM messages own WHERE own.thread_id = root.id \
+                             AND own.author_type = 'user' AND own.author_id = ?1))) OR EXISTS ( \
+                         SELECT 1 FROM mentions mn JOIN messages mm ON mm.id = mn.message_id \
+                         WHERE mn.username = ?1 AND mm.thread_id = root.id \
+                           AND mm.id > COALESCE(tr.last_read_id, 0))) \
+                     GROUP BY root.id",
+                    params![username, thread_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                ).optional().map_err(|e| e.to_string())?;
+                let Some((channel_id, current, maximum)) = row else { continue; };
+                if !visible.contains(channel_id.as_str()) { continue; }
+                (channel_id, current, maximum)
+            } else { continue; };
+            if max_unread == 0 { continue; }
+            let target = (*ack).min(max_unread);
+            if target <= current { continue; }
+            let table = if kind == "channel" { "reads" } else { "thread_reads" };
+            let key = if kind == "channel" { "channel_id" } else { "thread_id" };
+            let sql = format!(
+                "INSERT INTO {table} (username, {key}, last_read_id, updated_at) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(username, {key}) DO UPDATE SET \
+                 last_read_id = MAX(last_read_id, excluded.last_read_id), updated_at = excluded.updated_at"
+            );
+            if kind == "channel" {
+                tx.execute(&sql, params![username, id, target, now()]).map_err(|e| e.to_string())?;
+            } else {
+                let thread_id: i64 = id.parse().map_err(|_| "Invalid thread id".to_string())?;
+                tx.execute(&sql, params![username, thread_id, target, now()]).map_err(|e| e.to_string())?;
+            }
+            applied.push((kind.clone(), id.clone(), channel_id, target));
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(applied)
     }
 
     // ---------------------------------------------------------- mentions
@@ -3343,6 +3591,17 @@ impl Store {
             |r| r.get(0),
         )
         .unwrap_or(0)
+    }
+
+    /// Unread replies after the user's marker, excluding their own replies.
+    pub fn thread_unread_count(&self, username: &str, thread_id: i64) -> i64 {
+        self.conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM messages m WHERE m.thread_id = ?2 \
+             AND m.id > COALESCE((SELECT last_read_id FROM thread_reads \
+                 WHERE username = ?1 AND thread_id = ?2), 0) \
+             AND NOT (m.author_type = 'user' AND m.author_id = ?1)",
+            params![username, thread_id], |r| r.get(0),
+        ).unwrap_or(0)
     }
 
     /// Dismiss a thread from the user's inbox/sidebar. The messages stay in
@@ -4657,7 +4916,177 @@ mod tests {
         s.mark_read("tom", cid, None);
         let u = s.unread_counts("tom", &[cid.to_string()]);
         assert_eq!(u[cid]["count"], 0);
+        assert_eq!(u[cid]["mentions"], 1, "channel read does not clear a thread mention");
+        s.mark_thread_read("tom", root_id, m["id"].as_i64());
+        let u = s.unread_counts("tom", &[cid.to_string()]);
         assert_eq!(u[cid]["mentions"], 0);
+    }
+
+    #[test]
+    fn unread_inbox_separates_channels_and_threads_and_finds_unjoined_mentions() {
+        let s = store();
+        let g = s.create_group("G", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        let own = s.add_message(cid, "my note", "user", "tom", None, None, &[]);
+        let root = s.add_message(cid, "other thread", "agent", "bot", None, None, &[]);
+        let tid = root["id"].as_i64().unwrap();
+        let reply = s.add_message(cid, "hello tom", "agent", "bot", None, Some(tid), &[]);
+        let reply_id = reply["id"].as_i64().unwrap();
+        s.add_mentions(reply_id, cid, &["tom".into()]);
+        let ids = vec![cid.to_string()];
+        let items = s.unread_inbox("tom", &ids, 100);
+        assert_eq!(items.len(), 2);
+        let channel = items.iter().find(|i| i["kind"] == "channel").unwrap();
+        assert_eq!(channel["unread"], 1);
+        assert_eq!(channel["first_unread_id"], root["id"]);
+        assert_ne!(channel["first_unread_id"], own["id"]);
+        let thread = items.iter().find(|i| i["kind"] == "thread").unwrap();
+        assert_eq!(thread["unread"], 1);
+        assert_eq!(thread["mentions"], 1);
+        assert_eq!(thread["first_unread_id"], reply_id);
+        s.mark_thread_read("tom", tid, Some(reply_id));
+        assert_eq!(s.unread_inbox("tom", &ids, 100).len(), 1);
+        assert!(s.unread_inbox("tom", &[], 100).is_empty());
+    }
+
+    #[test]
+    fn unread_inbox_ack_snapshot_keeps_newer_messages() {
+        let s = store();
+        let g = s.create_group("G", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        s.add_message(cid, "before", "agent", "bot", None, None, &[]);
+        let ids = vec![cid.to_string()];
+        let snapshot = s.unread_inbox("tom", &ids, 100);
+        let last = snapshot[0]["ack_through_id"].as_i64().unwrap();
+        s.add_message(cid, "after", "agent", "bot", None, None, &[]);
+        s.mark_read("tom", cid, Some(last));
+        let remaining = s.unread_inbox("tom", &ids, 100);
+        assert_eq!(remaining[0]["unread"], 1);
+        assert_eq!(remaining[0]["previews"][0]["text"], "after");
+    }
+
+    #[test]
+    fn unread_inbox_hidden_thread_requires_a_fresh_mention() {
+        let s = store();
+        let g = s.create_group("G", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        let root = s.add_message(cid, "mine", "user", "tom", None, None, &[]);
+        let tid = root["id"].as_i64().unwrap();
+        s.mark_read("tom", cid, Some(tid));
+        s.hide_thread("tom", tid);
+        s.add_message(cid, "ordinary reply", "agent", "bot", None, Some(tid), &[]);
+        let ids = vec![cid.to_string()];
+        assert!(s.unread_inbox("tom", &ids, 100).is_empty());
+        let mentioned = s.add_message(cid, "@tom review", "agent", "bot", None, Some(tid), &[]);
+        s.add_mentions(mentioned["id"].as_i64().unwrap(), cid, &["tom".into()]);
+        let items = s.unread_inbox("tom", &ids, 100);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "thread");
+        assert_eq!(items[0]["unread"], 2);
+        assert_eq!(items[0]["mentions"], 1);
+        s.mark_thread_read("tom", tid, mentioned["id"].as_i64());
+        assert!(s.unread_inbox("tom", &ids, 100).is_empty());
+    }
+
+    #[test]
+    fn unread_inbox_aggregates_many_messages_and_limits_previews() {
+        let s = store();
+        let g = s.create_group("G", "", Some("tom"));
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        let first = s.add_message(cid, "@tom note 0", "agent", "bot", None, None, &[]);
+        s.add_mentions(first["id"].as_i64().unwrap(), cid, &["tom".into()]);
+        for i in 1..120 { s.add_message(cid, &format!("note {i}"), "agent", "bot", None, None, &[]); }
+        let items = s.unread_inbox("tom", &[cid.to_string()], 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["unread"], 100);
+        assert_eq!(items[0]["mentions"], 1, "an old mention still filters into @Mentions");
+        assert_eq!(items[0]["first_unread_id"], first["id"]);
+        assert_eq!(items[0]["previews"].as_array().unwrap().len(), 3);
+        assert_eq!(items[0]["previews"][0]["text"], "note 117");
+        assert_eq!(items[0]["previews"][2]["text"], "note 119");
+
+        let root = s.add_message(cid, "thread root", "user", "tom", None, None, &[]);
+        let thread_id = root["id"].as_i64().unwrap();
+        let first_reply = s.add_message(cid, "@tom reply 0", "agent", "bot", None, Some(thread_id), &[]);
+        s.add_mentions(first_reply["id"].as_i64().unwrap(), cid, &["tom".into()]);
+        for i in 1..120 { s.add_message(cid, &format!("reply {i}"), "agent", "bot", None, Some(thread_id), &[]); }
+        let thread = s.unread_inbox("tom", &[cid.to_string()], 10).into_iter()
+            .find(|item| item["thread_id"] == thread_id).unwrap();
+        assert_eq!(thread["unread"], 100);
+        assert_eq!(thread["mentions"], 1);
+        assert_eq!(thread["first_unread_id"], first_reply["id"]);
+        assert_eq!(thread["previews"][2]["text"], "reply 119");
+    }
+
+    #[test]
+    fn unread_inbox_orders_mentions_by_recency_before_other_channels() {
+        let s = store();
+        let g = s.create_group("G", "", Some("tom"));
+        let gid = g["id"].as_str().unwrap();
+        let old = s.create_channel(gid, "old", "");
+        let recent = s.create_channel(gid, "recent", "");
+        let newest = s.create_channel(gid, "newest", "");
+        let old_id = old["id"].as_str().unwrap();
+        let recent_id = recent["id"].as_str().unwrap();
+        let newest_id = newest["id"].as_str().unwrap();
+        for _ in 0..2 {
+            let m = s.add_message(old_id, "@tom old", "agent", "bot", None, None, &[]);
+            s.add_mentions(m["id"].as_i64().unwrap(), old_id, &["tom".into()]);
+            s.conn.lock().unwrap().execute("UPDATE messages SET ts = 10 WHERE id = ?1",
+                params![m["id"].as_i64().unwrap()]).unwrap();
+        }
+        let m = s.add_message(recent_id, "@tom recent", "agent", "bot", None, None, &[]);
+        s.add_mentions(m["id"].as_i64().unwrap(), recent_id, &["tom".into()]);
+        s.conn.lock().unwrap().execute("UPDATE messages SET ts = 20 WHERE id = ?1",
+            params![m["id"].as_i64().unwrap()]).unwrap();
+        let m = s.add_message(newest_id, "plain", "agent", "bot", None, None, &[]);
+        s.conn.lock().unwrap().execute("UPDATE messages SET ts = 30 WHERE id = ?1",
+            params![m["id"].as_i64().unwrap()]).unwrap();
+        let ids = vec![old_id.to_string(), recent_id.to_string(), newest_id.to_string()];
+        let items = s.unread_inbox("tom", &ids, 2);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["channel_id"], recent_id);
+        assert_eq!(items[1]["channel_id"], old_id);
+        let (limited, total) = s.unread_inbox_page("tom", &ids, 1);
+        assert_eq!(limited[0]["channel_id"], recent_id);
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn unread_ack_batch_clamps_stale_markers_and_skips_deleted_items() {
+        let s = store();
+        let g = s.create_group("G", "", Some("tom"));
+        let gid = g["id"].as_str().unwrap();
+        let one = s.create_channel(gid, "one", "");
+        let two = s.create_channel(gid, "two", "");
+        let deleted = s.create_channel(gid, "deleted", "");
+        let removed_channel = s.create_channel(gid, "removed-channel", "");
+        let one_id = one["id"].as_str().unwrap().to_string();
+        let two_id = two["id"].as_str().unwrap().to_string();
+        let deleted_id = deleted["id"].as_str().unwrap().to_string();
+        let removed_channel_id = removed_channel["id"].as_str().unwrap().to_string();
+        let m = s.add_message(&one_id, "first", "agent", "bot", None, None, &[]);
+        let second = s.add_message(&two_id, "second", "agent", "bot", None, None, &[]);
+        let removed = s.add_message(&deleted_id, "gone", "agent", "bot", None, None, &[]);
+        s.conn.lock().unwrap().execute("DELETE FROM messages WHERE id = ?1",
+            params![removed["id"].as_i64().unwrap()]).unwrap();
+        assert!(s.delete_channel(&removed_channel_id));
+        let visible = vec![one_id.clone(), two_id.clone(), deleted_id.clone(), removed_channel_id.clone()];
+        let requested = vec![
+            ("thread".into(), "invalid".into(), m["id"].as_i64().unwrap()),
+            ("channel".into(), removed_channel_id, m["id"].as_i64().unwrap()),
+            ("channel".into(), one_id.clone(), m["id"].as_i64().unwrap()),
+            ("channel".into(), two_id.clone(), m["id"].as_i64().unwrap() + 1000),
+            ("channel".into(), deleted_id, removed["id"].as_i64().unwrap()),
+        ];
+        let applied = s.mark_unreads_read_batch("tom", &visible, &requested).unwrap();
+        assert_eq!(applied.len(), 2);
+        assert_eq!(applied[1].3, second["id"].as_i64().unwrap());
+        assert!(s.unread_inbox("tom", &visible, 10).is_empty());
     }
 
     #[test]
@@ -4672,11 +5101,14 @@ mod tests {
         let r1 = s.add_message(cid, "r1", "agent", "bot", None, Some(root_id), &[]);
         s.add_message(cid, "r2", "agent", "bot", None, Some(root_id), &[]);
         let id1 = r1["id"].as_i64().unwrap();
+        assert_eq!(s.thread_unread_count("tom", root_id), 2);
         assert_eq!(s.mark_thread_read("tom", root_id, Some(id1)), id1);
+        assert_eq!(s.thread_unread_count("tom", root_id), 1);
         // Stale ack cannot regress; None advances to the thread max.
         assert_eq!(s.mark_thread_read("tom", root_id, Some(0)), id1);
         let max = s.mark_thread_read("tom", root_id, None);
         assert!(max > id1);
+        assert_eq!(s.thread_unread_count("tom", root_id), 0);
     }
 
     #[test]

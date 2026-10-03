@@ -32,7 +32,8 @@ export function initToken(): void {
 
 /** Preserve a conversation path across the full-page Google OAuth trip. */
 export function rememberAuthPath(): void {
-  if (location.pathname.startsWith("/g/") || location.pathname === "/threads") {
+  if (location.pathname.startsWith("/g/") || location.pathname === "/threads" ||
+      location.pathname === "/inbox" || location.pathname.startsWith("/inbox/")) {
     sessionStorage.setItem(AUTH_PATH_KEY, location.pathname);
   }
 }

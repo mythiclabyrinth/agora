@@ -186,6 +186,14 @@ describe("applyReplyToThreads", () => {
 });
 
 describe("applyThreadRead", () => {
+  it("keeps unread replies after a partial ack", () => {
+    const out = applyThreadRead([threadRow({ unread: 3 })], {
+      type: "thread_read", thread_id: 5, channel_id: "general-1a2b",
+      last_read_id: 20, unread: 1,
+    })!;
+    expect(out[0]).toMatchObject({ unread: 1, last_read_id: 20 });
+  });
+
   it("zeroes unread and moves the marker", () => {
     const out = applyThreadRead([threadRow({ unread: 3 })], {
       type: "thread_read",
@@ -370,13 +378,17 @@ describe("applyWsEvent", () => {
   });
 
   it("applies read frames to the groups cache", () => {
-    qc.setQueryData(keys.groups, groups());
+    const cached = groups();
+    cached[0].channels[0].mentions = 1;
+    qc.setQueryData(keys.groups, cached);
     applyWsEvent(
       qc,
-      { type: "read", channel_id: "general-1a2b", last_read_id: 20 },
+      { type: "read", channel_id: "general-1a2b", last_read_id: 20, unread: 0, mentions: 0 },
       { username: "me" },
     );
     expect(qc.getQueryData<Group[]>(keys.groups)![0].channels[0].last_read_id).toBe(20);
+    expect(qc.getQueryData<Group[]>(keys.groups)![0].channels[0].mentions).toBe(0);
+    expect(qc.getQueryState(keys.groups)?.isInvalidated).toBe(false);
   });
 
   it("routes a thread reply into the threads inbox cache", () => {
@@ -392,15 +404,34 @@ describe("applyWsEvent", () => {
 
   it("applies thread_read frames to the threads cache", () => {
     qc.setQueryData(keys.threads, [threadRow({ unread: 2 })]);
+    qc.setQueryData(keys.groups, groups());
     applyWsEvent(
       qc,
-      { type: "thread_read", thread_id: 5, channel_id: "general-1a2b", last_read_id: 20 },
+      { type: "thread_read", thread_id: 5, channel_id: "general-1a2b", last_read_id: 20, mentions: 0 },
       { username: "me" },
     );
     expect(qc.getQueryData<ThreadRow[]>(keys.threads)![0]).toMatchObject({
       unread: 0,
       last_read_id: 20,
     });
+    expect(qc.getQueryData<Group[]>(keys.groups)![0].channels[0].mentions).toBe(0);
+    expect(qc.getQueryState(keys.groups)?.isInvalidated).toBe(false);
+  });
+
+  it("refetches groups for read frames from older servers without mention counts", () => {
+    qc.setQueryData(keys.groups, groups());
+    applyWsEvent(qc, {
+      type: "read", channel_id: "general-1a2b", last_read_id: 20,
+    }, { username: "me" });
+    expect(qc.getQueryState(keys.groups)?.isInvalidated).toBe(true);
+  });
+
+  it("refetches groups for thread reads from older servers without mention counts", () => {
+    qc.setQueryData(keys.groups, groups());
+    applyWsEvent(qc, {
+      type: "thread_read", thread_id: 5, channel_id: "general-1a2b", last_read_id: 20,
+    }, { username: "me" });
+    expect(qc.getQueryState(keys.groups)?.isInvalidated).toBe(true);
   });
 
   it("applies message_update frames (options resolved)", () => {
