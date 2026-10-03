@@ -1,3 +1,5 @@
+import { SheetHeader } from "./SheetHeader";
+import { useSession } from "../state/session";
 /* Message composer: text, attachments (max 5, like the server), voice notes
    (🎤 → transcribed server-side), @mention autocomplete over the channel's
    live agents + group members, and a "talk to" multi-select that prepends
@@ -411,12 +413,14 @@ export function Composer({
     return m ? m[2].toLowerCase() : null;
   }, [text]);
 
+  const username = useSession(s => s.username);
   const candidates = useMemo(() => {
     if (mentionQuery === null) return [];
     return mentions
+      .filter(c => c.id !== username)
       .filter((c) => slugify(c.name).startsWith(mentionQuery) || c.id.toLowerCase().startsWith(mentionQuery))
       .slice(0, 6);
-  }, [mentionQuery, mentions]);
+  }, [mentionQuery, mentions, username]);
 
   const insertMention = (c: MentionCandidate) => {
     const at = selection.current.start || text.length;
@@ -598,7 +602,7 @@ export function Composer({
     if (pasteOps > 0) return;
     const sentText = text;
     const body = text.trim();
-    if (!body && files.length === 0) return;
+    if ((!body || body === "@") && files.length === 0) return;
     const prefix = addressedAgents.map((a) => `@${slugify(a.name)}`).join(", ");
     try {
       await onSend({
@@ -688,10 +692,12 @@ export function Composer({
         </ScrollView>
       ) : null}
       {focused && candidates.length > 0 ? (
-        <ScrollView horizontal keyboardShouldPersistTaps="always" style={styles.mentionBar}>
+        <ScrollView horizontal keyboardShouldPersistTaps="always" style={styles.mentionBar} contentContainerStyle={styles.mentionContent}>
           {candidates.map((c) => (
-            <Pressable key={c.id} style={styles.mentionChip} onPress={() => insertMention(c)}>
-              <Text style={styles.mentionText}>@{slugify(c.name)}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Mention ${c.name}`} key={c.id} style={styles.mentionChip} onPress={() => insertMention(c)}>
+              {agents.some(agent => agent.id === c.id) ? <AgentAvatar agentId={c.id} size={20} /> :
+                <View style={styles.mentionAvatar}><Text maxFontSizeMultiplier={1.2} style={styles.mentionInitial}>{c.name[0]?.toUpperCase()}</Text></View>}
+              <Text maxFontSizeMultiplier={1.5} style={styles.mentionText}>{c.name}{agents.some(agent => agent.id === c.id) ? " · agent" : ""}</Text>
             </Pressable>
           ))}
         </ScrollView>
@@ -752,7 +758,7 @@ export function Composer({
         ) : null}
         <PasteAwareInput
           enabled={nativePasteInput}
-          style={focused ? styles.pasteWrapFocused : styles.pasteWrap}
+          style={[focused ? styles.pasteWrapFocused : styles.pasteWrap, { height: Math.min(inputHeight, focused ? 150 : 130) }]}
           onPaste={(payload) => void onNativePaste(payload)}
         >
           <TextInput
@@ -780,6 +786,7 @@ export function Composer({
             placeholder={placeholder}
             placeholderTextColor={colors.faint}
             multiline
+            scrollEnabled={inputHeight >= (focused ? 150 : 130)}
             maxLength={MAX_MESSAGE_CHARS}
           />
         </PasteAwareInput>
@@ -788,7 +795,7 @@ export function Composer({
         {!focused && (text.trim() || files.length > 0) ? (
           <Pressable
             onPress={send}
-            disabled={sending || pasteOps > 0}
+            disabled={sending || pasteOps > 0 || (text.trim() === "@" && files.length === 0)}
             accessibilityRole="button"
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
             style={[styles.sendBtn, (sending || pasteOps > 0) && styles.sendOff]}
@@ -876,12 +883,12 @@ export function Composer({
           ) : null}
           <Pressable
             onPress={send}
-            disabled={sending || pasteOps > 0 || (!text.trim() && files.length === 0)}
+            disabled={sending || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)}
             accessibilityRole="button"
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
             style={[
               styles.sendBtn,
-              (sending || pasteOps > 0 || (!text.trim() && files.length === 0)) && styles.sendOff,
+              (sending || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)) && styles.sendOff,
             ]}
           >
             {sending || pasteOps > 0 ? (
@@ -948,9 +955,10 @@ export function Composer({
         onRequestClose={() => closeSheet()}
         onDismiss={onSheetDismissed}
       >
-        <Pressable style={styles.sheetBackdrop} onPress={() => closeSheet()}>
-          <View style={styles.sheet}>
-            <Pressable style={styles.sheetBtn} onPress={() => closeSheet(() => void pickPhotos())}>
+        <Pressable accessible={false} style={styles.sheetBackdrop} onPress={() => closeSheet()}>
+          <View accessibilityViewIsModal style={styles.sheet}>
+            <SheetHeader title="Add attachment" onClose={() => closeSheet()} />
+            <Pressable accessibilityRole="button" style={styles.sheetBtn} onPress={() => closeSheet(() => void pickPhotos())}>
               <Icon icon={ImageIcon} size={19} color={colors.text} />
               <Text style={styles.sheetText}>Photo library</Text>
             </Pressable>
@@ -971,6 +979,7 @@ export function Composer({
 
 const styles = StyleSheet.create({
   wrap: {
+    flexShrink: 0,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     backgroundColor: colors.panel,
@@ -1051,8 +1060,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   addrDoneText: { color: colors.onAccent, fontSize: typography.message.fontSize, fontWeight: weight.bold },
-  mentionBar: { paddingHorizontal: 12, paddingTop: 8 },
+  mentionBar: { flexGrow: 0, paddingTop: 8 },
+  mentionContent: { paddingHorizontal: 12, gap: 6 },
+  mentionAvatar: { width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.panelStrong },
+  mentionInitial: { fontSize: 12, color: colors.text },
   mentionChip: {
+    flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44,
     backgroundColor: "rgba(139,124,255,0.15)",
     borderRadius: 8,
     paddingVertical: 5,
@@ -1083,9 +1096,9 @@ const styles = StyleSheet.create({
   fileSize: { marginTop: 2, color: colors.faint, fontSize: typography.caption.fontSize },
   fileRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   row: { flexDirection: "row", alignItems: "flex-end", padding: 10, gap: 8 },
-  colFocused: { paddingHorizontal: 16, paddingTop: 12 },
+  colFocused: { flexShrink: 0, marginHorizontal: 12, marginTop: 8, borderWidth: 1, borderColor: colors.accentBorder, borderRadius: 12, backgroundColor: colors.bg },
   pasteWrap: { flex: 1 },
-  pasteWrapFocused: { alignSelf: "stretch" },
+  pasteWrapFocused: { alignSelf: "stretch", flexShrink: 0 },
   iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   input: {
     flex: 1,
@@ -1111,7 +1124,7 @@ const styles = StyleSheet.create({
     fontSize: typography.body.fontSize,
     minHeight: 40,
     maxHeight: 150,
-    paddingHorizontal: 4,
+    paddingHorizontal: 12,
     paddingTop: 6,
     paddingBottom: 6,
   },

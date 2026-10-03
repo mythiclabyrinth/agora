@@ -1,3 +1,6 @@
+import { useBottomViewport } from "../../../src/lib/useBottomViewport";
+import { SheetHeader } from "../../../src/components/SheetHeader";
+import { previewText } from "../../../src/lib/previewText";
 /* Channel view: inverted infinite list, "New" divider from the read marker,
    live typing/progress, mention-aware composer, pins/stars sheets, and
    long-press message actions (thread / star / pin). */
@@ -88,9 +91,9 @@ function ListSheet<T extends Message>({
 }) {
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose}>
-        <View style={[styles.sheet, styles.listSheet]}>
-          <Text style={styles.sheetTitle}>{title}</Text>
+      <Pressable accessible={false} style={styles.sheetBackdrop} onPress={onClose}>
+        <View accessibilityViewIsModal style={[styles.sheet, styles.listSheet]}>
+          <SheetHeader title={title} onClose={onClose} />
           <ScrollView>
             {items.length === 0 ? <Text style={styles.sheetEmpty}>{emptyText}</Text> : null}
             {items.map((item) => (
@@ -99,7 +102,7 @@ function ListSheet<T extends Message>({
                   {item.author_name || item.author_id} · {subtitle(item)}
                 </Text>
                 <Text style={styles.sheetItemText} numberOfLines={2}>
-                  {item.text || "(attachment)"}
+                  {previewText(item.text) || "(attachment)"}
                 </Text>
               </Pressable>
             ))}
@@ -193,6 +196,7 @@ export default function ChannelScreen() {
   }, [latestId]);
 
   const listRef = useRef<FlashListRef<Row>>(null);
+  const onViewportLayout = useBottomViewport(listRef, atBottom);
   const [showJump, setShowJump] = useState(false);
   const [highlightedId, setHighlightedId] = useState<number | null>(null);
   const landedOnMessage = useRef<number | null>(null);
@@ -410,7 +414,7 @@ export default function ChannelScreen() {
                   <Icon icon={Headphones} size={20} color={colors.text} />
                 </Pressable>
               ) : null}
-              <Pressable accessibilityRole="button" accessibilityLabel="Pinned threads" onPress={() => setSheet("pins")} hitSlop={12}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Pinned messages" onPress={() => setSheet("pins")} hitSlop={12}>
                 <Icon icon={Pin} size={20} color={colors.text} />
               </Pressable>
               {FEATURES.stars ? <Pressable accessibilityRole="button" accessibilityLabel="Starred messages" onPress={() => setSheet("stars")} hitSlop={12}>
@@ -437,7 +441,7 @@ export default function ChannelScreen() {
             </Text>
           </Pressable>
         ) : null}
-        <View style={styles.listWrap}>
+        <View style={styles.listWrap} onLayout={onViewportLayout}>
           <FlashList
           ref={listRef}
           data={rows}
@@ -570,7 +574,7 @@ export default function ChannelScreen() {
       ) : null}
       {sheet === "pins" ? (
         <ListSheet<PinnedMessage>
-          title="Pinned threads"
+          title="Pinned messages"
           items={pins.data ?? []}
           emptyText="Nothing pinned in this channel."
           subtitle={(p) => `pinned ${fmtTs(p.pinned_at)}`}

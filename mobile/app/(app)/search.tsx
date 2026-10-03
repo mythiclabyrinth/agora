@@ -1,3 +1,4 @@
+import { previewText } from "../../src/lib/previewText";
 /* Search: one box over groups / channels / messages, mirroring the desktop
    search pane. Message hits show a snippet with the matched terms
    highlighted; tapping a hit opens its channel (or thread — deep-linking to
@@ -197,7 +198,7 @@ function openHit(m: SearchMessageHit) {
 /** Server snippets wrap matched terms in U+0001…U+0002; odd split segments
     are the matches. */
 function Snippet({ text }: { text: string }) {
-  const parts = text.split(/[\u0001\u0002]/);
+  const parts = previewText(text).split(/[\u0001\u0002]/);
   return (
     <Text style={styles.snippet} numberOfLines={2}>
       {parts.map((p, i) =>

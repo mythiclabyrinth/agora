@@ -195,7 +195,7 @@ test.each(["Named thread", null])("shows the compact reply time with thread name
   const replyTime = tree.root.find(node => node.type === Text
     && typeof node.props.accessibilityLabel === "string"
     && node.props.accessibilityLabel.startsWith("Last reply at"));
-  expect(replyTime.props.numberOfLines).toBe(1);
+  expect(replyTime.props.numberOfLines).toBe(2);
   expect(replyTime.props.maxFontSizeMultiplier).toBe(1.2);
   expect(replyTime.props.accessibilityLabel).toContain(String(previousYear));
 });

@@ -1,3 +1,4 @@
+import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 /* Home: groups with collapsible channel lists and unread badges — the
    mobile take on the desktop sidebar (drill-down instead of split pane).
    Red badges mean @you; muted badges are plain traffic (Slack convention).
@@ -12,7 +13,6 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
-  Text,
   TextInput,
   View,
 } from "react-native";
@@ -66,14 +66,14 @@ export function UnreadBadge({
   if (mentions > 0) {
     return (
       <View style={[styles.badge, styles.badgeMention]}>
-        <Text style={styles.badgeMentionText}>@ {mentions > 99 ? "99+" : mentions}</Text>
+        <Text maxFontSizeMultiplier={1.3} style={styles.badgeMentionText}>@ {mentions > 99 ? "99+" : mentions}</Text>
       </View>
     );
   }
   if (!count) return null;
   return (
     <View style={styles.badge}>
-      <Text style={styles.badgeText}>{count > 99 ? "99+" : count}</Text>
+      <Text maxFontSizeMultiplier={1.3} style={styles.badgeText}>{count > 99 ? "99+" : count}</Text>
     </View>
   );
 }
@@ -305,12 +305,12 @@ function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean 
         <View style={styles.chevron}>
           <Icon icon={expanded ? ChevronDown : ChevronRight} size={14} color={colors.faint} />
         </View>
-        <Text style={styles.groupName} numberOfLines={1}>
+        <Text style={styles.groupName} numberOfLines={1} maxFontSizeMultiplier={1.5}>
           {group.name}
         </Text>
         {!expanded ? <UnreadBadge count={unread} mentions={mentions} /> : null}
         <Pressable accessibilityRole="button" accessibilityLabel={`Create channel in ${group.name}`} onPress={() => setCreating((c) => !c)} style={styles.plusBtn}>
-          <Text style={styles.plus}>＋</Text>
+          <Text maxFontSizeMultiplier={1.2} style={styles.plus}>＋</Text>
         </Pressable>
       </Pressable>
       {creating ? (
@@ -351,7 +351,7 @@ export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { g
         <Icon icon={Bot} size={16} color={colors.a1} />
         <Text style={styles.groupName}>Direct messages</Text>
         <Pressable accessibilityLabel="Start a direct message with an agent" onPress={() => setChoosing(true)} hitSlop={10} style={styles.plusBtn}>
-          <Text style={styles.plus}>＋</Text>
+          <Text maxFontSizeMultiplier={1.2} style={styles.plus}>＋</Text>
         </Pressable>
       </View>
       <Modal transparent visible={choosing} animationType="fade" onRequestClose={() => setChoosing(false)}>
@@ -375,7 +375,7 @@ export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { g
         <Pressable key={channel.id} style={styles.channelRow} onPress={() => router.push({
           pathname: "/(app)/channel/[id]", params: { id: channel.id, name: channel.name, groupId: "__dms" },
         })}>
-          <Text style={styles.hash}>↔</Text><Text style={styles.channelName}>{channel.name}</Text>
+          <Text maxFontSizeMultiplier={1.3} style={styles.hash}>↔</Text><Text maxFontSizeMultiplier={1.5} style={[styles.channelName, (channel.unread ?? 0) > 0 && styles.channelUnread]}>{channel.name}</Text>
           <UnreadBadge count={channel.unread ?? 0} />
         </Pressable>
       ))}
@@ -543,11 +543,6 @@ export default function Home() {
           />
         }
       >
-        <View style={styles.intro}>
-          <Text style={styles.eyebrow}>YOUR WORKSPACE</Text>
-          <Text accessibilityRole="header" style={styles.display}>Conversations</Text>
-          <Text style={styles.introHint}>Your people and agents, together.</Text>
-        </View>
         <View style={styles.topRow}>
           <Pressable
             accessibilityRole="button"
@@ -557,7 +552,6 @@ export default function Home() {
             <View style={styles.inboxIcon}><Icon icon={MessagesSquare} size={23} color={colors.a1} /></View>
             <View style={styles.inboxCopy}>
               <Text style={styles.threadsLabel}>Inbox</Text>
-              <Text style={styles.inboxHint}>Catch up on messages and threads</Text>
             </View>
             {inboxUnread > 0 ? (
               <View style={[styles.badge, inboxMentions > 0 ? styles.badgeMention : styles.badgeThread]}
@@ -627,13 +621,8 @@ const styles = StyleSheet.create({
   content: { padding: space.lg, gap: space.lg, paddingBottom: 40 },
   headerBtns: { flexDirection: "row", gap: 0 },
   headerAction: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  intro: { gap: space.xs, paddingTop: space.sm, paddingBottom: space.sm },
-  eyebrow: { ...typography.caption, color: colors.a2, letterSpacing: 1.6 },
-  display: { ...typography.display, color: colors.text, letterSpacing: -0.6 },
-  introHint: { ...typography.bodySm, color: colors.dim },
   inboxIcon: { width: 44, height: 44, borderRadius: radii.md, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
   inboxCopy: { flex: 1, gap: space.xs },
-  inboxHint: { ...typography.meta, color: colors.dim },
   rowPressed: { backgroundColor: colors.panelStrong },
   channelUnread: { color: colors.text, fontWeight: weight.semibold },
   topRow: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -649,7 +638,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  threadsLabel: { ...typography.title, color: colors.text },
+  threadsLabel: { fontSize: typography.title.fontSize, fontWeight: typography.title.fontWeight, color: colors.text },
   filterChip: {
     minHeight: 44, justifyContent: "center",
     borderWidth: 1,
@@ -674,7 +663,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingVertical: 0,
   },
   chevron: { width: 14, alignItems: "center" },
   groupName: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold, flex: 1 },
@@ -686,11 +675,11 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingLeft: 34,
     paddingRight: 14,
-    paddingVertical: 11,
+    paddingVertical: 8,
     minHeight: 44,
   },
   hash: { color: colors.faint, fontSize: typography.bodySm.fontSize },
-  channelName: { ...typography.message, color: colors.dim, flex: 1 },
+  channelName: { fontSize: typography.message.fontSize, fontWeight: typography.message.fontWeight, color: colors.dim, flex: 1 },
   dmModalScrim: { flex: 1, justifyContent: "center", padding: 20, backgroundColor: "rgba(4,6,10,0.78)" },
   dmModalCard: { width: "100%", maxWidth: 440, maxHeight: "78%", alignSelf: "center", padding: 18, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 18, backgroundColor: colors.sheet },
   dmModalHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 14 },
@@ -734,7 +723,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     fontSize: typography.bodySm.fontSize,
   },
-  inlineOk: { color: colors.a2, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  inlineOk: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   emptyChannels: { color: colors.faint, fontSize: typography.meta.fontSize, paddingLeft: 34, paddingVertical: 8 },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 30, fontSize: typography.bodySm.fontSize },
   newGroup: { alignItems: "center", paddingVertical: 12 },

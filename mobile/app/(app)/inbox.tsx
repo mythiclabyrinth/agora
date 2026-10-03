@@ -1,5 +1,7 @@
+import { previewText } from "../../src/lib/previewText";
+import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 import React from "react";
-import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, StyleSheet, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { Check, CheckCheck } from "lucide-react-native";
 import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadFilter, type UnreadItem } from "@agora/core";
@@ -40,14 +42,14 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
     ])}>
     <View style={styles.cardTop}>
       <Text style={styles.source} numberOfLines={1}>
-        #{item.channel_name} · {item.group_name}
+        {item.group_id === "__dms" ? "" : "#"}{item.channel_name} · {item.group_name}
       </Text>
       <Text style={styles.time}>{fmtRelative(item.latest_ts)}</Text>
       <Text maxFontSizeMultiplier={1.3} style={styles.count}>{formatUnreadCount(item.unread)}{item.mentions > 0 ? `  @${item.mentions}` : ""}</Text>
     </View>
-    {item.kind === "thread" ? <Text style={styles.threadTitle} numberOfLines={2}>{item.title || "Thread"}</Text> : null}
+    {item.kind === "thread" ? <Text style={styles.threadTitle} numberOfLines={2}>{previewText(item.title || "") || "Thread"}</Text> : null}
     {item.previews.map(message => <Text key={message.id} style={styles.preview} numberOfLines={1}>
-      <Text style={styles.author}>{message.author_name || message.author_id}: </Text>{message.text || "Attachment"}
+      <Text style={styles.author}>{message.author_name || message.author_id}: </Text>{previewText(message.text) || "Attachment"}
     </Text>)}
   </SwipeRow>;
 }
@@ -96,7 +98,7 @@ export default function InboxScreen({ initialTab = null, initialSwipe }: {
     {activeTab === "threads" ? <ThreadsScreen embedded /> : <>
       <View style={styles.toolbar}>
         <View style={styles.filters}>{(["all", "mentions", "channels", "threads"] as const).map(option =>
-          <Pressable accessibilityRole="button" accessibilityState={{ selected: filter === option }} key={option} style={[styles.filter, filter === option && styles.filterActive]}
+          <Pressable hitSlop={6} accessibilityRole="button" accessibilityState={{ selected: filter === option }} key={option} style={[styles.filter, filter === option && styles.filterActive]}
             onPress={() => { swipeRows.close(); setFilter(option); }}><Text style={styles.filterText}>
               {option === "mentions" ? "@Mentions" : option[0].toUpperCase() + option.slice(1)}
             </Text></Pressable>)}</View>
@@ -132,22 +134,22 @@ const styles = StyleSheet.create({
   tabTextActive: { color: colors.text },
   toolbar: { paddingHorizontal: space.lg, paddingTop: space.sm, gap: space.xs },
   filters: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  filter: { minHeight: 44, justifyContent: "center", borderWidth: 1, borderColor: colors.border, borderRadius: radii.pill, paddingHorizontal: space.md, paddingVertical: space.sm },
+  filter: { minWidth: 48, minHeight: 32, justifyContent: "center", borderWidth: 1, borderColor: colors.border, borderRadius: radii.pill, paddingHorizontal: space.md, paddingVertical: space.xs },
   filterActive: { borderColor: colors.a1, backgroundColor: colors.accentSoft },
-  filterText: { color: colors.text, fontSize: typography.caption.fontSize },
+  filterText: { textAlign: "center", color: colors.text, fontSize: typography.caption.fontSize },
   markAll: { color: colors.a1, fontWeight: weight.bold, alignSelf: "flex-end" },
   limit: { color: colors.dim, fontSize: typography.caption.fontSize },
   error: { color: colors.text, marginBottom: 8 },
   list: { flex: 1 },
   listContent: { padding: space.lg, gap: space.md, paddingBottom: 40 },
-  card: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 13, padding: 13, gap: 5 },
+  card: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 13, padding: 12, gap: 3 },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
-  source: { ...typography.meta, flex: 1, color: colors.dim, fontWeight: weight.semibold },
-  threadTitle: { ...typography.body, color: colors.text, fontWeight: weight.semibold },
+  source: { fontSize: typography.meta.fontSize, flex: 1, color: colors.dim, fontWeight: weight.semibold },
+  threadTitle: { fontSize: typography.body.fontSize, color: colors.text, fontWeight: weight.semibold },
   markButton: { minHeight: 44, justifyContent: "center", alignSelf: "flex-end" },
   count: { color: colors.a1, fontWeight: weight.bold },
   time: { color: colors.faint, fontSize: typography.caption.fontSize },
-  preview: { ...typography.bodySm, color: colors.dim },
+  preview: { fontSize: typography.bodySm.fontSize, fontWeight: typography.bodySm.fontWeight, color: colors.dim },
   author: { color: colors.text, fontWeight: weight.medium },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 60 },
 });

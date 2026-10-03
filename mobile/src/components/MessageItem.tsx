@@ -32,7 +32,7 @@ export function Avatar({ message }: { message: Message }) {
     "?")[0].toUpperCase();
   return (
     <View style={styles.avatar}>
-      <Text style={styles.avatarInitial}>{initial}</Text>
+      <Text maxFontSizeMultiplier={1.2} style={styles.avatarInitial}>{initial}</Text>
     </View>
   );
 }
@@ -149,7 +149,7 @@ export function MessageItem({
             </Text>
           ) : null}
           {validLastReplyTs(message.last_reply_ts) ? (
-            <Text style={styles.lastReply} numberOfLines={1} maxFontSizeMultiplier={1.2}
+            <Text style={styles.lastReply} numberOfLines={2} maxFontSizeMultiplier={1.2}
               accessibilityLabel={`Last reply at ${fmtLastReplyFull(message.last_reply_ts)}`}>
               Last reply at {fmtLastReply(message.last_reply_ts)}
             </Text>

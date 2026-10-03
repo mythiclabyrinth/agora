@@ -2,14 +2,14 @@
 export const colors = {
   bg: "#07090f",
   panel: "#10131b",
-  panelStrong: "#191d28",
+  panelStrong: "#252938",
   /** Opaque foreground for sheets/modals rendered over a translucent scrim. */
   sheet: "#191d28",
   border: "rgba(255,255,255,0.07)",
   borderStrong: "rgba(255,255,255,0.13)",
   text: "#eceef4",
   dim: "#adb5c7",
-  faint: "#959fb4",
+  faint: "#919aaf",
   a1: "#8b7cff",
   a2: "#38e1c8",
   green: "#4ade80",

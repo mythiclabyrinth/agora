@@ -1,3 +1,4 @@
+import { useBottomViewport } from "../../../../src/lib/useBottomViewport";
 /* Thread view: the root message pinned at the top, replies below, and a
    composer that posts with thread_id (the server folds reply-to-reply back
    to the root, same as resolve_thread in server.rs).
@@ -226,6 +227,7 @@ export default function ThreadScreen() {
   }, [channelId, params.channelName, rootId, root?.text]);
 
   const listRef = useRef<FlashListRef<Row>>(null);
+  const onViewportLayout = useBottomViewport(listRef, atBottom);
   const {
     activeMessageId: activeSectionMessageId,
     onViewableItemsChanged,
@@ -364,7 +366,7 @@ export default function ThreadScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={keyboardOffset}
       >
-        <View style={styles.listWrap}>
+        <View style={styles.listWrap} onLayout={onViewportLayout}>
           <FlashList
           ref={listRef}
           data={rows}

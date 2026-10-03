@@ -1,3 +1,5 @@
+import { previewText } from "../../src/lib/previewText";
+import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 /* Threads inbox: every thread you started or replied in, newest activity
    first, with per-thread unread badges — the mobile take on Slack's
    "Threads" view. Tapping a row opens the thread screen directly;
@@ -12,7 +14,6 @@ import {
   Pressable,
   RefreshControl,
   StyleSheet,
-  Text,
   TextInput,
   View,
 } from "react-native";
@@ -53,8 +54,8 @@ const FILTER_OPTIONS: { value: ThreadFilter; label: string }[] = [
 
 function snippet(t: ThreadRow): string {
   const alias = (t.root.alias ?? "").trim();
-  if (alias) return alias;
-  const text = t.root.text.replace(/\s+/g, " ").trim();
+  if (alias) return previewText(alias);
+  const text = previewText(t.root.text);
   return text || "(attachment)";
 }
 
@@ -114,6 +115,7 @@ function Row({
       onLongPress={onLongPress}
     >
       <View style={styles.top}>
+        {thread.unread > 0 ? <View style={styles.unreadDot} /> : null}
         <Text style={styles.chan} numberOfLines={1}>
           <Text style={styles.hash}># </Text>
           {thread.channel_name}
@@ -126,7 +128,7 @@ function Row({
         />
       </View>
       <View style={styles.mid}>
-        <Text style={styles.snippet} numberOfLines={2}>{snippet(thread)}</Text>
+        <Text style={styles.snippet} numberOfLines={1}>{snippet(thread)}</Text>
         <Text style={styles.author} numberOfLines={1}>{thread.root.author_name || thread.root.author_id}</Text>
       </View>
       <ThreadInboxFooter
@@ -400,7 +402,7 @@ export default function ThreadsRedirect() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  embeddedFilters: { minHeight: 44, alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 6, margin: 12, padding: 8, borderRadius: 9 },
+  embeddedFilters: { minHeight: 44, alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 12, marginVertical: 0, padding: 8, borderRadius: 9 },
   embeddedFiltersText: { color: colors.a1, fontWeight: weight.bold },
   headerButton: { padding: 6, borderRadius: 9 },
   headerButtonActive: { backgroundColor: colors.accentSoft },
@@ -414,14 +416,15 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     gap: 4,
   },
-  rowUnread: { borderLeftWidth: 3, borderLeftColor: colors.a1 },
+  unreadDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.a1 },
+  rowUnread: { borderColor: colors.accentBorder },
   top: { flexDirection: "row", alignItems: "center", gap: 10 },
   chan: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.bold, flex: 1, minWidth: 0 },
   hash: { color: colors.faint },
   grp: { color: colors.faint, fontWeight: weight.regular },
-  mid: { gap: 4, paddingVertical: 4 },
-  author: { ...typography.meta, color: colors.dim },
-  snippet: { ...typography.body, color: colors.text, fontWeight: weight.semibold },
+  mid: { gap: 2, paddingVertical: 0 },
+  author: { fontSize: typography.meta.fontSize, fontWeight: typography.meta.fontWeight, color: colors.dim },
+  snippet: { fontSize: typography.message.fontSize, color: colors.text, fontWeight: weight.semibold },
   empty: { alignItems: "center", paddingVertical: 60, gap: 6 },
   emptyText: { color: colors.dim, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
   emptyHint: {
