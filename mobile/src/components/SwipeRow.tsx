@@ -1,6 +1,7 @@
 import React from "react";
 import { Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from "react-native";
 import ReanimatedSwipeable, { type SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
+import Animated, { useAnimatedStyle, type SharedValue } from "react-native-reanimated";
 import type { LucideIcon } from "lucide-react-native";
 import { Icon } from "./Icon";
 import { colors } from "../lib/theme";
@@ -17,7 +18,13 @@ export interface SwipeRowController {
   opened: (row: SwipeableMethods) => void;
   closed: (row: SwipeableMethods) => void;
   close: () => void;
+  isOpen: (row: SwipeableMethods) => boolean;
   consumeTap: () => boolean;
+}
+
+export function shouldIgnoreSwipeRelease(dragged: boolean, row: SwipeableMethods | null,
+  controller: SwipeRowController): boolean {
+  return !!(dragged && row && controller.isOpen(row));
 }
 
 export function createSwipeRowController(): SwipeRowController {
@@ -29,6 +36,7 @@ export function createSwipeRowController(): SwipeRowController {
     },
     closed(row) { if (open === row) open = null; },
     close() { open?.close(); open = null; },
+    isOpen(row) { return open === row; },
     consumeTap() {
       if (!open) return false;
       open.close();
@@ -60,6 +68,10 @@ export function SwipeRow({
   initialOpen?: "left" | "right";
 }) {
   const row = React.useRef<SwipeableMethods | null>(null);
+  // The content moves with the finger, so a swipe ends inside the Pressable and
+  // would fire onPress, which closes the row it just opened. Drop that press.
+  const dragged = React.useRef(false);
+  const startDrag = () => { dragged.current = true; };
   React.useEffect(() => {
     if (!initialOpen) return;
     const timer = setTimeout(() => {
@@ -72,18 +84,18 @@ export function SwipeRow({
     controller.close();
     action.onPress();
   };
-  const actionButton = (action: SwipeAction) => (
-    <Pressable accessibilityRole="button" accessibilityLabel={action.label}
-      style={[styles.action, { backgroundColor: action.color }]}
-      onPress={() => activate(action)}>
-      <Icon icon={action.icon} size={19} color={colors.onAccent} />
-      <Text style={styles.actionText}>{action.label}</Text>
-    </Pressable>
-  );
-  return <ReanimatedSwipeable ref={row} containerStyle={styles.container}
+  // ReanimatedSwipeable stacks both action panels (absoluteFill) underneath
+  // the row at all times; the row itself must be opaque to hide them.
+  const radius = StyleSheet.flatten(style)?.borderRadius ?? DEFAULT_RADIUS;
+  const actionButton = (action: SwipeAction) => (progress: SharedValue<number>) =>
+    <SwipeActionButton action={action} progress={progress} onPress={() => activate(action)} />;
+  return <ReanimatedSwipeable ref={row}
+    containerStyle={[styles.container, { borderRadius: radius }]}
+    childrenContainerStyle={[styles.foreground, { borderRadius: radius }]}
     overshootLeft={false} overshootRight={false}
-    renderLeftActions={swipeRight ? () => actionButton(swipeRight) : undefined}
-    renderRightActions={swipeLeft ? () => actionButton(swipeLeft) : undefined}
+    renderLeftActions={swipeRight ? actionButton(swipeRight) : undefined}
+    renderRightActions={swipeLeft ? actionButton(swipeLeft) : undefined}
+    onSwipeableOpenStartDrag={startDrag} onSwipeableCloseStartDrag={startDrag}
     onSwipeableWillOpen={() => { if (row.current) controller.opened(row.current); }}
     onSwipeableClose={() => { if (row.current) controller.closed(row.current); }}>
     <Pressable style={style} accessibilityRole="button" accessibilityLabel={accessibilityLabel}
@@ -93,7 +105,13 @@ export function SwipeRow({
         const action = [swipeLeft, swipeRight].find(a => a?.name === event.nativeEvent.actionName);
         if (action) activate(action);
       }}
-      onPress={() => { if (!controller.consumeTap()) onPress(); }}
+      onPress={() => {
+        const wasDragged = dragged.current;
+        dragged.current = false;
+        if (shouldIgnoreSwipeRelease(wasDragged, row.current, controller)) return;
+        if (!controller.consumeTap()) onPress();
+      }}
+      onPressIn={() => { dragged.current = false; }}
       onLongPress={() => { controller.close(); onLongPress?.(); }}
       delayLongPress={350}>
       {children}
@@ -101,8 +119,30 @@ export function SwipeRow({
   </ReanimatedSwipeable>;
 }
 
+/** An action panel, kept invisible until its side starts being revealed so no
+ * colour can bleed through the row's rounded, anti-aliased edges at rest. */
+function SwipeActionButton({ action, progress, onPress }: {
+  action: SwipeAction; progress: SharedValue<number>; onPress: () => void;
+}) {
+  const revealed = useAnimatedStyle(() => ({ opacity: progress.value > 0 ? 1 : 0 }));
+  return <Animated.View style={[styles.actionWrap, revealed]}
+    accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+    <Pressable accessibilityRole="button" accessibilityLabel={action.label}
+      style={[styles.action, { backgroundColor: action.color }]} onPress={onPress}>
+      <Icon icon={action.icon} size={19} color={colors.onAccent} />
+      <Text style={styles.actionText}>{action.label}</Text>
+    </Pressable>
+  </Animated.View>;
+}
+
+const DEFAULT_RADIUS = 13;
+
 const styles = StyleSheet.create({
-  container: { borderRadius: 13, overflow: "hidden" },
+  container: { overflow: "hidden" },
+  // Rows use the translucent `colors.panel` card; backing it with the screen
+  // background keeps the same look while making the foreground opaque.
+  foreground: { backgroundColor: colors.bg, overflow: "hidden" },
+  actionWrap: { flexDirection: "row" },
   action: { minWidth: 90, paddingHorizontal: 10, alignItems: "center", justifyContent: "center", gap: 4 },
   actionText: { color: colors.onAccent, fontWeight: "800", fontSize: 12 },
 });

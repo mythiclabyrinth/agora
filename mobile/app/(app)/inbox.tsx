@@ -13,7 +13,7 @@ export function unreadSwipeAction(item: UnreadItem, onRead: (item: UnreadItem) =
     onPress: () => onRead(item) };
 }
 
-function UnreadRow({ item, onRead, controller, initialSwipe }: {
+export function UnreadRow({ item, onRead, controller, initialSwipe }: {
   item: UnreadItem; onRead: (item: UnreadItem) => void;
   controller: SwipeRowController; initialSwipe?: "left";
 }) {
@@ -43,10 +43,6 @@ function UnreadRow({ item, onRead, controller, initialSwipe }: {
       </Text>
       <Text style={styles.time}>{fmtRelative(item.latest_ts)}</Text>
       <Text style={styles.count}>{formatUnreadCount(item.unread)}{item.mentions > 0 ? `  @${item.mentions}` : ""}</Text>
-      <Pressable accessibilityRole="button" accessibilityLabel={`Mark ${item.kind} read`}
-        style={styles.markOne} onPress={event => { event.stopPropagation(); controller.close(); onRead(item); }}>
-        <Text style={styles.markOneText}>✓</Text>
-      </Pressable>
     </View>
     {item.previews.map(message => <Text key={message.id} style={styles.preview} numberOfLines={1}>
       <Text style={styles.author}>{message.author_name || message.author_id}: </Text>{message.text || "Attachment"}
@@ -147,8 +143,6 @@ const styles = StyleSheet.create({
   source: { flex: 1, color: colors.text, fontWeight: "700" },
   count: { color: colors.a1, fontWeight: "800" },
   time: { color: colors.faint, fontSize: 11 },
-  markOne: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
-  markOneText: { color: colors.a1, fontSize: 20 },
   preview: { color: colors.dim, fontSize: 13 },
   author: { color: colors.text, fontWeight: "600" },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 60 },
