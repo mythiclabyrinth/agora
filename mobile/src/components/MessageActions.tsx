@@ -1,6 +1,7 @@
+import { ThemedInput as TextInput } from "./ThemedInput";
 import React, { useEffect, useState } from "react";
 import {
-  Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import {
@@ -13,7 +14,7 @@ import {
   type Message,
 } from "@agora/core";
 import { beginReviewUiBlock, endReviewUiBlock } from "../lib/storeReview";
-import { colors, typography, weight } from "../lib/theme";
+import { colors, typography, weight, surfaces } from "../lib/theme";
 import { copyDeepLink } from "../lib/deepLinks";
 import { speakMessage } from "../lib/nativeSpeech";
 import { Icon } from "./Icon";
@@ -235,10 +236,10 @@ function Row({ icon, label, onPress, color = colors.text, fill, danger = false }
 const styles = StyleSheet.create({
   keyboard: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
   backdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
-  sheet: { maxHeight: "85%", backgroundColor: colors.sheet, borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 16, gap: 4, paddingBottom: 34 },
+  sheet: { maxHeight: "85%", ...surfaces.sheet, gap: 4, paddingBottom: 34 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
   text: { color: colors.text, fontSize: typography.body.fontSize }, danger: { color: colors.red },
-  editor: { backgroundColor: colors.sheet, borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 16, paddingBottom: 34, gap: 12 },
+  editor: { ...surfaces.sheet, paddingBottom: 34, gap: 12 },
   title: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold },
   input: { minHeight: 150, maxHeight: 360, borderWidth: 1, borderColor: colors.a1, borderRadius: 10, padding: 12, color: colors.text, backgroundColor: colors.bg, fontSize: typography.message.fontSize, lineHeight: 21 },
   editorActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10 },

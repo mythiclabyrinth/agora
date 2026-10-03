@@ -58,10 +58,12 @@ import { fmtTs } from "@agora/core";
 import { headerActions } from "../../../src/lib/headerItems";
 import { useHeaderKeyboardOffset } from "../../../src/lib/keyboard";
 import { enqueueSpeech, prepareSpeechAudio, stopSpeech } from "../../../src/lib/speech";
-import { colors, typography, weight } from "../../../src/lib/theme";
+import { colors, typography, weight, surfaces } from "../../../src/lib/theme";
 import { useChannelLive } from "@agora/core";
 import { usePrefs } from "../../../src/state/prefs";
 import { useSession } from "../../../src/state/session";
+import { ConversationTools } from "../../../src/components/ConversationTools";
+import { IconButton } from "../../../src/components/IconButton";
 
 type Row = { kind: "msg"; m: Message } | { kind: "divider" };
 const MAX_DEEP_LINK_PAGES = 10;
@@ -382,49 +384,16 @@ export default function ChannelScreen() {
           headerShown: true,
           ...headerActions(
             <View style={styles.headerBtns}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Channel attachments"
-                onPress={() => router.push({
-                  pathname: "/(app)/attachments/[channelId]",
-                  params: { channelId, channelName, groupId },
-                })}
-                hitSlop={8}
-              >
-                <Icon icon={Paperclip} size={20} color={colors.text} />
-              </Pressable>
-              {ttsOk ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Read replies aloud"
-                  accessibilityState={{ selected: speakAloud }}
-                  onPress={() => {
-                    if (speakAloud) stopSpeech();
-                    setSpeakAloud(!speakAloud);
-                  }}
-                  hitSlop={8}
-                >
-                  <View style={!speakAloud && styles.headerBtnOff}>
-                    <Icon icon={Volume2} size={20} color={colors.text} />
-                  </View>
-                </Pressable>
-              ) : null}
-              {sttOk && ttsOk ? (
-                <Pressable accessibilityRole="button" accessibilityLabel="Start live voice" onPress={openLive} hitSlop={12}>
-                  <Icon icon={Headphones} size={20} color={colors.text} />
-                </Pressable>
-              ) : null}
-              <Pressable accessibilityRole="button" accessibilityLabel="Pinned messages" onPress={() => setSheet("pins")} hitSlop={12}>
-                <Icon icon={Pin} size={20} color={colors.text} />
-              </Pressable>
-              {FEATURES.stars ? <Pressable accessibilityRole="button" accessibilityLabel="Starred messages" onPress={() => setSheet("stars")} hitSlop={12}>
-                <Icon icon={Star} size={20} color={colors.text} />
-              </Pressable> : null}
-              {groupId && groupId !== "__dms" ? (
-                <Pressable accessibilityRole="button" accessibilityLabel="Channel members" onPress={openMembers} hitSlop={12}>
-                  <Icon icon={Users} size={20} color={colors.text} />
-                </Pressable>
-              ) : null}
+              {sttOk && ttsOk ? <IconButton icon={Headphones} accessibilityLabel="Start live voice" onPress={openLive} /> : null}
+              <ConversationTools title={`# ${channelName}`} actions={[
+                { label: "Channel attachments", detail: "Files, images and shared media", icon: Paperclip,
+                  onPress: () => router.push({ pathname: "/(app)/attachments/[channelId]", params: { channelId, channelName, groupId } }) },
+                { label: "Pinned messages", detail: "The things worth keeping close", icon: Pin, onPress: () => setSheet("pins") },
+                ...(FEATURES.stars ? [{ label: "Starred messages", icon: Star, onPress: () => setSheet("stars") }] : []),
+                ...(groupId && groupId !== "__dms" ? [{ label: "Channel members", detail: "People and agents in this room", icon: Users, onPress: openMembers }] : []),
+                ...(ttsOk ? [{ label: "Read replies aloud", detail: speakAloud ? "On · tap to turn off" : "Off · tap to turn on", icon: Volume2, selected: speakAloud,
+                  onPress: () => { if (speakAloud) stopSpeech(); setSpeakAloud(!speakAloud); } }] : []),
+              ]} />
             </View>,
           ),
         }}
@@ -606,15 +575,14 @@ export default function ChannelScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   listWrap: { flex: 1, position: "relative" },
-  // Five actions fit beside a short channel title at the 320pt compact width.
-  headerBtns: { flexDirection: "row", gap: 12 },
+  headerBtns: { flexDirection: "row", gap: 4 },
   headerBtnOff: { opacity: 0.35 },
   deepLinkTarget: { backgroundColor: colors.accentSoft, borderRadius: 8 },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 40 },
   noAgents: {
-    backgroundColor: "rgba(251,191,36,0.08)",
+    backgroundColor: colors.warningSoft,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(251,191,36,0.35)",
+    borderBottomColor: colors.warningBorder,
     paddingHorizontal: 16,
     paddingVertical: 9,
   },
@@ -644,10 +612,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 16,
+    ...surfaces.sheet,
     gap: 4,
     paddingBottom: 34,
   },

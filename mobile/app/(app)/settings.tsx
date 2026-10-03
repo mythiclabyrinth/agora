@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "../../src/components/ThemedInput";
 /* Account, server session, and app settings. Agent administration has one
    dedicated surface, linked here for instance admins. */
 
@@ -9,7 +10,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import * as Application from "expo-application";
@@ -27,6 +27,9 @@ import { openWriteReviewUrl } from "../../src/lib/storeReview";
 import { colors, typography, weight } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 import { useSession } from "../../src/state/session";
+import { Icon } from "../../src/components/Icon";
+import { Bot, SlidersHorizontal, ChevronRight, ShieldCheck, Users } from "lucide-react-native";
+import { layout, radii, space, surfaces } from "../../src/lib/theme";
 
 function Section({
   title,
@@ -37,7 +40,7 @@ function Section({
 }) {
   return (
     <View style={styles.section}>
-      <SectionHeader title={title} />
+      <Text accessibilityRole="header" style={styles.sectionTitle}>{title}</Text>
       {children}
     </View>
   );
@@ -210,29 +213,47 @@ export default function SettingsScreen() {
     <>
       <Stack.Screen options={{ title: "Settings", headerShown: true }} />
       <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+        <View style={styles.profileCard}>
+          <View style={styles.profileAvatar}><Text style={styles.profileInitial}>{(me.data?.display_name || me.data?.username || "A").slice(0, 1).toUpperCase()}</Text></View>
+          <View style={{ flex: 1, gap: space.xs }}>
+            <Text style={styles.profileName}>{me.data?.display_name || me.data?.username || "Your account"}</Text>
+            <Text style={styles.meta}>{me.data?.username ? `@${me.data.username}` : "Connected to Agora"}</Text>
+          </View>
+          {instanceAdmin ? <View style={styles.role}><Icon icon={ShieldCheck} size={14} color={colors.a2} /><Text style={styles.roleText}>Admin</Text></View> : null}
+        </View>
+        {instanceAdmin ? <Link href="/(app)/people" asChild>
+          <Pressable style={styles.agentHub} accessibilityRole="button">
+            <View style={styles.hubIcon}><Icon icon={Users} size={22} color={colors.accentText} /></View>
+            <View style={{ flex: 1 }}><Text style={styles.agentHubTitle}>People & access</Text>
+              <Text style={styles.meta}>Manage people, group roles and channel access.</Text></View>
+            <Icon icon={ChevronRight} size={18} color={colors.faint} />
+          </Pressable>
+        </Link> : null}
         {instanceAdmin ? (
           <Link href="/(app)/add-agent" asChild>
             <Pressable style={styles.agentHub} accessibilityRole="button">
+              <View style={styles.hubIcon}><Icon icon={Bot} size={22} color={colors.accentText} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.agentHubTitle}>Agents & connections</Text>
                 <Text style={styles.meta}>
                   Guided setup for coding agents, integrations, and Pantheo.
                 </Text>
               </View>
-              <Text style={styles.agentHubArrow}>›</Text>
+              <Icon icon={ChevronRight} size={18} color={colors.faint} />
             </Pressable>
           </Link>
         ) : null}
         {instanceAdmin ? (
           <Link href="/(app)/instance-ai" asChild>
             <Pressable style={styles.agentHub} accessibilityRole="button">
+              <View style={styles.hubIcon}><Icon icon={SlidersHorizontal} size={22} color={colors.accentText} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.agentHubTitle}>Instance settings</Text>
                 <Text style={styles.meta}>
                   Voice, Ask AI providers, and credentials for this Agora.
                 </Text>
               </View>
-              <Text style={styles.agentHubArrow}>›</Text>
+              <Icon icon={ChevronRight} size={18} color={colors.faint} />
             </Pressable>
           </Link>
         ) : null}
@@ -359,22 +380,27 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 14, gap: 20, paddingBottom: 40 },
-  section: { gap: 8 },
+  content: { paddingHorizontal: layout.gutter, gap: space.md, paddingBottom: layout.contentBottom },
+  section: { gap: space.sm, marginTop: space.md },
+  sectionTitle: { ...typography.eyebrow, color: colors.faint, textTransform: "uppercase", marginBottom: space.xs },
+  profileCard: { ...surfaces.card, padding: space.lg, flexDirection: "row", alignItems: "center", gap: space.md, marginBottom: space.sm },
+  profileAvatar: { width: 52, height: 52, borderRadius: radii.lg, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
+  profileInitial: { ...typography.display, color: colors.accentText },
+  profileName: { ...typography.title, color: colors.text },
+  role: { flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, paddingVertical: space.xs, borderRadius: radii.pill, backgroundColor: colors.mintSoft },
+  roleText: { ...typography.caption, color: colors.a2 },
+  hubIcon: { width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: radii.md, backgroundColor: colors.accentSoft },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: colors.panel,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    ...surfaces.card,
+    padding: space.lg,
   },
   name: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
-  meta: { color: colors.dim, fontSize: typography.caption.fontSize },
+  meta: { color: colors.dim, ...typography.caption },
   input: {
+    ...surfaces.field,
     backgroundColor: colors.panelStrong,
     borderWidth: 1,
     borderColor: colors.borderStrong,
@@ -387,8 +413,8 @@ const styles = StyleSheet.create({
   linkBtn: { minHeight: 44, justifyContent: "center", paddingVertical: 10, alignItems: "center" },
   linkBtnText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   linkBtnDim: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
-  dangerCard: { padding: 16, gap: 16, borderWidth: 1, borderColor: colors.red, borderRadius: 12, backgroundColor: colors.panel },
-  deleteButton: { minHeight: 44, padding: 12, alignItems: "center", borderRadius: 8, backgroundColor: colors.red },
+  dangerCard: { padding: space.lg, gap: space.lg, borderWidth: 1, borderColor: colors.dangerBorder, borderRadius: radii.lg, backgroundColor: colors.dangerSoft },
+  deleteButton: { minHeight: 44, padding: space.md, alignItems: "center", borderRadius: radii.md, backgroundColor: colors.red },
   deleteText: { color: colors.onAccent, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   agentHub: {
     flexDirection: "row",
@@ -398,8 +424,8 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: colors.accentBorder,
-    backgroundColor: colors.accentSoft,
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
   },
   agentHubTitle: {
     color: colors.text,

@@ -1,8 +1,9 @@
 /* Known agents: live status dots and forget-offline-agent, same rules as
    the desktop (the server refuses to forget a connected agent). */
 
-import React from "react";
+import React, { useState } from "react";
 import {
+  ActivityIndicator,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -11,14 +12,14 @@ import {
   View,
 } from "react-native";
 import { Link, Stack } from "expo-router";
-import { Bot, Plus } from "lucide-react-native";
-import { useAgents, useForgetAgent } from "@agora/core";
+import { Bot, ChevronDown, ChevronRight, Plus } from "lucide-react-native";
+import { useAgents, useForgetAgent, type AgentInfo } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
 import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { ArmedButton } from "../../src/components/ArmedButton";
 import { toastErr } from "../../src/components/Toast";
 import { fmtTs } from "@agora/core";
-import { colors, typography, weight } from "../../src/lib/theme";
+import { colors, control, typography, weight, layout, radii, space, surfaces } from "../../src/lib/theme";
 import { useSession } from "../../src/state/session";
 
 export default function AgentsScreen() {
@@ -26,6 +27,7 @@ export default function AgentsScreen() {
   const forget = useForgetAgent();
   const admin = useSession((s) => s.instanceAdmin);
   const adminKnown = useSession((s) => s.instanceAdminKnown);
+  const onlineCount = (agents.data ?? []).filter((agent) => agent.live).length;
 
   return (
     <>
@@ -39,7 +41,6 @@ export default function AgentsScreen() {
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Add agent"
-                    hitSlop={10}
                     style={styles.addHeader}
                   >
                     <Plus size={18} color={colors.a1} />
@@ -61,31 +62,24 @@ export default function AgentsScreen() {
           />
         }
       >
+        {agents.isSuccess && agents.data.length > 0 ? <View style={styles.summary}>
+          <View style={[styles.dot, onlineCount > 0 ? styles.dotOn : styles.dotOff]} />
+          <Text style={styles.summaryText}>{onlineCount} online</Text>
+          <Text style={styles.summaryTotal}>{agents.data.length} {agents.data.length === 1 ? "agent" : "agents"}</Text>
+        </View> : null}
+        {agents.isPending ? <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Loading agents">
+          <ActivityIndicator color={colors.a1} />
+          <Text style={styles.meta}>Loading agents…</Text>
+        </View> : null}
+        {agents.isError ? <EmptyState icon={Bot} title="Couldn't refresh agents"
+          description="Check your connection and try again."
+          action={{ label: "Try again", onPress: () => void agents.refetch(), disabled: agents.isFetching }} /> : null}
         {(agents.data ?? []).map((a) => (
-          <View key={a.id} style={styles.rowWrap}>
-          <View style={styles.row}>
-            <AgentAvatar agentId={a.id} size={30} />
-            <View style={[styles.dot, a.live ? styles.dotOn : styles.dotOff]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{a.name}</Text>
-              <Text style={styles.meta}>
-                {a.source}
-                {a.requires_mention ? " · mention-only" : ""}
-                {a.live ? " · online" : ` · last seen ${fmtTs(a.last_seen)}`}
-              </Text>
-            </View>
-            {!a.live ? (
-              <ArmedButton
-                label="Forget"
-                onConfirm={() =>
+          <AgentCard key={a.id} agent={a} onForget={() =>
                   forget.mutate(a.id, {
                     onError: (e) => toastErr("Forget failed", e),
                   })
-                }
-              />
-            ) : null}
-          </View>
-          </View>
+          } />
         ))}
         {agents.isSuccess && agents.data.length === 0 ? (
           <EmptyState icon={Bot} title="No agents yet" description={!adminKnown
@@ -97,13 +91,14 @@ export default function AgentsScreen() {
         {admin ? (
           <Link href="/(app)/add-agent" asChild>
             <Pressable style={styles.addCard} accessibilityRole="button">
-              <Plus size={20} color={colors.a2} />
+              <View style={styles.addMark}><Plus size={20} color={colors.a2} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.addTitle}>Add an agent</Text>
                 <Text style={styles.meta}>
                   Connect a coding agent, integration, or Pantheo instance.
                 </Text>
               </View>
+              <ChevronRight size={18} color={colors.faint} />
             </Pressable>
           </Link>
         ) : null}
@@ -112,37 +107,74 @@ export default function AgentsScreen() {
   );
 }
 
+function AgentCard({ agent, onForget }: { agent: AgentInfo; onForget: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return <View style={styles.card}>
+    <View style={styles.row}>
+      <AgentAvatar agentId={agent.id} size={44} />
+      <View style={styles.identity}>
+        <Text style={styles.name}>{agent.name}</Text>
+        <Text style={styles.meta}>{agent.requires_mention ? "Responds when mentioned" : "Responds to all messages"}</Text>
+      </View>
+    </View>
+    <View style={styles.cardFooter}>
+      <View style={styles.status}>
+        <View style={[styles.dot, agent.live ? styles.dotOn : styles.dotOff]} />
+        <Text style={[styles.meta, agent.live && styles.online]}>{agent.live ? "Online" : "Offline"}</Text>
+      </View>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Connection details for ${agent.name}`}
+        accessibilityState={{ expanded }} onPress={() => setExpanded((value) => !value)}
+        style={({ pressed }) => [styles.detailsToggle, pressed && styles.pressed]}>
+        <Text style={styles.meta}>Details</Text>
+        {expanded ? <ChevronDown size={16} color={colors.faint} /> : <ChevronRight size={16} color={colors.faint} />}
+      </Pressable>
+    </View>
+    {expanded ? <View style={styles.details}>
+      <Text style={styles.detailLabel}>CONNECTION SOURCE</Text>
+      <Text selectable style={styles.meta}>{agent.source}</Text>
+      <Text style={styles.detailLabel}>AGENT ID</Text>
+      <Text selectable style={styles.meta}>{agent.id}</Text>
+    </View> : null}
+    {!agent.live ? <View style={styles.offlineActions}>
+      <Text style={[styles.meta, styles.identity]}>Last seen {fmtTs(agent.last_seen)}</Text>
+      <ArmedButton label="Forget" accessibilityLabel={`Forget ${agent.name}`} onConfirm={onForget} />
+    </View> : null}
+  </View>;
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 14, gap: 8, paddingBottom: 40 },
+  content: { paddingHorizontal: layout.gutter, gap: space.md, paddingBottom: layout.contentBottom },
+  summary: { flexDirection: "row", alignItems: "center", gap: space.sm, paddingVertical: space.sm, marginBottom: space.sm },
+  summaryText: { ...typography.meta, color: colors.a2 },
+  summaryTotal: { ...typography.caption, color: colors.faint, flex: 1, textAlign: "right" },
+  loading: { alignItems: "center", gap: space.md, padding: space.section },
+  identity: { flex: 1, gap: space.xs },
+  status: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  online: { color: colors.a2 },
+  card: { ...surfaces.card, paddingHorizontal: space.lg, paddingTop: space.lg },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    backgroundColor: colors.panel,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
   },
-  rowWrap: { backgroundColor: colors.panel, borderRadius: 12 },
+  cardFooter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: space.sm },
+  detailsToggle: { minHeight: control.minTouchSize, paddingLeft: space.md, flexDirection: "row", gap: space.xs, alignItems: "center" },
+  details: { borderTopWidth: 1, borderTopColor: colors.border, gap: space.xs, paddingBottom: space.lg },
+  detailLabel: { ...typography.eyebrow, color: colors.faint, marginTop: space.md },
+  offlineActions: { flexDirection: "row", alignItems: "center", gap: space.md, borderTopWidth: 1, borderTopColor: colors.border, paddingVertical: space.md },
   dot: { width: 9, height: 9, borderRadius: 5 },
   dotOn: { backgroundColor: colors.green },
   dotOff: { backgroundColor: colors.faint },
   name: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
-  meta: { color: colors.dim, fontSize: typography.caption.fontSize },
-  empty: {
-    color: colors.dim,
-    textAlign: "center",
-    paddingVertical: 24,
-    lineHeight: 20,
-  },
+  meta: { ...typography.caption, color: colors.dim },
   addHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 3,
-    minHeight: 40,
+    justifyContent: "center",
+    gap: space.sm,
+    minHeight: control.minTouchSize,
+    paddingHorizontal: space.md,
   },
   addHeaderText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
   addCard: {
@@ -151,11 +183,13 @@ const styles = StyleSheet.create({
     gap: 12,
     marginTop: 6,
     borderWidth: 1,
-    borderColor: "rgba(56,225,200,0.22)",
-    backgroundColor: "rgba(56,225,200,0.06)",
-    borderRadius: 14,
-    padding: 14,
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
+    borderRadius: radii.lg,
+    padding: space.lg,
     minHeight: 66,
   },
+  addMark: { width: 40, height: 40, borderRadius: radii.md, backgroundColor: colors.mintSoft, alignItems: "center", justifyContent: "center" },
+  pressed: { opacity: 0.65 },
   addTitle: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
 });

@@ -184,7 +184,7 @@ const styles = StyleSheet.create({
   mention: {
     color: "#b3a8ff",
     fontWeight: weight.semibold,
-    backgroundColor: "rgba(139,124,255,0.18)",
+    backgroundColor: colors.accentSoft,
   },
   pre: {
     backgroundColor: colors.panelStrong,

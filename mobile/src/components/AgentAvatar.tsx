@@ -40,7 +40,7 @@ export function AgentAvatar({ agentId, size = 30 }: { agentId: string; size?: nu
 const styles = StyleSheet.create({
   image: { backgroundColor: colors.panelStrong },
   fallback: {
-    backgroundColor: "rgba(139,124,255,0.15)",
+    backgroundColor: colors.accentSoft,
     alignItems: "center",
     justifyContent: "center",
   },

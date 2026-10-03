@@ -61,7 +61,7 @@ import {
 } from "@agora/core";
 import { toOutgoing, type LocalFile } from "../api/voice";
 import { useKeyboardVisible } from "../lib/keyboard";
-import { colors, typography, weight } from "../lib/theme";
+import { colors, typography, weight, surfaces, composerSizing } from "../lib/theme";
 import { useAddressed, useMessageDrafts } from "@agora/core";
 import { usePrefs } from "../state/prefs";
 import { AgentAvatar } from "./AgentAvatar";
@@ -77,7 +77,6 @@ const MAX_FILES = 5;
 
 /** Keep-awake tag for voice notes: the screen must not auto-lock mid-take. */
 const REC_KEEP_AWAKE = "composer-voice-note";
-const COMPOSER_INPUT_MIN_HEIGHT = 40;
 
 export function appendVoiceTranscript(
   addressKey: string | undefined,
@@ -249,7 +248,7 @@ export function Composer({
   const filesRef = useRef<LocalFile[]>(initialFiles);
   const [preview, setPreview] = useState<LocalFile | null>(null);
   const [focused, setFocused] = useState(false);
-  const [inputHeight, setInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT);
+  const [inputAtMaxHeight, setInputAtMaxHeight] = useState(false);
   const [attachSheet, setAttachSheet] = useState(false);
   const [pasteOps, setPasteOps] = useState(0);
   const pasteGeneration = useRef(0);
@@ -283,11 +282,12 @@ export function Composer({
   const hasSelection = useRef(false);
   const inputRef = useRef<TextInput>(null);
 
-  /* iOS multiline inputs do not reliably shrink after a controlled clear.
-     Track their content height explicitly and restore the one-line baseline
-     whenever the actual draft becomes empty. */
+  /* Keep native intrinsic measurement in charge. Fabric emits content-size
+     events from layout updates: feeding those events into a fixed height can
+     lock the input at its initial height. Only use layout to enable scrolling
+     once the native input reaches its cap, never to dictate its height. */
   useEffect(() => {
-    if (!text) setInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+    if (!text) setInputAtMaxHeight(false);
   }, [text]);
 
   /* A native paste finishes asynchronously. Invalidate in-flight work when
@@ -768,13 +768,11 @@ export function Composer({
             style={[
               focused ? styles.inputFocused : styles.input,
               nativePasteInput && !focused ? styles.inputWrapped : null,
-              { height: inputHeight },
+              { minHeight: composerSizing.minHeight, maxHeight: composerSizing.maxHeight },
             ]}
             value={text}
             onChangeText={setText}
-            onContentSizeChange={(e) => {
-              setInputHeight(Math.max(COMPOSER_INPUT_MIN_HEIGHT, e.nativeEvent.contentSize.height));
-            }}
+            onLayout={({ nativeEvent }) => setInputAtMaxHeight(nativeEvent.layout.height >= composerSizing.maxHeight - 1)}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onSelectionChange={(e) => {
@@ -786,6 +784,8 @@ export function Composer({
             placeholder={placeholder}
             placeholderTextColor={colors.faint}
             multiline
+            scrollEnabled={inputAtMaxHeight}
+            textAlignVertical="top"
             maxLength={MAX_MESSAGE_CHARS}
           />
         </PasteAwareInput>
@@ -980,10 +980,10 @@ const styles = StyleSheet.create({
   wrap: {
     flexShrink: 0,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+    borderTopColor: colors.borderStrong,
     backgroundColor: colors.panel,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
   },
   addrBar: { paddingHorizontal: 12, paddingTop: 8 },
   addrLabelBtn: { alignSelf: "center", marginRight: 8 },
@@ -1065,7 +1065,7 @@ const styles = StyleSheet.create({
   mentionInitial: { fontSize: 12, color: colors.text },
   mentionChip: {
     flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44,
-    backgroundColor: "rgba(139,124,255,0.15)",
+    backgroundColor: colors.accentSoft,
     borderRadius: 8,
     paddingVertical: 5,
     paddingHorizontal: 10,
@@ -1088,14 +1088,14 @@ const styles = StyleSheet.create({
   fileThumb: { width: 72, height: 54, borderRadius: 7, backgroundColor: colors.panel },
   fileIcon: {
     width: 40, height: 42, borderRadius: 7, alignItems: "center", justifyContent: "center",
-    backgroundColor: "rgba(139,124,255,0.15)",
+    backgroundColor: colors.accentSoft,
   },
   fileMeta: { flex: 1, minWidth: 0 },
   fileText: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
   fileSize: { marginTop: 2, color: colors.faint, fontSize: typography.caption.fontSize },
   fileRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   row: { flexDirection: "row", alignItems: "flex-end", padding: 10, gap: 8 },
-  colFocused: { flexShrink: 0, marginHorizontal: 12, marginTop: 8, borderWidth: 1, borderColor: colors.accentBorder, borderRadius: 12, backgroundColor: colors.bg },
+  colFocused: { flexShrink: 0, marginHorizontal: 12, marginTop: 12, borderWidth: 1, borderColor: colors.accentBorder, borderRadius: 16, backgroundColor: colors.bg },
   pasteWrap: { flex: 1 },
   pasteWrapFocused: { alignSelf: "stretch" },
   iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
@@ -1103,7 +1103,6 @@ const styles = StyleSheet.create({
     flex: 1,
     color: colors.text,
     fontSize: typography.message.fontSize,
-    maxHeight: 130,
     backgroundColor: colors.bg,
     borderWidth: 1,
     borderColor: colors.borderStrong,
@@ -1121,8 +1120,6 @@ const styles = StyleSheet.create({
   inputFocused: {
     color: colors.text,
     fontSize: typography.body.fontSize,
-    minHeight: 40,
-    maxHeight: 150,
     paddingHorizontal: 12,
     paddingTop: 6,
     paddingBottom: 6,
@@ -1141,7 +1138,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 14,
-    backgroundColor: colors.panelStrong,
+    backgroundColor: colors.accentSoft,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: "center",
@@ -1149,17 +1146,14 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
     marginBottom: 2,
   },
-  plusText: { color: colors.dim, fontSize: typography.title.fontSize, fontWeight: weight.semibold, lineHeight: 24 },
+  plusText: { color: colors.accentText, fontSize: typography.title.fontSize, fontWeight: weight.semibold, lineHeight: 24 },
   sheetBackdrop: {
     flex: 1,
     backgroundColor: colors.scrim,
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 16,
+    ...surfaces.sheet,
     gap: 4,
     paddingBottom: 34,
   },

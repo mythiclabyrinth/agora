@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "../../src/components/ThemedInput";
 /* Instance-admin AI & voice settings (parity with the web AI & voice panel). */
 
 import React, { useEffect, useState } from "react";
@@ -9,7 +10,6 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { Stack } from "expo-router";

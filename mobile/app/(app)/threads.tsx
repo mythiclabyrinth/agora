@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "../../src/components/ThemedInput";
 import { previewText } from "../../src/lib/previewText";
 import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 /* Threads inbox: every thread you started or replied in, newest activity
@@ -14,7 +15,6 @@ import {
   Pressable,
   RefreshControl,
   StyleSheet,
-  TextInput,
   View,
 } from "react-native";
 import { Redirect, Stack, router } from "expo-router";
@@ -36,7 +36,7 @@ import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } fro
 import { toastAction, toastErr } from "../../src/components/Toast";
 import { ThreadInboxFooter, ThreadRelativeTime } from "../../src/components/ThreadTimeMeta";
 import { headerActions } from "../../src/lib/headerItems";
-import { colors, typography, weight } from "../../src/lib/theme";
+import { colors, typography, weight, surfaces, layout, radii, space } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
 
 const SORT_OPTIONS: { value: ThreadSort; label: string }[] = [
@@ -406,18 +406,18 @@ const styles = StyleSheet.create({
   embeddedFiltersText: { color: colors.a1, fontWeight: weight.bold },
   headerButton: { padding: 6, borderRadius: 9 },
   headerButtonActive: { backgroundColor: colors.accentSoft },
-  content: { padding: 14, gap: 10, paddingBottom: 40 },
+  content: { paddingHorizontal: layout.gutter, paddingTop: space.sm, gap: space.md, paddingBottom: layout.contentBottom },
   row: {
     backgroundColor: colors.panel,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    gap: 4,
+    borderRadius: radii.lg,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.lg,
+    gap: space.sm,
   },
   unreadDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.a1 },
-  rowUnread: { borderColor: colors.accentBorder },
+  rowUnread: { borderColor: colors.accentBorder, backgroundColor: colors.accentWash },
   top: { flexDirection: "row", alignItems: "center", gap: 10 },
   chan: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.bold, flex: 1, minWidth: 0 },
   hash: { color: colors.faint },
@@ -436,7 +436,7 @@ const styles = StyleSheet.create({
   },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: colors.scrim,
     justifyContent: "center",
     padding: 28,
   },
@@ -474,10 +474,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   viewSheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 18,
+    ...surfaces.sheet,
     paddingBottom: 34,
     gap: 12,
     maxHeight: "85%",

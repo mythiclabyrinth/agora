@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "../../src/components/ThemedInput";
 import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 /* Home: groups with collapsible channel lists and unread badges — the
    mobile take on the desktop sidebar (drill-down instead of split pane).
@@ -5,7 +6,7 @@ import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
    The Threads row is the inbox entry; the filter chip hides read channels.
    Long-press a group or channel name for manage/delete actions. */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Alert,
   Modal,
@@ -13,10 +14,9 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from "react-native";
-import { Link, Stack, router, useLocalSearchParams } from "expo-router";
+import { Stack, router, useLocalSearchParams } from "expo-router";
 import {
   Bot,
   ChevronDown,
@@ -24,9 +24,8 @@ import {
   Eye,
   EyeOff,
   MessagesSquare,
-  Search,
-  Settings,
-  Users,
+  ArrowUpRight,
+  Hash,
 } from "lucide-react-native";
 import {
   useCreateChannel,
@@ -34,7 +33,6 @@ import {
   useDeleteChannel,
   useDeleteGroup,
   useGroups,
-  useMe,
   FEATURES,
   useAgentDms,
   useOpenAgentDm,
@@ -47,9 +45,11 @@ import { Icon } from "../../src/components/Icon";
 import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { AgentStatus } from "../../src/components/AgentStatus";
 import { toastErr } from "../../src/components/Toast";
-import { headerActions } from "../../src/lib/headerItems";
 import { colors, typography, space, radii, weight } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
+import { EmptyState } from "../../src/components/EmptyState";
+import { brand, layout } from "../../src/lib/theme";
+import { WorkspaceHeader } from "../../src/components/WorkspaceHeader";
 
 function isGroupAdmin(group: Group): boolean {
   return group.role === "admin";
@@ -184,10 +184,15 @@ function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
         onLongPress={onLongPress}
         delayLongPress={350}
       >
-        <Text style={styles.hash}>#</Text>
-        <Text style={[styles.channelName, (channel.unread ?? 0) > 0 && styles.channelUnread]} numberOfLines={1} maxFontSizeMultiplier={1.5}>
-          {channel.name}
-        </Text>
+        <View style={[styles.channelGlyph, (channel.unread ?? 0) > 0 && styles.channelGlyphUnread]}>
+          <Icon icon={Hash} size={17} color={(channel.unread ?? 0) > 0 ? colors.accentText : colors.faint} />
+        </View>
+        <View style={styles.channelCopy}>
+          <Text style={[styles.channelName, (channel.unread ?? 0) > 0 && styles.channelUnread]} numberOfLines={1} maxFontSizeMultiplier={1.5}>
+            {channel.name}
+          </Text>
+          {channel.topic ? <Text style={styles.channelTopic} numberOfLines={1}>{channel.topic}</Text> : null}
+        </View>
         <UnreadBadge count={channel.unread ?? 0} mentions={channel.mentions ?? 0} />
       </Pressable>
       {managing && editing ? (
@@ -302,12 +307,14 @@ function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean 
         onLongPress={onLongPress}
         delayLongPress={350}
       >
-        <View style={styles.chevron}>
-          <Icon icon={expanded ? ChevronDown : ChevronRight} size={14} color={colors.faint} />
+        <View style={styles.groupMonogram}>
+          <Text style={styles.groupInitial}>{group.name.slice(0, 1).toUpperCase()}</Text>
         </View>
-        <Text style={styles.groupName} numberOfLines={1} maxFontSizeMultiplier={1.5}>
-          {group.name}
-        </Text>
+        <View style={styles.channelCopy}>
+          <Text style={styles.groupName} numberOfLines={1} maxFontSizeMultiplier={1.5}>{group.name}</Text>
+          <Text style={styles.groupMeta}>{shownChannels.length} {shownChannels.length === 1 ? "channel" : "channels"}</Text>
+        </View>
+        <Icon icon={expanded ? ChevronDown : ChevronRight} size={16} color={colors.faint} />
         {!expanded ? <UnreadBadge count={unread} mentions={mentions} /> : null}
         <Pressable accessibilityRole="button" accessibilityLabel={`Create channel in ${group.name}`} onPress={() => setCreating((c) => !c)} style={styles.plusBtn}>
           <Text maxFontSizeMultiplier={1.2} style={styles.plus}>＋</Text>
@@ -466,7 +473,6 @@ function HiddenSection({ groups }: { groups: Group[] }) {
 export default function Home() {
   const { groupId } = useLocalSearchParams<{ groupId?: string }>();
   const groups = useGroups();
-  const me = useMe();
   const threads = useThreads();
   const createGroup = useCreateGroup();
   const [creatingGroup, setCreatingGroup] = useState(false);
@@ -493,42 +499,10 @@ export default function Home() {
     .filter(channel => !channel.hidden).reduce((n, channel) => n + (channel.mentions ?? 0), 0), 0);
   const inboxUnread = Math.max(countedUnread, inboxMentions);
 
-  const header = useMemo(
-    () => ({
-      title: "Agora",
-      headerTitleAlign: "left" as const,
-      headerShown: true,
-      ...headerActions(
-        <View style={styles.headerBtns}>
-          <Link href="/(app)/search" asChild>
-            <Pressable accessibilityRole="button" accessibilityLabel="Search messages" style={styles.headerAction}>
-              <Icon icon={Search} size={21} color={colors.text} />
-            </Pressable>
-          </Link>
-          <Link href="/(app)/agents" asChild>
-            <Pressable accessibilityRole="button" accessibilityLabel="Agents" style={styles.headerAction}>
-              <Icon icon={Bot} size={21} color={colors.text} />
-            </Pressable>
-          </Link>
-          {me.data?.instance_admin ? <Link href="/(app)/people" asChild>
-            <Pressable accessibilityRole="button" accessibilityLabel="People" style={styles.headerAction}>
-              <Icon icon={Users} size={21} color={colors.text} />
-            </Pressable>
-          </Link> : null}
-          <Link href="/(app)/settings" asChild>
-            <Pressable accessibilityRole="button" accessibilityLabel="Settings" style={styles.headerAction}>
-              <Icon icon={Settings} size={21} color={colors.text} />
-            </Pressable>
-          </Link>
-        </View>,
-      ),
-    }),
-    [me.data?.instance_admin],
-  );
-
   return (
     <>
-      <Stack.Screen options={header} />
+      <Stack.Screen options={{ title: brand.name, headerShown: false }} />
+      <WorkspaceHeader />
       <ScrollView
         style={styles.root}
         contentContainerStyle={styles.content}
@@ -552,6 +526,7 @@ export default function Home() {
             <View style={styles.inboxIcon}><Icon icon={MessagesSquare} size={23} color={colors.a1} /></View>
             <View style={styles.inboxCopy}>
               <Text maxFontSizeMultiplier={1.5} numberOfLines={2} style={styles.threadsLabel}>Inbox</Text>
+              <Text style={styles.inboxHint}>{inboxUnread > 0 ? "Pick up where you left off" : "A little room to breathe. All caught up."}</Text>
             </View>
             {inboxUnread > 0 ? (
               <View style={[styles.badge, inboxMentions > 0 ? styles.badgeMention : styles.badgeThread]}
@@ -561,7 +536,11 @@ export default function Home() {
                 </Text>
               </View>
             ) : null}
+            <Icon icon={ArrowUpRight} size={19} color={colors.accentText} />
           </Pressable>
+        </View>
+        <View style={styles.sectionRow}>
+          <Text accessibilityRole="header" style={styles.sectionLabel}>YOUR GROUPS</Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Show unread channels only"
@@ -571,7 +550,7 @@ export default function Home() {
             hitSlop={6}
           >
             <Text maxFontSizeMultiplier={1.5} style={[styles.filterText, unreadsOnly ? styles.filterTextOn : null]}>
-              Unreads
+              {unreadsOnly ? "Unread only" : "All channels"}
             </Text>
           </Pressable>
         </View>
@@ -583,8 +562,12 @@ export default function Home() {
               : <GroupCard key={g.id} group={g} unreadsOnly={unreadsOnly} />
           ))}
         {groups.isSuccess && groups.data.length === 0 ? (
-          <Text style={styles.empty}>No groups yet. Create one to get started.</Text>
+          <EmptyState icon={MessagesSquare} title="Make room for good work" description="Create your first group, then bring your people and agents together."
+            action={{ label: "Create a group", onPress: () => setCreatingGroup(true) }} />
         ) : null}
+        {groups.isSuccess && unreadsOnly && visibleGroups.length > 0 && !visibleGroups.some(group => group.channels.some(channel => !channel.hidden && ((channel.unread ?? 0) > 0 || (channel.mentions ?? 0) > 0))) ?
+          <EmptyState icon={MessagesSquare} title="All caught up" description="Your channels are quiet. Switch back to see every conversation."
+            action={{ label: "Show all channels", onPress: () => setUnreadsOnly(false) }} /> : null}
         {groups.isSuccess && groups.data.length > 0 && unreadsOnly ? (
           <Text style={styles.filterHint}>Showing unread channels only.</Text>
         ) : null}
@@ -618,10 +601,18 @@ export default function Home() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: space.md, gap: space.sm, paddingBottom: 40 },
-  headerBtns: { flexDirection: "row", gap: 0 },
-  headerAction: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  inboxIcon: { width: 32, height: 32, borderRadius: radii.md, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
+  content: { paddingHorizontal: layout.gutter, paddingTop: space.md, gap: space.md, paddingBottom: layout.contentBottom },
+  sectionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  sectionLabel: { ...typography.eyebrow, color: colors.faint },
+  inboxHint: { ...typography.caption, color: colors.dim, flexShrink: 1 },
+  channelCopy: { flex: 1, minWidth: 0, gap: 2 },
+  channelTopic: { ...typography.caption, color: colors.faint },
+  channelGlyph: { width: 28, height: 28, borderRadius: radii.sm, backgroundColor: colors.bg, alignItems: "center", justifyContent: "center" },
+  channelGlyphUnread: { backgroundColor: colors.accentSoft },
+  groupMonogram: { width: 34, height: 34, borderRadius: radii.md, backgroundColor: colors.mintSoft, alignItems: "center", justifyContent: "center" },
+  groupInitial: { ...typography.bodySm, color: colors.a2, fontWeight: weight.bold },
+  groupMeta: { ...typography.caption, color: colors.faint },
+  inboxIcon: { width: 42, height: 42, borderRadius: radii.md, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
   inboxCopy: { flex: 1, gap: space.xs },
   rowPressed: { backgroundColor: colors.panelStrong },
   channelUnread: { color: colors.text, fontWeight: weight.semibold },
@@ -631,21 +622,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: colors.panel,
+    backgroundColor: colors.accentWash,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderColor: colors.accentBorder,
+    borderRadius: radii.lg,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
   },
   threadsLabel: { fontSize: typography.title.fontSize, fontWeight: typography.title.fontWeight, color: colors.text },
   filterChip: {
     minHeight: 44, justifyContent: "center",
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    borderRadius: 999,
-    paddingHorizontal: 13,
-    paddingVertical: 8,
+    borderRadius: radii.pill,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
   },
   filterChipOn: { backgroundColor: colors.accentSoft, borderColor: colors.a1 },
   filterText: { color: colors.dim, fontSize: typography.meta.fontSize, fontWeight: weight.bold },
@@ -655,15 +644,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.panel,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 14,
-    paddingVertical: 2,
+    borderRadius: radii.lg,
+    paddingBottom: space.sm,
+    overflow: "hidden",
   },
   groupHead: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 0,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+    marginBottom: 2,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
   },
   chevron: { width: 14, alignItems: "center" },
   groupName: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold, flex: 1 },
@@ -672,11 +665,10 @@ const styles = StyleSheet.create({
   channelRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingLeft: 34,
-    paddingRight: 14,
-    paddingVertical: 6,
-    minHeight: 40,
+    gap: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    minHeight: 48,
   },
   hash: { color: colors.faint, fontSize: typography.bodySm.fontSize },
   channelName: { fontSize: typography.message.fontSize, fontWeight: typography.message.fontWeight, color: colors.dim, flex: 1 },
@@ -694,7 +686,7 @@ const styles = StyleSheet.create({
   dmAgentRowPressed: { backgroundColor: colors.accentSoft },
   dmModalEmpty: { color: colors.dim, padding: 14, textAlign: "center", lineHeight: 19 },
   badge: {
-    backgroundColor: "rgba(255,255,255,0.14)",
+    backgroundColor: colors.panelStrong,
     borderRadius: 9,
     minWidth: 20,
     paddingHorizontal: 5,

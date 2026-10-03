@@ -23,11 +23,11 @@ export function EmptyState({ icon, title, description, action }: {
 
 const styles = StyleSheet.create({
   root: { alignItems: "center", padding: space.xxl, paddingVertical: space.section, gap: space.md },
-  mark: { padding: space.lg, borderRadius: radii.lg, backgroundColor: colors.panelStrong },
+  mark: { padding: space.xl, borderRadius: radii.xl, borderWidth: 1, borderColor: colors.accentBorder, backgroundColor: colors.accentWash, marginBottom: space.sm },
   title: { ...typography.title, color: colors.text, textAlign: "center" },
   description: { ...typography.bodySm, color: colors.dim, textAlign: "center", maxWidth: 320 },
   action: { minHeight: control.minTouchSize, justifyContent: "center", paddingHorizontal: space.lg,
-    paddingVertical: space.sm, borderRadius: radii.md, backgroundColor: colors.panelStrong },
+    paddingVertical: space.sm, borderRadius: radii.md, backgroundColor: colors.accentSoft },
   actionText: { ...typography.bodySm, fontWeight: weight.semibold, color: colors.a1, textAlign: "center" },
   pressed: { opacity: 0.8 },
   disabled: { opacity: 0.5 },

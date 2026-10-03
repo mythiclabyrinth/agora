@@ -110,7 +110,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: 9,
   },
-  tabActive: { backgroundColor: "rgba(139,124,255,0.16)" },
+  tabActive: { backgroundColor: colors.accentSoft },
   tabText: { color: colors.dim, fontSize: 13.5, fontWeight: "700" },
   tabTextActive: { color: colors.text },
   content: {

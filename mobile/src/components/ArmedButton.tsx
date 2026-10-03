@@ -69,7 +69,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "rgba(248,113,113,0.35)",
+    borderColor: colors.dangerBorder,
   },
   compact: {
     minHeight: 0,
@@ -79,7 +79,7 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     alignSelf: "flex-start",
   },
-  armed: { backgroundColor: "rgba(248,113,113,0.16)", borderColor: colors.red },
+  armed: { backgroundColor: colors.dangerSoft, borderColor: colors.red },
   text: { color: colors.red, fontSize: 12.5, fontWeight: "600" },
   compactText: { fontSize: 11.5 },
 });

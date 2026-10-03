@@ -1,3 +1,4 @@
+import { ThemedInput as TextInput } from "../src/components/ThemedInput";
 /* Login: the mobile flavor of the desktop connect page. Two steps —
    pick the server (first run only; a signed-out relaunch remembers it),
    then sign in using the methods the server offers. */
@@ -9,9 +10,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { Redirect, type Href, useLocalSearchParams } from "expo-router";
@@ -25,7 +26,8 @@ import { runGoogleFlow } from "../src/lib/googleAuth";
 import { openLink } from "../src/lib/openLink";
 import { forgetRecentServer, loadRecentServers } from "../src/state/servers";
 import { useSession } from "../src/state/session";
-import { colors, radius, typography, weight } from "../src/lib/theme";
+import { brand, colors, radii, space, surfaces, typography, weight } from "../src/lib/theme";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ServerSetupHelp,
   shouldShowServerSetupHelp,
@@ -37,6 +39,7 @@ WebBrowser.maybeCompleteAuthSession();
 type Step = "server" | "signin";
 
 export default function Connect() {
+  const insets = useSafeAreaInsets();
   const { next } = useLocalSearchParams<{ next?: string }>();
   const { status, savedUrl, signIn } = useSession();
   const [step, setStep] = useState<Step>(savedUrl ? "signin" : "server");
@@ -176,10 +179,13 @@ export default function Connect() {
       style={styles.root}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[styles.content, { paddingTop: insets.top + space.xxl, paddingBottom: insets.bottom + space.xxl }]}>
       <View style={styles.card}>
         <View style={styles.brand}>
-          <Image source={require("../assets/icon.png")} style={styles.logo} />
-          <Text style={styles.brandName}>Agora</Text>
+          <Image source={brand.logo} style={styles.logo} />
+          <Text style={styles.brandName}>{brand.name}</Text>
+          <Text style={styles.brandTagline}>{brand.tagline}</Text>
         </View>
 
         {step === "server" ? (
@@ -189,6 +195,7 @@ export default function Connect() {
               Agora server to get started.
             </Text>
             <TextInput
+              accessibilityLabel="Agora server address"
               style={styles.input}
               value={url}
               onChangeText={setUrl}
@@ -335,6 +342,7 @@ export default function Connect() {
           </>
         )}
       </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -343,23 +351,20 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: colors.bg,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
   },
+  content: { flexGrow: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: space.xxl },
   card: {
     width: "100%",
     maxWidth: 420,
-    backgroundColor: colors.panel,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius,
-    padding: 20,
-    gap: 16,
+    ...surfaces.card,
+    borderRadius: radii.xl,
+    padding: space.xxl,
+    gap: space.lg,
   },
   brand: { alignItems: "center", gap: 10, marginBottom: 2 },
   logo: { width: 72, height: 72, borderRadius: 18 },
   brandName: { color: colors.text, fontSize: typography.display.fontSize, fontWeight: weight.bold, letterSpacing: 0.5 },
+  brandTagline: { ...typography.meta, color: colors.accentText, marginBottom: space.sm },
   hint: { color: colors.dim, fontSize: typography.bodySm.fontSize, lineHeight: 19, textAlign: "center" },
   serverChip: { color: colors.dim, fontSize: typography.bodySm.fontSize, textAlign: "center" },
   serverHost: { color: colors.text, fontWeight: weight.bold },

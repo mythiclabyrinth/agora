@@ -41,7 +41,7 @@ import type { Session } from "@agora/core";
 import { fmtTs } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
 import { SheetHeader } from "../../src/components/SheetHeader";
-import { colors, typography, weight } from "../../src/lib/theme";
+import { colors, typography, weight, surfaces } from "../../src/lib/theme";
 
 /** Value that lags `value` by `ms` — keeps /api/search off the hot path
     while the user is still typing. */
@@ -648,8 +648,8 @@ const styles = StyleSheet.create({
     maxWidth: "100%",
   },
   filterChipActive: {
-    backgroundColor: "rgba(139,124,255,0.10)",
-    borderColor: "rgba(139,124,255,0.45)",
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.accentBorder,
   },
   filterChipText: {
     color: colors.dim,
@@ -664,10 +664,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: colors.sheet,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 16,
+    ...surfaces.sheet,
     gap: 4,
     paddingBottom: 34,
     maxHeight: "70%",
@@ -713,9 +710,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: "rgba(139,124,255,0.10)",
+    backgroundColor: colors.accentSoft,
     borderWidth: 1,
-    borderColor: "rgba(139,124,255,0.45)",
+    borderColor: colors.accentBorder,
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 12,
@@ -723,9 +720,9 @@ const styles = StyleSheet.create({
   askRowText: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold, flex: 1 },
   askRowQuery: { color: colors.a1 },
   askCard: {
-    backgroundColor: "rgba(139,124,255,0.08)",
+    backgroundColor: colors.accentSoft,
     borderWidth: 1,
-    borderColor: "rgba(139,124,255,0.45)",
+    borderColor: colors.accentBorder,
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 12,

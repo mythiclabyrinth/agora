@@ -12,7 +12,7 @@ import {
   POSITIVE_REACTION_EMOJIS,
   recordPositiveEvent,
 } from "../lib/storeReview";
-import { colors } from "../lib/theme";
+import { colors, surfaces } from "../lib/theme";
 import { useSession } from "../state/session";
 import { Icon } from "./Icon";
 import { AgentAvatar } from "./AgentAvatar";
@@ -218,8 +218,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   chipMine: {
-    backgroundColor: "rgba(139,124,255,0.14)",
-    borderColor: "rgba(139,124,255,0.5)",
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.accentBorder,
   },
   emoji: { fontSize: 14 },
   count: { color: colors.dim, fontSize: 11.5, fontWeight: "700" },
@@ -241,8 +241,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.05)",
   },
   quickEmoji: { fontSize: 22 },
-  backdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.55)" },
-  sheet: { maxHeight: "72%", backgroundColor: colors.sheet, borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 20, paddingBottom: 36 },
+  backdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: colors.scrim },
+  sheet: { maxHeight: "72%", ...surfaces.sheet, paddingBottom: 36 },
   handle: { alignSelf: "center", width: 42, height: 4, borderRadius: 2, backgroundColor: colors.borderStrong, marginBottom: 16 },
   tabBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
   tabs: { flexDirection: "row", gap: 8 },
@@ -252,7 +252,7 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontSize: 16, fontWeight: "700", marginVertical: 18 },
   reactorList: { flexGrow: 0 },
   reactorRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 9 },
-  personAvatar: { width: 44, height: 44, borderRadius: 13, backgroundColor: "rgba(139,124,255,0.15)", alignItems: "center", justifyContent: "center" },
+  personAvatar: { width: 44, height: 44, borderRadius: 13, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
   personInitial: { color: colors.a2, fontSize: 18, fontWeight: "700" },
   reactorName: { color: colors.text, fontSize: 17, fontWeight: "700" },
   reactorKind: { color: colors.dim, fontSize: 13, marginTop: 2 },
