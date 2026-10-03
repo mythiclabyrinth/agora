@@ -100,6 +100,14 @@ OpenClaw wrapper, a shell script, whatever:
  "text": "hey @Claw", "author": {"id": "me", "name": "me", "type": "user"},
  "mentioned": true, "any_mention": true, "require_agent": false, "attachments": []}
 
+// Inbound frames also include `context_note` (channel and thread context)
+// and `roster`: channel agents with exact, unambiguous @handles. A non-null
+// `handle` is lowercase and can be used as an @mention as-is. A null handle
+// means the agent cannot be tagged safely; offline agents have no handle.
+// Bridges can give the note to a new CLI session, then send only changed context lines.
+{"roster": [{"id": "claw-1", "name": "Claw", "handle": "claw-1", "online": true, "self": true},
+            {"id": "codex-m5", "name": "Codex M5", "handle": "codex-m5", "online": true, "self": false}]}
+
 // The first reply in a thread arrives with the root inlined in front of the
 // author's text: `[thread on: "<root, ≤500 chars>" — by <author>]` + newline.
 // `thread_context_chars` is that header's length in characters (null on every

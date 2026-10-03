@@ -37,6 +37,7 @@ import binascii
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -55,6 +56,42 @@ try:
     import websockets
 except ImportError:  # pragma: no cover
     sys.exit("missing dependency: pip install websockets")
+
+
+def roster_prompt(frame: dict, binding: dict, text: str = "") -> tuple[str, str | None]:
+    """Return context due on this CLI turn and the note to save on success."""
+    if text.lstrip().startswith("/"):
+        return "", None
+    note = frame.get("context_note")
+    if not isinstance(note, str) or not note:
+        return "", None
+    def wrapped(label: str, body: str) -> str:
+        marker = secrets.token_hex(8)
+        return f"[Agora relay context {marker}]\n{label}\n{body}\n[end {marker}]\n\n"
+
+    previous = binding.get("roster_note")
+    if (not previous or not binding.get("session_id")
+            or binding.get("roster_session") != binding.get("session_id")):
+        return wrapped("[Where you are — from the Agora relay, not the user]", note), note
+    if previous == note:
+        return "", note
+
+    old_lines = previous.splitlines()
+    new_lines = note.splitlines()
+    updates = [line for line in new_lines if line not in old_lines]
+    new_keys = {line.split(":", 1)[0] for line in updates}
+    for line in old_lines:
+        key = line.split(":", 1)[0]
+        if (line not in new_lines and key not in new_keys
+                and not line.startswith(("Other agents here are colleagues",
+                                         "Anyone here can address"))
+                and not (key in ("Voice conversation", "Formatting")
+                         and {"Voice conversation", "Formatting"} & new_keys)):
+            updates.append(f"Removed from context: {line}")
+    if not updates:
+        return "", note
+    return wrapped("[Context update from the relay]", "\n".join(updates)), note
+
 
 def default_claude_config_dir() -> Path:
     """The config directory Claude itself would use, made absolute for children."""
@@ -258,7 +295,8 @@ TLDR_SYSTEM_PROMPT = (
 # turn of the server's limited agent-to-agent relay budget.
 COLLAB_SYSTEM_PROMPT = (
     "Multi-agent etiquette: other AI agents may be members of this chat — the "
-    "context note lists them with @handles. Only @mention another agent when "
+    "relay's context note lists their exact @handles. If an agent is offline or has "
+    "no handle, say so instead of guessing. Only @mention another agent when "
     "the humans' instructions explicitly ask you to collaborate with, delegate "
     "to, or get a review from that agent. Never @mention an agent just because "
     "it is present, to thank it, or to acknowledge its message — an unnecessary "
@@ -1736,6 +1774,8 @@ class Bridge:
             log(f"auto compact for {key} lost its bound session")
             return False
         self.warm_compacted_sizes[key] = (current_sid, after)
+        self.bindings[key].pop("roster_note", None)
+        self.bindings[key]["_context_epoch"] = self.bindings[key].get("_context_epoch", 0) + 1
         self._save_state()
         self.cold_compact_failures.pop(key, None)
         # A queued message may have run in the same forward loop. Keep the
@@ -2477,6 +2517,7 @@ class Bridge:
                 binding["session_id"] = None
                 dropped += 1
             binding.pop("_fork_source", None)
+            binding.pop("roster_note", None)
         self.listings.clear()
         self._save_state()
         return dropped
@@ -2632,6 +2673,7 @@ class Bridge:
             if not source.get("session_id"):
                 return True
             binding = json.loads(json.dumps(source))
+            binding.pop("roster_note", None)
             binding["_fork_source"] = source["session_id"]
             self.bindings[key] = binding
             return True
@@ -3114,6 +3156,9 @@ class Bridge:
 
     async def run_claude(self, key: str, frame: dict, binding: dict, text: str) -> str:
         prompt, extra_args, tmpdir = await asyncio.to_thread(self._stage_attachments, frame, text)
+        roster_prefix, roster_note = roster_prompt(frame, binding, text)
+        context_epoch = binding.get("_context_epoch", 0)
+        prompt = roster_prefix + prompt
         if key in self.stop_requested:
             self.stop_requested.discard(key)
             if tmpdir:
@@ -3155,7 +3200,8 @@ class Bridge:
                 elif extra_args:
                     await self._end_live_run(key, "a new message brought attachments")
                 else:
-                    return await self._inject_into_live(live, frame, prompt)
+                    return await self._inject_into_live(live, frame, prompt, roster_note,
+                                                        context_epoch)
                 # Retirement awaits, and /stop can land inside that window —
                 # before this turn has spawned anything for it to kill.
                 if key in self.stop_requested:
@@ -3254,7 +3300,12 @@ class Bridge:
                         if kind == "rate_limit_event":
                             self.capture_usage(event)
                             continue
-                        if kind == "system" and event.get("subtype") == "init":
+                        if kind == "system" and event.get("subtype") == "compact_boundary":
+                            if self.bindings.get(key) is binding:
+                                binding.pop("roster_note", None)
+                                binding["_context_epoch"] = binding.get("_context_epoch", 0) + 1
+                                self._save_state()
+                        elif kind == "system" and event.get("subtype") == "init":
                             raw_cmds = event.get("slash_commands") or []
                             if isinstance(raw_cmds, list):
                                 slash_commands = [c for c in raw_cmds if isinstance(c, str)]
@@ -3346,6 +3397,13 @@ class Bridge:
             if result_text is None:
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
                 raise RuntimeError(stderr[-500:] or f"claude exited {proc.returncode} with no result")
+            if (roster_note and not result_text.startswith("(claude error)")
+                    and key not in self.stopped_processes
+                    and self.bindings.get(key) is binding
+                    and binding.get("_context_epoch", 0) == context_epoch):
+                binding["roster_note"] = roster_note
+                binding["roster_session"] = binding.get("session_id")
+                self._save_state()
             return self._annotate_slash_failure(prompt, result_text, slash_commands)
         finally:
             # A handed-off child is still running and its --add-dir points here,
@@ -3417,7 +3475,8 @@ class Bridge:
             f"owed={sorted(live.owed_reports)}")
         live.reader = asyncio.create_task(self._followup_loop(live, perm_tasks))
 
-    async def _inject_into_live(self, live: LiveRun, frame: dict, prompt: str) -> str:
+    async def _inject_into_live(self, live: LiveRun, frame: dict, prompt: str,
+                                roster_note: str | None, context_epoch: int) -> str:
         """Send a new channel turn down a live child's stdin and await its reply."""
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         live.waiters.append({"fut": fut, "frame": frame,
@@ -3439,7 +3498,15 @@ class Bridge:
             f"ahead={[w['ahead'] for w in live.waiters]}")
         try:
             async with asyncio.timeout(self.timeout):
-                return await fut
+                reply = await fut
+                if (roster_note and not reply.startswith("(claude error)")
+                        and live.key not in self.stopped_processes
+                        and self.bindings.get(live.key) is live.binding
+                        and live.binding.get("_context_epoch", 0) == context_epoch):
+                    live.binding["roster_note"] = roster_note
+                    live.binding["roster_session"] = live.binding.get("session_id")
+                    self._save_state()
+                return reply
         except TimeoutError:
             self._drop_waiter(live, fut)
             raise RuntimeError(f"timed out after {self.timeout}s")
@@ -3537,7 +3604,12 @@ class Bridge:
                 if kind == "rate_limit_event":
                     self.capture_usage(event)
                     continue
-                if kind == "system" and event.get("subtype") == "background_tasks_changed":
+                if kind == "system" and event.get("subtype") == "compact_boundary":
+                    if self.bindings.get(key) is live.binding:
+                        live.binding.pop("roster_note", None)
+                        live.binding["_context_epoch"] = live.binding.get("_context_epoch", 0) + 1
+                        self._save_state()
+                elif kind == "system" and event.get("subtype") == "background_tasks_changed":
                     listed = event.get("tasks")
                     listed = listed if isinstance(listed, list) else []
                     # A departed task may wake the model for a report. A task
