@@ -2163,7 +2163,7 @@ where
 /// client can't smuggle arbitrary text in front of a transcript.
 fn mention_prefix(raw: &str) -> Option<String> {
     let raw: String = raw.chars().take(500).collect();
-    let tokens = crate::hub::mention_tokens(&raw);
+    let tokens = crate::hub::mention_raw_tokens(&raw);
     if tokens.is_empty() {
         return None;
     }

@@ -65,6 +65,14 @@ describe("mentionsMe", () => {
     expect(mentionsMe("(@tom)", "tom")).toBe(true);
   });
 
+  it("trims trailing punctuation like the server", () => {
+    expect(mentionsMe("ping @tom.", "tom")).toBe(true);
+    expect(mentionsMe("ping @tom-", "tom")).toBe(true);
+    expect(mentionsMe("ping @tom_", "tom")).toBe(true);
+    expect(mentionsMe("ping @tom_", "tom_")).toBe(true);
+    expect(mentionsMe("ping @tom.x", "tom")).toBe(false);
+  });
+
   it("rejects lookalikes and other users", () => {
     expect(mentionsMe("hey @tommy", "tom")).toBe(false);
     expect(mentionsMe("mail me a@tom.com", "tom")).toBe(false);

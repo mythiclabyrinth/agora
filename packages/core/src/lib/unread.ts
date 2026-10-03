@@ -36,14 +36,17 @@ export function totalThreadUnread(threads: ThreadRow[]): number {
   return threads.reduce((n, t) => n + (t.unread || 0), 0);
 }
 
-/** Does `text` @mention `username`? Mirrors the server's mention_tokens. */
+/** Does `text` @mention `username`? Mirrors the server's mention_tokens:
+    trailing `.`, `-` and `_` are trimmed, so `@tom.` mentions `tom`. */
 export function mentionsMe(text: string, username: string): boolean {
   if (!username) return false;
   const me = username.toLowerCase();
   const re = /(^|[\s(>])@([A-Za-z0-9][\w.-]*)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text || ""))) {
-    if (m[2].toLowerCase() === me) return true;
+    let token = m[2].toLowerCase();
+    while (token !== me && /[._-]$/.test(token)) token = token.slice(0, -1);
+    if (token === me) return true;
   }
   return false;
 }

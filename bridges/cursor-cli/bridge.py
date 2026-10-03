@@ -30,6 +30,7 @@ import binascii
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import sqlite3
@@ -47,6 +48,42 @@ try:
     import websockets
 except ImportError:  # pragma: no cover
     sys.exit("missing dependency: pip install websockets")
+
+
+def roster_prompt(frame: dict, binding: dict, text: str = "") -> tuple[str, str | None]:
+    """Return context due on this CLI turn and the note to save on success."""
+    if text.lstrip().startswith("/"):
+        return "", None
+    note = frame.get("context_note")
+    if not isinstance(note, str) or not note:
+        return "", None
+    def wrapped(label: str, body: str) -> str:
+        marker = secrets.token_hex(8)
+        return f"[Agora relay context {marker}]\n{label}\n{body}\n[end {marker}]\n\n"
+
+    previous = binding.get("roster_note")
+    if (not previous or not binding.get("session_id")
+            or binding.get("roster_session") != binding.get("session_id")):
+        return wrapped("[Where you are — from the Agora relay, not the user]", note), note
+    if previous == note:
+        return "", note
+
+    old_lines = previous.splitlines()
+    new_lines = note.splitlines()
+    updates = [line for line in new_lines if line not in old_lines]
+    new_keys = {line.split(":", 1)[0] for line in updates}
+    for line in old_lines:
+        key = line.split(":", 1)[0]
+        if (line not in new_lines and key not in new_keys
+                and not line.startswith(("Other agents here are colleagues",
+                                         "Anyone here can address"))
+                and not (key in ("Voice conversation", "Formatting")
+                         and {"Voice conversation", "Formatting"} & new_keys)):
+            updates.append(f"Removed from context: {line}")
+    if not updates:
+        return "", note
+    return wrapped("[Context update from the relay]", "\n".join(updates)), note
+
 
 CURSOR_SESSIONS = Path.home() / ".cursor" / "chats"
 
@@ -152,7 +189,8 @@ TLDR_PROMPT_SUFFIX = (
 # turn of the server's limited agent-to-agent relay budget.
 COLLAB_PROMPT_SUFFIX = (
     "\n\n(Etiquette note from the relay, not the user: other AI agents may be "
-    "members of this chat — the context note lists them with @handles. Only "
+    "members of this chat — the relay's context note lists their exact @handles. "
+    "If an agent is offline or has no handle, say so instead of guessing. Only "
     "@mention another agent when the humans' instructions explicitly ask you "
     "to collaborate with, delegate to, or get a review from that agent. Never "
     "@mention an agent just because it is present, to thank it, or to "
@@ -1549,6 +1587,7 @@ class Bridge:
             if copied_session_id:
                 await asyncio.to_thread(remove_cursor_copy, copied_session_id)
             binding["session_id"] = None
+            binding.pop("roster_note", None)
             binding.pop("_cursor_copy", None)
             binding.pop("_cursor_copy_id", None)
             binding["_fork_context"] = history
@@ -1619,6 +1658,7 @@ class Bridge:
             if not source.get("session_id"):
                 return True
             binding = json.loads(json.dumps(source))
+            binding.pop("roster_note", None)
             try:
                 copied_id = await asyncio.to_thread(copy_cursor_session, source["session_id"])
                 if key in self.bindings or thread_id in self.deleted_thread_roots:
@@ -1976,6 +2016,8 @@ class Bridge:
         if not self.agent_bin:
             raise RuntimeError(CURSOR_NOT_FOUND)
         prompt, extra_args, tmpdir = await asyncio.to_thread(self._stage_attachments, frame, text)
+        roster_prefix, roster_note = roster_prompt(frame, binding, text)
+        prompt = roster_prefix + prompt
         if key in self.stop_requested:
             self.stop_requested.discard(key)
             if tmpdir:
@@ -2103,6 +2145,13 @@ class Bridge:
                     and (key not in self.bindings or self.bindings.get(key) is binding)):
                 binding["session_id"] = new_session_id
                 self.bindings[key] = binding
+                self._save_state()
+            # cursor-agent exposes no reliable compaction event, so a session
+            # summary may forget this note until context changes or resets.
+            if (roster_note and key not in self.stopped_processes
+                    and self.bindings.get(key) is binding):
+                binding["roster_note"] = roster_note
+                binding["roster_session"] = binding.get("session_id")
                 self._save_state()
             return "".join(reply_parts)
         finally:

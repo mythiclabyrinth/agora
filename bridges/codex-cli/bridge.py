@@ -28,9 +28,11 @@ import argparse
 import asyncio
 import base64
 import binascii
+import glob
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -46,6 +48,41 @@ try:
     import websockets
 except ImportError:  # pragma: no cover
     sys.exit("missing dependency: pip install websockets")
+
+
+def roster_prompt(frame: dict, binding: dict, text: str = "") -> tuple[str, str | None]:
+    """Return context due on this CLI turn and the note to save on success."""
+    if text.lstrip().startswith("/"):
+        return "", None
+    note = frame.get("context_note")
+    if not isinstance(note, str) or not note:
+        return "", None
+    def wrapped(label: str, body: str) -> str:
+        marker = secrets.token_hex(8)
+        return f"[Agora relay context {marker}]\n{label}\n{body}\n[end {marker}]\n\n"
+
+    previous = binding.get("roster_note")
+    if (not previous or not binding.get("session_id")
+            or binding.get("roster_session") != binding.get("session_id")):
+        return wrapped("[Where you are — from the Agora relay, not the user]", note), note
+    if previous == note:
+        return "", note
+
+    old_lines = previous.splitlines()
+    new_lines = note.splitlines()
+    updates = [line for line in new_lines if line not in old_lines]
+    new_keys = {line.split(":", 1)[0] for line in updates}
+    for line in old_lines:
+        key = line.split(":", 1)[0]
+        if (line not in new_lines and key not in new_keys
+                and not line.startswith(("Other agents here are colleagues",
+                                         "Anyone here can address"))
+                and not (key in ("Voice conversation", "Formatting")
+                         and {"Voice conversation", "Formatting"} & new_keys)):
+            updates.append(f"Removed from context: {line}")
+    if not updates:
+        return "", note
+    return wrapped("[Context update from the relay]", "\n".join(updates)), note
 
 
 def default_codex_home() -> Path:
@@ -169,7 +206,8 @@ TLDR_PROMPT_SUFFIX = (
 # turn of the server's limited agent-to-agent relay budget.
 COLLAB_PROMPT_SUFFIX = (
     "\n\n(Etiquette note from the relay, not the user: other AI agents may be "
-    "members of this chat — the context note lists them with @handles. Only "
+    "members of this chat — the relay's context note lists their exact @handles. "
+    "If an agent is offline or has no handle, say so instead of guessing. Only "
     "@mention another agent when the humans' instructions explicitly ask you "
     "to collaborate with, delegate to, or get a review from that agent. Never "
     "@mention an agent just because it is present, to thank it, or to "
@@ -697,6 +735,35 @@ def find_session(session_id: str, sessions_dir: Path | None = None) -> dict | No
     for path in (sessions_dir or CODEX_SESSIONS).glob(f"*/*/*/rollout-*{session_id}.jsonl"):
         return _scan_session_file(path)
     return None
+
+
+def scan_session_compactions(session_id: str, sessions_dir: Path,
+                             offset: int = 0, count: int = 0) -> tuple[int, int] | None:
+    """Count compaction records added since offset, restarting on truncation."""
+    try:
+        path = next(sessions_dir.glob(
+            f"*/*/*/rollout-*{glob.escape(session_id)}.jsonl"))
+        with path.open("rb") as stream:
+            if stream.seek(0, os.SEEK_END) < offset:
+                offset, count = 0, 0
+            stream.seek(offset)
+            while True:
+                position = stream.tell()
+                line = stream.readline()
+                if not line or not line.endswith(b"\n"):
+                    return count, position
+                if b'"compacted"' in line and _is_compacted_record(line):
+                    count += 1
+    except (OSError, StopIteration):
+        return None
+
+
+def _is_compacted_record(line: bytes) -> bool:
+    try:
+        record = json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(record, dict) and record.get("type") == "compacted"
 
 
 def _age(ts: float) -> str:
@@ -1991,6 +2058,7 @@ class Bridge:
                 binding["session_id"] = None
                 dropped += 1
             binding.pop("_fork_source", None)
+            binding.pop("roster_note", None)
         # /sessions listings are rollouts of the account we are leaving; a
         # later `/use <n>` against them would bind an unreachable session.
         self.listings.clear()
@@ -2120,6 +2188,7 @@ class Bridge:
             if not source.get("session_id"):
                 return True
             binding = json.loads(json.dumps(source))
+            binding.pop("roster_note", None)
             binding["_fork_source"] = source["session_id"]
             self.bindings[key] = binding
             return True
@@ -2601,7 +2670,21 @@ class Bridge:
         return ["-c", f"sandbox_mode={mode}"]
 
     async def run_codex(self, key: str, frame: dict, binding: dict, text: str) -> str:
+        sessions_dir = self.sessions_dir
+        old_session_id = binding.get("session_id")
+        saved_compactions = binding.get("compacted_count")
+        same_rollout = binding.get("compacted_session") == old_session_id
+        previous_count = saved_compactions if same_rollout and isinstance(saved_compactions, int) else 0
+        previous_offset = binding.get("compacted_offset", 0) if same_rollout else 0
+        before_scan = (await asyncio.to_thread(
+            scan_session_compactions, old_session_id, sessions_dir,
+            previous_offset, previous_count) if old_session_id else (0, 0))
+        if (before_scan is not None and isinstance(saved_compactions, int)
+                and before_scan[0] > saved_compactions):
+            binding.pop("roster_note", None)
         prompt, extra_args, tmpdir = await asyncio.to_thread(self._stage_attachments, frame, text)
+        roster_prefix, roster_note = roster_prompt(frame, binding, text)
+        prompt = roster_prefix + prompt
         if key in self.stop_requested:
             self.stop_requested.discard(key)
             if tmpdir:
@@ -2733,6 +2816,26 @@ class Bridge:
                 self._save_state()
             if self.bindings.get(key) is binding:
                 changed = False
+                current_session_id = binding.get("session_id")
+                scan_offset, scan_count = (before_scan[1], before_scan[0]) if before_scan else (0, 0)
+                if current_session_id != old_session_id:
+                    scan_offset, scan_count = 0, 0
+                after_scan = (await asyncio.to_thread(
+                    scan_session_compactions, current_session_id, sessions_dir,
+                    scan_offset, scan_count) if current_session_id else None)
+                compacted = (after_scan is not None and
+                             after_scan[0] > scan_count)
+                if after_scan is not None:
+                    binding["compacted_count"], binding["compacted_offset"] = after_scan
+                    binding["compacted_session"] = current_session_id
+                    changed = True
+                if compacted:
+                    if binding.pop("roster_note", None) is not None:
+                        changed = True
+                elif roster_note and key not in self.stopped_processes:
+                    binding["roster_note"] = roster_note
+                    binding["roster_session"] = binding.get("session_id")
+                    changed = True
                 if started_with_developer and new_session_id:
                     binding["relay_developer_installed"] = True
                     binding["relay_developer_settings"] = instruction_settings
