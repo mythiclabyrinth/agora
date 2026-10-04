@@ -240,6 +240,8 @@ export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: b
   const unread = shownChannels.reduce((n, c) => n + (c.unread ?? 0), 0);
   const mentions = shownChannels.reduce((n, c) => n + (c.mentions ?? 0), 0);
   const expanded = !collapsed;
+  const allChannelsHidden = shownChannels.length === 0 && group.channels.length > 0;
+  const channelCount = allChannelsHidden ? group.channels.length : shownChannels.length;
   const visibleChannels = unreadsOnly
     ? shownChannels.filter((c) => (c.unread ?? 0) > 0 || (c.mentions ?? 0) > 0)
     : shownChannels;
@@ -314,7 +316,7 @@ export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: b
           </View>
           <View style={styles.channelCopy}>
             <Text style={styles.groupName} numberOfLines={1} maxFontSizeMultiplier={1.5}>{group.name}</Text>
-            <Text style={styles.groupMeta}>{shownChannels.length} {shownChannels.length === 1 ? "channel" : "channels"}</Text>
+            <Text style={styles.groupMeta}>{`${channelCount} ${allChannelsHidden ? "hidden " : ""}${channelCount === 1 ? "channel" : "channels"}`}</Text>
           </View>
           <Icon icon={expanded ? ChevronDown : ChevronRight} size={16} color={colors.faint} />
           {!expanded ? <UnreadBadge count={unread} mentions={mentions} /> : null}

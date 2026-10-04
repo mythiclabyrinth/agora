@@ -112,3 +112,13 @@ test("group create control is separate from collapse control", () => {
   expect(usePrefs.getState().collapsedGroups).toEqual({});
   expect(tree.root.findAll(n => n.props.placeholder === "new channel name").length).toBeGreaterThan(0);
 });
+
+
+test.each([1, 2])("all-hidden groups describe their %i hidden channels in the count", count => {
+  render({ ...group, id: "leadership", kind: undefined,
+    channels: Array.from({ length: count }, (_, i) => channel(`hidden-${i}`, 0, 0, true)),
+  }, false, GroupCard);
+  expect(text(`${count} hidden ${count === 1 ? "channel" : "channels"}`)).toBe(true);
+  expect(text("0 channels")).toBe(false);
+  expect(text("All channels are hidden.")).toBe(true);
+});
