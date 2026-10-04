@@ -398,12 +398,9 @@ test("attachment sheet does not offer a separate paste image action", () => {
     ));
   });
   /* The sheet is a Modal: closed, it renders nothing, so asserting the row's
-     absence only means anything once the "+" has actually opened it — hence
+     absence only means anything once the attach button has opened it — hence
      the "Photo library" check pinning that the sheet really is on screen. */
-  const [plus] = tree.root.findAll((node) =>
-    typeof node.props.onPress === "function" &&
-    node.findAll((child) => child.type === Text && child.props.children === "+").length > 0
-  );
+  const plus = tree.root.findByProps({ accessibilityLabel: "Add attachment" });
   act(() => plus.props.onPress());
   expect(tree.root.findAllByProps({ children: "Photo library" }).length).toBeGreaterThan(0);
   expect(tree.root.findAllByProps({ children: "Paste image" })).toHaveLength(0);

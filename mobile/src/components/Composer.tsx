@@ -47,6 +47,7 @@ import {
   Mic,
   NotepadText,
   Paperclip,
+  Plus,
   Square,
   X,
 } from "lucide-react-native";
@@ -756,7 +757,9 @@ export function Composer({
       <View style={focused ? styles.colFocused : styles.row}>
         {!focused ? (
           <Pressable accessibilityRole="button" accessibilityLabel="Add attachment" onPress={() => setAttachSheet(true)} style={styles.plusBtn}>
-            <Text style={styles.plusText}>+</Text>
+            <View style={styles.plusVisual}>
+              <Icon icon={Plus} size={18} color={colors.accentText} />
+            </View>
           </Pressable>
         ) : null}
         <PasteAwareInput
@@ -817,7 +820,9 @@ export function Composer({
       {focused ? (
         <View style={styles.toolbar}>
           <Pressable accessibilityRole="button" accessibilityLabel="Add attachment" onPress={() => setAttachSheet(true)} style={styles.plusBtn}>
-            <Text style={styles.plusText}>+</Text>
+            <View style={styles.plusVisual}>
+              <Icon icon={Plus} size={18} color={colors.accentText} />
+            </View>
           </Pressable>
           {agents.length > 0 && addressKey ? (
             <Pressable accessibilityRole="button" accessibilityLabel="Choose addressed agents" onPress={() => setAddrSheet(true)} style={styles.toolBtn}>
@@ -1140,16 +1145,17 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   plusBtn: {
     width: 44,
     height: 44,
-    borderRadius: 14,
-    backgroundColor: colors.accentSoft,
-    borderWidth: 1,
-    borderColor: colors.border,
     alignItems: "center",
     justifyContent: "center",
-    alignSelf: "flex-end",
-    marginBottom: 2,
   },
-  plusText: { color: colors.accentText, fontSize: typography.title.fontSize, fontWeight: weight.semibold, lineHeight: 24 },
+  plusVisual: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.accentSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   sheetBackdrop: {
     flex: 1,
     backgroundColor: colors.scrim,
