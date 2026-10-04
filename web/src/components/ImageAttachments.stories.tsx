@@ -79,7 +79,7 @@ async function validateGallery(
   expect(imageElements).toHaveLength(expectedCount);
   await waitFor(() => {
     expect(imageElements.every((image) => image.complete && image.naturalWidth > 0)).toBe(true);
-  });
+  }, { timeout: 5000 });
   expect(gallery.scrollWidth).toBeLessThanOrEqual(gallery.clientWidth);
   const galleryRect = gallery.getBoundingClientRect();
   for (const button of gallery.querySelectorAll<HTMLElement>(".ago-att-img")) {

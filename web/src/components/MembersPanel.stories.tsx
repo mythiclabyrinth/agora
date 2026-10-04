@@ -260,8 +260,10 @@ export const RetryRemainingChannels: Story = {
     await userEvent.click(choices[2]);
     await userEvent.click(canvas.getByRole("button", { name: "Add" }));
     await expect(await canvas.findByRole("alert")).toHaveTextContent("Added to 1 channel");
-    await expect(choices[1]).not.toBeChecked();
-    await expect(choices[2]).toBeChecked();
+    await userEvent.click(canvas.getByLabelText("Choose access"));
+    const retryChoices = canvas.getAllByRole("checkbox");
+    await expect(retryChoices[1]).not.toBeChecked();
+    await expect(retryChoices[2]).toBeChecked();
     await userEvent.click(canvas.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(retryAdd).toHaveBeenCalledTimes(3));
     expect(retryAdd.mock.calls[2]).toEqual(retryAdd.mock.calls[1]);

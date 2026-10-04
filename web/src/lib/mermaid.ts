@@ -15,6 +15,8 @@ declare global {
 }
 
 const svgCache = new Map<string, string>(); // graph source -> svg ("" = failed)
+const sources = new WeakMap<HTMLElement, string>();
+let renderQueue = Promise.resolve();
 let loadPromise: Promise<void> | null = null;
 let seq = 0;
 
@@ -27,24 +29,26 @@ function loadMermaid(): Promise<void> {
       s.onload = () => resolve();
       s.onerror = () => { loadPromise = null; resolve(); };
       document.head.appendChild(s);
-    }).then(() => {
-      window.mermaid?.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
     });
   }
   return loadPromise;
 }
 
-export async function renderMermaid(): Promise<void> {
-  const nodes = document.querySelectorAll<HTMLElement>(".md-mermaid:not(.rendered)");
+async function renderDiagrams(): Promise<void> {
+  const theme = document.documentElement.dataset.theme === "light" ? "default" : "dark";
+  const nodes = [...document.querySelectorAll<HTMLElement>(".md-mermaid")]
+    .filter(node => !node.classList.contains("rendered") || node.dataset.diagramTheme !== theme);
   if (!nodes.length) return;
   // Apply what's cached; collect what still needs a render.
   const need = new Set<string>();
   nodes.forEach(node => {
-    const src = (node.textContent || "").trim();
-    const svg = svgCache.get(src);
+    const src = node.classList.contains("rendered") ? sources.get(node) || "" : (node.textContent || "").trim();
+    sources.set(node, src);
+    const svg = svgCache.get(`${theme}:${src}`);
     if (svg) {
       node.innerHTML = svg;
       node.classList.add("rendered");
+      node.dataset.diagramTheme = theme;
     } else if (svg === undefined) {
       need.add(src);
     }
@@ -52,19 +56,28 @@ export async function renderMermaid(): Promise<void> {
   if (!need.size) return;
   await loadMermaid();
   if (!window.mermaid) return; // offline/blocked: leave the code standing
+  window.mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
   for (const src of need) {
-    if (svgCache.has(src)) continue;
+    const key = `${theme}:${src}`;
+    if (svgCache.has(key)) continue;
     const id = `ago-mmd-${++seq}`;
     try {
       const { svg } = await window.mermaid.render(id, src);
-      svgCache.set(src, svg);
+      svgCache.set(key, svg);
     } catch {
-      svgCache.set(src, "");
+      svgCache.set(key, "");
       // Mermaid can leave its scratch element behind on a parse error.
       const scratch = document.getElementById(id) || document.getElementById(`d${id}`);
       if (scratch) scratch.remove();
     }
   }
   // Apply what just rendered (nodes may have re-mounted meanwhile).
-  void renderMermaid();
+  await renderDiagrams();
+}
+
+export function renderMermaid(): Promise<void> {
+  // Mermaid's renderer/config are global. Serialize renders so rapid appearance
+  // changes cannot apply an SVG using another diagram's theme configuration.
+  renderQueue = renderQueue.then(renderDiagrams, renderDiagrams);
+  return renderQueue;
 }

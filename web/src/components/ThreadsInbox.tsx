@@ -114,7 +114,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
         ui.selectChannel(t.group_id, t.channel_id);
         ui.openThread(root.id, "replace");
       }}>
-        <span className="snippet">{snippet(root)}</span>
+        <span className="snippet" title={root.alias?.trim() || (root.text || "").split("\n")[0]}>{snippet(root)}</span>
       </button>
       <div className="ago-inbox-foot">
         <span className="chan" title={`${t.group_name} / #${t.channel_name}`}>#{t.channel_name}</span>
@@ -156,7 +156,7 @@ export function ThreadsInbox({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div className={embedded ? "ago-inbox-content" : "agora-main"} id={embedded ? undefined : "agora-main"}>
-      <div className="ago-head">
+      <div className={`ago-head${embedded ? " ago-threads-filter-head" : ""}`}>
         {!embedded && <button className="btn sm ago-back" title="Back to groups" onClick={() => ui.backToGroups()}>
           <Icon name="chevron-left" />
         </button>}
@@ -164,8 +164,8 @@ export function ThreadsInbox({ embedded = false }: { embedded?: boolean }) {
           <span className="ago-chan-name"><Icon name="messages-square" /> Threads</span>
           <span className="dim">conversations you're part of</span>
         </div>}
-        <button className="btn sm ago-pane-tools-toggle" aria-label="Thread filters" aria-expanded={toolsOpen}
-          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>
+        {!embedded && <button className="btn sm ago-pane-tools-toggle" aria-label="Thread filters" aria-expanded={toolsOpen}
+          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>}
         <div className={`ago-head-actions ago-inbox-tools ${toolsOpen ? "open" : ""}`}>
           <label className="ago-inbox-control">
             <span>Sort by</span>
@@ -204,6 +204,8 @@ export function ThreadsInbox({ embedded = false }: { embedded?: boolean }) {
         <input type="search" aria-label="Search threads" placeholder="Find a conversation…"
           value={search} onChange={event => setSearch(event.target.value)} />
         <span>{displayedThreads.length} found</span>
+        {embedded && <button className="btn sm ago-pane-tools-toggle" aria-label="Thread filters" aria-expanded={toolsOpen}
+          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>}
       </div>
       <div className="ago-log ago-inbox-list">
         {displayedThreads.length

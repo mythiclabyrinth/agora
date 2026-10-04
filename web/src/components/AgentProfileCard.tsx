@@ -14,6 +14,7 @@ import { Icon } from "../lib/icons";
 import { withToken } from "../lib/files";
 import { toast } from "../lib/toast";
 import { useAgentProfile } from "./MessageItem";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 function relTime(ts: number): string {
   const s = Math.max(0, Date.now() / 1000 - ts);
@@ -43,6 +44,7 @@ export function AgentProfileCard() {
   const { openId, close } = useAgentProfile();
   const agents = useAgents().data || [];
   const me = useMe();
+  const dialogRef = useDialogFocus(!!openId && agents.some(agent => agent.id === openId), close);
   if (!openId) return null;
   const a = agents.find(x => x.id === openId);
   if (!a) return null;
@@ -51,7 +53,7 @@ export function AgentProfileCard() {
   return (
     <div className="conn-overlay" id="ago-profile-overlay"
       onClick={e => { if (e.target === e.currentTarget) close(); }}>
-      <div className="conn-panel ago-profile-panel">
+      <div ref={dialogRef} className="conn-panel ago-profile-panel" role="dialog" aria-modal="true" aria-label="Agent profile" tabIndex={-1}>
         <div className="ago-profile-top">
           {a.avatar
             ? <span className="ago-av profile has-avatar"><img src={withToken(a.avatar)} alt="" /></span>
@@ -60,7 +62,7 @@ export function AgentProfileCard() {
             <div className="ago-profile-name">{a.name || a.id}</div>
             <div className="ago-profile-sub dim">@{a.id} · agent</div>
           </div>
-          <button className="btn sm ago-profile-close" onClick={close}><Icon name="x" /></button>
+          <button className="btn sm ago-profile-close" aria-label="Close agent profile" onClick={close}><Icon name="x" /></button>
         </div>
         <div className="ago-profile-rows">
           <div className="ago-profile-row">

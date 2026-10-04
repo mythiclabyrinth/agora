@@ -16,6 +16,7 @@ import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { AgentAvatar } from "./AgentAvatar";
+import { AccessScopeSelect } from "./AccessScopeSelect";
 
 type RosterMode = "channel" | "group";
 type AddPersonStep = { kind: "pick" } | { kind: "scope"; user: UserInfo };
@@ -31,8 +32,6 @@ function MembershipForm({ name, channels, wholeGroup, initialChannel, agent = fa
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const accessRef = useRef<HTMLElement>(null);
-  useEffect(() => { accessRef.current?.focus(); }, []);
   // Empty string denotes whole-group access; it is exclusive with channels.
   const [selected, setSelected] = useState<string[]>(initialChannel ? [initialChannel] : wholeGroup ? [""] : []);
   const [role, setRole] = useState<"admin" | "member">("member");
@@ -64,15 +63,7 @@ function MembershipForm({ name, channels, wholeGroup, initialChannel, agent = fa
     <fieldset disabled={busy}>
       <div className="ago-access-field">
         <span className="ago-field-label">Access</span>
-        <details className="ago-access-select" onKeyDown={e => {
-          if (e.key === "Escape") { e.stopPropagation(); e.currentTarget.open = false; accessRef.current?.focus(); }
-        }}>
-          <summary ref={accessRef} aria-label="Choose access">{summary}<Icon name="chevron-down" /></summary>
-          <div className="ago-access-options" role="group" aria-label="Access scopes">
-            {wholeGroup && <label><input type="checkbox" checked={selected.includes("")} onChange={() => toggle("")} />Whole group</label>}
-            {channels.map(c => <label key={c.id}><input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} /><span>#{c.name}</span></label>)}
-          </div>
-        </details>
+        <AccessScopeSelect summary={summary} wholeGroup={wholeGroup} channels={channels} selected={selected} onToggle={toggle} />
       </div>
       {!agent && <label className="ago-membership-role"><span className="ago-field-label">Role</span>
         <span className="ago-membership-role-control"><select value={role} onChange={e => setRole(e.target.value as "admin" | "member")}>

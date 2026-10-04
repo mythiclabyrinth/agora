@@ -58,6 +58,22 @@ export const ConnectedAgentAndCatalog: Story = {
   },
 };
 
+export const UnifiedAgentManagement: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("Live: Codex")).resolves.toBeVisible();
+    expect(canvas.queryByRole("tab", { name: "Connections" })).not.toBeInTheDocument();
+    expect(canvas.queryByText("This Agora")).not.toBeInTheDocument();
+    expect(canvas.getByRole("button", { name: /Codex.*View profile/ })).toBeVisible();
+    expect(canvas.getByRole("button", { name: "Manage access" })).toBeVisible();
+    const search = canvas.getByRole("searchbox", { name: "Search agents" });
+    await userEvent.type(search, "missing-agent");
+    expect(canvas.getByText("No matching agents or integrations.")).toBeVisible();
+    await userEvent.clear(search);
+    expect(canvas.getByRole("button", { name: "Manage access" })).toBeVisible();
+  },
+};
+
 export const BridgeAccessPolicy: Story = {
   play: async ({ canvasElement }) => {
     const canvas=within(canvasElement);

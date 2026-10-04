@@ -40,7 +40,7 @@ function PinBar({ channelId }: { channelId: string }) {
         title={open ? "Hide pinned threads" : "Show pinned threads"}>
         <span className="ago-pin-ico"><Icon name="pin" /></span>
         <span className="ago-pin-count">{pins.length} pinned</span>
-        {!open && <span className="ago-pin-preview">{pinSnippet(first)}</span>}
+        {!open && <span className="ago-pin-preview" title={first.alias?.trim() || (first.text || "").split("\n")[0]}>{pinSnippet(first)}</span>}
         <span className="ago-pin-caret"><Icon name={open ? "chevron-up" : "chevron-down"} /></span>
       </button>
       {open && (
@@ -50,7 +50,7 @@ function PinBar({ channelId }: { channelId: string }) {
               onClick={() => { setOpen(false); ui.openThread(p.id); }}>
               <div className="ago-pin-row-main">
                 <span className="ago-pin-author">{(p as Message).author_name || (p as Message).author_id}</span>
-                <span className="ago-pin-text">{pinSnippet(p)}</span>
+                <span className="ago-pin-text" title={p.alias?.trim() || (p.text || "").split("\n")[0]}>{pinSnippet(p)}</span>
               </div>
               <span className="ago-pin-meta">
                 {p.reply_count ? `${p.reply_count} repl${p.reply_count === 1 ? "y" : "ies"} · ` : ""}{fmtTs(p.ts)}
@@ -91,7 +91,7 @@ function StarPop({ channelId, onClose }: { channelId: string; onClose: () => voi
             }}>
             <div className="ago-pin-row-main">
               <span className="ago-pin-author">{s.author_name || s.author_id}</span>
-              <span className="ago-pin-text">{pinSnippet(s)}</span>
+              <span className="ago-pin-text" title={s.alias?.trim() || (s.text || "").split("\n")[0]}>{pinSnippet(s)}</span>
             </div>
             <span className="ago-pin-meta">{s.thread_id != null ? "in thread · " : ""}{fmtTs(s.ts)}</span>
             <button className="ago-x" title="Unstar"

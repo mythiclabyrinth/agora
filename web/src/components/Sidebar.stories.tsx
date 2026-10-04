@@ -83,3 +83,19 @@ export const RenameThreadDialog: Story = {
     await waitFor(() => expect(within(document.body).queryByRole("dialog", { name: "Rename thread" })).not.toBeInTheDocument());
   },
 };
+
+export const IndependentGroupExpansion: Story = {
+  parameters: { apiRoutes: { ...routes, "GET /api/groups": { groups: [
+    ...fixtureGroups,
+    { ...fixtureGroups[0], id: "another-group", name: "Another group", channels: [] },
+  ] } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Expand Another group" }));
+    expect(useUiState.getState().expanded).toContain("product");
+    expect(useUiState.getState().expanded).toContain("another-group");
+    await userEvent.click(canvas.getByRole("button", { name: "Collapse Another group" }));
+    expect(useUiState.getState().expanded).toContain("product");
+    expect(JSON.parse(localStorage.getItem("agora_open") || "[]")).toContain("product");
+  },
+};

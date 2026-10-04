@@ -158,13 +158,15 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     const input = taRef.current;
     if (!input || typeof ResizeObserver === "undefined") return;
     let hidden = input.getBoundingClientRect().height === 0;
+    let frame = 0;
     const observer = new ResizeObserver(entries => {
       const visible = entries.some(entry => entry.contentRect.height > 0);
-      if (hidden && visible) autoGrow(input);
+      // A layout write inside ResizeObserver causes a delivery loop in WebKit.
+      if (hidden && visible) frame = requestAnimationFrame(() => autoGrow(input));
       hidden = !visible;
     });
     observer.observe(input);
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, []);
 
   const inThread = threadId != null;

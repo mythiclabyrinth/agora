@@ -116,6 +116,7 @@ async function seedDeepHistory(g) {
 const results = [];
 let failures = 0;
 async function check(name, fn) {
+  if (process.env.AGORA_PARITY_PROGRESS) console.log(`RUN ${name}`);
   try {
     await fn();
     results.push(`PASS ${name}`);
@@ -123,6 +124,7 @@ async function check(name, fn) {
     failures++;
     results.push(`FAIL ${name}: ${String(e.message || e).split("\n")[0].slice(0, 200)}`);
   }
+  if (process.env.AGORA_PARITY_PROGRESS) console.log(results.at(-1));
 }
 
 const appUrl = q => BASE + APP_PATH + (q || "");
@@ -256,7 +258,7 @@ async function main() {
     if (await page.locator(".ago-dm-agent", { hasText: "Parity Agent" }).count()) throw new Error("existing DM agent remained in picker");
     await page.locator(".ago-dm-popover button", { hasText: "Close" }).click();
     await page.locator("#btn-connections").click();
-    const sourceRow=page.locator("#conn-panel .conn-row",{hasText:"parity-dm"});
+    const sourceRow=page.locator("#conn-panel .agent-source-card",{hasText:"parity-dm"});
     await sourceRow.locator("button",{hasText:"Manage access"}).click();
     await page.locator("#conn-panel",{hasText:"Everyone on this Agora can start a direct message"}).waitFor();
     const publicSwitch = page.locator('#conn-panel [role="switch"][aria-label="Public agent direct messages"]');
@@ -587,8 +589,9 @@ async function main() {
     await card.hover();
     await card.locator("button.ago-x.show").click();
     await page.locator(".toast", { hasText: "hidden for you" }).waitFor({ timeout: 8000 });
-    // restore it
-    const again = page.locator(".ago-gp-chan", { hasText: "second" }).first();
+    // Hidden channels leave normal group views; restore from the dedicated section.
+    await page.locator(".ago-hidden-toggle").click();
+    const again = page.locator(".ago-hidden-row", { hasText: "second" }).first();
     await again.hover();
     await again.locator("button.ago-x.show").click();
   });
@@ -641,9 +644,9 @@ async function main() {
     await page.fill("#pair-name", "parity-tok");
     await page.locator("#conn-panel button", { hasText: "Create access" }).click();
     await page.locator("#conn-panel .conn-issued").waitFor({ timeout: 8000 });
-    await page.locator("#conn-panel button", { hasText: "View connections" }).click();
+    await page.locator("#conn-panel button", { hasText: "View agents" }).click();
     // Back on the list tab the freshly issued token is listed and revocable.
-    const row = page.locator("#conn-panel .conn-row", { hasText: "parity-tok" });
+    const row = page.locator("#conn-panel .agent-source-card", { hasText: "parity-tok" });
     await row.waitFor({ timeout: 8000 });
     await row.locator("button", { hasText: "Revoke" }).click();
     await page.locator("#conn-panel .conn-head button").last().click();

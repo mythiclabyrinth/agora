@@ -9,6 +9,7 @@ import {
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 export function PeoplePane() {
   const ui = useUiState();
@@ -24,8 +25,11 @@ export function PeoplePane() {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("member");
   const [linkRole, setLinkRole] = useState("member");
+  const [search, setSearch] = useState("");
+  const dialogRef = useDialogFocus(open, () => ui.openPanel(null));
 
   if (!open) return null;
+  const filteredUsers = users.filter(user => `${user.display_name || ""} ${user.username} ${user.email || ""}`.toLowerCase().includes(search.trim().toLowerCase()));
   const now = Date.now() / 1000;
   const err = (msg: string) => (e: unknown) =>
     toast(`${msg}: ${(e as Error).message || e}`, { variant: "warn" });
@@ -33,23 +37,30 @@ export function PeoplePane() {
   return (
     <div className="conn-overlay" id="users-overlay"
       onClick={e => { if (e.target === e.currentTarget) ui.openPanel(null); }}>
-      <div className="conn-panel" id="users-panel">
+      <div ref={dialogRef} className="conn-panel" id="users-panel" role="dialog" aria-modal="true" aria-label="People" tabIndex={-1}>
         <div className="conn-head">
           <b>People</b>
           <button className="btn sm" aria-label="Close people" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
         </div>
         <div className="conn-body">
           <h4>Users <span className="dim">— everyone with an account on this Agora</span></h4>
-          {users.length ? users.map(u => {
+          <div className="directory-toolbar">
+            <label className="directory-search"><Icon name="search" />
+              <input type="search" aria-label="Search people" placeholder="Find someone by name or email…" value={search} onChange={event => setSearch(event.target.value)} />
+            </label>
+            <span className="directory-count">{users.length} {users.length === 1 ? "person" : "people"}</span>
+          </div>
+          {filteredUsers.length ? filteredUsers.map(u => {
             const self = u.username === me?.username;
             const admin = u.instance_role === "admin";
             return (
-              <div key={u.username} className={`conn-row ${u.disabled ? "disabled" : ""}`}>
-                <span className={`conn-dot ${u.disabled ? "err" : "on"}`}></span>
+              <div key={u.username} className={`conn-row people-row ${u.disabled ? "disabled" : ""}`}>
+                <span className="directory-avatar" aria-hidden="true">{(u.display_name || u.username).split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()}</span>
                 <div className="conn-row-main">
                   <div className="conn-name">{u.display_name || u.username}{" "}
                     <span className="dim">@{u.username}{self ? " · you" : ""}</span></div>
-                  <div className="conn-url">{u.email || "no email — admin-key bootstrap"} · {u.instance_role}{u.disabled ? " · disabled" : ""}</div>
+                  <div className="conn-url">{u.email || "no email — admin-key bootstrap"}</div>
+                  <span className={`directory-role${admin ? " admin" : ""}`}>{u.instance_role}{u.disabled ? " · disabled" : ""}</span>
                 </div>
                 {!self && (
                   <>
@@ -73,7 +84,7 @@ export function PeoplePane() {
                 )}
               </div>
             );
-          }) : <div className="dim conn-empty">No users yet.</div>}
+          }) : <div className="dim conn-empty">{users.length ? "No matching people. Try a different name or email." : "No users yet."}</div>}
 
           <h4>Invites <span className="dim">— sign in with Google/Apple using the invited email to join</span></h4>
           {invites.length ? invites.map(i => (
@@ -92,9 +103,9 @@ export function PeoplePane() {
             </div>
           )) : <div className="dim conn-empty">No invites.</div>}
           <div className="conn-add">
-            <input id="invite-email" type="email" placeholder="person@example.com"
+            <input id="invite-email" type="email" aria-label="Invite email address" placeholder="person@example.com"
               value={email} onChange={e => setEmail(e.target.value)} />
-            <select id="invite-role" value={role} onChange={e => setRole(e.target.value)}>
+            <select id="invite-role" aria-label="Invite role" value={role} onChange={e => setRole(e.target.value)}>
               <option value="member">member</option>
               <option value="admin">instance admin</option>
             </select>
@@ -137,7 +148,7 @@ export function PeoplePane() {
             );
           }) : <div className="dim conn-empty">No invite links.</div>}
           <div className="conn-add">
-            <select id="invite-link-role" value={linkRole} onChange={e => setLinkRole(e.target.value)}>
+            <select id="invite-link-role" aria-label="Invite link role" value={linkRole} onChange={e => setLinkRole(e.target.value)}>
               <option value="member">member</option>
               <option value="admin">instance admin</option>
             </select>

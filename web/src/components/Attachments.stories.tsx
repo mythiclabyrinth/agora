@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, userEvent, waitFor, within } from "storybook/test";
 import { Attachments } from "./Attachments";
 import { message } from "../stories/fixtures/data";
 
@@ -58,6 +58,10 @@ export const VideoFallback: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // Exercise the browser error event deterministically, without depending on
+    // a missing URL's network timeout under parallel browser-test load.
+    const video = canvasElement.querySelector("video");
+    if (video) fireEvent.error(video);
     await waitFor(() => expect(canvas.getByText("missing-demo.mp4")).toBeVisible());
     expect(canvasElement.querySelector("video")).toBeNull();
   },
@@ -181,7 +185,7 @@ export const ImageFailureAndRetry: Story = {
     await waitFor(() => {
       const retried = canvas.getByAltText("responsive-layout-preview.svg") as HTMLImageElement;
       expect(retried.complete && retried.naturalWidth > 0).toBe(true);
-    });
+    }, { timeout: 5000 });
     expect(canvas.queryByText("Image preview unavailable")).not.toBeInTheDocument();
   },
 };

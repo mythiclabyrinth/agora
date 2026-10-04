@@ -1,5 +1,5 @@
 import "./storage";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import {
   MutationCache,
@@ -16,11 +16,13 @@ import { ToastHost } from "../src/lib/toast";
 import { resetStoryState } from "../src/stories/resetState";
 import "../src/styles.css";
 import "./preview.css";
+import { syncAppearance, useAppearance } from "../src/state/appearance";
 
 function StoryProviders({ routes, children }: {
   routes?: FixtureRoutes;
   children: ReactNode;
 }) {
+  useEffect(syncAppearance, []);
   const [fixtureError, setFixtureError] = useState("");
   const reportFixtureError = (error: Error) => {
     if (!error.message.startsWith("Missing Storybook fixture route:")) return;
@@ -59,6 +61,7 @@ function StoryProviders({ routes, children }: {
 const preview: Preview = {
   beforeEach: (context) => {
     resetStoryState();
+    if (context.parameters.appearance) useAppearance.getState().setPreference(context.parameters.appearance);
     const setup = context.parameters.setup;
     if (typeof setup === "function") setup();
   },

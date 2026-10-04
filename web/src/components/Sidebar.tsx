@@ -58,16 +58,17 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
   const arm = useConfirm(s => s.arm);
   const disarm = useConfirm(s => s.disarm);
   const snippet = pinSnippet(t.root || {});
+  const fullName = t.root.alias?.trim() || (t.root.text || "").split("\n")[0];
   const [renaming, setRenaming] = useState(false);
   return (
-    <div className={`ago-side-thread ${t.unread ? "unread" : ""}`} title={snippet}
+    <div className={`ago-side-thread ${t.unread ? "unread" : ""}`} title={fullName}
       onClick={e => {
         e.stopPropagation();
         ui.selectChannel(g.id, c.id);
         ui.openThread(t.root.id, "replace");
       }}>
       <span className="tico"><Icon name="corner-down-right" /></span>
-      <span className="nm">{snippet}</span>
+      <span className="nm" title={fullName}>{snippet}</span>
       <Badge n={t.unread || 0} mentions={0} />
       <button className="ago-x" title="Rename this thread"
         onClick={e => {
@@ -213,9 +214,9 @@ export function Sidebar() {
   const hiddenCount = hiddenGroups.length + hiddenChans.length;
 
   return (
-    <div className="agora-side" id="agora-side">
+    <nav className="agora-side" id="agora-side" aria-label="Workspace navigation">
       <div className="side-title">
-        <span>Groups</span>
+        <span>Workspace</span>
         <span className="side-title-actions">
           <button className="ago-side-toggle search" title={`Search (${SEARCH_KEY})`}
             onClick={() => ui.setSearchOpen(true)}><Icon name="search" /></button>
@@ -230,11 +231,14 @@ export function Sidebar() {
         onClick={() => ui.toggleSide()}><Icon name="chevrons-right" /></button>
       {anyUnread && <span className={`ago-side-dot ${anyMention ? "mention" : ""}`} title="Unread messages"></span>}
       <div className={`ago-inbox-item ${ui.view.kind === "inbox" ? "active" : ""} ${inboxTotal ? "unread" : ""}`}
+        role="button" tabIndex={0} aria-current={ui.view.kind === "inbox" ? "page" : undefined}
+        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ui.openInbox(); } }}
         onClick={() => ui.openInbox()}>
         <span className="tico"><Icon name="messages-square" /></span><span className="nm">Inbox</span>
         <Badge n={inboxTotal} mentions={inboxMentions} totalWithMention />
       </div>
       <div className="ago-groups">
+        <div className="workspace-section-label">Your channels</div>
         {orderedGroups.filter(g => !g.hidden).map(g => {
           const open = ui.isExpanded(g.id);
           const sel = g.id === ui.sel.g;
@@ -243,17 +247,19 @@ export function Sidebar() {
           return (
             <div key={g.id} className={`ago-group ${open ? "open" : ""} ${sel ? "sel" : ""}`}>
               <div className={`ago-group-head ${groupUnread(g) || groupMentions(g) ? "unread" : ""}`}
-                title={`Open ${g.name}`}
+                title={`Open ${g.name}`} role="button" tabIndex={0}
+                onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); ui.openGroupPage(g.id); } }}
                 draggable={!isDms}
                 onDragStart={dragStart("group", g.id)}
                 onDragOver={isDms ? undefined : dragOver("group")}
                 onDrop={isDms ? undefined : dropOn("group", g.id)}
                 onClick={() => ui.openGroupPage(g.id)}>
-                <span className={`ago-caret ${open ? "open" : ""}`}
+                <button type="button" className={`ago-caret ${open ? "open" : ""}`}
+                  aria-label={`${open ? "Collapse" : "Expand"} ${g.name}`} aria-expanded={open}
                   title={`${open ? "Collapse" : "Expand"} ${g.name}`}
                   onClick={e => { e.stopPropagation(); ui.toggleGroup(g.id); }}>
                   <Icon name="chevron-right" />
-                </span>
+                </button>
                 <span className="ago-group-title"><span className="nm">{g.name}</span></span>
                 {!open && <Badge n={groupUnread(g)} mentions={groupMentions(g)} />}
                 <span className="role">{g.role || ""}</span>
@@ -269,6 +275,8 @@ export function Sidebar() {
                 return (
                   <div key={c.id}>
                     <div className={`ago-chan ${active ? "active" : ""} ${unread || mentions || (threadsCollapsed && threadUnread) ? "unread" : ""}`}
+                      role="button" tabIndex={0} aria-current={active ? "page" : undefined}
+                      onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); ui.selectChannel(g.id, c.id); } }}
                       draggable={!isDms}
                       onDragStart={isDms ? undefined : dragStart("chan", c.id, g.id)}
                       onDragOver={isDms ? undefined : dragOver("chan", g.id)}
@@ -368,6 +376,6 @@ export function Sidebar() {
           : <button className="ago-add" onClick={() => { setCreating({ kind: "group" }); setCreateName(""); }}>+ New group</button>}
       </div>
       {dmOpen && <AgentDmPanel onClose={() => setDmOpen(false)} />}
-    </div>
+    </nav>
   );
 }

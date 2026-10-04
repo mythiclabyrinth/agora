@@ -54,8 +54,8 @@ export function MapGraphic({ data, activeRegion, visiblePlaces, selectedPlace, o
       aria-label="Interactive itinerary map">
       <defs>
         <linearGradient id="ago-map-sea" x1="0" x2="1" y1="0" y2="1">
-          <stop offset="0" stopColor="#121b2b" />
-          <stop offset="1" stopColor="#0b1220" />
+          <stop offset="0" stopColor="var(--map-sea-start)" />
+          <stop offset="1" stopColor="var(--map-sea-end)" />
         </linearGradient>
         <filter id="ago-map-glow">
           <feGaussianBlur stdDeviation="1.5" result="blur" />
