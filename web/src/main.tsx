@@ -4,6 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { initToken } from "./lib/auth";
 import { App } from "./App";
 import "./styles.css";
+import { syncAppearance } from "./state/appearance";
+import { installTruncationTooltips } from "./lib/truncationTooltips";
+
+const stopAppearanceSync = syncAppearance();
+const stopTruncationTooltips = installTruncationTooltips();
+if (import.meta.hot) import.meta.hot.dispose(() => { stopAppearanceSync(); stopTruncationTooltips(); });
 
 // Consume ?token= and the auth fragments before anything renders or fetches.
 initToken();

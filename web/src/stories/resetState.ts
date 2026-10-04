@@ -10,6 +10,7 @@ import { useLiveVoice } from "../state/liveVoice";
 import { useSpeak } from "../state/speak";
 import { useRequireAgent } from "../state/requireAgent";
 import { useToasts } from "../lib/toast";
+import { useAppearance } from "../state/appearance";
 
 const STORAGE_KEYS = [
   "agora_token",
@@ -22,6 +23,7 @@ const STORAGE_KEYS = [
   "agora_threads_group",
   "agora_side",
   "agora_thread",
+  "agora_thread_width",
   "agora_speak",
   "agora_thread_require_agent",
   "agoEmojiRecent",
@@ -34,6 +36,7 @@ const HOME = new URL(".", window.location.href).pathname;
 
 /** Reset module-scoped zustand stores as well as their persisted inputs. */
 export function resetStoryState(): void {
+  useAppearance.getState().setPreference(import.meta.env.VITE_STORY_THEME === "light" ? "light" : "dark");
   history.replaceState(null, "", HOME + window.location.search);
   for (const key of STORAGE_KEYS) localStorage.removeItem(key);
   useUiState.setState({

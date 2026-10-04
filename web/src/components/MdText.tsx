@@ -6,6 +6,7 @@ import { mdliteHtml, normalizeEChart, type NormalizedEChart } from "@agora/core"
 import { decorateMentions, type MentionIndex } from "../lib/mentions";
 import { renderMermaid } from "../lib/mermaid";
 import { ChartModal, EChartBlock } from "./EChartBlock";
+import { useAppearance } from "../state/appearance";
 
 type MdPart = { kind: "html"; text: string } | { kind: "echarts"; source: string };
 
@@ -26,6 +27,7 @@ function splitECharts(text: string): MdPart[] {
 }
 
 export function MdText({ text, mentions }: { text: string; mentions?: MentionIndex }) {
+  const theme = useAppearance(state => state.resolved);
   const parts = useMemo(() => {
     let validIndex = 0;
     return splitECharts(text).map((part, partIndex) => {
@@ -51,7 +53,7 @@ export function MdText({ text, mentions }: { text: string; mentions?: MentionInd
   const mermaidHtml = parts.flatMap(part => part.kind === "html" ? [part.html] : []).join("");
   useEffect(() => {
     if (mermaidHtml.includes("md-mermaid")) void renderMermaid();
-  }, [mermaidHtml]);
+  }, [mermaidHtml, theme]);
   return (
     <div>
       {parts.map(part => part.kind === "echarts"

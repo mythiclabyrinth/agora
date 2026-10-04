@@ -21,6 +21,7 @@ import { LiveRows } from "./ChannelPane";
 import { LiveButton, LiveStrip, SpeakButton } from "./VoiceControls";
 import { confirmStep, useConfirm } from "../state/confirm";
 import { toast } from "../lib/toast";
+import { ThreadResizeHandle } from "./ThreadResizeHandle";
 
 const AT_BOTTOM_PX = 40;
 const NEAR_TOP_PX = 400;
@@ -226,7 +227,7 @@ export function ThreadPane() {
       <div className="agora-thread" id="agora-thread">
         <div className="ago-head">
           <div className="ago-head-text"><span className="ago-chan-name">Thread unavailable</span></div>
-          <button className="btn sm ago-thread-close" onClick={() => ui.closeThread()}>
+          <button className="btn sm ago-thread-close" aria-label="Close thread" title="Close thread" onClick={() => ui.closeThread()}>
             <Icon name="x" />
           </button>
         </div>
@@ -237,6 +238,7 @@ export function ThreadPane() {
 
   return (
     <div className="agora-thread" id="agora-thread">
+      {!ui.threadExpanded && <ThreadResizeHandle />}
       <div className="ago-head">
         <button className="btn sm ago-back" title={`Back to #${channel.name}`}
           onClick={() => ui.closeThread()}>
@@ -290,7 +292,7 @@ export function ThreadPane() {
             onClick={() => ui.toggleThreadSize()}>
             <Icon name={ui.threadExpanded ? "minimize-2" : "maximize-2"} />
           </button>
-          <button className="btn sm ago-thread-close" onClick={() => ui.closeThread()}>
+          <button className="btn sm ago-thread-close" title="Close thread" aria-label="Close thread" onClick={() => ui.closeThread()}>
             <Icon name="x" />
           </button>
         </div>

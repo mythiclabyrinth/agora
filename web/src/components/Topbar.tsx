@@ -1,12 +1,13 @@
 /* Topbar: brand, server badge, self-rename button, and the operator-only
    People / Connections / Settings buttons. */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys, useMe, useApi, type Me } from "@agora/core";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 import { PromptDialog } from "./PromptDialog";
+import { Icon } from "../lib/icons";
 
 function ServerBadge() {
   const host = location.hostname;
@@ -32,10 +33,27 @@ export function Topbar() {
   const qc = useQueryClient();
   const me = useMe().data;
   const openPanel = useUiState(s => s.openPanel);
+  const setSearchOpen = useUiState(s => s.setSearchOpen);
   const isAdmin = !!me?.instance_admin;
   const [toolsOpen, setToolsOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renamePending, setRenamePending] = useState(false);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const pointer = (event: PointerEvent) => {
+      if (!toolsRef.current?.contains(event.target as Node)) setToolsOpen(false);
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setToolsOpen(false);
+        toolsRef.current?.querySelector<HTMLButtonElement>(".ago-mobile-tools")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", pointer);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", pointer); document.removeEventListener("keydown", key); };
+  }, [toolsOpen]);
 
   const rename = async (next: string) => {
     setRenamePending(true);
@@ -52,30 +70,32 @@ export function Topbar() {
   };
 
   return (
-    <div className={`topbar ${toolsOpen ? "tools-open" : ""}`}>
+    <div ref={toolsRef} className={`topbar ${toolsOpen ? "tools-open" : ""}`}>
       <div className="brand"><span className="brand-mark"><img src="/icon.png" alt="" /></span> Agora</div>
       <ServerBadge />
+      <button className="workspace-search" aria-label="Search conversations" onClick={() => setSearchOpen(true)}>
+        <Icon name="search" /><span>Search conversations</span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘ K" : "Ctrl K"}</kbd>
+      </button>
       <button className="topbar-me" id="topbar-me" title="Change how your name appears"
         onClick={() => setRenaming(true)}>
-        {me ? (me.display_name || me.username) : ""}
+        <span className="topbar-avatar" aria-hidden="true">{(me?.display_name || me?.username || "?").split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()}</span>
+        <span className="topbar-name">{me ? (me.display_name || me.username) : ""}</span>
       </button>
       {renaming && <PromptDialog title="Change display name"
         description="Leave the name blank to use your username."
         label="Display name" value={me?.display_name || me?.username || ""}
         pending={renamePending} onClose={() => setRenaming(false)}
         onSave={value => void rename(value)} />}
-      {isAdmin && <button className="btn sm ago-mobile-tools" aria-expanded={toolsOpen}
-        onClick={() => setToolsOpen(!toolsOpen)}>Manage</button>}
+      <button className="btn sm ago-mobile-tools" aria-label="Workspace tools" aria-expanded={toolsOpen}
+        onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>
       <div className={`ago-topbar-tools ${toolsOpen ? "open" : ""}`}>
       {isAdmin && (
-        <button className="btn sm" id="btn-people" onClick={() => openPanel("people")}>People</button>
+        <button className="btn sm" id="btn-people" onClick={() => { openPanel("people"); setToolsOpen(false); }}><Icon name="users" />People</button>
       )}
       {isAdmin && (
-        <button className="btn sm" id="btn-connections" onClick={() => openPanel("connections")}>Connections</button>
+        <button className="btn sm" id="btn-connections" onClick={() => { openPanel("connections"); setToolsOpen(false); }}><Icon name="bot" />Agents</button>
       )}
-      {isAdmin && (
-        <button className="btn sm" id="btn-settings" onClick={() => openPanel("settings")}>Settings</button>
-      )}
+        <button className="btn sm" id="btn-settings" onClick={() => { openPanel("settings"); setToolsOpen(false); }}><Icon name="sliders" />Settings</button>
       </div>
     </div>
   );

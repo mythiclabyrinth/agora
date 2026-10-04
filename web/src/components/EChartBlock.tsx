@@ -3,24 +3,26 @@ import { createPortal } from "react-dom";
 import type { NormalizedEChart } from "@agora/core";
 import type { EChartsType } from "echarts";
 import { Icon } from "../lib/icons";
+import { useAppearance } from "../state/appearance";
 
 function ChartCanvas({ chart, source, expanded = false }: { chart: NormalizedEChart; source: string; expanded?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const instance = useRef<EChartsType | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const theme = useAppearance(state => state.resolved);
 
   useEffect(() => {
     let cancelled = false;
     let observer: ResizeObserver | undefined;
     void import("echarts").then(echarts => {
       if (cancelled || !ref.current) return;
-      const rendered = echarts.init(ref.current, undefined, { renderer: "canvas" });
+      const rendered = echarts.init(ref.current, theme === "dark" ? "dark" : undefined, { renderer: "canvas" });
       instance.current = rendered;
-      rendered.setOption(chart.option);
-      observer = new ResizeObserver(() => rendered.resize());
+      rendered.setOption({ backgroundColor: "transparent", ...chart.option });
+      observer = new ResizeObserver(() => { if (!cancelled) rendered.resize(); });
       observer.observe(ref.current);
       // A modal's first layout follows its mount; resize once more after paint.
-      if (expanded) requestAnimationFrame(() => rendered.resize());
+      if (expanded) requestAnimationFrame(() => { if (!cancelled) rendered.resize(); });
     }).catch(() => { if (!cancelled) setLoadError(true); });
     return () => {
       cancelled = true;
@@ -28,7 +30,7 @@ function ChartCanvas({ chart, source, expanded = false }: { chart: NormalizedECh
       instance.current?.dispose();
       instance.current = null;
     };
-  }, [chart, expanded]);
+  }, [chart, expanded, theme]);
 
   if (loadError) return <div className="ago-chart-load-error">Could not load the chart renderer.<pre>{source}</pre></div>;
   // Expanded charts fill the dialog body (CSS-driven) instead of keeping the

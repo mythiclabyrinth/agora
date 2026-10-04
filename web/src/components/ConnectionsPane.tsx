@@ -10,7 +10,7 @@ import {
   inferPairingKind,
   useAgentDmPolicy, useAgentSources, useUpdateAgentDmPolicy, useUsers,
   useConnectionMutations, useConnectionsInfo, usePairingMutations, usePairingTokens,
-  useRenameInstance,
+  useAgents,
 } from "@agora/core";
 import claudeLogo from "../assets/agents/claude.png";
 import codexLogo from "../assets/agents/codex.png";
@@ -23,6 +23,7 @@ import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentStatus } from "./AgentStatus";
+import { AgentsDirectory } from "./AgentsDirectory";
 
 type Tab = "list" | "add";
 type AddKind = "pantheo" | "coding" | PairingKind;
@@ -57,7 +58,7 @@ function AgentAccessPolicy({ agent, onBack }: { agent: AgentSource["agents"][num
 }
 
 function SourceAgentAccess({ source, onBack, onSelect }: { source: AgentSource; onBack: () => void; onSelect: (agent: AgentSource["agents"][number]) => void }) {
-  return <div className="conn-access"><BackButton onClick={onBack} label="Connections" />
+  return <div className="conn-access"><BackButton onClick={onBack} label="Agents" />
     <h3>{source.name}</h3><p className="dim">Choose an agent to manage who can start a direct message.</p>
     <div className="conn-access-agent-list">{source.agents.map(agent => <button className="conn-row conn-access-agent" key={agent.id} onClick={()=>onSelect(agent)}>
       <AgentAvatar agentId={agent.id} small /><span className="conn-row-main"><strong>{agent.name}</strong><AgentStatus live={agent.live}/></span><Icon name="chevron-right"/>
@@ -184,15 +185,18 @@ export function ConnectionsPane() {
   const ui = useUiState();
   const closeConnections = useUiState(state => state.openPanel);
   const open = ui.panel === "connections";
-  const info = useConnectionsInfo(open, open).data;
-  const tokens = usePairingTokens(open, open).data || [];
+  const infoQuery = useConnectionsInfo(open, open);
+  const pairingQuery = usePairingTokens(open, open);
+  const info = infoQuery.data;
+  const tokens = pairingQuery.data || [];
   const connMut = useConnectionMutations();
   const pairMut = usePairingMutations();
   const sources = useAgentSources(open, open).data || [];
+  const roster = useAgents().data || [];
   const [tab, setTab] = useState<Tab>("list");
   const [addKind, setAddKind] = useState<AddKind | null>(null);
   const [issued, setIssued] = useState<{ token: string } | null>(null);
-  const [instName, setInstName] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
@@ -200,12 +204,11 @@ export function ConnectionsPane() {
   const [accessSource, setAccessSource] = useState<AgentSource | null>(null);
   const [accessAgent, setAccessAgent] = useState<AgentSource["agents"][number] | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const renameInstance = useRenameInstanceLocal();
 
   useEffect(() => {
     if (!open) {
       setTab("list"); setAddKind(null); setIssued(null);
-      setInstName(null); setName(""); setUrl(""); setToken(""); setPairName("");
+      setSearch(""); setName(""); setUrl(""); setToken(""); setPairName("");
       setAccessSource(null); setAccessAgent(null);
     }
   }, [open]);
@@ -216,6 +219,9 @@ export function ConnectionsPane() {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     panel?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
+      // Profiles can open above this dialog. Their focus/keyboard handling wins.
+      const activeDialog = document.activeElement?.closest('[role="dialog"]');
+      if (event.defaultPrevented || (activeDialog && activeDialog !== panel)) return;
       if (event.key === "Escape") {
         closeConnections(null);
         return;
@@ -254,7 +260,6 @@ export function ConnectionsPane() {
 
   if (!open) return null;
   const conns = info?.connections || [];
-  const instance = info?.instance || null;
   const err = (message: string) => (error: unknown) =>
     toast(`${message}: ${(error as Error).message || error}`, { variant: "warn" });
 
@@ -272,42 +277,39 @@ export function ConnectionsPane() {
     if (kind==="pairing" && source.agents.length===1) setAccessAgent(source.agents[0]);
   };
 
+  const needle = search.trim().toLowerCase();
+  const matching = (name: string, agents: { id: string; name: string }[]) =>
+    !needle || `${name} ${agents.map(agent => `${agent.name} ${agent.id}`).join(" ")}`.toLowerCase().includes(needle);
+  const sourceAgents = (kind: AgentSource["kind"], id: string, fallback: { id: string; name: string }[] = []) =>
+    sources.find(source => source.kind === kind && source.id === id)?.agents || fallback;
+  const shownConns = conns.filter(connection => matching(connection.name, sourceAgents("pantheo", connection.name, connection.status?.agents)));
+  const shownTokens = tokens.filter(pairing => matching(pairing.name, sourceAgents("pairing", pairing.id, pairing.agents)));
+  const assigned = new Set([...sources.flatMap(source => source.agents), ...tokens.flatMap(pairing => pairing.agents || []), ...conns.flatMap(connection => connection.status?.agents || [])].map(agent => agent.id));
+  const otherAgents = roster.filter(agent => !assigned.has(agent.id) && matching(agent.name, [agent]));
   const listTab = (
-    <>
-      {instance && (
-        <>
-          <h4>This Agora <span className="dim">— how linked instances label this app's chats</span></h4>
-          <div className="conn-add">
-            <input id="inst-name" value={instName ?? (instance.name || "")}
-              placeholder="name (e.g. Home Agora)"
-              onChange={event => setInstName(event.target.value)} />
-            <button className="btn sm primary" onClick={() => {
-              const value = (instName ?? instance.name ?? "").trim();
-              if (!value) { toast("Name required", { variant: "warn" }); return; }
-              renameInstance(value);
-              setInstName(null);
-            }}>Rename</button>
-          </div>
-          <p className="conn-hint">Sessions and channel bindings on a linked Pantheo carry this name
-            (instance id <code>{(instance.id || "").slice(0, 8)}</code>), so several Agoras stay distinct.</p>
-        </>
-      )}
-      <h4>Pantheo instances <span className="dim">— linked agent servers</span></h4>
-      {conns.length ? conns.map(connection => {
+    <section className="agents-management" aria-label="Agents and access">
+      <div className="directory-intro"><div><h2>Your AI teammates</h2><p>{roster.filter(agent => agent.live).length} online · {roster.length} agents</p></div>
+        <button className="btn primary" onClick={() => goAdd()}><Icon name="plus" /> Add agent</button></div>
+      <label className="directory-search"><Icon name="search" /><input type="search" aria-label="Search agents" placeholder="Find an agent or integration…" value={search} onChange={event => setSearch(event.target.value)} /></label>
+      <p className="conn-hint agents-management-hint">Profiles, connection status, and access—all in one place. Agents sharing an integration are grouped together.</p>
+      {(infoQuery.isError || pairingQuery.isError) && <div className="conn-hint" role="alert">Some integrations couldn’t be loaded. <button className="btn sm" onClick={() => { void infoQuery.refetch(); void pairingQuery.refetch(); }}>Retry</button></div>}
+      {shownConns.map(connection => {
         const status = connection.status;
-        const agents = (status?.agents || []).map(agent => agent.name || agent.id).join(", ");
-        const detail = status?.connected
-          ? (agents ? `agents: ${agents}` : "linked, no agents offered")
-          : (status?.last_error ? String(status.last_error).slice(0, 120) : "connecting…");
+        const agents = sourceAgents("pantheo", connection.name, connection.status?.agents);
+        const issue = !connection.enabled ? "Integration disabled" : status?.connected ? null
+          : status?.last_error || "Connecting…";
         return (
-          <div key={connection.name} className="conn-row">
-            <AgentMark definition={DEFINITION_BY_KIND.pantheo} small />
-            <span className={`conn-dot ${status?.connected ? "on" : "err"}`} />
+          <article key={connection.name} className="agent-source-card">
+          <div className="conn-row agent-source-head">
             <div className="conn-row-main">
               <div className="conn-name">{connection.name} <span className="conn-badge">Pantheo</span></div>
               <div className="conn-url mono">{connection.url}</div>
-              <div className="conn-url">{detail}</div>
+              {issue && <div className="conn-url" title={issue}>{issue}</div>}
             </div>
+          </div>
+          <AgentsDirectory agents={agents} emptyMessage={status?.connected
+            ? "Connected. Waiting for this server to offer agents." : "No agents registered through this integration."} />
+          <div className="agent-source-actions">
             <button className="btn sm"
               onClick={() => manageSource("pantheo", connection.name)}>Manage access</button>
             <button className="btn sm"
@@ -321,46 +323,43 @@ export function ConnectionsPane() {
               onClick={() => connMut.remove.mutate(connection.name, { onError: err("Remove failed") })}>
               Remove
             </button>
-          </div>
+          </div></article>
         );
-      }) : (
-        <div className="dim conn-empty">
-          None yet. <button className="btn sm" onClick={() => goAdd("pantheo")}>Link a Pantheo</button>
-        </div>
-      )}
-      <h4>Connected agents <span className="dim">— secure access for CLIs and integrations</span></h4>
-      {tokens.length ? tokens.map(pairing => {
+      })}
+      {shownTokens.map(pairing => {
         const definition = displayDefinition(pairing);
-        const liveNames = (pairing.agents || []).map(agent => agent.name || agent.id).join(", ");
-        const detail = pairing.connected
-          ? (liveNames ? `Live: ${liveNames}` : "Connected, registering…")
-          : "Offline";
+        const agents = sourceAgents("pairing", pairing.id, pairing.agents);
         return (
-          <div key={pairing.token} className="conn-row">
-            <AgentMark definition={definition} small />
-            <span className={`conn-dot ${pairing.connected ? "on" : "off"}`} />
+          <article key={pairing.id} className="agent-source-card">
+          {agents.length !== 1 && <div className="conn-row agent-source-head">
             <div className="conn-row-main">
               <div className="conn-name">
                 {pairing.name}
-                <span className="conn-badge">{definition?.shortTitle || "Agent"}</span>
+                <span className="conn-badge">{agents.length ? `${agents.length} agents · shared access` : definition?.shortTitle || "Agent"}</span>
               </div>
-              <div className="conn-url mono">{pairing.token.slice(0, 10)}…{pairing.token.slice(-4)}</div>
-              <div className="conn-url">{detail}</div>
             </div>
-            <button className="btn sm" onClick={() => copyText(pairing.token, "Token copied")}>Copy</button>
+          </div>}
+          <AgentsDirectory agents={agents} typeLabel={definition?.shortTitle} emptyMessage={pairing.connected
+            ? "Connected. Waiting for this integration to register an agent."
+            : "Not connected yet. Use the access key below to finish setup."} />
+          <div className="agent-source-actions">
+            <button className="btn sm" title="Copy access key" onClick={() => copyText(pairing.token, "Token copied")}>Copy key</button>
             <button className="btn sm" onClick={() => manageSource("pairing", pairing.id)}>Manage access</button>
             <button className="btn sm danger"
               onClick={() => pairMut.revoke.mutate(pairing.token, { onError: err("Revoke failed") })}>
               Revoke
             </button>
-          </div>
+          </div></article>
         );
-      }) : (
+      })}
+      {!!otherAgents.length && <div className="agent-source-card"><AgentsDirectory agents={otherAgents} /></div>}
+      {!shownConns.length && !shownTokens.length && !otherAgents.length && !infoQuery.isError && !pairingQuery.isError && (
         <div className="dim conn-empty">
-          No agent access created. <button className="btn sm" onClick={() => goAdd()}>Add an agent</button>
+          {infoQuery.isLoading || pairingQuery.isLoading ? "Loading agents…" : needle ? "No matching agents or integrations." : "No agents connected yet."}
+          {!needle && !infoQuery.isLoading && !pairingQuery.isLoading && <button className="btn sm" onClick={() => goAdd()}>Add an agent</button>}
         </div>
       )}
-    </>
+    </section>
   );
 
   const addPicker = (
@@ -465,7 +464,7 @@ export function ConnectionsPane() {
             )}
             <button className={`btn${guide ? "" : " primary"}`}
               onClick={() => { setIssued(null); setAddKind(null); setTab("list"); }}>
-              View connections
+              View agents
             </button>
           </div>
         </div>
@@ -519,16 +518,16 @@ export function ConnectionsPane() {
     <div className="conn-overlay" id="conn-overlay"
       onClick={event => { if (event.target === event.currentTarget) ui.openPanel(null); }}>
       <div ref={panelRef} className="conn-panel" id="conn-panel" role="dialog" aria-modal="true"
-        aria-label="Connections" tabIndex={-1}>
+        aria-label="Agents" tabIndex={-1}>
         <div className="conn-head">
-          <b>Connections</b>
-          <button className="btn sm" aria-label="Close connections"
+          <b>Agents</b>
+          <button className="btn sm" aria-label="Close agents"
             onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
         </div>
         <div className="conn-tabs" role="tablist">
           <button role="tab" aria-selected={tab === "list"}
             className={`conn-tab${tab === "list" ? " active" : ""}`}
-            onClick={() => { setTab("list"); setAccessSource(null); setAccessAgent(null); }}>Connections</button>
+            onClick={() => { setTab("list"); setAccessSource(null); setAccessAgent(null); }}>Your agents</button>
           <button role="tab" aria-selected={tab === "add"}
             className={`conn-tab${tab === "add" ? " active" : ""}`}
             onClick={() => goAdd()}>Add agent</button>
@@ -553,12 +552,4 @@ function BackButton({ onClick, label }: { onClick: () => void; label: string }) 
       <Icon name="chevron-left" /> {label}
     </button>
   );
-}
-
-function useRenameInstanceLocal() {
-  const rename = useRenameInstance();
-  return (name: string) => rename.mutate(name, {
-    onSuccess: () => toast("Renamed — relinking so endpoints pick it up…", { variant: "ok" }),
-    onError: error => toast("Rename failed: " + (error as Error).message, { variant: "warn" }),
-  });
 }

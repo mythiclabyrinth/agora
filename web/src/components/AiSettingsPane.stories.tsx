@@ -3,6 +3,7 @@ import { expect, fn, userEvent, within } from "storybook/test";
 import { fixtureMe } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
 import { AiSettingsPane } from "./AiSettingsPane";
+import { SearchPane } from "./SearchPane";
 
 const emptySettings = {
   voice: {
@@ -175,11 +176,41 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+export const MemberAppearanceOnly: Story = {
+  parameters: { apiRoutes: { "GET /api/me": { ...fixtureMe, instance_admin: false } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("Make yourself at home")).resolves.toBeVisible();
+    expect(canvas.queryByRole("tab", { name: "Features" })).not.toBeInTheDocument();
+    expect(canvas.queryByRole("tab", { name: "Credentials" })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("radio", { name: /Light/ }));
+    expect(document.documentElement.dataset.theme).toBe("light");
+  },
+};
+
+export const SearchOverSettings: Story = {
+  parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/groups": { groups: [] } } },
+  render: () => <><AiSettingsPane /><SearchPane /></>,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("Make yourself at home")).resolves.toBeVisible();
+    await userEvent.keyboard("{Control>}k{/Control}");
+    const input = await canvas.findByPlaceholderText("Search messages, channels, groups…");
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}");
+    expect(useUiState.getState().searchOpen).toBe(false);
+    expect(useUiState.getState().panel).toBe("settings");
+    await userEvent.keyboard("{Escape}");
+    expect(useUiState.getState().panel).toBeNull();
+  },
+};
+
 export const Empty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("Settings")).resolves.toBeVisible();
     await expect(canvas.findByRole("tab", { name: "Features" })).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("tab", { name: "Features" }));
     await expect(canvas.findByDisplayValue(/Anthropic \(API key\)/)).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: "Credentials" }));
     await expect(canvas.findByText("API keys")).resolves.toBeVisible();
@@ -265,7 +296,12 @@ export const Configured: Story = {
   },
 };
 
-export const ConfiguredFeatures: Story = { parameters: Configured.parameters };
+export const ConfiguredFeatures: Story = {
+  parameters: Configured.parameters,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("tab", { name: "Features" }));
+  },
+};
 export const ConfiguredCredentials: Story = {
   parameters: Configured.parameters,
   play: async ({ canvasElement }) => {

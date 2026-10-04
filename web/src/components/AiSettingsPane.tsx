@@ -17,6 +17,9 @@ import {
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
+import { AppearancePicker } from "./AppearancePicker";
+import { useDialogFocus } from "../hooks/useDialogFocus";
+import { WorkspaceSettings } from "./WorkspaceSettings";
 
 function SectionHead({
   title, enabled, onEnabled,
@@ -543,33 +546,45 @@ export function AiSettingsPane() {
   const ui = useUiState();
   const me = useMe().data;
   const open = ui.panel === "settings";
-  const q = useInstanceAi(open && !!me?.instance_admin);
-  const [tab, setTab] = useState<"features" | "credentials">("features");
+  const [tab, setTab] = useState<"appearance" | "workspace" | "features" | "credentials">("appearance");
+  const admin = !!me?.instance_admin;
+  const activeTab = admin ? tab : "appearance";
+  const aiTab = activeTab === "features" || activeTab === "credentials";
+  const q = useInstanceAi(open && admin && aiTab);
+  const dialogRef = useDialogFocus(open, () => ui.openPanel(null));
 
   if (!open) return null;
 
   return (
     <div className="conn-overlay" id="settings-overlay"
       onClick={e => { if (e.target === e.currentTarget) ui.openPanel(null); }}>
-      <div className="conn-panel" id="settings-panel">
+      <div ref={dialogRef} className="conn-panel" id="settings-panel" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1}>
         <div className="conn-head">
           <b>Settings</b>
           <button className="btn sm" aria-label="Close settings" onClick={() => ui.openPanel(null)}><Icon name="x" /></button>
         </div>
-        <div className="conn-tabs" role="tablist">
-          <button type="button" role="tab" className={`conn-tab${tab === "features" ? " active" : ""}`}
+        <div className="conn-tabs" role="tablist" aria-label="Settings sections">
+          <button type="button" role="tab" className={`conn-tab${activeTab === "appearance" ? " active" : ""}`}
+            aria-selected={activeTab === "appearance"} onClick={() => setTab("appearance")}>
+            Appearance
+          </button>
+          {admin && <button type="button" role="tab" className={`conn-tab${tab === "workspace" ? " active" : ""}`}
+            aria-selected={tab === "workspace"} onClick={() => setTab("workspace")}>Workspace</button>}
+          {admin && <button type="button" role="tab" className={`conn-tab${tab === "features" ? " active" : ""}`}
             aria-selected={tab === "features"} onClick={() => setTab("features")}>
             Features
-          </button>
-          <button type="button" role="tab" className={`conn-tab${tab === "credentials" ? " active" : ""}`}
+          </button>}
+          {admin && <button type="button" role="tab" className={`conn-tab${tab === "credentials" ? " active" : ""}`}
             aria-selected={tab === "credentials"} onClick={() => setTab("credentials")}>
             Credentials
-          </button>
+          </button>}
         </div>
         <div className="conn-body">
-          {q.isLoading && <div className="dim conn-empty">Loading…</div>}
-          {q.isError && <div className="dim conn-empty">Couldn&apos;t load AI settings.</div>}
-          {q.data && tab === "features" && (
+          {activeTab === "appearance" && <AppearancePicker />}
+          {activeTab === "workspace" && <WorkspaceSettings />}
+          {aiTab && q.isLoading && <div className="dim conn-empty">Loading…</div>}
+          {aiTab && q.isError && <div className="dim conn-empty">Couldn&apos;t load AI settings. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
+          {q.data && activeTab === "features" && (
             <>
               <p className="conn-hint">
                 Choose providers and models. Keys and Codex OAuth live under Credentials.
@@ -579,7 +594,7 @@ export function AiSettingsPane() {
               <SearchFeatures data={q.data.search} />
             </>
           )}
-          {q.data && tab === "credentials" && (
+          {q.data && activeTab === "credentials" && (
             <CredentialsTab data={q.data} />
           )}
         </div>

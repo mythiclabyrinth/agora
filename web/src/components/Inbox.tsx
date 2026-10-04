@@ -47,6 +47,7 @@ export function Inbox() {
     <header className="ago-inbox-nav">
       <button className="btn sm ago-back" title="Back to groups" aria-label="Back to groups"
         onClick={() => ui.backToGroups()}><Icon name="chevron-left" /></button>
+      <div className="inbox-heading"><Icon name="messages-square" /><h1>Inbox</h1></div>
       <nav className="ago-inbox-tabs" role="tablist" aria-label="Inbox tabs">
         <button role="tab" aria-selected={tab === "unreads"} onClick={() => switchTab("unreads")}>Unreads {showTabCount && unreadTotal ? `(${unreadTotal})` : ""}</button>
         <button role="tab" aria-selected={tab === "threads"} onClick={() => switchTab("threads")}>Threads</button>

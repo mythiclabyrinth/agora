@@ -57,3 +57,18 @@ export const PopulatedWorkspace: Story = {
     }))] },
   } },
 };
+
+export const SearchPeople: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText(/@tom · you/)).resolves.toBeVisible();
+    const search = canvas.getByRole("searchbox", { name: "Search people" });
+    await userEvent.type(search, "no-such-person");
+    await expect(canvas.findByText(/No matching people/)).resolves.toBeVisible();
+    expect(canvas.queryByText(/@tom · you/)).not.toBeInTheDocument();
+    await userEvent.clear(search);
+    await expect(canvas.findByText(/@tom · you/)).resolves.toBeVisible();
+    // Filtering the directory never hides the separate invitation workflow.
+    expect(canvas.getByPlaceholderText("person@example.com")).toBeInTheDocument();
+  },
+};

@@ -13,6 +13,7 @@ import { fileUrl, humanSize } from "../lib/files";
 import { toast } from "../lib/toast";
 import { useJump } from "../state/jump";
 import { useUiState } from "../state/ui";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type Item =
   | { kind: "ask" }
@@ -103,6 +104,10 @@ export function SearchPane() {
   const inputRef = useRef<HTMLInputElement>(null);
   const askAi = useAskAi();
   const more = useSearchMore();
+  const panelRef = useDialogFocus(ui.searchOpen, () => {
+    if (view === "ask") { setView("results"); setAnswer(null); setSel(0); inputRef.current?.focus(); }
+    else ui.setSearchOpen(false);
+  });
 
   const scope: SearchScope | undefined = scopeStr.startsWith("g:")
     ? { groupId: scopeStr.slice(2) }
@@ -200,18 +205,13 @@ export function SearchPane() {
   // Global shortcuts: ⌘K toggles; Esc/arrows/Enter while open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         ui.setSearchOpen(!useUiState.getState().searchOpen);
         return;
       }
       if (!useUiState.getState().searchOpen) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        if (view === "ask") { setView("results"); setAnswer(null); setSel(0); inputRef.current?.focus(); }
-        else ui.setSearchOpen(false);
-        return;
-      }
       if (e.isComposing) return;
       if ((e.target as HTMLElement)?.id === "ago-search-scope") return;
       if (e.key === "ArrowDown") { e.preventDefault(); setSel(s => items.length ? (s + 1) % items.length : 0); return; }
@@ -238,7 +238,7 @@ export function SearchPane() {
   return (
     <div className="ago-search-overlay" id="ago-search-overlay"
       onClick={e => { if (e.target === e.currentTarget) ui.setSearchOpen(false); }}>
-      <div className="ago-search-panel">
+      <div className="ago-search-panel" ref={panelRef} role="dialog" aria-modal="true" aria-label="Search conversations" tabIndex={-1}>
         <div className="ago-search-bar">
           <Icon name="search" />
           <input id="ago-search-input" ref={inputRef} placeholder="Search messages, channels, groups…"

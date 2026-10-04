@@ -29,7 +29,8 @@ export function GroupOverview() {
   }
   const admin = g.role === "admin" || !!me?.instance_admin;
   const desc = (g.description || "").trim();
-  const chans = g.channels || [];
+  // Hidden channels are only discoverable in the dedicated Hidden section.
+  const chans = (g.channels || []).filter(channel => !channel.hidden);
 
   return (
     <div className="agora-main" id="agora-main">
