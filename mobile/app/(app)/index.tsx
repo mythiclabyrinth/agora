@@ -47,6 +47,7 @@ import { AgentStatus } from "../../src/components/AgentStatus";
 import { toastErr } from "../../src/components/Toast";
 import { colors, typography, space, radii, weight } from "../../src/lib/theme";
 import { usePrefs } from "../../src/state/prefs";
+import { useSession } from "../../src/state/session";
 import { EmptyState } from "../../src/components/EmptyState";
 import { brand, layout } from "../../src/lib/theme";
 import { WorkspaceHeader } from "../../src/components/WorkspaceHeader";
@@ -226,7 +227,7 @@ function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
   );
 }
 
-function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean }) {
+export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean }) {
   const collapsed = usePrefs((s) => !!s.collapsedGroups[group.id]);
   const toggleGroup = usePrefs((s) => s.toggleGroup);
   const [creating, setCreating] = useState(false);
@@ -298,28 +299,30 @@ function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean 
   if (unreadsOnly && visibleChannels.length === 0) return null;
 
   return (
-    <View style={styles.groupCard}>
-      <Pressable
-        style={styles.groupHead}
-        accessibilityRole="button"
-        accessibilityState={{ expanded }}
-        onPress={() => toggleGroup(group.id)}
-        onLongPress={onLongPress}
-        delayLongPress={350}
-      >
-        <View style={styles.groupMonogram}>
-          <Text style={styles.groupInitial}>{group.name.slice(0, 1).toUpperCase()}</Text>
-        </View>
-        <View style={styles.channelCopy}>
-          <Text style={styles.groupName} numberOfLines={1} maxFontSizeMultiplier={1.5}>{group.name}</Text>
-          <Text style={styles.groupMeta}>{shownChannels.length} {shownChannels.length === 1 ? "channel" : "channels"}</Text>
-        </View>
-        <Icon icon={expanded ? ChevronDown : ChevronRight} size={16} color={colors.faint} />
-        {!expanded ? <UnreadBadge count={unread} mentions={mentions} /> : null}
+    <View style={[styles.groupCard, (expanded || creating) && styles.groupCardExpanded]}>
+      <View style={[styles.groupHead, (expanded || creating) && styles.groupHeadExpanded]}>
+        <Pressable
+          style={styles.groupToggle}
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          onPress={() => toggleGroup(group.id)}
+          onLongPress={onLongPress}
+          delayLongPress={350}
+        >
+          <View style={styles.groupMonogram}>
+            <Text style={styles.groupInitial}>{group.name.slice(0, 1).toUpperCase()}</Text>
+          </View>
+          <View style={styles.channelCopy}>
+            <Text style={styles.groupName} numberOfLines={1} maxFontSizeMultiplier={1.5}>{group.name}</Text>
+            <Text style={styles.groupMeta}>{shownChannels.length} {shownChannels.length === 1 ? "channel" : "channels"}</Text>
+          </View>
+          <Icon icon={expanded ? ChevronDown : ChevronRight} size={16} color={colors.faint} />
+          {!expanded ? <UnreadBadge count={unread} mentions={mentions} /> : null}
+        </Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel={`Create channel in ${group.name}`} onPress={() => setCreating((c) => !c)} style={styles.plusBtn}>
           <Text maxFontSizeMultiplier={1.2} style={styles.plus}>＋</Text>
         </Pressable>
-      </Pressable>
+      </View>
       {creating ? (
         <InlineCreate
           placeholder="new channel name"
@@ -338,8 +341,8 @@ function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean 
       {expanded
         ? visibleChannels.map((c) => <ChannelRow key={c.id} group={group} channel={c} />)
         : null}
-      {expanded && group.channels.length === 0 ? (
-        <Text style={styles.emptyChannels}>No channels yet — tap ＋</Text>
+      {expanded && shownChannels.length === 0 ? (
+        <Text style={styles.emptyChannels}>{group.channels.length ? "All channels are hidden." : "No channels yet — tap ＋"}</Text>
       ) : null}
     </View>
   );
@@ -349,15 +352,44 @@ export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { g
   const [choosing, setChoosing] = useState(initialChoosing);
   const dms = useAgentDms();
   const open = useOpenAgentDm();
-  const channels = unreadsOnly ? group.channels.filter(c => (c.unread ?? 0) > 0) : group.channels;
+  // __dms is shared by all accounts; scope its persisted group key locally.
+  const baseUrl = useSession(s => s.session?.baseUrl ?? "");
+  const username = useSession(s => s.username);
+  const collapseKey = JSON.stringify([baseUrl, username, group.id]);
+  const collapsed = usePrefs(s => !!s.collapsedGroups[collapseKey]);
+  const toggleGroup = usePrefs(s => s.toggleGroup);
+  const shownChannels = group.channels.filter(c => !c.hidden);
+  const channels = unreadsOnly
+    ? shownChannels.filter(c => (c.unread ?? 0) > 0 || (c.mentions ?? 0) > 0)
+    : shownChannels;
+  const unread = shownChannels.reduce((n, c) => n + (c.unread ?? 0), 0);
+  const mentions = shownChannels.reduce((n, c) => n + (c.mentions ?? 0), 0);
+  const hasBody = !collapsed && channels.length > 0;
   const existing = new Set((dms.data?.conversations ?? []).map(dm => dm.agent_id));
   const available = (dms.data?.agents ?? []).filter(a => a.can_dm && !existing.has(a.id));
   return (
-    <View style={styles.groupCard}>
-      <View style={styles.groupHead}>
-        <Icon icon={Bot} size={16} color={colors.a1} />
-        <Text style={styles.groupName}>Direct messages</Text>
-        <Pressable accessibilityLabel="Start a direct message with an agent" onPress={() => setChoosing(true)} hitSlop={10} style={styles.plusBtn}>
+    <View style={[styles.groupCard, hasBody && styles.groupCardExpanded]}>
+      <View style={[styles.groupHead, hasBody && styles.groupHeadExpanded]}>
+        <Pressable
+          style={styles.groupToggle}
+          accessibilityRole="button"
+          accessibilityLabel="Direct messages"
+          accessibilityState={{ expanded: !collapsed, disabled: !username }}
+          accessibilityValue={collapsed ? { text: `${unread} unread messages, ${mentions} mentions` } : undefined}
+          disabled={!username}
+          onPress={() => toggleGroup(collapseKey)}
+        >
+          <Icon icon={Bot} size={16} color={colors.a1} />
+          <View style={styles.channelCopy}>
+            <Text style={styles.groupName} numberOfLines={1}>Direct messages</Text>
+            {!collapsed && !channels.length ? <Text style={styles.groupMeta}>
+              {unreadsOnly && shownChannels.length ? "No unread direct messages" : "Start a conversation with ＋"}
+            </Text> : null}
+          </View>
+          <Icon icon={collapsed ? ChevronRight : ChevronDown} size={16} color={colors.faint} />
+          {collapsed ? <UnreadBadge count={unread} mentions={mentions} /> : null}
+        </Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Start a direct message with an agent" onPress={() => setChoosing(true)} hitSlop={10} style={styles.plusBtn}>
           <Text maxFontSizeMultiplier={1.2} style={styles.plus}>＋</Text>
         </Pressable>
       </View>
@@ -378,12 +410,12 @@ export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { g
           </Pressable>
         </Pressable>
       </Modal>
-      {channels.map(channel => (
-        <Pressable key={channel.id} style={styles.channelRow} onPress={() => router.push({
+      {!collapsed && channels.map(channel => (
+        <Pressable key={channel.id} accessibilityRole="button" style={styles.channelRow} onPress={() => router.push({
           pathname: "/(app)/channel/[id]", params: { id: channel.id, name: channel.name, groupId: "__dms" },
         })}>
           <Text maxFontSizeMultiplier={1.3} style={styles.hash}>↔</Text><Text maxFontSizeMultiplier={1.5} style={[styles.channelName, (channel.unread ?? 0) > 0 && styles.channelUnread]}>{channel.name}</Text>
-          <UnreadBadge count={channel.unread ?? 0} />
+          <UnreadBadge count={channel.unread ?? 0} mentions={channel.mentions ?? 0} />
         </Pressable>
       ))}
     </View>
@@ -543,7 +575,7 @@ export default function Home() {
           <Text accessibilityRole="header" style={styles.sectionLabel}>YOUR GROUPS</Text>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Show unread channels only"
+            accessibilityLabel={unreadsOnly ? "Show all channels and direct messages" : "Show unread channels and direct messages only"}
             accessibilityState={{ selected: unreadsOnly }}
             style={[styles.filterChip, unreadsOnly ? styles.filterChipOn : null]}
             onPress={() => setUnreadsOnly(!unreadsOnly)}
@@ -568,9 +600,6 @@ export default function Home() {
         {groups.isSuccess && unreadsOnly && visibleGroups.length > 0 && !visibleGroups.some(group => group.channels.some(channel => !channel.hidden && ((channel.unread ?? 0) > 0 || (channel.mentions ?? 0) > 0))) ?
           <EmptyState icon={MessagesSquare} title="All caught up" description="Your channels are quiet. Switch back to see every conversation."
             action={{ label: "Show all channels", onPress: () => setUnreadsOnly(false) }} /> : null}
-        {groups.isSuccess && groups.data.length > 0 && unreadsOnly ? (
-          <Text style={styles.filterHint}>Showing unread channels only.</Text>
-        ) : null}
         {groups.isError ? (
           <Text style={styles.empty}>Couldn't load groups: {groups.error.message}</Text>
         ) : null}
@@ -639,27 +668,29 @@ const styles = StyleSheet.create({
   filterChipOn: { backgroundColor: colors.accentSoft, borderColor: colors.a1 },
   filterText: { color: colors.dim, fontSize: typography.meta.fontSize, fontWeight: weight.bold },
   filterTextOn: { color: colors.a1 },
-  filterHint: { color: colors.faint, fontSize: typography.caption.fontSize, textAlign: "center" },
   groupCard: {
     backgroundColor: colors.panel,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radii.lg,
-    paddingBottom: space.sm,
     overflow: "hidden",
   },
+  groupCardExpanded: { paddingBottom: space.sm },
+  groupToggle: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8 },
   groupHead: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     paddingHorizontal: space.md,
     paddingVertical: space.xs,
+  },
+  groupHeadExpanded: {
     marginBottom: 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
   chevron: { width: 14, alignItems: "center" },
-  groupName: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold, flex: 1 },
+  groupName: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.bold },
   plusBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   plus: { color: colors.dim, fontSize: typography.title.fontSize },
   channelRow: {
