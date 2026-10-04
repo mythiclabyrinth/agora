@@ -3,7 +3,7 @@
    an avatar and author line. */
 
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Pin, Star } from "lucide-react-native";
 import type { Session } from "@agora/core";
 import { FEATURES, useSelectOption } from "@agora/core";
@@ -92,6 +92,27 @@ function MessageOptions({ message }: { message: Message }) {
   );
 }
 
+/* A thread footer squeezed into a short bubble wrapped its meta column one
+   word per line. Roots with replies get a floor wide enough for the count
+   plus "Last reply at …"; named threads get a wider, still fixed, floor so a
+   useful prefix of the name shows before it truncates. Clamped to what the
+   bubble's maxWidth allows so narrow phones never overflow. */
+const THREAD_MIN = 248;
+const NAMED_THREAD_MIN = 300;
+
+export function threadBubbleMinWidth(
+  windowWidth: number,
+  fontScale: number,
+  { named, mine }: { named: boolean; mine: boolean },
+): number {
+  const floor = (named ? NAMED_THREAD_MIN : THREAD_MIN) * Math.min(Math.max(fontScale, 1), 1.2);
+  // Row padding is 12 per side; other people's bubbles also share the row
+  // with a 30pt avatar and an 8pt gap.
+  const rowInner = windowWidth - 24;
+  const available = rowInner * 0.86 - (mine ? 0 : 38);
+  return Math.round(Math.max(0, Math.min(floor, available)));
+}
+
 export function MessageItem({
   session,
   message,
@@ -111,6 +132,7 @@ export function MessageItem({
 }) {
   const { colors } = useAppTheme();
   const styles = useStyles();
+  const { width: windowWidth, fontScale } = useWindowDimensions();
   const username = useSession((s) => s.username);
   const mine =
     message.author_type === "user" &&
@@ -163,6 +185,9 @@ export function MessageItem({
       ) : null}
     </View>
   ) : null;
+  const threadMinWidth = threadFoot
+    ? { minWidth: threadBubbleMinWidth(windowWidth, fontScale, { named: !!threadName, mine }) }
+    : null;
 
   /* Long-press-to-star must NOT come from a Pressable wrapping the bubble:
      on the iOS new architecture a parent Pressable steals the pan gesture
@@ -199,7 +224,7 @@ export function MessageItem({
   if (mine) {
     return (
       <View style={[styles.row, styles.rowMine]}>
-        <View style={[styles.bubble, styles.bubbleMine]}>
+        <View style={[styles.bubble, styles.bubbleMine, threadMinWidth]}>
           {pressBackdrop}
           <MdText text={body} onPressIn={pressIn} onPress={openThread} onLongPress={longPress} />
           <ArtifactList artifacts={message.meta?.artifacts} />
@@ -236,7 +261,7 @@ export function MessageItem({
   return (
     <View style={styles.row}>
       {avatar}
-      <View style={[styles.bubble, styles.bubbleOther]}>
+      <View style={[styles.bubble, styles.bubbleOther, threadMinWidth]}>
         {pressBackdrop}
         <View style={styles.head}>
           <Text style={styles.author} numberOfLines={1}>

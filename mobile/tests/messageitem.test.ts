@@ -15,7 +15,7 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { ScrollView, StyleSheet, Text } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MessageItem } from "../src/components/MessageItem";
+import { MessageItem, threadBubbleMinWidth } from "../src/components/MessageItem";
 import { useSession } from "../src/state/session";
 import { ApiClient, ApiProvider } from "@agora/core";
 import type { Message } from "@agora/core";
@@ -198,6 +198,28 @@ test.each(["Named thread", null])("shows the compact reply time with thread name
   expect(replyTime.props.numberOfLines).toBe(2);
   expect(replyTime.props.maxFontSizeMultiplier).toBe(1.2);
   expect(replyTime.props.accessibilityLabel).toContain(String(previousYear));
+});
+
+test("named threads get a wider bubble floor than unnamed ones, clamped to the screen", () => {
+  const unnamed = threadBubbleMinWidth(393, 1, { named: false, mine: true });
+  const named = threadBubbleMinWidth(393, 1, { named: true, mine: true });
+  expect(named).toBeGreaterThan(unnamed);
+  // A 320pt phone cannot fit the named floor beside an avatar; it clamps
+  // to the bubble's 86% maxWidth instead of overflowing.
+  expect(threadBubbleMinWidth(320, 1, { named: true, mine: false })).toBe(Math.round(296 * 0.86 - 38));
+});
+
+test("only bubbles with a thread footer get a minimum width", () => {
+  const minWidths = (m: Message) => render(m, undefined, () => {}).root
+    .findAll(node => String(node.type) === "View" && Array.isArray(node.props.style))
+    .map(node => StyleSheet.flatten(node.props.style).minWidth)
+    .filter((w): w is number => typeof w === "number" && w > 0);
+  expect(minWidths(message("no replies"))).toHaveLength(0);
+  const plain = minWidths({ ...message("/new"), reply_count: 3, last_reply_ts: 1_700_000_100 });
+  const named = minWidths({ ...message("/new"), alias: "Agora voice mode", reply_count: 3, last_reply_ts: 1_700_000_100 });
+  expect(plain).toHaveLength(1);
+  expect(named).toHaveLength(1);
+  expect(named[0]).toBeGreaterThan(plain[0]);
 });
 
 test("hides reply time when an older server omits it", () => {
