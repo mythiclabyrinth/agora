@@ -2,17 +2,8 @@ import { ThemedInput as TextInput } from "./ThemedInput";
 /* Native connection catalog and credential manager. The route owns only the
    app chrome; keeping this flow here makes every state available to Storybook. */
 
-import React, { useMemo, useState } from "react";
-import {
-  Image,
-  Pressable,
-  Share,
-  StyleSheet,
-  Switch,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import React, { useState } from "react";
+import { Image, Pressable, Share, Switch, Text, useWindowDimensions, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { openLinkOrThrow } from "../lib/openLink";
 import {
@@ -46,7 +37,8 @@ import { ArmedButton } from "./ArmedButton";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentStatus } from "./AgentStatus";
 import { toast, toastErr } from "./Toast";
-import { colors, mono } from "../lib/theme";
+import { mono } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { useSession } from "../state/session";
 
 type AddKind = "pantheo" | "coding" | "generic" | PairingKind;
@@ -131,6 +123,8 @@ function AgentMark({
   definition?: Definition;
   size?: number;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return definition ? (
     <Image
       source={definition.image}
@@ -149,6 +143,8 @@ function AgentMark({
 }
 
 function Back({ label, onPress }: { label: string; onPress: () => void }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return (
     <Pressable
       accessibilityRole="button"
@@ -171,6 +167,7 @@ function PrimaryButton({
   onPress: () => void;
   disabled?: boolean;
 }) {
+  const styles = useStyles();
   return (
     <Pressable
       accessibilityRole="button"
@@ -197,6 +194,8 @@ function Card({
   wide: boolean;
   onPress: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return (
     <Pressable
       accessibilityRole="button"
@@ -224,6 +223,8 @@ function Card({
 }
 
 function Credential({ label, value }: { label: string; value: string }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const copy = async () => {
     try {
       await Clipboard.setStringAsync(value);
@@ -274,6 +275,8 @@ export function AddAgentFlow({
   initialKind?: AddKind | null;
   initialIssued?: string | null;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const session = useSession((s) => s.session);
   const { width } = useWindowDimensions();
   const wide = width >= 700;
@@ -625,6 +628,8 @@ export function AddAgentFlow({
 }
 
 function NativeAgentAccess({ agent, onBack }: { agent: AgentSource["agents"][number]; onBack: () => void }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const policy=useAgentDmPolicy(agent.id);
   const users=useUsers();
   const update=useUpdateAgentDmPolicy(agent.id);
@@ -647,6 +652,8 @@ function NativeAgentAccess({ agent, onBack }: { agent: AgentSource["agents"][num
 }
 
 export function AgentConnectionsList() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const admin = useSession((s) => s.instanceAdmin);
   const connections = useConnections(true, admin);
   // Deliberate order: enabled first, polling second.
@@ -843,7 +850,7 @@ export function AgentConnectionsList() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   flow: { gap: 14 },
   backRow:{minHeight:44,flexDirection:"row",alignItems:"center",gap:4},
   accessBackText:{color:colors.a1,fontSize:14,fontWeight:"700"},
@@ -1082,4 +1089,4 @@ const styles = StyleSheet.create({
   },
   token: { ...mono, color: colors.a1, fontSize: 10.5 },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 18 },
-});
+}));

@@ -1,6 +1,7 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
-import { colors } from "../lib/theme";
+import { Pressable, Text, View } from "react-native";
+
+import { createThemedStyles } from "../lib/useTheme";
 
 export const SERVER_SETUP_GUIDE_URL =
   "https://tomjose92.github.io/agora/self-hosting/";
@@ -17,6 +18,7 @@ export function ServerSetupHelp({
 }: {
   onOpenGuide: (url: string) => void;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.card}>
       <Text style={styles.title}>Don&apos;t have a server yet?</Text>
@@ -36,7 +38,7 @@ export function ServerSetupHelp({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   card: {
     backgroundColor: colors.panelStrong,
     borderWidth: 1,
@@ -50,4 +52,4 @@ const styles = StyleSheet.create({
   action: { alignSelf: "flex-start", paddingVertical: 4 },
   actionPressed: { opacity: 0.65 },
   actionText: { color: colors.a1, fontSize: 13.5, fontWeight: "700" },
-});
+}));

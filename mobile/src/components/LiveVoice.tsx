@@ -4,11 +4,12 @@
    every visual state reachable from Storybook without a recorder. */
 
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { Headphones, Mic, MicOff } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "./Icon";
-import { colors, typography, radii, space } from "../lib/theme";
+import { typography, radii, space } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 
 export type LiveStatus = "starting" | "listening" | "recording" | "thinking" | "speaking" | "error";
 
@@ -46,6 +47,8 @@ export function LiveVoiceView({
   onToggleMute: () => void;
   onEnd: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const insets = useSafeAreaInsets();
 
   const db = meteringDb ?? -60;
@@ -117,7 +120,7 @@ export function LiveVoiceView({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg, alignItems: "center" },
   channelRow: { flexDirection: "row", alignItems: "center", gap: 7 },
   channel: { color: colors.dim, fontSize: 14.5, fontWeight: "700" },
@@ -178,4 +181,4 @@ const styles = StyleSheet.create({
   muteTextActive: { color: colors.red },
   disabledBtn: { opacity: 0.6 },
   endText: { color: colors.text, fontSize: 15.5, fontWeight: "700" },
-});
+}));

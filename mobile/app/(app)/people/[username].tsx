@@ -1,17 +1,20 @@
 import React, { useMemo, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { ChevronRight, Plus, User, X } from "lucide-react-native";
 import { useAddMember, useAllMemberships, useGroups, useMe, useRemoveMember, useUsers } from "@agora/core";
 import type { Group, InstanceMembership } from "@agora/core";
 import { Icon } from "../../../src/components/Icon";
 import { toast, toastErr } from "../../../src/components/Toast";
-import { colors, typography, weight } from "../../../src/lib/theme";
+import { typography, weight } from "../../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
 import { RoleDropdown } from "../../../src/components/RoleDropdown";
 
 type ScopeChoice = { groupId: string; channelId: string | null; label: string };
 
 export default function PersonAccessScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const { username = "" } = useLocalSearchParams<{ username: string }>();
   const me = useMe();
   const users = useUsers(me.data?.instance_admin === true);
@@ -92,6 +95,8 @@ export default function PersonAccessScreen() {
 }
 
 function ScopePicker({ group, existing, onPick, onConvert }: { group: Group; existing: InstanceMembership[]; onPick: (scope: ScopeChoice) => void; onConvert: (channelId: string, role: "member" | "admin") => void }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const wholeGroup = existing.find(row => !row.channel_id);
   const existingChannels = new Set(existing.map(row => row.channel_id));
   return <><Text style={styles.addTitle}>Choose access in {group.name}</Text>
@@ -109,9 +114,10 @@ function ScopePicker({ group, existing, onPick, onConvert }: { group: Group; exi
   </>;
 }
 
-function RoleChoice({ label, detail, onPress }: { label: string; detail: string; onPress: () => void }) { return <Pressable style={styles.roleChoice} onPress={onPress}><Text style={styles.scopeName}>{label}</Text><Text style={styles.meta}>{detail}</Text></Pressable>; }
+function RoleChoice({ label, detail, onPress }: { label: string; detail: string; onPress: () => void }) {
+  const styles = useStyles(); return <Pressable style={styles.roleChoice} onPress={onPress}><Text style={styles.scopeName}>{label}</Text><Text style={styles.meta}>{detail}</Text></Pressable>; }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg }, content: { padding: 16, gap: 10, paddingBottom: 50 }, hint: { color: colors.dim },
   profile: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 6 }, avatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.panelStrong, alignItems: "center", justifyContent: "center" },
   title: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold }, meta: { color: colors.dim, fontSize: typography.caption.fontSize, marginTop: 2 },
@@ -124,4 +130,4 @@ const styles = StyleSheet.create({
   addCard: { borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panel, borderRadius: 14, padding: 12, gap: 7 }, addTitle: { color: colors.text, fontWeight: weight.bold, fontSize: typography.message.fontSize, marginBottom: 3 },
   option: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 12 }, optionDisabled: { opacity: 0.55 }, convertRow: { alignItems: "flex-end", paddingVertical: 5, paddingRight: 4 }, convertText: { color: colors.a2, fontSize: typography.caption.fontSize, fontWeight: weight.semibold },
   roleChoice: { borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10, padding: 12 }, cancel: { alignItems: "center", padding: 9 }, cancelText: { color: colors.dim, fontWeight: weight.semibold },
-});
+}));

@@ -27,7 +27,8 @@ import {
   type MapMessageArtifact,
   type MessageArtifact,
 } from "@agora/core";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import {
   filterMapPlaces,
   mapArtifactHtml,
@@ -54,6 +55,8 @@ function CoordinateMap({
   onPlace?: (place: MapArtifactPlace) => void;
   activeRegion?: string;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const detail = places !== undefined;
   const plottedPlaces = detail
     ? places
@@ -91,7 +94,7 @@ function CoordinateMap({
       style={styles.svg}
       accessibilityLabel="Itinerary map"
     >
-      <Rect width="100" height="100" rx="4" fill="#0b1220" />
+      <Rect width="100" height="100" rx="4" fill={colors.bg} />
       {[25, 50, 75].map((n) => (
         <Line
           key={`h${n}`}
@@ -99,7 +102,7 @@ function CoordinateMap({
           x2="100"
           y1={n}
           y2={n}
-          stroke="#283348"
+          stroke={colors.borderStrong}
           strokeWidth=".35"
         />
       ))}
@@ -110,7 +113,7 @@ function CoordinateMap({
           y2="100"
           x1={n}
           x2={n}
-          stroke="#283348"
+          stroke={colors.borderStrong}
           strokeWidth=".35"
         />
       ))}
@@ -141,7 +144,7 @@ function CoordinateMap({
                   x={point.x}
                   y={point.y + 1.5}
                   textAnchor="middle"
-                  fill="#071019"
+                  fill={colors.bg}
                   fontSize="4"
                   fontWeight="700"
                 >
@@ -199,6 +202,7 @@ function FilterChips({
   value: string;
   onChange: (id: string) => void;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.filterRow}>
       <Text style={styles.filterLabel}>{label}</Text>
@@ -238,6 +242,8 @@ export function MapViewer({
   initialRegion?: string;
   onClose: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const { data } = artifact;
   const styleUrl = useMe().data?.map_style_url?.trim() || "";
   const [filters, setFilters] = useState<MapFilters>({
@@ -273,9 +279,10 @@ export function MapViewer({
   useEffect(() => setMapFailed(false), [styleUrl]);
   const detail =
     places.find((place) => place.id === selectedId) ?? places[0] ?? null;
+  const theme = useAppTheme();
   const mapHtml = useMemo(
-    () => (styleUrl ? mapArtifactHtml(data, styleUrl) : ""),
-    [data, styleUrl],
+    () => (styleUrl ? mapArtifactHtml(data, styleUrl, theme) : ""),
+    [data, styleUrl, theme],
   );
   const mapSource = useMemo(
     () => ({ html: mapHtml, baseUrl: "https://unpkg.com/" }),
@@ -469,6 +476,8 @@ export function MapArtifactCard({
 }: {
   artifact: MapMessageArtifact;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [openRegion, setOpenRegion] = useState<string | null>(null);
   const { data } = artifact;
   return (
@@ -521,6 +530,7 @@ export function MapArtifactCard({
 }
 
 export function ArtifactList({ artifacts }: { artifacts?: MessageArtifact[] }) {
+  const styles = useStyles();
   if (!artifacts?.length) return null;
   return (
     <View style={styles.list}>
@@ -541,14 +551,14 @@ export function ArtifactList({ artifacts }: { artifacts?: MessageArtifact[] }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   list: { gap: 8, marginTop: 7 },
   card: {
     borderWidth: 1,
     borderColor: colors.borderStrong,
     borderRadius: 12,
     overflow: "hidden",
-    backgroundColor: "#0b0f18",
+    backgroundColor: colors.bg,
   },
   cardHead: {
     flexDirection: "row",
@@ -618,7 +628,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.borderStrong,
   },
-  web: { flex: 1, backgroundColor: "#0b1220" },
+  web: { flex: 1, backgroundColor: colors.bg },
   details: {
     gap: 8,
     padding: 13,
@@ -647,4 +657,4 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 5,
   },
-});
+}));

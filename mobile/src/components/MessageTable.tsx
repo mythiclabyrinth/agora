@@ -23,7 +23,8 @@ import {
   type Message,
   type MessageTableColumn,
 } from "@agora/core";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import {
   INTERACTIVE_COL_GUTTER,
   MIN_COL,
@@ -59,6 +60,8 @@ function parseCommitValue(
 }
 
 export function MessageTable({ message }: { message: Message }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const update = useUpdateTableCell();
   const act = useActOnTableRow();
   const submit = useSubmitTable();
@@ -325,7 +328,7 @@ export function MessageTable({ message }: { message: Message }) {
                               disabled={update.isPending || busy}
                               hitSlop={6}
                             >
-                              <Icon icon={Check} size={14} color="#6ee7a0" />
+                              <Icon icon={Check} size={14} color={colors.green} />
                             </Pressable>
                           ) : null}
                         </View>
@@ -419,7 +422,7 @@ export function MessageTable({ message }: { message: Message }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   wrap: {
     marginTop: 8,
     padding: 10,
@@ -427,7 +430,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 10,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.accentWash,
     alignSelf: "stretch",
   },
   scroll: {
@@ -464,7 +467,7 @@ const styles = StyleSheet.create({
   },
   editInput: { flex: 1, minWidth: 0 },
   inputInvalid: {
-    borderColor: "rgba(239,68,68,0.55)",
+    borderColor: colors.dangerBorder,
   },
   locked: {
     color: colors.faint,
@@ -477,13 +480,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
   },
-  cellErr: { color: "#fca5a5", fontSize: 11, fontWeight: "500", paddingHorizontal: 4 },
+  cellErr: { color: colors.red, fontSize: 11, fontWeight: "500", paddingHorizontal: 4 },
   confirmBtn: {
     width: 28,
     height: 28,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "rgba(72,187,120,0.45)",
+    borderColor: colors.successBorder,
     backgroundColor: colors.panelStrong,
     alignItems: "center",
     justifyContent: "center",
@@ -513,15 +516,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   buttonPrimary: {
-    backgroundColor: "rgba(72,187,120,0.18)",
-    borderColor: "rgba(72,187,120,0.45)",
+    backgroundColor: colors.successSoft,
+    borderColor: colors.successBorder,
   },
   buttonPressed: {
-    backgroundColor: "rgba(72,187,120,0.22)",
-    borderColor: "rgba(72,187,120,0.55)",
+    backgroundColor: colors.successSoft,
+    borderColor: colors.successBorder,
   },
   buttonDisabled: { opacity: 0.45 },
   buttonLabel: { color: colors.text, fontSize: 12.5, fontWeight: "600" },
-  buttonPrimaryLabel: { color: "#6ee7a0" },
+  buttonPrimaryLabel: { color: colors.green },
   doneBy: { color: colors.faint, fontSize: 12 },
-});
+}));

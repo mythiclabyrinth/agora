@@ -41,7 +41,8 @@ import type { Session } from "@agora/core";
 import { fmtTs } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
 import { SheetHeader } from "../../src/components/SheetHeader";
-import { colors, typography, weight, surfaces } from "../../src/lib/theme";
+import { typography, weight } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 
 /** Value that lags `value` by `ms` — keeps /api/search off the hot path
     while the user is still typing. */
@@ -69,6 +70,7 @@ function ScopeSheet({
   onPick: (s: Scope | null) => void;
   onClose: () => void;
 }) {
+  const styles = useStyles();
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
       <Pressable accessible={false} style={styles.sheetBackdrop} onPress={onClose}>
@@ -128,6 +130,7 @@ function FileSheet({
   onPick: (f: FileFilter) => void;
   onClose: () => void;
 }) {
+  const styles = useStyles();
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
       <Pressable accessible={false} style={styles.sheetBackdrop} onPress={onClose}>
@@ -200,6 +203,7 @@ function openHit(m: SearchMessageHit) {
 /** Server snippets wrap matched terms in U+0001…U+0002; odd split segments
     are the matches. */
 function Snippet({ text }: { text: string }) {
+  const styles = useStyles();
   const parts = previewText(text).split(/[\u0001\u0002]/);
   return (
     <Text style={styles.snippet} numberOfLines={2}>
@@ -225,6 +229,7 @@ function MessageRow({
   session: Session;
   badge?: number;
 }) {
+  const styles = useStyles();
   const atts = hit.attachments ?? [];
   return (
     <Pressable style={styles.card} onPress={() => openHit(hit)}>
@@ -255,6 +260,7 @@ function AnswerText({
   answer: string;
   sources: SearchMessageHit[];
 }) {
+  const styles = useStyles();
   const parts = answer.split(/(\[\d+\])/g);
   return (
     <Text style={styles.askAnswer}>
@@ -273,6 +279,8 @@ function AnswerText({
 }
 
 export default function SearchScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [input, setInput] = useState("");
   const query = useDebounced(input.trim(), 250);
 
@@ -605,7 +613,7 @@ export default function SearchScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   list: { flex: 1 },
   content: { padding: 14, gap: 10, paddingBottom: 40 },
@@ -736,4 +744,4 @@ const styles = StyleSheet.create({
   askError: { color: colors.red, fontSize: typography.bodySm.fontSize },
   cite: { color: colors.a1, fontWeight: weight.bold },
   citeBadge: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
-});
+}));

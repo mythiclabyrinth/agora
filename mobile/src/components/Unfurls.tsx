@@ -8,10 +8,12 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
 import type { Message } from "@agora/core";
 import { openLink } from "../lib/openLink";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles } from "../lib/useTheme";
 import { hostOf } from "./Sources";
 
 export function Unfurls({ message }: { message: Message }) {
+  const styles = useStyles();
   const unfurls = message.meta?.unfurls ?? [];
   if (!unfurls.length) return null;
   return (
@@ -40,7 +42,7 @@ export function Unfurls({ message }: { message: Message }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   list: { gap: 8, marginTop: 8 },
   card: {
     flexDirection: "row",
@@ -50,7 +52,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: colors.borderStrong,
     borderRadius: 6,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.accentWash,
   },
   body: { flex: 1, minWidth: 0, gap: 2 },
   site: { color: colors.faint, fontSize: 11 },
@@ -63,4 +65,4 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
   },
-});
+}));

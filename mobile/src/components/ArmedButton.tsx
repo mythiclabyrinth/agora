@@ -2,8 +2,9 @@
    ("Sure?"), a second tap within 5s executes, otherwise it disarms. */
 
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, type ViewStyle } from "react-native";
-import { colors } from "../lib/theme";
+import { Pressable, Text, type ViewStyle } from "react-native";
+
+import { createThemedStyles } from "../lib/useTheme";
 
 export function ArmedButton({
   label,
@@ -21,6 +22,7 @@ export function ArmedButton({
   /** Visually smaller; keeps a ~44pt touch target via hitSlop. */
   compact?: boolean;
 }) {
+  const styles = useStyles();
   const [armed, setArmed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -61,7 +63,7 @@ export function ArmedButton({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   btn: {
     minHeight: 44,
     justifyContent: "center",
@@ -82,4 +84,4 @@ const styles = StyleSheet.create({
   armed: { backgroundColor: colors.dangerSoft, borderColor: colors.red },
   text: { color: colors.red, fontSize: 12.5, fontWeight: "600" },
   compactText: { fontSize: 11.5 },
-});
+}));

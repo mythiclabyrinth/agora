@@ -13,7 +13,8 @@ import { FileText } from "lucide-react-native";
 import { authHeaders, fileUrl, type Session } from "@agora/core";
 import type { Attachment } from "@agora/core";
 import { fmtSize } from "@agora/core";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { Icon } from "./Icon";
 import { toastErr } from "./Toast";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -28,6 +29,8 @@ export async function downloadAndShare(session: Session, att: Attachment) {
 }
 
 function FileChip({ session, att }: { session: Session; att: Attachment }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [busy, setBusy] = useState(false);
   return (
     <Pressable
@@ -60,6 +63,7 @@ const NATIVE_VIDEO = /^video\/(mp4|quicktime|webm)(?:;|$)/i;
 export function VideoAttachment({ session, att, onError }: {
   session: Session; att: Attachment; onError: () => void;
 }) {
+  const styles = useStyles();
   const player = useVideoPlayer({ uri: fileUrl(session, att.id), headers: authHeaders(session) });
   useEventListener(player, "statusChange", ({ status }) => { if (status === "error") onError(); });
   return <VideoView player={player} style={styles.video} nativeControls contentFit="contain" />;
@@ -75,6 +79,7 @@ export function Attachments({
   /** Story/testing seam for deterministic inline images; production omits it. */
   imageSource?: (attachment: Attachment) => { uri: string; headers?: Record<string, string> };
 }) {
+  const styles = useStyles();
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [failedVideos, setFailedVideos] = useState<Set<string>>(new Set());
   const images = React.useMemo(() => attachments.filter(att => att.mime.startsWith("image/")), [attachments]);
@@ -122,7 +127,7 @@ export function Attachments({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   wrap: { gap: 8, marginTop: 6 },
   image: {
     width: 220,
@@ -146,4 +151,4 @@ const styles = StyleSheet.create({
   },
   name: { color: colors.text, fontSize: 13, fontWeight: "600" },
   size: { color: colors.dim, fontSize: 11.5 },
-});
+}));

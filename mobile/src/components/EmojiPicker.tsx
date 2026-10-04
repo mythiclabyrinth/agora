@@ -5,9 +5,10 @@ import { ThemedInput as TextInput } from "./ThemedInput";
    whether a pick closes the sheet. */
 
 import React, { useMemo, useState } from "react";
-import { FlatList, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Modal, Pressable, Text, View } from "react-native";
 import { EMOJI_CATEGORIES, EmojiEntry } from "@agora/core";
-import { colors, surfaces } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { usePrefs } from "../state/prefs";
 
 const COLS = 8;
@@ -45,6 +46,8 @@ export function EmojiPicker({
   onPick: (emoji: string) => void;
   onClose: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [query, setQuery] = useState("");
   const recent = usePrefs((s) => s.recentEmoji);
   const rememberEmoji = usePrefs((s) => s.rememberEmoji);
@@ -103,7 +106,7 @@ export function EmojiPicker({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   backdrop: {
     flex: 1,
     backgroundColor: colors.scrim,
@@ -146,4 +149,4 @@ const styles = StyleSheet.create({
   },
   emoji: { fontSize: 26 },
   empty: { color: colors.dim, fontSize: 14, paddingVertical: 16, textAlign: "center" },
-});
+}));

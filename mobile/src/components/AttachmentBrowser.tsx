@@ -21,7 +21,8 @@ import {
   type AttachmentBrowserItem,
   type Session,
 } from "@agora/core";
-import { colors, typography, weight } from "../lib/theme";
+import { typography, weight } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { downloadAndShare } from "./Attachments";
 import { EmptyState } from "./EmptyState";
 import { Icon } from "./Icon";
@@ -41,6 +42,8 @@ export function AttachmentBrowser({
   /** Native Storybook/testing seam; production loads authenticated file URLs. */
   imageSource?: (item: AttachmentBrowserItem) => { uri: string; headers?: Record<string, string> };
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const query = useAttachments(channelId, threadId);
   const remove = useDeleteAttachment(channelId, threadId);
   const [failed, setFailed] = useState<Set<string>>(new Set());
@@ -119,7 +122,7 @@ export function AttachmentBrowser({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, padding: 24 },
   list: { padding: 14, gap: 10 },
   emptyList: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 24 },
@@ -135,4 +138,4 @@ const styles = StyleSheet.create({
   empty: { color: colors.dim, textAlign: "center" },
   retry: { color: colors.a1, fontWeight: weight.semibold },
   footer: { padding: 18 },
-});
+}));

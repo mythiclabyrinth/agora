@@ -61,7 +61,8 @@ import {
 } from "@agora/core";
 import { toOutgoing, type LocalFile } from "../api/voice";
 import { useKeyboardVisible } from "../lib/keyboard";
-import { colors, typography, weight, surfaces, composerSizing } from "../lib/theme";
+import { typography, weight, composerSizing } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { useAddressed, useMessageDrafts } from "@agora/core";
 import { usePrefs } from "../state/prefs";
 import { AgentAvatar } from "./AgentAvatar";
@@ -233,6 +234,8 @@ export function Composer({
   maxFileMb?: number;
   maxVideoMb?: number;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   /* Keep this render-time so platform-branch tests can verify Android rather
      than inheriting the test runtime's iOS value captured at module load. */
   const nativePasteInput = Platform.OS === "ios" || Platform.OS === "android";
@@ -976,7 +979,7 @@ export function Composer({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   wrap: {
     flexShrink: 0,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -1201,4 +1204,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-});
+}));

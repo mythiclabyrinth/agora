@@ -1,13 +1,16 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
-import { colors, control, radii, space, typography, weight } from "../lib/theme";
+import { control, radii, space, typography, weight } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { Icon } from "./Icon";
 
 export function EmptyState({ icon, title, description, action }: {
   icon: LucideIcon; title: string; description?: string;
   action?: { label: string; accessibilityLabel?: string; onPress: () => void; disabled?: boolean };
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return <View style={styles.root}>
     <View accessible={false} style={styles.mark}><Icon icon={icon} size={24} color={colors.a1} /></View>
     <Text accessibilityRole="header" style={styles.title}>{title}</Text>
@@ -21,7 +24,7 @@ export function EmptyState({ icon, title, description, action }: {
   </View>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { alignItems: "center", padding: space.xxl, paddingVertical: space.section, gap: space.md },
   mark: { padding: space.xl, borderRadius: radii.xl, borderWidth: 1, borderColor: colors.accentBorder, backgroundColor: colors.accentWash, marginBottom: space.sm },
   title: { ...typography.title, color: colors.text, textAlign: "center" },
@@ -31,4 +34,4 @@ const styles = StyleSheet.create({
   actionText: { ...typography.bodySm, fontWeight: weight.semibold, color: colors.a1, textAlign: "center" },
   pressed: { opacity: 0.8 },
   disabled: { opacity: 0.5 },
-});
+}));

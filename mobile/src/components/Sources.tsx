@@ -11,7 +11,8 @@ import { ChevronLeft, ChevronRight, ExternalLink, Link2, X } from "lucide-react-
 import { Image } from "expo-image";
 import type { LinkPreview, Message } from "@agora/core";
 import { openLink } from "../lib/openLink";
-import { colors, mono, surfaces } from "../lib/theme";
+import { mono } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { Icon } from "./Icon";
 
 /* The text a bubble renders: cut a server-detected trailing sources block
@@ -39,6 +40,7 @@ export function hostOf(url: string): string {
 }
 
 export function Sources({ message }: { message: Message }) {
+  const styles = useStyles();
   const sources = message.meta?.sources ?? [];
   const [open, setOpen] = React.useState<number | null>(null);
   if (!sources.length) return null;
@@ -70,6 +72,8 @@ function SourceViewer({
   initial: number;
   onClose: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [width, setWidth] = React.useState(0);
   const [index, setIndex] = React.useState(initial);
   const scroller = React.useRef<ScrollView>(null);
@@ -145,6 +149,8 @@ function SourceViewer({
 }
 
 function SourceCard({ source, width }: { source: LinkPreview; width: number }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return (
     <ScrollView
       style={{ width }}
@@ -169,7 +175,7 @@ function SourceCard({ source, width }: { source: LinkPreview; width: number }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   chips: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 8 },
   chip: {
     flexDirection: "row",
@@ -190,7 +196,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: colors.neutralStrong,
   },
   chipNumText: { color: colors.dim, fontSize: 10, fontWeight: "700" },
   chipLabel: { color: colors.dim, fontSize: 11.5, flexShrink: 1 },
@@ -230,7 +236,7 @@ const styles = StyleSheet.create({
     gap: 5,
     flexShrink: 1,
   },
-  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.14)" },
+  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.borderStrong },
   dotOn: { backgroundColor: colors.a2 },
   openBtn: {
     flexDirection: "row",
@@ -244,4 +250,4 @@ const styles = StyleSheet.create({
     backgroundColor: colors.panelStrong,
   },
   openText: { color: colors.text, fontSize: 13.5, fontWeight: "600" },
-});
+}));

@@ -8,15 +8,18 @@ import { ThemedInput as TextInput } from "./ThemedInput";
    agent and locks the form for everyone (meta.form_submitted). */
 
 import React, { useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, Text, View } from "react-native";
 import { Check } from "lucide-react-native";
 import { useSubmitForm, useUpdateFormState } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtTs } from "@agora/core";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { Icon } from "./Icon";
 
 export function MessageForm({ message }: { message: Message }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const update = useUpdateFormState();
   const submit = useSubmitForm();
   /* Unconfirmed input text, keyed by field id. Local on purpose: a
@@ -40,7 +43,7 @@ export function MessageForm({ message }: { message: Message }) {
             <Text style={styles.doneLabel}>{f.label}</Text>
             {f.kind === "checkbox" ? (
               values[f.id] ? (
-                <Icon icon={Check} size={13} color="#6ee7a0" />
+                <Icon icon={Check} size={13} color={colors.green} />
               ) : (
                 <Text style={styles.doneValue}>—</Text>
               )
@@ -50,7 +53,7 @@ export function MessageForm({ message }: { message: Message }) {
           </View>
         ))}
         <View style={styles.doneFoot}>
-          <Icon icon={Check} size={13} color="#6ee7a0" />
+          <Icon icon={Check} size={13} color={colors.green} />
           <Text style={styles.doneButton}>{button?.label || done.button_id}</Text>
           <Text style={styles.doneBy}>
             by {done.by || "?"}
@@ -120,7 +123,7 @@ export function MessageForm({ message }: { message: Message }) {
               disabled={update.isPending || submitting}
             >
               <View style={[styles.checkBox, on && styles.checkBoxOn]}>
-                {on ? <Icon icon={Check} size={12} color="#6ee7a0" /> : null}
+                {on ? <Icon icon={Check} size={12} color={colors.green} /> : null}
               </View>
               <Text style={styles.checkLabel}>{f.label}</Text>
             </Pressable>
@@ -154,7 +157,7 @@ export function MessageForm({ message }: { message: Message }) {
                   disabled={update.isPending || submitting}
                   hitSlop={6}
                 >
-                  <Icon icon={Check} size={14} color="#6ee7a0" />
+                  <Icon icon={Check} size={14} color={colors.green} />
                 </Pressable>
               ) : null}
             </View>
@@ -179,7 +182,7 @@ export function MessageForm({ message }: { message: Message }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   form: {
     marginTop: 8,
     padding: 10,
@@ -187,7 +190,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 10,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.accentWash,
   },
   field: { gap: 4 },
   fieldLabel: { color: colors.text, fontSize: 12.5, fontWeight: "600" },
@@ -208,7 +211,7 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "rgba(72,187,120,0.45)",
+    borderColor: colors.successBorder,
     backgroundColor: colors.panelStrong,
     alignItems: "center",
     justifyContent: "center",
@@ -225,8 +228,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   checkBoxOn: {
-    borderColor: "rgba(72,187,120,0.55)",
-    backgroundColor: "rgba(72,187,120,0.14)",
+    borderColor: colors.successBorder,
+    backgroundColor: colors.successSoft,
   },
   checkLabel: { color: colors.text, fontSize: 13, flexShrink: 1 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
@@ -240,15 +243,15 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   buttonPrimary: {
-    backgroundColor: "rgba(72,187,120,0.18)",
-    borderColor: "rgba(72,187,120,0.45)",
+    backgroundColor: colors.successSoft,
+    borderColor: colors.successBorder,
   },
   buttonLabel: { color: colors.text, fontSize: 13, fontWeight: "600" },
-  buttonPrimaryLabel: { color: "#6ee7a0" },
+  buttonPrimaryLabel: { color: colors.green },
   doneRow: { flexDirection: "row", alignItems: "baseline", gap: 8 },
   doneLabel: { color: colors.faint, fontSize: 12.5, fontWeight: "600" },
   doneValue: { color: colors.text, fontSize: 12.5, flexShrink: 1 },
   doneFoot: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
-  doneButton: { color: "#6ee7a0", fontSize: 12, fontWeight: "600" },
+  doneButton: { color: colors.green, fontSize: 12, fontWeight: "600" },
   doneBy: { color: colors.faint, fontSize: 12 },
-});
+}));

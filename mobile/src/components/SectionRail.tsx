@@ -3,7 +3,7 @@
    width; long timelines use a fixed window instead of a nested scroller. */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, View } from "react-native";
 import {
   conversationSections,
   agentRailColors,
@@ -11,7 +11,8 @@ import {
   type ConversationSection,
   type Message,
 } from "@agora/core";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles } from "../lib/useTheme";
 
 export const MAX_VISIBLE_SECTION_DOTS = 12;
 const SECTION_DOT_PITCH = 26;
@@ -237,6 +238,7 @@ export function SectionRail({
   onJump: (messageId: number) => void;
   bottomInset?: number;
 }) {
+  const styles = useStyles();
   const [maxVisible, setMaxVisible] = useState(MAX_VISIBLE_SECTION_DOTS);
   const agents = useAgents().data;
   const agentColors = useMemo(() => agentRailColors(agents || []), [agents]);
@@ -273,7 +275,7 @@ export function SectionRail({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   rail: {
     position: "absolute",
     zIndex: 5,
@@ -304,4 +306,4 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
     opacity: 1,
   },
-});
+}));

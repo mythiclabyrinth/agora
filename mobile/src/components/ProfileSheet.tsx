@@ -5,21 +5,34 @@
    MessageActions. */
 
 import React from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, Platform, Pressable, ScrollView, View } from "react-native";
+import * as Clipboard from "expo-clipboard";
+import { CalendarDays, Cable, Copy, Mail, MessageSquare, Clock3, type LucideIcon } from "lucide-react-native";
 import { useAgents, useAgentUsage, useUsers } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtTs } from "@agora/core";
-import { colors, surfaces } from "../lib/theme";
+import { radii, space, typography, weight } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { AgentAvatar } from "./AgentAvatar";
 import { SheetHeader } from "./SheetHeader";
+import { ResponsiveText as Text } from "./ResponsiveText";
+import { Icon } from "./Icon";
+import { toast, toastErr } from "./Toast";
 
-function Row({ k, v }: { k: string; v: string }) {
+function Row({ label, value, icon, copy = false, mono = false }: { label: string; value: string; icon: LucideIcon; copy?: boolean; mono?: boolean }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return (
     <View style={styles.row}>
-      <Text style={styles.rowKey} numberOfLines={1}>
-        {k}
-      </Text>
-      <Text style={styles.rowVal}>{v}</Text>
+      <View style={styles.rowIcon}><Icon icon={icon} size={18} color={colors.faint} /></View>
+      <View style={styles.rowBody}>
+        <Text style={styles.rowKey}>{label}</Text>
+        <Text selectable style={[styles.rowVal, mono && styles.mono]}>{value}</Text>
+      </View>
+      {copy ? <Pressable accessibilityRole="button" accessibilityLabel={`Copy ${label.toLowerCase()}`} style={styles.copy} onPress={async () => {
+        try { await Clipboard.setStringAsync(value); toast(`${label} copied.`); }
+        catch (error) { toastErr("Copy failed", error); }
+      }}><Icon icon={Copy} size={17} color={colors.dim} /></Pressable> : null}
     </View>
   );
 }
@@ -49,6 +62,7 @@ function useBoundedRefreshing(refreshing: boolean, updatedAt: number): boolean {
 }
 
 export function ProfileSheet({ message, onClose }: { message: Message; onClose: () => void }) {
+  const styles = useStyles();
   const isAgent = message.author_type === "agent";
   const agents = useAgents();
   const users = useUsers(!isAgent);
@@ -67,46 +81,41 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
       <Pressable accessible={false} style={styles.backdrop} onPress={onClose}>
         <Pressable accessible={false} accessibilityViewIsModal style={[styles.sheet, { maxHeight: "85%" }]} onPress={event => event.stopPropagation()}>
           <SheetHeader title="Profile" onClose={onClose} />
-          <ScrollView>
-          <View style={styles.top}>
-            {isAgent ? (
-              <AgentAvatar agentId={message.author_id} size={64} />
-            ) : (
-              <View style={styles.userAvatar}>
-                <Text style={styles.userInitial}>{(name || "?")[0].toUpperCase()}</Text>
+          <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+            <View style={styles.top}>
+              {isAgent ? <AgentAvatar agentId={message.author_id} size={60} /> : <View accessible={false} style={styles.userAvatar}>
+                <Text maxFontSizeMultiplier={1.2} style={styles.userInitial}>{name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase() || "?"}</Text>
+              </View>}
+              <View style={styles.id}>
+                <Text accessibilityRole="header" style={styles.name}>{name}</Text>
+                <Text selectable style={styles.sub}>@{message.author_id}</Text>
               </View>
-            )}
-            <View style={styles.id}>
-              <View style={styles.nameRow}>
-                <Text style={styles.name} numberOfLines={1}>
-                  {name}
-                </Text>
-                {agent ? (
-                  <View style={[styles.dot, agent.live ? styles.dotOn : styles.dotOff]} />
-                ) : null}
-              </View>
-              <Text style={styles.sub} numberOfLines={1}>
-                @{message.author_id} · {isAgent ? "agent" : "person"}
-              </Text>
             </View>
-          </View>
-          {agent ? (
-            <View style={styles.rows}>
-              <Row
-                k="Status"
-                v={agent.live ? "Online" : `Offline · last seen ${fmtTs(agent.last_seen)}`}
-              />
-              {agent.source ? <Row k="Connection" v={agent.source} /> : null}
+            <View style={styles.badges}>
+              <View style={[styles.badge, isAgent ? styles.agentBadge : styles.personBadge]}>
+                <Text style={[styles.badgeText, isAgent ? styles.agentBadgeText : styles.personBadgeText]}>{isAgent ? "AI agent" : user ? `Workspace ${user.instance_role === "admin" ? "admin" : "member"}` : "Person"}</Text>
+              </View>
+              {agent ? <View style={styles.badge}>
+                <View style={[styles.dot, agent.live ? styles.dotOn : styles.dotOff]} /><Text style={[styles.badgeText, agent.live && styles.online]}>{agent.live ? "Online" : "Offline"}</Text>
+              </View> : null}
+              {user?.disabled ? <View style={styles.badge}><Text style={styles.badgeText}>Deactivated</Text></View> : null}
+            </View>
+            {agent ? <>
+              <View style={styles.rows}>
+                <Row icon={MessageSquare} label="Replies" value={agent.requires_mention ? "When mentioned" : "To all messages"} />
+                {!agent.live ? <Row icon={Clock3} label="Last seen" value={fmtTs(agent.last_seen)} /> : null}
+                {agent.source ? <Row icon={Cable} label="Connection" value={agent.source} copy mono /> : null}
+              </View>
               <AgentUsageBlock data={usageQuery.data} live={agent.live} refreshing={usageRefreshing} />
-            </View>
-          ) : null}
-          {user ? (
-            <View style={styles.rows}>
-              <Row k="Role" v={user.instance_role} />
-              {user.email ? <Row k="Email" v={user.email} /> : null}
-              <Row k="Joined" v={fmtTs(user.created_at)} />
-            </View>
-          ) : null}
+            </> : null}
+            {user ? <View style={styles.rows}>
+              {user.email ? <Row icon={Mail} label="Email" value={user.email} copy /> : null}
+              <Row icon={CalendarDays} label="Joined" value={fmtTs(user.created_at)} />
+            </View> : null}
+            {!agent && !user ? <View style={styles.unavailable}>
+              <Text style={styles.sub}>{(isAgent ? agents.isPending : users.isPending) ? "Loading profile…" : (isAgent ? agents.isError : users.isError) ? "Couldn't load profile details." : "No additional profile details available."}</Text>
+              {(isAgent ? agents.isError : users.isError) ? <Pressable accessibilityRole="button" accessibilityLabel="Retry profile" style={styles.retry} onPress={() => void (isAgent ? agents.refetch() : users.refetch())}><Text style={styles.retryText}>Try again</Text></Pressable> : null}
+            </View> : null}
           </ScrollView>
         </Pressable>
       </Pressable>
@@ -115,6 +124,7 @@ export function ProfileSheet({ message, onClose }: { message: Message; onClose: 
 }
 
 function AgentUsageBlock({ data, live, refreshing }: { data: ReturnType<typeof useAgentUsage>["data"]; live: boolean; refreshing: boolean }) {
+  const styles = useStyles();
   const usage = data?.usage;
   if (!usage || usage.windows.length === 0) return null;
   const freshness = refreshing ? "Updating…" : usageAge(usage.captured_at);
@@ -130,52 +140,37 @@ function AgentUsageBlock({ data, live, refreshing }: { data: ReturnType<typeof u
   );
 }
 
-const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: colors.scrim,
-    justifyContent: "flex-end",
-  },
-  sheet: {
-    ...surfaces.sheet,
-    paddingBottom: 40,
-    gap: 16,
-  },
-  top: { flexDirection: "row", alignItems: "center", gap: 14 },
-  id: { flex: 1, minWidth: 0 },
-  nameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  name: { color: colors.text, fontSize: 17, fontWeight: "700", flexShrink: 1 },
-  sub: { color: colors.dim, fontSize: 12.5, marginTop: 2 },
-  dot: { width: 9, height: 9, borderRadius: 5 },
-  dotOn: { backgroundColor: colors.green },
-  dotOff: { backgroundColor: colors.faint },
-  userAvatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 19,
-    backgroundColor: colors.panelStrong,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  userInitial: { color: colors.a2, fontSize: 28, fontWeight: "700" },
-  rows: { gap: 10 },
-  row: { flexDirection: "row", alignItems: "baseline", gap: 12 },
-  rowKey: {
-    width: 110,
-    color: colors.dim,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-  },
-  rowVal: { color: colors.text, fontSize: 13.5, flex: 1 },
-  usageCard: { borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 12, gap: 10, marginTop: 3 },
-  usageHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: 8 },
-  usageTitle: { color: colors.text, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
-  usageWindow: { gap: 5 },
-  usageLabel: { color: colors.text, fontSize: 12.5 },
-  usagePercent: { color: colors.text, fontSize: 11.5, fontWeight: "700" },
-  usageTrack: { height: 7, borderRadius: 4, overflow: "hidden", backgroundColor: colors.panelStrong },
-  usageFill: { height: "100%", backgroundColor: colors.a1 },
-  usageNote: { color: colors.dim, fontSize: 11.5 },
-});
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
+  backdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
+  sheet: { ...surfaces.sheet, paddingBottom: 32 },
+  content: { gap: space.lg, paddingTop: space.sm, paddingBottom: space.sm },
+  top: { flexDirection: "row", alignItems: "center", gap: space.lg },
+  id: { flex: 1, minWidth: 0, gap: space.xs },
+  name: { color: colors.text, ...typography.title, fontWeight: weight.bold },
+  sub: { color: colors.dim, ...typography.bodySm },
+  badges: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  badge: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.panelStrong, borderRadius: radii.pill },
+  badgeText: { color: colors.dim, ...typography.caption, fontWeight: weight.semibold },
+  agentBadge: { backgroundColor: colors.accentSoft }, agentBadgeText: { color: colors.accentText },
+  personBadge: { backgroundColor: colors.mintSoft }, personBadgeText: { color: colors.a2 },
+  online: { color: colors.green },
+  dot: { width: 7, height: 7, borderRadius: 4 }, dotOn: { backgroundColor: colors.green }, dotOff: { backgroundColor: colors.faint },
+  userAvatar: { width: 60, height: 60, borderRadius: radii.lg, backgroundColor: colors.mintSoft, borderWidth: 1, borderColor: colors.mintBorder, alignItems: "center", justifyContent: "center" },
+  userInitial: { color: colors.a2, fontSize: 22, fontWeight: weight.bold },
+  rows: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: space.xs },
+  row: { flexDirection: "row", alignItems: "flex-start", gap: space.md, paddingLeft: space.sm, paddingVertical: space.md, paddingRight: space.xs },
+  rowIcon: { width: 24, paddingTop: 2, alignItems: "center" },
+  rowBody: { flex: 1, minWidth: 0, gap: space.xs },
+  rowKey: { color: colors.faint, ...typography.caption },
+  rowVal: { color: colors.text, ...typography.bodySm },
+  mono: { fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace", fontSize: typography.caption.fontSize, lineHeight: 19 },
+  copy: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radii.sm },
+  unavailable: { gap: space.sm }, retry: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" }, retryText: { color: colors.a1, ...typography.bodySm },
+  usageCard: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: radii.lg, padding: space.lg, gap: space.md },
+  usageHeading: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", alignItems: "baseline", gap: space.sm },
+  usageTitle: { color: colors.text, ...typography.caption, fontWeight: weight.bold },
+  usageWindow: { gap: space.sm }, usageLabel: { color: colors.text, ...typography.bodySm },
+  usagePercent: { color: colors.accentText, ...typography.caption, fontWeight: weight.semibold },
+  usageTrack: { height: 6, borderRadius: 3, overflow: "hidden", backgroundColor: colors.panelStrong },
+  usageFill: { height: "100%", backgroundColor: colors.a1 }, usageNote: { color: colors.dim, ...typography.caption },
+}));

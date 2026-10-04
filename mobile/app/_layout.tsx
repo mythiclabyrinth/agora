@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { StatusBar } from "expo-status-bar";
 import { Stack } from "expo-router";
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { ApiError, resetSeenMessageIds } from "@agora/core";
 import { onUnauthorized, useSession } from "../src/state/session";
 import { ToastHost } from "../src/components/Toast";
-import { colors } from "../src/lib/theme";
+import { AppThemeProvider } from "../src/components/AppThemeProvider";
+
+import { useAppTheme } from "../src/lib/useTheme";
 // Side-effect import: defines the background unread task at module scope so
 // it exists when iOS launches the app headless to run it.
 import "../src/lib/background";
@@ -44,16 +45,17 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <QueryClientProvider client={client}>
-        <StatusBar style="light" />
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: colors.bg },
-          }}
-        />
-        <ToastHost />
-      </QueryClientProvider>
+      <AppThemeProvider>
+        <QueryClientProvider client={client}>
+          <RootNavigator />
+          <ToastHost />
+        </QueryClientProvider>
+      </AppThemeProvider>
     </GestureHandlerRootView>
   );
+}
+
+function RootNavigator() {
+  const { colors } = useAppTheme();
+  return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />;
 }

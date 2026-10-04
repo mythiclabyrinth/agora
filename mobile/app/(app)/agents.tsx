@@ -2,15 +2,7 @@
    the desktop (the server refuses to forget a connected agent). */
 
 import React, { useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { Link, Stack } from "expo-router";
 import { Bot, ChevronDown, ChevronRight, Plus } from "lucide-react-native";
 import { useAgents, useForgetAgent, type AgentInfo } from "@agora/core";
@@ -19,10 +11,13 @@ import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { ArmedButton } from "../../src/components/ArmedButton";
 import { toastErr } from "../../src/components/Toast";
 import { fmtTs } from "@agora/core";
-import { colors, control, typography, weight, layout, radii, space, surfaces } from "../../src/lib/theme";
+import { control, typography, weight, layout, radii, space } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { useSession } from "../../src/state/session";
 
 export default function AgentsScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const agents = useAgents();
   const forget = useForgetAgent();
   const admin = useSession((s) => s.instanceAdmin);
@@ -108,6 +103,8 @@ export default function AgentsScreen() {
 }
 
 function AgentCard({ agent, onForget }: { agent: AgentInfo; onForget: () => void }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [expanded, setExpanded] = useState(false);
   return <View style={styles.card}>
     <View style={styles.row}>
@@ -142,7 +139,7 @@ function AgentCard({ agent, onForget }: { agent: AgentInfo; onForget: () => void
   </View>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { paddingHorizontal: layout.gutter, gap: space.md, paddingBottom: layout.contentBottom },
   summary: { flexDirection: "row", alignItems: "center", gap: space.sm, paddingVertical: space.sm, marginBottom: space.sm },
@@ -192,4 +189,4 @@ const styles = StyleSheet.create({
   addMark: { width: 40, height: 40, borderRadius: radii.md, backgroundColor: colors.mintSoft, alignItems: "center", justifyContent: "center" },
   pressed: { opacity: 0.65 },
   addTitle: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
-});
+}));

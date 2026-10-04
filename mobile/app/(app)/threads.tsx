@@ -7,16 +7,7 @@ import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
    long-pressing renames it or removes the row from your inbox. */
 
 import React from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Modal,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  View,
-} from "react-native";
+import { ActivityIndicator, Alert, FlatList, Modal, Pressable, RefreshControl, View } from "react-native";
 import { Redirect, Stack, router } from "expo-router";
 import { ListFilter, MessagesSquare, Pencil, Trash2, X } from "lucide-react-native";
 import {
@@ -36,7 +27,8 @@ import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } fro
 import { toastAction, toastErr } from "../../src/components/Toast";
 import { ThreadInboxFooter, ThreadRelativeTime } from "../../src/components/ThreadTimeMeta";
 import { headerActions } from "../../src/lib/headerItems";
-import { colors, typography, weight, surfaces, layout, radii, space } from "../../src/lib/theme";
+import { colors, typography, weight, layout, radii, space, type Palette } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { usePrefs } from "../../src/state/prefs";
 
 const SORT_OPTIONS: { value: ThreadSort; label: string }[] = [
@@ -60,10 +52,10 @@ function snippet(t: ThreadRow): string {
 }
 
 export function threadSwipeActions(thread: ThreadRow, onRename: (thread: ThreadRow) => void,
-  onRemove: () => void): { swipeLeft: SwipeAction; swipeRight: SwipeAction } {
+  onRemove: () => void, palette: Palette = colors): { swipeLeft: SwipeAction; swipeRight: SwipeAction } {
   return {
-    swipeLeft: { name: "remove", label: "Remove", icon: Trash2, color: colors.red, onPress: onRemove },
-    swipeRight: { name: "rename", label: "Rename", icon: Pencil, color: colors.a1,
+    swipeLeft: { name: "remove", label: "Remove", icon: Trash2, color: palette.red, onPress: onRemove },
+    swipeRight: { name: "rename", label: "Rename", icon: Pencil, color: palette.a1,
       onPress: () => onRename(thread) },
   };
 }
@@ -79,6 +71,8 @@ function Row({
   controller: SwipeRowController;
   initialSwipe?: "left" | "right";
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const hideThread = useHideThread();
   const unhideThread = useUnhideThread();
   const remove = () => hideThread.mutate(thread.root.id, {
@@ -101,7 +95,7 @@ function Row({
       style={[styles.row, thread.unread > 0 ? styles.rowUnread : null]}
       controller={controller} initialOpen={initialSwipe}
       accessibilityLabel={`Thread ${snippet(thread)} in ${thread.channel_name}`}
-      {...threadSwipeActions(thread, onRename, remove)}
+      {...threadSwipeActions(thread, onRename, remove, colors)}
       onPress={() =>
         router.push({
           pathname: "/(app)/thread/[channelId]/[rootId]",
@@ -149,6 +143,8 @@ export function RenameModal({
   thread: ThreadRow | null;
   onClose: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const rename = useRenameThread();
   const [text, setText] = React.useState("");
   React.useEffect(() => {
@@ -223,6 +219,8 @@ export function ThreadViewSheet({
   /** Opens a chosen menu in Storybook previews. */
   initialOpen?: "sort" | "filter" | "group" | null;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [open, setOpen] = React.useState<"sort" | "filter" | "group" | null>(initialOpen);
   const [controlsY, setControlsY] = React.useState(0);
   const [controlLayouts, setControlLayouts] = React.useState<Record<string, { y: number; height: number }>>({});
@@ -302,6 +300,8 @@ export function ThreadViewSheet({
 export function ThreadsScreen({ embedded = false, initialSwipe }: {
   embedded?: boolean; initialSwipe?: "left" | "right";
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const threads = useThreads();
   const swipeRows = useSwipeRows();
   const groups = useGroups();
@@ -400,7 +400,7 @@ export default function ThreadsRedirect() {
   return <Redirect href="/(app)/inbox?tab=threads" />;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   embeddedFilters: { minHeight: 44, alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 12, marginVertical: 0, padding: 8, borderRadius: 9 },
   embeddedFiltersText: { color: colors.a1, fontWeight: weight.bold },
@@ -494,4 +494,4 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   doneText: { color: colors.onAccent, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
-});
+}));

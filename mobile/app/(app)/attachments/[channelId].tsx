@@ -1,12 +1,14 @@
 import React from "react";
 import { Stack, router, useLocalSearchParams } from "expo-router";
-import { View, StyleSheet } from "react-native";
+import { View } from "react-native";
 import type { AttachmentBrowserItem } from "@agora/core";
 import { AttachmentBrowser } from "../../../src/components/AttachmentBrowser";
-import { colors } from "../../../src/lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
 import { useSession } from "../../../src/state/session";
 
 export default function AttachmentsScreen() {
+  const styles = useStyles();
   const params = useLocalSearchParams<{ channelId: string; channelName?: string; groupId?: string; threadId?: string; threadName?: string }>();
   const session = useSession((state) => state.session)!;
   const threadId = params.threadId ? Number(params.threadId) : null;
@@ -26,4 +28,4 @@ export default function AttachmentsScreen() {
   </View>;
 }
 
-const styles = StyleSheet.create({ root: { flex: 1, backgroundColor: colors.bg } });
+const useStyles = createThemedStyles(({ colors }) => ({ root: { flex: 1, backgroundColor: colors.bg } }));

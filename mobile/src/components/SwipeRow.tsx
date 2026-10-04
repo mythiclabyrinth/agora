@@ -4,7 +4,8 @@ import ReanimatedSwipeable, { type SwipeableMethods } from "react-native-gesture
 import Animated, { useAnimatedStyle, type SharedValue } from "react-native-reanimated";
 import type { LucideIcon } from "lucide-react-native";
 import { Icon } from "./Icon";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 
 export interface SwipeAction {
   name: string;
@@ -67,6 +68,7 @@ export function SwipeRow({
   /** Opens the action in native Storybook previews. */
   initialOpen?: "left" | "right";
 }) {
+  const styles = useStyles();
   const row = React.useRef<SwipeableMethods | null>(null);
   // The content moves with the finger, so a swipe ends inside the Pressable and
   // would fire onPress, which closes the row it just opened. Drop that press.
@@ -124,6 +126,8 @@ export function SwipeRow({
 function SwipeActionButton({ action, progress, onPress }: {
   action: SwipeAction; progress: SharedValue<number>; onPress: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const revealed = useAnimatedStyle(() => ({ opacity: progress.value > 0 ? 1 : 0 }));
   return <Animated.View style={[styles.actionWrap, revealed]}
     accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
@@ -137,7 +141,7 @@ function SwipeActionButton({ action, progress, onPress }: {
 
 const DEFAULT_RADIUS = 13;
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   container: { overflow: "hidden" },
   // Rows use the translucent `colors.panel` card; backing it with the screen
   // background keeps the same look while making the foreground opaque.
@@ -145,4 +149,4 @@ const styles = StyleSheet.create({
   actionWrap: { flexDirection: "row" },
   action: { minWidth: 90, paddingHorizontal: 10, alignItems: "center", justifyContent: "center", gap: 4 },
   actionText: { color: colors.onAccent, fontWeight: "800", fontSize: 12 },
-});
+}));

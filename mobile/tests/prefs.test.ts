@@ -12,6 +12,7 @@ beforeEach(() => {
   mockRead.mockReset();
   mockWrite.mockClear();
   usePrefs.setState({
+    appearance: "dark",
     loaded: false,
     collapsedGroups: {},
     unreadsOnly: false,
@@ -24,6 +25,35 @@ beforeEach(() => {
     threadGroup: null,
     requireAgentOffThreads: [],
   });
+});
+
+it.each(["light", "dark", "system"] as const)("persists and restores %s appearance without changing other preferences", async appearance => {
+  usePrefs.getState().setAppearance(appearance);
+  const saved = mockWrite.mock.calls.at(-1)![1];
+  expect(JSON.parse(saved).appearance).toBe(appearance);
+  usePrefs.setState({ appearance: "dark" });
+  mockRead.mockResolvedValue(saved);
+  await usePrefs.getState().load();
+  expect(usePrefs.getState().appearance).toBe(appearance);
+  expect(usePrefs.getState().linkBrowser).toBe("in-app");
+});
+
+it.each([undefined, "invalid", 42])("defaults missing or invalid appearance to the existing dark theme (%s)", async appearance => {
+  mockRead.mockResolvedValue(JSON.stringify({ appearance }));
+  await usePrefs.getState().load();
+  expect(usePrefs.getState().appearance).toBe("dark");
+});
+
+it("shares an in-flight read and does not overwrite a newer appearance choice", async () => {
+  let resolve!: (value: string) => void;
+  mockRead.mockReturnValue(new Promise<string>(done => { resolve = done; }));
+  const first = usePrefs.getState().load();
+  const second = usePrefs.getState().load();
+  usePrefs.getState().setAppearance("light");
+  resolve(JSON.stringify({ appearance: "dark" }));
+  await Promise.all([first, second]);
+  expect(mockRead).toHaveBeenCalledTimes(1);
+  expect(usePrefs.getState().appearance).toBe("light");
 });
 
 it("defaults new link preferences when an old prefs file has no keys", async () => {

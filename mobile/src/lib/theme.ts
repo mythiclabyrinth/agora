@@ -5,6 +5,8 @@ export const brand = {
   tagline: "People & agents, together.",
   primary: "#8b7cff",
   secondary: "#38e1c8",
+  primaryLight: "#6250ce",
+  secondaryLight: "#087365",
   logo: require("../../assets/icon.png"),
 } as const;
 
@@ -49,7 +51,31 @@ export const colors = {
   warningSoft: "rgba(251,191,36,0.08)",
   warningBorder: "rgba(251,191,36,0.35)",
   shadow: "#000000",
+  neutralSoft: "rgba(255,255,255,0.05)",
+  neutralStrong: "rgba(255,255,255,0.08)",
+  info: "#6ecbf5",
+  infoSoft: "rgba(54,197,240,0.13)",
 } as const;
+
+export type ThemeMode = "dark" | "light";
+export type AppearancePreference = ThemeMode | "system";
+export type Palette = { [K in keyof typeof colors]: string };
+export const lightColors: Palette = {
+  bg: "#f5f6fa", panel: "#ffffff", panelStrong: "#e9ebf2", sheet: "#ffffff",
+  border: "rgba(24,32,51,0.10)", borderStrong: "rgba(24,32,51,0.20)",
+  text: "#182033", dim: "#4f586b", faint: "#606878",
+  a1: brand.primaryLight, a2: brand.secondaryLight,
+  green: "#137d42", amber: "#8f6400", red: "#b52b40",
+  accentSoft: tint(brand.primaryLight, 0.10), accentBorder: tint(brand.primaryLight, 0.28), accentWash: tint(brand.primaryLight, 0.05),
+  mintSoft: tint(brand.secondaryLight, 0.08), mintBorder: tint(brand.secondaryLight, 0.22),
+  accentText: "#5140b4", ownMessage: "#ece8ff", scrim: "rgba(16,24,40,0.36)", mentionSurface: "#ffe4e9",
+  accent: brand.primaryLight, onAccent: "#ffffff",
+  successSoft: "rgba(19,125,66,0.08)", successBorder: "rgba(19,125,66,0.30)",
+  dangerSoft: "rgba(181,43,64,0.08)", dangerBorder: "rgba(181,43,64,0.30)",
+  warningSoft: "rgba(143,100,0,0.08)", warningBorder: "rgba(143,100,0,0.30)", shadow: "#000000",
+  neutralSoft: "rgba(24,32,51,0.04)", neutralStrong: "rgba(24,32,51,0.08)",
+  info: "#146a99", infoSoft: "rgba(20,106,153,0.08)",
+};
 
 export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, section: 32 } as const;
 export const radii = { sm: 8, md: 12, lg: 16, xl: 24, pill: 999 } as const;
@@ -74,7 +100,7 @@ export const control = { minTouchSize: 44 } as const;
 export const composerSizing = { minHeight: 40, maxHeight: 150 } as const;
 
 /** Shared recipes; screen-specific layout belongs with its screen. */
-export const surfaces = {
+export function createSurfaces(colors: Palette) { return {
   card: { backgroundColor: colors.panel, borderColor: colors.border, borderWidth: 1, borderRadius: radii.lg },
   field: { backgroundColor: colors.bg, borderColor: colors.borderStrong, borderWidth: 1, borderRadius: radii.md,
     minHeight: control.minTouchSize, paddingHorizontal: space.md, paddingVertical: space.md, color: colors.text },
@@ -82,7 +108,17 @@ export const surfaces = {
     borderWidth: 1, borderColor: colors.borderStrong, padding: space.xl, paddingBottom: space.section },
   primaryButton: { minHeight: control.minTouchSize, borderRadius: radii.md, backgroundColor: colors.accent,
     alignItems: "center", justifyContent: "center", paddingHorizontal: space.lg, paddingVertical: space.md },
-} as const;
+} as const; }
+
+export const surfaces = createSurfaces(colors);
+export const themes = {
+  dark: { mode: "dark" as const, colors: colors as Palette, surfaces },
+  light: { mode: "light" as const, colors: lightColors, surfaces: createSurfaces(lightColors) },
+};
+export type AppTheme = typeof themes.dark | typeof themes.light;
+export function resolveTheme(preference: AppearancePreference, system: string | null | undefined): ThemeMode {
+  return preference === "system" ? system === "light" ? "light" : "dark" : preference;
+}
 
 export const layout = { gutter: space.xl, sectionGap: space.xxl, contentBottom: space.section } as const;
 

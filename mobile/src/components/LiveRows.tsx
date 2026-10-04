@@ -5,7 +5,8 @@
 import React, { useEffect, useRef } from "react";
 import { Animated, StyleSheet, Text, View } from "react-native";
 import type { ProgressEvent, TypingEvent } from "@agora/core";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles } from "../lib/useTheme";
 
 function Blink({ children }: { children: React.ReactNode }) {
   const opacity = useRef(new Animated.Value(1)).current;
@@ -23,6 +24,7 @@ function Blink({ children }: { children: React.ReactNode }) {
 }
 
 export function TypingRow({ typing }: { typing: TypingEvent[] }) {
+  const styles = useStyles();
   if (typing.length === 0) return null;
   const names = typing.map((t) => t.agent_name).join(", ");
   return (
@@ -35,6 +37,7 @@ export function TypingRow({ typing }: { typing: TypingEvent[] }) {
 }
 
 export function ProgressBubbles({ progress }: { progress: ProgressEvent[] }) {
+  const styles = useStyles();
   if (progress.length === 0) return null;
   return (
     <View style={styles.progressWrap}>
@@ -50,7 +53,7 @@ export function ProgressBubbles({ progress }: { progress: ProgressEvent[] }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   typing: { color: colors.dim, fontSize: 12.5, paddingHorizontal: 16, paddingVertical: 4 },
   progressWrap: { gap: 6, paddingHorizontal: 16, paddingVertical: 4 },
   bubble: {
@@ -62,4 +65,4 @@ const styles = StyleSheet.create({
   },
   bubbleAgent: { color: colors.a1, fontSize: 11.5, fontWeight: "700", marginBottom: 2 },
   bubbleText: { color: colors.dim, fontSize: 12.5 },
-});
+}));

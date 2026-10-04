@@ -45,20 +45,21 @@ import { useSendVoice, useTranscribeVoice } from "../../../src/api/voice";
 import type { Message, PinnedMessage, StarredMessage } from "@agora/core";
 import { Composer, type MentionCandidate } from "../../../src/components/Composer";
 import { EmojiPicker } from "../../../src/components/EmojiPicker";
-import { Icon } from "../../../src/components/Icon";
+
 import { ProgressBubbles, TypingRow } from "../../../src/components/LiveRows";
 import { MessageItem } from "../../../src/components/MessageItem";
 import { MessageActions } from "../../../src/components/MessageActions";
 import { SectionRail, useSectionJump } from "../../../src/components/SectionRail";
 import { ProfileSheet } from "../../../src/components/ProfileSheet";
 import { useReactWith } from "../../../src/components/Reactions";
-import { toastErr } from "../../../src/components/Toast";
+
 import { onAgentMessage } from "../../../src/lib/agentBus";
 import { fmtTs } from "@agora/core";
 import { headerActions } from "../../../src/lib/headerItems";
 import { useHeaderKeyboardOffset } from "../../../src/lib/keyboard";
 import { enqueueSpeech, prepareSpeechAudio, stopSpeech } from "../../../src/lib/speech";
-import { colors, typography, weight, surfaces } from "../../../src/lib/theme";
+import { typography, weight } from "../../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
 import { useChannelLive } from "@agora/core";
 import { usePrefs } from "../../../src/state/prefs";
 import { useSession } from "../../../src/state/session";
@@ -91,6 +92,7 @@ function ListSheet<T extends Message>({
   onClose: () => void;
   subtitle: (item: T) => string;
 }) {
+  const styles = useStyles();
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose}>
       <Pressable accessible={false} style={styles.sheetBackdrop} onPress={onClose}>
@@ -116,6 +118,8 @@ function ListSheet<T extends Message>({
 }
 
 export default function ChannelScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const params = useLocalSearchParams<{
     id: string;
     name?: string;
@@ -365,7 +369,7 @@ export default function ChannelScreen() {
         </View>
       );
     },
-    [session, starredIds, pinnedIds, channelId, channelName, highlightedId],
+    [session, starredIds, pinnedIds, channelId, channelName, highlightedId, styles],
   );
 
   if (groupMismatch) {
@@ -390,7 +394,7 @@ export default function ChannelScreen() {
                   onPress: () => router.push({ pathname: "/(app)/attachments/[channelId]", params: { channelId, channelName, groupId } }) },
                 { label: "Pinned messages", detail: "The things worth keeping close", icon: Pin, onPress: () => setSheet("pins") },
                 ...(FEATURES.stars ? [{ label: "Starred messages", icon: Star, onPress: () => setSheet("stars") }] : []),
-                ...(groupId && groupId !== "__dms" ? [{ label: "Channel members", detail: "People and agents in this room", icon: Users, onPress: openMembers }] : []),
+                ...(groupId && groupId !== "__dms" ? [{ label: "Participants", detail: "People, agents and channel access", icon: Users, onPress: openMembers }] : []),
                 ...(ttsOk ? [{ label: "Read replies aloud", detail: speakAloud ? "On · tap to turn off" : "Off · tap to turn on", icon: Volume2, selected: speakAloud,
                   onPress: () => { if (speakAloud) stopSpeech(); setSpeakAloud(!speakAloud); } }] : []),
               ]} />
@@ -406,7 +410,7 @@ export default function ChannelScreen() {
         {noAgents && groupId && groupId !== "__dms" ? (
           <Pressable style={styles.noAgents} onPress={openMembers}>
             <Text style={styles.noAgentsText}>
-              No agents are listening in this channel yet — tap to add one under Members.
+              No agents are listening in this channel yet — tap to add one under Participants.
             </Text>
           </Pressable>
         ) : null}
@@ -572,7 +576,7 @@ export default function ChannelScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   listWrap: { flex: 1, position: "relative" },
   headerBtns: { flexDirection: "row", gap: 4 },
@@ -626,4 +630,4 @@ const styles = StyleSheet.create({
   },
   sheetItemAuthor: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.bold, marginBottom: 2 },
   sheetItemText: { color: colors.text, fontSize: typography.bodySm.fontSize },
-});
+}));

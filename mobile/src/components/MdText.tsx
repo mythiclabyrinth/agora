@@ -2,12 +2,14 @@ import React from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { normalizeEChart, parseMd, type NormalizedEChart, type Span } from "@agora/core";
 import { openLink } from "../lib/openLink";
-import { colors, mono, typography, weight } from "../lib/theme";
+import { mono, typography, weight } from "../lib/theme";
+import { createThemedStyles } from "../lib/useTheme";
 import { columnWidths } from "../lib/tableLayout";
 import { MermaidBlock } from "./Mermaid";
 import { ChartModal, EChartBlock } from "./EChart";
 
 function SpanText({ span }: { span: Span }) {
+  const styles = useStyles();
   switch (span.kind) {
     case "bold":
       return <Text style={styles.bold}>{span.text}</Text>;
@@ -49,6 +51,7 @@ export function MdText({ text, onLongPress, onPress, onPressIn }: {
   onPress?: () => void;
   onPressIn?: () => void;
 }) {
+  const styles = useStyles();
   const blocks = React.useMemo(() => {
     let validIndex = 0;
     return parseMd(text).map((block, blockIndex) => {
@@ -169,7 +172,7 @@ function alignStyle(a: "" | "left" | "center" | "right") {
   return a ? { textAlign: a as "left" | "center" | "right" } : null;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { gap: 6 },
   para: { color: colors.text, ...typography.message },
   bold: { fontWeight: weight.bold, color: colors.text },
@@ -182,7 +185,7 @@ const styles = StyleSheet.create({
   },
   link: { color: colors.a2, fontWeight: weight.medium, textDecorationLine: "underline" },
   mention: {
-    color: "#b3a8ff",
+    color: colors.accentText,
     fontWeight: weight.semibold,
     backgroundColor: colors.accentSoft,
   },
@@ -215,4 +218,4 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
   },
-});
+}));

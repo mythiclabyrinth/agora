@@ -12,7 +12,8 @@ import {
   POSITIVE_REACTION_EMOJIS,
   recordPositiveEvent,
 } from "../lib/storeReview";
-import { colors, surfaces } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { useSession } from "../state/session";
 import { Icon } from "./Icon";
 import { AgentAvatar } from "./AgentAvatar";
@@ -57,6 +58,8 @@ export function QuickReactions({
   onDone: () => void;
   onMore: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const username = useSession((s) => s.username);
   const react = useReactWith();
   return (
@@ -89,6 +92,7 @@ export function QuickReactions({
 }
 
 export function Reactions({ message }: { message: Message }) {
+  const styles = useStyles();
   const username = useSession((s) => s.username);
   const toggle = useToggleReaction();
   const list = message.reactions ?? [];
@@ -142,6 +146,7 @@ export function ReactionDetailsSheet({
   initialEmoji: string;
   onClose: () => void;
 }) {
+  const styles = useStyles();
   const [emoji, setEmoji] = useState(initialEmoji);
   const users = useUsers();
   const agents = useAgents();
@@ -204,13 +209,13 @@ export function ReactionDetailsSheet({
   </Modal>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   row: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 4 },
   chip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: colors.neutralSoft,
     borderWidth: 1,
     borderColor: colors.borderStrong,
     borderRadius: 999,
@@ -223,7 +228,7 @@ const styles = StyleSheet.create({
   },
   emoji: { fontSize: 14 },
   count: { color: colors.dim, fontSize: 11.5, fontWeight: "700" },
-  countMine: { color: "#cfc8ff" },
+  countMine: { color: colors.accentText },
   quickRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -238,7 +243,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: colors.neutralSoft,
   },
   quickEmoji: { fontSize: 22 },
   backdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: colors.scrim },
@@ -256,4 +261,4 @@ const styles = StyleSheet.create({
   personInitial: { color: colors.a2, fontSize: 18, fontWeight: "700" },
   reactorName: { color: colors.text, fontSize: 17, fontWeight: "700" },
   reactorKind: { color: colors.dim, fontSize: 13, marginTop: 2 },
-});
+}));
