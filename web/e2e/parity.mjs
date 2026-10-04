@@ -258,7 +258,7 @@ async function main() {
     if (await page.locator(".ago-dm-agent", { hasText: "Parity Agent" }).count()) throw new Error("existing DM agent remained in picker");
     await page.locator(".ago-dm-popover button", { hasText: "Close" }).click();
     await page.locator("#btn-connections").click();
-    const sourceRow=page.locator("#conn-panel .agent-source-card",{hasText:"parity-dm"});
+    const sourceRow=page.locator("#conn-panel .agent-source-card",{hasText:"Parity Agent"});
     await sourceRow.locator("button",{hasText:"Manage access"}).click();
     await page.locator("#conn-panel",{hasText:"Everyone on this Agora can start a direct message"}).waitFor();
     const publicSwitch = page.locator('#conn-panel [role="switch"][aria-label="Public agent direct messages"]');
@@ -355,9 +355,10 @@ async function main() {
     await latest.locator("dd").filter({ hasNotText: /Loading|Unavailable/ }).waitFor();
     await dialog.getByTitle("Close message info").click();
     await dialog.waitFor({ state: "detached" });
-    if (!(await named.getByRole("button", { name: "More message actions" }).evaluate(el => el === document.activeElement))) {
-      throw new Error("message info did not restore focus to More");
-    }
+    // Dialog cleanup restores focus on the next animation frame, after unmount.
+    await page.waitForFunction(el => el === document.activeElement,
+      await named.getByRole("button", { name: "More message actions" }).elementHandle(),
+      { timeout: 2000 });
   });
 
   await check("history: thread pane pages older replies in on scroll-up", async () => {

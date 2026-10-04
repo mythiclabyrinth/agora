@@ -295,22 +295,20 @@ export function ConnectionsPane() {
       {(infoQuery.isError || pairingQuery.isError) && <div className="conn-hint" role="alert">Some integrations couldn’t be loaded. <button className="btn sm" onClick={() => { void infoQuery.refetch(); void pairingQuery.refetch(); }}>Retry</button></div>}
       {shownConns.map(connection => {
         const status = connection.status;
-        const agents = (status?.agents || []).map(agent => agent.name || agent.id).join(", ");
-        const detail = status?.connected
-          ? (agents ? `agents: ${agents}` : "linked, no agents offered")
-          : (status?.last_error ? String(status.last_error).slice(0, 120) : "connecting…");
+        const agents = sourceAgents("pantheo", connection.name, connection.status?.agents);
+        const issue = !connection.enabled ? "Integration disabled" : status?.connected ? null
+          : status?.last_error || "Connecting…";
         return (
           <article key={connection.name} className="agent-source-card">
           <div className="conn-row agent-source-head">
-            <AgentMark definition={DEFINITION_BY_KIND.pantheo} small />
-            <span className={`conn-dot ${status?.connected ? "on" : "err"}`} />
             <div className="conn-row-main">
               <div className="conn-name">{connection.name} <span className="conn-badge">Pantheo</span></div>
               <div className="conn-url mono">{connection.url}</div>
-              <div className="conn-url" title={status?.last_error || detail}>{detail}</div>
+              {issue && <div className="conn-url" title={issue}>{issue}</div>}
             </div>
           </div>
-          <AgentsDirectory agents={sourceAgents("pantheo", connection.name, connection.status?.agents)} />
+          <AgentsDirectory agents={agents} emptyMessage={status?.connected
+            ? "Connected. Waiting for this server to offer agents." : "No agents registered through this integration."} />
           <div className="agent-source-actions">
             <button className="btn sm"
               onClick={() => manageSource("pantheo", connection.name)}>Manage access</button>
@@ -330,27 +328,22 @@ export function ConnectionsPane() {
       })}
       {shownTokens.map(pairing => {
         const definition = displayDefinition(pairing);
-        const liveNames = (pairing.agents || []).map(agent => agent.name || agent.id).join(", ");
-        const detail = pairing.connected
-          ? (liveNames ? `Live: ${liveNames}` : "Connected, registering…")
-          : "Offline";
+        const agents = sourceAgents("pairing", pairing.id, pairing.agents);
         return (
           <article key={pairing.id} className="agent-source-card">
-          <div className="conn-row agent-source-head">
-            <AgentMark definition={definition} small />
-            <span className={`conn-dot ${pairing.connected ? "on" : "off"}`} />
+          {agents.length !== 1 && <div className="conn-row agent-source-head">
             <div className="conn-row-main">
               <div className="conn-name">
                 {pairing.name}
-                <span className="conn-badge">{definition?.shortTitle || "Agent"}</span>
+                <span className="conn-badge">{agents.length ? `${agents.length} agents · shared access` : definition?.shortTitle || "Agent"}</span>
               </div>
-              <div className="conn-url">{detail}</div>
             </div>
-          </div>
-          <AgentsDirectory agents={sourceAgents("pairing", pairing.id, pairing.agents)} />
+          </div>}
+          <AgentsDirectory agents={agents} typeLabel={definition?.shortTitle} emptyMessage={pairing.connected
+            ? "Connected. Waiting for this integration to register an agent."
+            : "Not connected yet. Use the access key below to finish setup."} />
           <div className="agent-source-actions">
-            <span className="agent-source-key mono" aria-label="Masked access key">{pairing.token.slice(0, 10)}…{pairing.token.slice(-4)}</span>
-            <button className="btn sm" title="Copy access key" onClick={() => copyText(pairing.token, "Token copied")}>Copy</button>
+            <button className="btn sm" title="Copy access key" onClick={() => copyText(pairing.token, "Token copied")}>Copy key</button>
             <button className="btn sm" onClick={() => manageSource("pairing", pairing.id)}>Manage access</button>
             <button className="btn sm danger"
               onClick={() => pairMut.revoke.mutate(pairing.token, { onError: err("Revoke failed") })}>

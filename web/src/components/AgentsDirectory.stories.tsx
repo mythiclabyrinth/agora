@@ -20,9 +20,20 @@ export const OpenProfile: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("Atlas")).resolves.toBeVisible();
     expect(canvas.getByText("Offline")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: /Atlas.*View profile/ }));
+    const card = canvas.getByRole("button", { name: /Atlas.*View profile/ });
+    const arrow = card.querySelector(":scope > .ico")!.getBoundingClientRect();
+    const label = within(card).getByText("View profile").getBoundingClientRect();
+    expect(Math.abs(arrow.right - label.right)).toBeLessThanOrEqual(1);
+    expect(arrow.width).toBe(20);
+    expect(arrow.height).toBe(20);
+    await userEvent.click(card);
     expect(useAgentProfile.getState().openId).toBe("atlas");
   },
+};
+
+export const PhoneProfile: Story = {
+  ...OpenProfile,
+  globals: { viewport: { value: "phone", isRotated: false } },
 };
 
 export const EmptyDirectory: Story = {
