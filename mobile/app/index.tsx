@@ -1,10 +1,13 @@
 import React from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
 import { Redirect } from "expo-router";
 import { useSession } from "../src/state/session";
-import { colors } from "../src/lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../src/lib/useTheme";
 
 export default function Index() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const status = useSession((s) => s.status);
   if (status === "loading") {
     return (
@@ -16,6 +19,6 @@ export default function Index() {
   return <Redirect href={status === "signedIn" ? "/(app)" : "/connect"} />;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   splash: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
-});
+}));

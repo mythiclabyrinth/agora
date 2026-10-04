@@ -26,7 +26,8 @@ import {
   useUpdateTemplate,
   type MessageTemplate,
 } from "@agora/core";
-import { colors, surfaces } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { Icon } from "./Icon";
 
 function alertErr(title: string, error: unknown) {
@@ -41,6 +42,8 @@ export function TemplateSheet({ groupId, visible, draft, onChoose, onClose }: {
   onChoose: (text: string) => void;
   onClose: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const s = useStyles();
   const templates = useTemplates(groupId);
   const create = useCreateTemplate(groupId);
   const update = useUpdateTemplate(groupId);
@@ -199,9 +202,9 @@ export function TemplateSheet({ groupId, visible, draft, onChoose, onClose }: {
   );
 }
 
-const s = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   keyboard: { flex: 1 },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,.58)", justifyContent: "flex-end" },
+  backdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
   sheet: {
     ...surfaces.sheet,
     paddingBottom: 32,
@@ -262,4 +265,4 @@ const s = StyleSheet.create({
   },
   saveText: { color: colors.onAccent, fontWeight: "800" },
   off: { opacity: 0.45 },
-});
+}));

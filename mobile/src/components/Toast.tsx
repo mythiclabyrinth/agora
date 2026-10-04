@@ -2,10 +2,11 @@
    variant. A zustand store so any hook/mutation can raise one. */
 
 import React, { useEffect, useRef, useState } from "react";
-import { Animated, Keyboard, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Keyboard, Platform, Pressable, Text, View } from "react-native";
 import { X } from "lucide-react-native";
 import { create } from "zustand";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles } from "../lib/useTheme";
 import { Icon } from "./Icon";
 
 interface ToastItem {
@@ -68,6 +69,7 @@ export function toastErr(msg: string, e: unknown) {
 }
 
 function ToastCard({ item }: { item: ToastItem }) {
+  const styles = useStyles();
   const dismiss = useToasts((s) => s.dismiss);
   const opacity = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -107,6 +109,7 @@ function useKeyboardHeight(): number {
 }
 
 export function ToastHost() {
+  const styles = useStyles();
   const items = useToasts((s) => s.items);
   const keyboardHeight = useKeyboardHeight();
   if (items.length === 0) return null;
@@ -119,7 +122,7 @@ export function ToastHost() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   host: {
     position: "absolute",
     bottom: 90,
@@ -133,14 +136,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     maxWidth: 480,
-    backgroundColor: "#171a23",
+    backgroundColor: colors.sheet,
     borderWidth: 1,
     borderColor: colors.borderStrong,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 14,
   },
-  warn: { borderColor: "rgba(248,113,113,0.5)" },
+  warn: { borderColor: colors.dangerBorder },
   msg: { color: colors.text, fontSize: 13.5, flexShrink: 1 },
   action: { color: colors.a1, fontSize: 13.5, fontWeight: "800" },
-});
+}));

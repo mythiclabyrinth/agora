@@ -1,25 +1,19 @@
 import React, { useState } from "react";
-import {
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { Stack } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   AddAgentFlow,
   AgentConnectionsList,
 } from "../../src/components/AgentConnections";
-import { colors } from "../../src/lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { useSession } from "../../src/state/session";
 
 type Tab = "connections" | "add";
 
 export default function AddAgentScreen() {
+  const styles = useStyles();
   const admin = useSession((s) => s.instanceAdmin);
   const adminKnown = useSession((s) => s.instanceAdminKnown);
   const loadSession = useSession((s) => s.load);
@@ -93,7 +87,7 @@ export default function AddAgentScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   tabs: {
     flexDirection: "row",
@@ -138,4 +132,4 @@ const styles = StyleSheet.create({
     borderColor: colors.borderStrong,
   },
   retryText: { color: colors.a1, fontSize: 14, fontWeight: "700" },
-});
+}));

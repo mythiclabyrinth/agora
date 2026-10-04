@@ -45,7 +45,8 @@ import { Icon } from "../../src/components/Icon";
 import { AgentAvatar } from "../../src/components/AgentAvatar";
 import { AgentStatus } from "../../src/components/AgentStatus";
 import { toastErr } from "../../src/components/Toast";
-import { colors, typography, space, radii, weight } from "../../src/lib/theme";
+import { typography, space, radii, weight } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { usePrefs } from "../../src/state/prefs";
 import { useSession } from "../../src/state/session";
 import { EmptyState } from "../../src/components/EmptyState";
@@ -63,6 +64,7 @@ export function UnreadBadge({
   count: number;
   mentions?: number;
 }) {
+  const styles = useStyles();
   if (mentions > 0) {
     return (
       <View style={[styles.badge, styles.badgeMention]}>
@@ -91,6 +93,8 @@ function InlineCreate({
   onSubmit: (name: string) => void;
   onCancel: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [name, setName] = useState(initial);
   return (
     <View style={styles.inlineCreate}>
@@ -112,6 +116,8 @@ function InlineCreate({
 }
 
 function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [managing, setManaging] = useState(false);
   const [editing, setEditing] = useState<"name" | "topic" | null>(null);
   const deleteChannel = useDeleteChannel();
@@ -228,6 +234,8 @@ function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
 }
 
 export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: boolean }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const collapsed = usePrefs((s) => !!s.collapsedGroups[group.id]);
   const toggleGroup = usePrefs((s) => s.toggleGroup);
   const [creating, setCreating] = useState(false);
@@ -240,8 +248,7 @@ export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: b
   const unread = shownChannels.reduce((n, c) => n + (c.unread ?? 0), 0);
   const mentions = shownChannels.reduce((n, c) => n + (c.mentions ?? 0), 0);
   const expanded = !collapsed;
-  const allChannelsHidden = shownChannels.length === 0 && group.channels.length > 0;
-  const channelCount = allChannelsHidden ? group.channels.length : shownChannels.length;
+  const channelCount = shownChannels.length;
   const visibleChannels = unreadsOnly
     ? shownChannels.filter((c) => (c.unread ?? 0) > 0 || (c.mentions ?? 0) > 0)
     : shownChannels;
@@ -271,7 +278,7 @@ export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: b
       onPress?: () => void;
     }[] = [
       {
-        text: "Members",
+        text: "Participants",
         onPress: () =>
           router.push({
             pathname: "/(app)/members/[groupId]",
@@ -316,7 +323,7 @@ export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: b
           </View>
           <View style={styles.channelCopy}>
             <Text style={styles.groupName} numberOfLines={1} maxFontSizeMultiplier={1.5}>{group.name}</Text>
-            <Text style={styles.groupMeta}>{`${channelCount} ${allChannelsHidden ? "hidden " : ""}${channelCount === 1 ? "channel" : "channels"}`}</Text>
+            <Text style={styles.groupMeta}>{`${channelCount} ${channelCount === 1 ? "channel" : "channels"}`}</Text>
           </View>
           <Icon icon={expanded ? ChevronDown : ChevronRight} size={16} color={colors.faint} />
           {!expanded ? <UnreadBadge count={unread} mentions={mentions} /> : null}
@@ -344,13 +351,15 @@ export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: b
         ? visibleChannels.map((c) => <ChannelRow key={c.id} group={group} channel={c} />)
         : null}
       {expanded && shownChannels.length === 0 ? (
-        <Text style={styles.emptyChannels}>{group.channels.length ? "All channels are hidden." : "No channels yet — tap ＋"}</Text>
+        <Text style={styles.emptyChannels}>No channels yet — tap ＋</Text>
       ) : null}
     </View>
   );
 }
 
 export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { group: Group; unreadsOnly: boolean; initialChoosing?: boolean }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [choosing, setChoosing] = useState(initialChoosing);
   const dms = useAgentDms();
   const open = useOpenAgentDm();
@@ -428,6 +437,8 @@ export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { g
    they stay reachable (tap to open) and restorable (tap the eye) without
    crowding the main list. */
 function HiddenSection({ groups }: { groups: Group[] }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [open, setOpen] = useState(false);
   const setGroupHidden = useSetGroupHidden();
   const updateChannel = useUpdateChannel();
@@ -505,6 +516,8 @@ function HiddenSection({ groups }: { groups: Group[] }) {
 }
 
 export default function Home() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const { groupId } = useLocalSearchParams<{ groupId?: string }>();
   const groups = useGroups();
   const threads = useThreads();
@@ -630,7 +643,7 @@ export default function Home() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { paddingHorizontal: layout.gutter, paddingTop: space.md, gap: space.md, paddingBottom: layout.contentBottom },
   sectionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
@@ -705,7 +718,7 @@ const styles = StyleSheet.create({
   },
   hash: { color: colors.faint, fontSize: typography.bodySm.fontSize },
   channelName: { fontSize: typography.message.fontSize, fontWeight: typography.message.fontWeight, color: colors.dim, flex: 1 },
-  dmModalScrim: { flex: 1, justifyContent: "center", padding: 20, backgroundColor: "rgba(4,6,10,0.78)" },
+  dmModalScrim: { flex: 1, justifyContent: "center", padding: 20, backgroundColor: colors.scrim },
   dmModalCard: { width: "100%", maxWidth: 440, maxHeight: "78%", alignSelf: "center", padding: 18, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 18, backgroundColor: colors.sheet },
   dmModalHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 14 },
   dmModalTitleBlock: { flex: 1, gap: 3 },
@@ -773,7 +786,7 @@ const styles = StyleSheet.create({
     color: colors.faint,
     fontSize: typography.caption.fontSize,
     fontWeight: weight.bold,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: colors.neutralStrong,
     borderRadius: 9,
     minWidth: 20,
     textAlign: "center",
@@ -792,4 +805,4 @@ const styles = StyleSheet.create({
   hiddenChanBtn: { flex: 1 },
   hiddenName: { color: colors.dim, fontSize: typography.bodySm.fontSize, flex: 1 },
   hiddenGroupSuffix: { color: colors.faint, fontSize: typography.meta.fontSize },
-});
+}));

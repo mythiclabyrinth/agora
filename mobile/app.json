@@ -6,7 +6,7 @@
     "scheme": "agora",
     "orientation": "default",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "automatic",
     "backgroundColor": "#101216",
     "ios": {
       "supportsTablet": true,

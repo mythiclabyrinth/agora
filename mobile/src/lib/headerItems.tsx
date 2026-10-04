@@ -14,7 +14,8 @@ import { Platform, Pressable } from "react-native";
 import { router, type NativeStackNavigationOptions } from "expo-router";
 import { ChevronLeft } from "lucide-react-native";
 import { Icon } from "../components/Icon";
-import { colors } from "./theme";
+
+import { useAppTheme } from "./useTheme";
 
 export function headerActions(element: ReactElement | null): NativeStackNavigationOptions {
   if (Platform.OS !== "ios") {
@@ -29,9 +30,10 @@ export function headerActions(element: ReactElement | null): NativeStackNavigati
 /* Chevron-only back button; renders nothing on the stack root. The edge
    swipe-back gesture is unaffected by hiding the native button. */
 function HeaderBack() {
+  const { colors } = useAppTheme();
   if (!router.canGoBack()) return null;
   return (
-    <Pressable onPress={() => router.back()} hitSlop={12} style={{ paddingRight: 6 }}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={() => router.back()} hitSlop={12} style={{ paddingRight: 6 }}>
       <Icon icon={ChevronLeft} size={26} color={colors.text} strokeWidth={2.2} />
     </Pressable>
   );

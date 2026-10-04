@@ -55,7 +55,8 @@ import {
   prepareSpeechAudio,
   stopSpeech,
 } from "../../../../src/lib/speech";
-import { colors, typography, weight } from "../../../../src/lib/theme";
+import { typography, weight } from "../../../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../../../src/lib/useTheme";
 import { threadAddressKey } from "@agora/core";
 import { useChannelLive } from "@agora/core";
 import { usePrefs } from "../../../../src/state/prefs";
@@ -65,6 +66,8 @@ type Row = { kind: "root"; m: Message } | { kind: "msg"; m: Message };
 const MAX_DEEP_LINK_PAGES = 10;
 
 export default function ThreadScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const params = useLocalSearchParams<{
     channelId: string;
     rootId: string;
@@ -286,7 +289,7 @@ export default function ThreadScreen() {
         />
       </View>
     ),
-    [session, starredIds, highlightedId],
+    [session, starredIds, highlightedId, styles],
   );
 
   if (groupMismatch) {
@@ -481,7 +484,7 @@ export default function ThreadScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   listWrap: { flex: 1, position: "relative" },
   headerBtns: { flexDirection: "row", gap: 16 },
@@ -499,4 +502,4 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 24 },
-});
+}));

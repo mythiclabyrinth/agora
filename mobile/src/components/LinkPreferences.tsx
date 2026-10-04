@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { StyleSheet, Switch, Text, View } from "react-native";
 import { isChromeAvailable } from "../lib/openLink";
-import { colors, surfaces, typography, space } from "../lib/theme";
+import { space } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { SelectDropdown } from "./SelectDropdown";
 import type { LinkBrowser } from "../state/prefs";
 
@@ -18,6 +19,8 @@ export function LinkPreferences({
   onBrowserChange: (browser: LinkBrowser) => void;
   chromeAvailable?: boolean;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [detectedChrome, setDetectedChrome] = useState(false);
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -65,11 +68,11 @@ export function LinkPreferences({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   card: { ...surfaces.card, overflow: "hidden" },
   nativeRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14 },
   browser: { padding: space.lg, gap: space.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   copy: { flex: 1 },
   name: { color: colors.text, fontSize: 14, fontWeight: "700" },
   meta: { color: colors.dim, fontSize: 12, marginTop: 2 },
-});
+}));

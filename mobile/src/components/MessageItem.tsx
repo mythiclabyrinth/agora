@@ -9,7 +9,8 @@ import type { Session } from "@agora/core";
 import { FEATURES, useSelectOption } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtLastReply, fmtLastReplyFull, fmtTs, validLastReplyTs } from "@agora/core";
-import { colors, typography, weight, radii, space } from "../lib/theme";
+import { typography, weight, radii, space } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { useSession } from "../state/session";
 import { tldrOf, useTldrView } from "@agora/core";
 import { AgentAvatar } from "./AgentAvatar";
@@ -24,6 +25,7 @@ import { Unfurls } from "./Unfurls";
 import { ArtifactList } from "./MapArtifacts";
 
 export function Avatar({ message }: { message: Message }) {
+  const styles = useStyles();
   if (message.author_type === "agent") {
     return <AgentAvatar agentId={message.author_id} size={30} />;
   }
@@ -38,6 +40,7 @@ export function Avatar({ message }: { message: Message }) {
 }
 
 function MessageOptions({ message }: { message: Message }) {
+  const styles = useStyles();
   const select = useSelectOption();
   const meta = message.meta;
   const options = meta?.options;
@@ -106,6 +109,8 @@ export function MessageItem({
   starred?: boolean;
   pinned?: boolean;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const username = useSession((s) => s.username);
   const mine =
     message.author_type === "user" &&
@@ -261,7 +266,7 @@ export function MessageItem({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   row: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -384,4 +389,4 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
     overflow: "hidden",
   },
-});
+}));

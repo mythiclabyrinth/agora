@@ -25,7 +25,8 @@ import {
   type InstanceAiUpdate,
 } from "@agora/core";
 import { toast, toastErr } from "../../src/components/Toast";
-import { colors, typography, weight } from "../../src/lib/theme";
+import { typography, weight } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import * as Linking from "expo-linking";
 
 type SelectOption = { id: string; label: string };
@@ -43,6 +44,7 @@ function SelectField({
   disabled?: boolean;
   onChange: (id: string) => void;
 }) {
+  const styles = useStyles();
   const [open, setOpen] = useState(false);
   const selected = options.find((o) => o.id === value);
 
@@ -104,6 +106,8 @@ function SelectField({
 }
 
 function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const update = useUpdateInstanceAi();
   const [sttProvider, setSttProvider] = useState(data.stt_provider);
 
@@ -163,6 +167,8 @@ function SttFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
 }
 
 function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const update = useUpdateInstanceAi();
   const [ttsProvider, setTtsProvider] = useState(data.tts_provider);
 
@@ -256,6 +262,7 @@ function TtsFeatures({ data }: { data: InstanceAiSettings["voice"] }) {
 }
 
 function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
+  const styles = useStyles();
   const update = useUpdateInstanceAi();
   const [provider, setProvider] = useState(data.provider);
   const modelField = data.models?.[provider as "anthropic" | "openai" | "codex"] || data.model;
@@ -325,6 +332,8 @@ function KeyCard({
   testing: boolean;
   saving: boolean;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return (
     <View style={styles.keyCard}>
       <Text style={styles.envName}>{envName}</Text>
@@ -365,6 +374,8 @@ function KeyCard({
 }
 
 function CredentialsPane({ data }: { data: InstanceAiSettings }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const update = useUpdateInstanceAi();
   const test = useTestInstanceAi();
   const startOauth = useStartCodexOauth();
@@ -553,6 +564,8 @@ function CredentialsPane({ data }: { data: InstanceAiSettings }) {
 }
 
 export default function InstanceAiScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const me = useMe();
   const isAdmin = me.data?.instance_admin === true;
   const q = useInstanceAi(isAdmin);
@@ -611,7 +624,7 @@ export default function InstanceAiScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 16, gap: 14, paddingBottom: 40 },
   hint: { color: colors.dim, fontSize: typography.meta.fontSize, lineHeight: 19 },
@@ -739,7 +752,7 @@ const styles = StyleSheet.create({
     fontWeight: weight.bold,
   },
   oauthBadgeOn: {
-    color: "#6ecbf5",
-    backgroundColor: "rgba(54,197,240,0.13)",
+    color: colors.info,
+    backgroundColor: colors.infoSoft,
   },
-});
+}));

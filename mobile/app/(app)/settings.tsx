@@ -3,33 +3,27 @@ import { ThemedInput as TextInput } from "../../src/components/ThemedInput";
    dedicated surface, linked here for instance admins. */
 
 import React, { useState } from "react";
-import {
-  Alert,
-  Linking,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { Alert, Linking, Pressable, ScrollView, Text, View } from "react-native";
 import * as Application from "expo-application";
 import { Link, Stack } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { WEBSITE_URL, keys, useApi } from "@agora/core";
 import type { Me } from "@agora/core";
-import { SectionHeader } from "../../src/components/SectionHeader";
+
 import { ArmedButton } from "../../src/components/ArmedButton";
 import { LinkPreferences } from "../../src/components/LinkPreferences";
+import { AppearancePicker } from "../../src/components/AppearancePicker";
 import { toast, toastErr } from "../../src/components/Toast";
 import { compareVersions, lookupStoreVersion } from "../../src/lib/appVersion";
 import { openLink } from "../../src/lib/openLink";
 import { openWriteReviewUrl } from "../../src/lib/storeReview";
-import { colors, typography, weight } from "../../src/lib/theme";
+import { typography, weight } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { usePrefs } from "../../src/state/prefs";
 import { useSession } from "../../src/state/session";
 import { Icon } from "../../src/components/Icon";
 import { Bot, SlidersHorizontal, ChevronRight, ShieldCheck, Users } from "lucide-react-native";
-import { layout, radii, space, surfaces } from "../../src/lib/theme";
+import { layout, radii, space } from "../../src/lib/theme";
 
 function Section({
   title,
@@ -38,6 +32,7 @@ function Section({
   title: string;
   children: React.ReactNode;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.section}>
       <Text accessibilityRole="header" style={styles.sectionTitle}>{title}</Text>
@@ -49,6 +44,8 @@ function Section({
 /* Profile self-service: edit how your name appears on new messages.
    Saving PATCHes /api/me and updates the local session state. */
 function DisplayNameRow() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const api = useApi();
   const queryClient = useQueryClient();
   const username = useSession((s) => s.username);
@@ -123,6 +120,8 @@ function DisplayNameRow() {
 }
 
 export default function SettingsScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const api = useApi();
   const session = useSession((s) => s.session)!;
   const signOut = useSession((s) => s.signOut);
@@ -286,6 +285,10 @@ export default function SettingsScreen() {
           </View>
         </Section>
 
+        <Section title="Appearance">
+          <AppearancePicker />
+        </Section>
+
         <Section title="Links">
           <LinkPreferences
             preferNativeApps={preferNativeApps}
@@ -378,7 +381,7 @@ export default function SettingsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { paddingHorizontal: layout.gutter, gap: space.md, paddingBottom: layout.contentBottom },
   section: { gap: space.sm, marginTop: space.md },
@@ -434,4 +437,4 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   agentHubArrow: { color: colors.a1, fontSize: typography.display.fontSize, lineHeight: 30 },
-});
+}));

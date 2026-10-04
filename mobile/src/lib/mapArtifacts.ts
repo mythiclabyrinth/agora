@@ -4,6 +4,8 @@ import {
   type MapArtifactPlace,
 } from "@agora/core";
 
+import { themes, type AppTheme } from "./theme";
+
 export type MapFilters = { region: string; day: string; category: string };
 export type ProjectedPoint = { id: string; x: number; y: number };
 
@@ -53,6 +55,7 @@ export function projectMapPoints(
 export function mapArtifactHtml(
   data: MapArtifactData,
   styleUrl: string,
+  theme: AppTheme = themes.dark,
 ): string {
   const days = data.days ?? [];
   const payload = JSON.stringify({
@@ -86,32 +89,32 @@ export function mapArtifactHtml(
       content="script-src 'unsafe-inline' https://unpkg.com blob:; worker-src blob: https://unpkg.com; child-src blob: https://unpkg.com">
 <link href="https://unpkg.com/maplibre-gl@6.0.0/dist/maplibre-gl.css" rel="stylesheet">
 <style>
-html,body,#map { margin:0; width:100%; height:100%; background:#0b1220; }
+html,body,#map { margin:0; width:100%; height:100%; background:${theme.colors.bg}; }
 button { cursor:pointer; }
 .pin { display:grid; place-items:center; width:24px; height:24px; padding:0;
        border:2px solid #fff; border-radius:999px 999px 999px 2px;
-       background:var(--marker,#8b7cff); color:#fff; font:800 11px/1 system-ui;
+       background:var(--marker,${theme.colors.a1}); color:#fff; font:800 11px/1 system-ui;
        box-shadow:0 2px 6px rgba(0,0,0,.45); transform:rotate(45deg); }
 .pin span { transform:rotate(-45deg); }
-.pin.selected { transform:rotate(45deg) scale(1.18); border-color:#8b7cff; z-index:2; }
+.pin.selected { transform:rotate(45deg) scale(1.18); border-color:${theme.colors.a1}; z-index:2; }
 .cluster { display:grid; place-items:center; min-width:30px; height:30px; padding:0 6px;
-           border:2px solid #fff; border-radius:999px; background:#8b7cff; color:#fff;
+           border:2px solid #fff; border-radius:999px; background:${theme.colors.a1}; color:${theme.colors.onAccent};
            font:800 12px/1 system-ui; box-shadow:0 2px 8px rgba(0,0,0,.5); }
 .area { max-width:180px; overflow:hidden; padding:4px 9px;
-        border:1px solid rgba(255,255,255,.25); border-radius:999px;
-        background:rgba(10,15,26,.82); color:rgba(255,255,255,.92);
+        border:1px solid ${theme.colors.borderStrong}; border-radius:999px;
+        background:${theme.colors.sheet}; color:${theme.colors.text};
         font:700 10.5px/1.2 system-ui; text-overflow:ellipsis; white-space:nowrap;
         box-shadow:0 2px 8px rgba(0,0,0,.45); }
-.area.selected { border-color:#8b7cff; background:#8b7cff; color:#fff; }
+.area.selected { border-color:${theme.colors.a1}; background:${theme.colors.a1}; color:${theme.colors.onAccent}; }
 .popup-holder .maplibregl-popup-content { padding:9px 11px; border-radius:10px;
-  background:#131a28; color:#e6ecf7; box-shadow:0 6px 22px rgba(0,0,0,.5); }
-.popup-holder .maplibregl-popup-tip { border-top-color:#131a28; border-bottom-color:#131a28; }
+  background:${theme.colors.sheet}; color:${theme.colors.text}; box-shadow:0 6px 22px rgba(0,0,0,.5); }
+.popup-holder .maplibregl-popup-tip { border-top-color:${theme.colors.sheet}; border-bottom-color:${theme.colors.sheet}; }
 .popup strong { display:block; font-size:12px; }
 .popup .meta { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
-.popup .meta span { border-radius:999px; padding:2px 6px; color:#93a4bd;
-                    background:rgba(255,255,255,.06); font-size:9px; }
-.popup .meta .day { color:#8b7cff; font-weight:700; }
-#err { color:#fca5a5; font:12px ui-monospace,monospace; padding:16px;
+.popup .meta span { border-radius:999px; padding:2px 6px; color:${theme.colors.dim};
+                    background:${theme.colors.neutralSoft}; font-size:9px; }
+.popup .meta .day { color:${theme.colors.a1}; font-weight:700; }
+#err { color:${theme.colors.red}; font:12px ui-monospace,monospace; padding:16px;
        white-space:pre-wrap; overflow-wrap:anywhere; }
 </style></head><body><div id="map"></div>
 <script type="module">

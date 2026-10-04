@@ -14,7 +14,8 @@ import {
   type Message,
 } from "@agora/core";
 import { beginReviewUiBlock, endReviewUiBlock } from "../lib/storeReview";
-import { colors, typography, weight, surfaces } from "../lib/theme";
+import { typography, weight } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { copyDeepLink } from "../lib/deepLinks";
 import { speakMessage } from "../lib/nativeSpeech";
 import { Icon } from "./Icon";
@@ -39,6 +40,8 @@ export function MessageActions({
   onThread?: () => void;
   onDeleted?: () => void;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const star = useStarMessage(channelId);
   const pin = usePinMessage(channelId);
   const del = useDeleteMessage();
@@ -218,22 +221,25 @@ function absoluteTime(ts: number): string {
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
+  const styles = useStyles();
   return <View style={styles.infoRow}>
     <Text style={styles.infoLabel}>{label}</Text>
     <Text selectable style={styles.infoValue}>{value}</Text>
   </View>;
 }
 
-function Row({ icon, label, onPress, color = colors.text, fill, danger = false }: {
+function Row({ icon, label, onPress, color, fill, danger = false }: {
   icon: LucideIcon; label: string; onPress: () => void; color?: string; fill?: string; danger?: boolean;
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   return <Pressable accessibilityRole="button" accessibilityLabel={label} style={styles.row} onPress={onPress}>
-    <Icon icon={icon} size={18} color={color} fill={fill} />
+    <Icon icon={icon} size={18} color={color ?? colors.text} fill={fill} />
     <Text style={[styles.text, danger && styles.danger]}>{label}</Text>
   </Pressable>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   keyboard: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
   backdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
   sheet: { maxHeight: "85%", ...surfaces.sheet, gap: 4, paddingBottom: 34 },
@@ -254,4 +260,4 @@ const styles = StyleSheet.create({
   infoValue: { color: colors.text, fontSize: typography.bodySm.fontSize, lineHeight: 20 },
   infoId: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   infoLink: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
-});
+}));

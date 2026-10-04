@@ -26,7 +26,8 @@ import { currentStoredSession, readActionRegistration } from "../../src/lib/noti
 import { useGroups, useThreads } from "@agora/core";
 import { headerBack } from "../../src/lib/headerItems";
 import { notificationNavigationAction } from "../../src/lib/notificationRouting";
-import { colors } from "../../src/lib/theme";
+
+import { useAppTheme } from "../../src/lib/useTheme";
 import { StoreReviewHost } from "../../src/components/StoreReviewHost";
 
 /** Ensure cold-start deep links still have Home beneath them in the stack. */
@@ -93,6 +94,7 @@ export function NotificationTapRouter() {
 }
 
 export default function AppLayout() {
+  const { colors } = useAppTheme();
   const pathname = usePathname();
   const status = useSession((s) => s.status);
   const session = useSession((s) => s.session);

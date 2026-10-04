@@ -5,6 +5,7 @@
 
 import * as FileSystem from "expo-file-system/legacy";
 import { create } from "zustand";
+import type { AppearancePreference } from "../lib/theme";
 import {
   forgetRequireAgentOff,
   isRequireAgentOn,
@@ -17,8 +18,11 @@ import {
 const PREFS_FILE = `${FileSystem.documentDirectory ?? ""}ui-prefs.json`;
 
 const RECENT_EMOJI_MAX = 24;
+let loadingPrefs: Promise<void> | null = null;
+let appearanceRevision = 0;
 
 interface PersistedPrefs {
+  appearance: AppearancePreference;
   collapsedGroups: string[];
   unreadsOnly: boolean;
   speakAloud: boolean;
@@ -37,6 +41,8 @@ interface PersistedPrefs {
 export type LinkBrowser = "in-app" | "system" | "chrome";
 
 interface PrefsState {
+  appearance: AppearancePreference;
+  setAppearance: (appearance: AppearancePreference) => void;
   loaded: boolean;
   /** Collapsed (not expanded) set, so unseen groups default to expanded. */
   collapsedGroups: Record<string, true>;
@@ -69,6 +75,7 @@ interface PrefsState {
 
 function persist(state: PrefsState): void {
   const data: PersistedPrefs = {
+    appearance: state.appearance,
     collapsedGroups: Object.keys(state.collapsedGroups),
     unreadsOnly: state.unreadsOnly,
     speakAloud: state.speakAloud,
@@ -86,6 +93,8 @@ function persist(state: PrefsState): void {
 }
 
 export const usePrefs = create<PrefsState>((set, get) => ({
+  appearance: "dark",
+  setAppearance(appearance) { appearanceRevision++; set({ appearance }); persist(get()); },
   loaded: false,
   collapsedGroups: {},
   unreadsOnly: false,
@@ -99,39 +108,46 @@ export const usePrefs = create<PrefsState>((set, get) => ({
   requireAgentOffThreads: [],
 
   async load() {
-    try {
-      const text = await FileSystem.readAsStringAsync(PREFS_FILE);
-      const data = JSON.parse(text) as Partial<PersistedPrefs>;
-      set({
-        loaded: true,
-        collapsedGroups: Object.fromEntries(
-          (data.collapsedGroups ?? []).map((id) => [id, true as const]),
-        ),
-        unreadsOnly: !!data.unreadsOnly,
-        speakAloud: !!data.speakAloud,
-        recentEmoji: Array.isArray(data.recentEmoji)
-          ? data.recentEmoji.filter((c) => typeof c === "string").slice(0, RECENT_EMOJI_MAX)
-          : [],
-        preferNativeApps:
-          typeof data.preferNativeApps === "boolean"
-            ? data.preferNativeApps
-            : true,
-        linkBrowser: ["in-app", "system", "chrome"].includes(data.linkBrowser ?? "")
-          ? data.linkBrowser as LinkBrowser
-          : "in-app",
-        threadSort: ["recent", "oldest", "az", "za"].includes(data.threadSort ?? "")
-          ? data.threadSort as ThreadSort
-          : "recent",
-        threadFilter: ["all", "saved", "unset"].includes(data.threadFilter ?? "")
-          ? data.threadFilter as ThreadFilter
-          : "all",
-        threadGroup: typeof data.threadGroup === "string" && data.threadGroup.length > 0
-          ? data.threadGroup : null,
-        requireAgentOffThreads: parseRequireAgentKeys(data.requireAgentOffThreads),
-      });
-    } catch {
-      set({ loaded: true }); // first run
-    }
+    if (loadingPrefs) return loadingPrefs;
+    const revision = appearanceRevision;
+    loadingPrefs = (async () => {
+      try {
+        const text = await FileSystem.readAsStringAsync(PREFS_FILE);
+        const data = JSON.parse(text) as Partial<PersistedPrefs>;
+        set({
+          loaded: true,
+          appearance: revision !== appearanceRevision ? get().appearance
+            : ["dark", "light", "system"].includes(data.appearance ?? "") ? data.appearance as AppearancePreference : "dark",
+          collapsedGroups: Object.fromEntries(
+            (data.collapsedGroups ?? []).map((id) => [id, true as const]),
+          ),
+          unreadsOnly: !!data.unreadsOnly,
+          speakAloud: !!data.speakAloud,
+          recentEmoji: Array.isArray(data.recentEmoji)
+            ? data.recentEmoji.filter((c) => typeof c === "string").slice(0, RECENT_EMOJI_MAX)
+            : [],
+          preferNativeApps:
+            typeof data.preferNativeApps === "boolean"
+              ? data.preferNativeApps
+              : true,
+          linkBrowser: ["in-app", "system", "chrome"].includes(data.linkBrowser ?? "")
+            ? data.linkBrowser as LinkBrowser
+            : "in-app",
+          threadSort: ["recent", "oldest", "az", "za"].includes(data.threadSort ?? "")
+            ? data.threadSort as ThreadSort
+            : "recent",
+          threadFilter: ["all", "saved", "unset"].includes(data.threadFilter ?? "")
+            ? data.threadFilter as ThreadFilter
+            : "all",
+          threadGroup: typeof data.threadGroup === "string" && data.threadGroup.length > 0
+            ? data.threadGroup : null,
+          requireAgentOffThreads: parseRequireAgentKeys(data.requireAgentOffThreads),
+        });
+      } catch {
+        set({ loaded: true }); // first run
+      }
+    })();
+    try { await loadingPrefs; } finally { loadingPrefs = null; }
   },
 
   toggleGroup(groupId) {

@@ -1,13 +1,16 @@
 import React, { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { Stack, router } from "expo-router";
 import { ChevronRight, Search, User } from "lucide-react-native";
 import { useAllMemberships, useMe, useUsers } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
 import { Icon } from "../../src/components/Icon";
-import { colors, typography, weight } from "../../src/lib/theme";
+import { typography, weight } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 
 export default function PeopleScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const me = useMe();
   const isInstanceAdmin = me.data?.instance_admin === true;
   const users = useUsers(isInstanceAdmin);
@@ -56,7 +59,7 @@ export default function PeopleScreen() {
   </>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg }, content: { padding: 16, gap: 10, paddingBottom: 40 },
   hint: { color: colors.dim, fontSize: typography.meta.fontSize, lineHeight: 19, marginBottom: 2 },
   searchBox: { flexDirection: "row", alignItems: "center", gap: 9, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.panel, borderRadius: 12, paddingHorizontal: 12 },
@@ -66,4 +69,4 @@ const styles = StyleSheet.create({
   details: { flex: 1, gap: 2 }, name: { color: colors.text, fontWeight: weight.bold, fontSize: typography.message.fontSize },
   username: { color: colors.dim, fontSize: typography.caption.fontSize }, accessCount: { color: colors.faint, fontSize: typography.caption.fontSize, marginTop: 2 },
   empty: { color: colors.faint, textAlign: "center", paddingVertical: 24 },
-});
+}));

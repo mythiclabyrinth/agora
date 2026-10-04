@@ -5,12 +5,13 @@
 
 import React from "react";
 import type { LucideIcon } from "lucide-react-native";
-import { colors } from "../lib/theme";
+
+import { useAppTheme } from "../lib/useTheme";
 
 export function Icon({
   icon: Glyph,
   size = 18,
-  color = colors.dim,
+  color,
   fill = "none",
   strokeWidth = 1.8,
 }: {
@@ -21,5 +22,6 @@ export function Icon({
   fill?: string;
   strokeWidth?: number;
 }) {
-  return <Glyph size={size} color={color} fill={fill} strokeWidth={strokeWidth} />;
+  const { colors } = useAppTheme();
+  return <Glyph size={size} color={color ?? colors.dim} fill={fill} strokeWidth={strokeWidth} />;
 }

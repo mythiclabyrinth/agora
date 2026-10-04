@@ -5,7 +5,7 @@ import {
   fixtureMembers,
   fixtureUsers,
 } from "@agora/core/testing/fixtures";
-import MembersScreen from "../../app/(app)/members/[groupId]";
+import MembersScreen, { AddAgent, AddPerson } from "../../app/(app)/members/[groupId]";
 
 const routes = {
   "GET /api/groups": { groups: fixtureGroups },
@@ -85,4 +85,22 @@ export const LongScopeNames: Story = {
       };
     },
   },
+};
+
+
+export const AddAgentPicker: Story = {
+  render: () => <AddAgent agents={fixtureAgents} totalAgents={fixtureAgents.length}
+    channels={fixtureGroups[0].channels} pending={false} onAdd={() => undefined} onCancel={() => undefined} />,
+};
+export const AllAgentsAdded: Story = {
+  render: () => <AddAgent agents={[]} totalAgents={fixtureAgents.length}
+    channels={fixtureGroups[0].channels} pending={false} onAdd={() => undefined} onCancel={() => undefined} />,
+};
+export const NoConnectedAgents: Story = {
+  render: () => <AddAgent agents={[]} totalAgents={0}
+    channels={fixtureGroups[0].channels} pending={false} onAdd={() => undefined} onCancel={() => undefined} />,
+};
+export const AddPersonPicker: Story = {
+  render: () => <AddPerson users={fixtureUsers} channels={fixtureGroups[0].channels}
+    pending={false} onAdd={() => undefined} onCancel={() => undefined} />,
 };

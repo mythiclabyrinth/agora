@@ -1,6 +1,7 @@
-import { StyleSheet, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { fmtLastReply, fmtLastReplyFull, fmtRelative, validLastReplyTs } from "@agora/core";
-import { colors, typography, weight } from "../lib/theme";
+import { typography, weight } from "../lib/theme";
+import { createThemedStyles } from "../lib/useTheme";
 
 /** Relative activity time shown at the right of the thread's top row. */
 export function ThreadRelativeTime({
@@ -12,6 +13,7 @@ export function ThreadRelativeTime({
   replyCount: number;
   lastReplyTs?: number | null;
 }) {
+  const styles = useStyles();
   const footerHasReplyTime = replyCount > 0 && validLastReplyTs(lastReplyTs);
   return (
     <Text
@@ -33,6 +35,7 @@ export function ThreadInboxFooter({
   unread: number;
   lastReplyTs?: number | null;
 }) {
+  const styles = useStyles();
   const lastReply = replyCount > 0 && validLastReplyTs(lastReplyTs)
     ? lastReplyTs : undefined;
   return (
@@ -61,7 +64,7 @@ export function ThreadInboxFooter({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   relative: { color: colors.faint, fontSize: typography.caption.fontSize, lineHeight: 15 },
   footer: { flexDirection: "row", alignItems: "center", gap: 10 },
   replyGroup: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -84,4 +87,4 @@ const styles = StyleSheet.create({
     maxWidth: 180,
     textAlign: "right",
   },
-});
+}));

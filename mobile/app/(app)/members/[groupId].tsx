@@ -1,373 +1,220 @@
-/* Group members, mirroring the desktop members pane: people and agents in
-   sections, channel-scope shown by name, live/offline status, an add-agent
-   flow with a "whole group / one channel" scope picker, and (for group
-   admins) an add-person flow with a member/admin role picker plus
-   promote/demote. Anyone can leave a group themselves. */
-
-import React, { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+/* Group and channel rosters share the same access rules; details and mutations
+   live in sheets so the roster stays readable as membership grows. */
+import React, { useRef, useState } from "react";
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { Link, Stack, useLocalSearchParams } from "expo-router";
-import { Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, User, X } from "lucide-react-native";
+import { Bot, Check, ChevronLeft, ChevronRight, Search, Users } from "lucide-react-native";
 import {
-  canManageMembershipScope,
-  hasChannelScope,
-  membershipUsernames,
-  personRemovalTargets,
-  useAddMember,
-  useAgents,
-  useGroups,
-  useMembers,
-  useRemoveMember,
-  useUsers,
-  visibleMembershipScopes,
+  useAddMember, useAgents, useGroups, useMembers, useRemoveMember, useUsers, visibleMembershipScopes,
 } from "@agora/core";
 import type { AgentInfo, Member, UserInfo } from "@agora/core";
-import { EmptyState } from "../../../src/components/EmptyState";
 import { AgentAvatar } from "../../../src/components/AgentAvatar";
-import { ArmedButton } from "../../../src/components/ArmedButton";
 import { Icon } from "../../../src/components/Icon";
+import { SheetHeader } from "../../../src/components/SheetHeader";
+import { ResponsiveText as Text } from "../../../src/components/ResponsiveText";
 import { toast, toastErr } from "../../../src/components/Toast";
-import { colors, typography, weight } from "../../../src/lib/theme";
+import { typography, weight } from "../../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
 import { useSession } from "../../../src/state/session";
-import { RoleDropdown } from "../../../src/components/RoleDropdown";
+import { ParticipantAccessFields } from "../../../src/components/ParticipantAccessFields";
+import { accessDraft, applyAccess, planAccess, type AccessDraft, type AccessPermissions, type AccessRole } from "../../../src/lib/participantAccess";
 
-function LiveDot({ live }: { live: boolean }) {
-  return <View style={[styles.dot, { backgroundColor: live ? colors.green : colors.faint }]} />;
+function MemberSheet({ title, onClose, children }: React.PropsWithChildren<{ title: string; onClose: () => void }>) {
+  const styles = useStyles();
+  return <Modal transparent animationType="slide" onRequestClose={onClose}>
+    <KeyboardAvoidingView style={styles.backdrop} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={onClose} />
+      <View accessibilityViewIsModal style={styles.sheet}>
+        <SheetHeader title={title} onClose={onClose} />
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.sheetContent}>{children}</ScrollView>
+      </View>
+    </KeyboardAvoidingView>
+  </Modal>;
 }
-
+function PersonAvatar({ name }: { name: string }) {
+  const styles = useStyles();
+  const initials = name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase();
+  return <View accessible={false} style={styles.avatar}><Text maxFontSizeMultiplier={1.2} style={styles.initials}>{initials || "?"}</Text></View>;
+}
 function scopeLabel(scope: Member, channelName: (id: string | null) => string | null) {
-  return scope.channel_id ? `# ${channelName(scope.channel_id)}` : "Whole group";
+  return scope.channel_id ? `#${channelName(scope.channel_id)}` : "Whole group";
 }
-
-function PersonMemberRow({
-  name, scopes, channelName, isSelf, channelFocused, canManageScope, onRemoveScope, onSetRole, onLeave, leaveLabel,
-}: {
-  name: string;
-  scopes: Member[];
-  channelName: (id: string | null) => string | null;
-  isSelf: boolean;
-  channelFocused: boolean;
-  canManageScope: (m: Member) => boolean;
-  onRemoveScope: (m: Member) => void;
-  onSetRole: (m: Member, role: "admin" | "member") => void;
-  onLeave?: () => void;
-  leaveLabel?: string;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  return <View style={styles.personCard}>
-    <Pressable style={styles.personHeader} onPress={() => setExpanded(value => !value)} accessibilityRole="button">
-      <Icon icon={User} size={20} />
-      <View style={styles.personIdentity}>
-          <Text style={styles.name}>{name}{isSelf ? <Text style={styles.meta}> (you)</Text> : null}</Text>
-          <Text style={styles.meta}>{scopes.length} {scopes.length === 1 ? "access level" : "access levels"}</Text>
-      </View>
-      <Icon icon={expanded ? ChevronUp : ChevronDown} size={17} color={colors.faint} />
-    </Pressable>
-    {expanded ? <>
-      <View style={styles.scopeList}>
-        {scopes.map(scope => {
-          const manageable = canManageScope(scope);
-          const shadowed = !!scope.channel_id && scopes.some(candidate => !candidate.channel_id);
-          const wholeGroupContext = channelFocused && !scope.channel_id;
-          // Channel view: armed action replaces tag ×. Self always gets Leave on
-          // their exact channel row; admins get Remove for others. Shadowed rows
-          // inherit whole-group access, so Remove would be a no-op — hide it.
-          const channelAction = channelFocused && !!scope.channel_id && !shadowed && (manageable || isSelf);
-          const actionLabel = isSelf ? "Leave" : "Remove";
-          return <View key={scope.channel_id ?? "group"} style={styles.scopeRow}>
-            <View style={channelAction ? styles.inlineRemoveRow : styles.scopeInfo}>
-              <Text
-                style={[styles.scopeName, channelAction && styles.wrapName]}
-                numberOfLines={channelAction ? undefined : 1}
-                ellipsizeMode={channelAction ? undefined : "tail"}
-              >
-                {scopeLabel(scope, channelName)}
-              </Text>
-              {channelAction ? (
-                <ArmedButton
-                  compact
-                  label={actionLabel}
-                  accessibilityLabel={`${actionLabel} ${isSelf ? "" : name + " "}from this channel`.trim()}
-                  onConfirm={() => onRemoveScope(scope)}
-                />
-              ) : null}
-            </View>
-            {!channelAction ? <View style={styles.scopeActions}>
-              {manageable && !shadowed && !wholeGroupContext
-                ? <RoleDropdown value={scope.role === "admin" ? "admin" : "member"} onChange={role => onSetRole(scope, role)} />
-                : <View>
-                  <Text style={styles.roleLabel}>{scope.role}</Text>
-                  {shadowed ? <Text style={styles.meta}>Included in whole-group access</Text> : null}
-                  {wholeGroupContext ? <Text style={styles.meta}>Inherited — manage from group members</Text> : null}
-                </View>}
-              {manageable && !channelFocused ? <Pressable style={styles.iconAction} hitSlop={8} onPress={() => onRemoveScope(scope)} accessibilityLabel={`Remove ${name} from this scope`}>
-                <Icon icon={X} size={12} color={colors.dim} />
-              </Pressable> : null}
-            </View> : manageable && !shadowed ? (
-              <View style={styles.scopeActions}>
-                <RoleDropdown value={scope.role === "admin" ? "admin" : "member"} onChange={role => onSetRole(scope, role)} />
-              </View>
-            ) : null}
-          </View>;
-        })}
-      </View>
-      {onLeave ? <View style={styles.personFooter}><ArmedButton label={leaveLabel ?? "Leave"} onConfirm={onLeave} /></View> : null}
-    </> : null}
+function scopeSummary(scopes: Member[], channelName: (id: string | null) => string | null, person = false) {
+  const whole = scopes.find(scope => !scope.channel_id);
+  if (whole) return person ? `Group ${whole.role === "admin" ? "admin" : "member"}` : "All channels";
+  if (scopes.length === 1) return `${person ? (scopes[0].role === "admin" ? "Admin · " : "Member · ") : ""}${scopeLabel(scopes[0], channelName)}`;
+  return `${scopes.length} channels${person && scopes.some(scope => scope.role === "admin") ? " · admin access" : ""}`;
+}
+function BackStep({ onPress }: { onPress: () => void }) {
+  const styles = useStyles();
+  return <Pressable accessibilityRole="button" accessibilityLabel="Back to previous step" style={styles.backStep} onPress={onPress}>
+    <Icon icon={ChevronLeft} size={16} /><Text style={styles.link}>Back</Text>
+  </Pressable>;
+}
+function SearchField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
+  return <View style={styles.search}><Icon icon={Search} size={17} color={colors.faint} />
+    <TextInput accessibilityLabel={placeholder} placeholder={placeholder} placeholderTextColor={colors.faint}
+      value={value} onChangeText={onChange} autoCapitalize="none" autoCorrect={false} style={styles.searchInput} clearButtonMode="while-editing" />
   </View>;
 }
 
-/* One row per agent: an agent scoped to several channels comes back as
-   several membership rows, so they arrive collapsed here with every scope
-   rendered as a tag. Channel view uses a compact armed Remove (no tag ×);
-   group view keeps ×-only removal. */
-function AgentMemberRow({
-  memberId,
-  name,
-  scopes,
-  channelName,
-  offline,
-  channelFocused,
-  onRemoveScope,
-  canManageScope,
-}: {
-  memberId: string;
-  name: string;
-  scopes: Member[];
-  channelName: (id: string | null) => string | null;
-  offline: boolean;
-  channelFocused: boolean;
-  onRemoveScope: (m: Member) => void;
-  canManageScope: (m: Member) => boolean;
+type PickerStatus = { loading?: boolean; error?: boolean; onRetry?: () => void };
+type AddPickerProps = PickerStatus & {
+  channels: { id: string; name: string }[]; memberships?: Member[]; pending: boolean;
+  onCancel: () => void; allowWholeGroup?: boolean; channelFocused?: boolean; initialChannelId?: string;
+};
+type Candidate = { id: string; name: string; detail: string };
+function AddParticipants({ candidates, kind, total = 0, channels, memberships = [], pending, onAdd, onCancel, allowWholeGroup = true, channelFocused = false, initialChannelId, loading, error, onRetry }: AddPickerProps & {
+  candidates: Candidate[]; kind: "user" | "agent"; total?: number;
+  onAdd: (id: string, role: AccessRole, channelId: string | null) => void | Promise<unknown>;
 }) {
-  return (
-    <View style={styles.agentCard}>
-      <View style={styles.agentHeader}>
-        <AgentAvatar agentId={memberId} size={26} />
-        <View style={styles.agentIdentity}>
-          <Text style={styles.name}>{name}</Text>
-          <Text style={styles.meta}>
-            member
-            {offline ? <Text style={styles.offline}> · offline — won't reply</Text> : null}
-          </Text>
-        </View>
-      </View>
-      <View style={channelFocused ? styles.channelScopeList : styles.tagRow}>
-          {scopes.map((s) => {
-            const manageable = canManageScope(s);
-            const shadowed = !!s.channel_id && scopes.some(candidate => !candidate.channel_id);
-            const channelRemove = channelFocused && !!s.channel_id && manageable && !shadowed;
-            const wholeGroupContext = channelFocused && !s.channel_id;
-            if (channelFocused) {
-              return (
-                <View key={s.channel_id ?? "group"} style={styles.channelScopeItem}>
-                  <View style={styles.inlineRemoveRow}>
-                    <View style={[styles.tag, styles.tagFlex, (wholeGroupContext || shadowed) && styles.tagMuted]}>
-                      <Text style={styles.tagTextWrap}>
-                        {scopeLabel(s, channelName)}
-                      </Text>
-                    </View>
-                    {channelRemove ? (
-                      <ArmedButton
-                        compact
-                        label="Remove"
-                        accessibilityLabel={`Remove ${name} from this channel`}
-                        onConfirm={() => onRemoveScope(s)}
-                      />
-                    ) : null}
-                  </View>
-                  {shadowed ? <Text style={styles.meta}>Included in whole-group access</Text> : null}
-                </View>
-              );
-            }
-            return (
-              <View key={s.channel_id ?? "group"} style={styles.tag}>
-                <Text style={styles.tagText} numberOfLines={1} ellipsizeMode="tail">
-                  {scopeLabel(s, channelName)}
-                </Text>
-                {manageable ? (
-                  <Pressable hitSlop={8} onPress={() => onRemoveScope(s)} accessibilityLabel={`Remove ${name} from this scope`}>
-                    <Icon icon={X} size={12} color={colors.dim} />
-                  </Pressable>
-                ) : null}
-              </View>
-            );
-          })}
-      </View>
-    </View>
-  );
+  const { colors } = useAppTheme();
+  const styles = useStyles();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [step, setStep] = useState<"participants" | "access">("participants");
+  const [query, setQuery] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [failure, setFailure] = useState("");
+  // Track individual grants so retrying a partial batch never repeats completed work.
+  const completed = useRef(new Set<string>());
+  const [draft, setDraft] = useState<AccessDraft>({ mode: initialChannelId || !allowWholeGroup ? "channels" : "group", role: "member",
+    channels: initialChannelId ? { [initialChannelId]: "member" } : {} });
+  const busy = pending || saving;
+  const filtered = candidates.filter(candidate => (candidate.name + " " + candidate.detail).toLowerCase().includes(query.trim().toLowerCase()));
+  const grants = draft.mode === "group" ? [[null, draft.role] as const] : Object.entries(draft.channels);
+  const close = () => { if (!busy) onCancel(); };
+  const submit = async () => {
+    if (busy) return;
+    setSaving(true); setFailure("");
+    try {
+      for (const id of selected) for (const [channelId, role] of grants) {
+        const key = JSON.stringify([id, channelId]);
+        const existing = memberships.some(scope => scope.member_id === id && (!scope.channel_id || scope.channel_id === channelId));
+        if (existing || completed.current.has(key)) continue;
+        await onAdd(id, kind === "agent" ? "member" : role, channelId);
+        completed.current.add(key);
+      }
+      toast("Participants added. Existing access was kept.");
+      onCancel();
+    } catch (e) {
+      setFailure("Some access may already be saved. Retry will skip completed additions. " + (e instanceof Error ? e.message : "Please try again."));
+    } finally { setSaving(false); }
+  };
+  const confirmSubmit = () => {
+    if (kind === "user" && draft.mode === "group" && memberships.some(scope => selected.includes(scope.member_id) && scope.channel_id)) {
+      Alert.alert("Apply whole-group access?", "For people with channel-specific access, this replaces their individual channel roles with the selected group role.",
+        [{ text: "Cancel", style: "cancel" }, { text: "Apply access", onPress: () => void submit() }]);
+    } else void submit();
+  };
+  return <MemberSheet title={step === "access" ? "Set access" : kind === "user" ? "Add people" : "Add agents"} onClose={close}>
+    {step === "participants" ? <>
+      <Text style={styles.hint}>Select one or more {kind === "user" ? "people" : "agents"} to add.</Text>
+      {candidates.length ? <SearchField value={query} onChange={setQuery} placeholder={kind === "user" ? "Search people" : "Search agents"} /> : null}
+      {loading ? <Text style={styles.feedback}>Loading…</Text> : error ? <View style={styles.accessCard}><Text style={styles.hint}>Couldn't load the available members.</Text><Pressable accessibilityRole="button" onPress={onRetry} style={styles.backStep}><Text style={styles.link}>Try again</Text></Pressable></View> : !candidates.length ? <View style={styles.emptyState}>
+        <Text style={styles.emptyTitle}>{kind === "user" ? "Everyone already has access" : total ? `All agents are already in this ${channelFocused ? "channel" : "group"}` : "No agents connected yet"}</Text>
+        <Text style={styles.hint}>{kind === "user" ? "Manage existing access from the participant list. Instance admins can invite new people from the web app." : total ? "You can manage their access from the agent list." : "Connect an agent on the Agents page, then add it here."}</Text>
+        {kind === "agent" && !total ? <Link href="/(app)/agents" onPress={close} style={styles.link}>Open Agents</Link> : null}
+      </View> : null}
+      {!loading && !error ? filtered.map(candidate => <Pressable key={candidate.id} accessibilityRole="checkbox" accessibilityLabel={`Select ${candidate.name}`}
+        accessibilityState={{ checked: selected.includes(candidate.id) }} style={styles.optionRow}
+        onPress={() => setSelected(current => current.includes(candidate.id) ? current.filter(id => id !== candidate.id) : [...current, candidate.id])}>
+        {kind === "user" ? <PersonAvatar name={candidate.name} /> : <AgentAvatar agentId={candidate.id} size={36} />}
+        <View style={styles.identity}><Text style={styles.name}>{candidate.name}</Text><Text style={styles.meta}>{candidate.detail}</Text></View>
+        <View style={[styles.check, selected.includes(candidate.id) && styles.checked]}>{selected.includes(candidate.id) ? <Icon icon={Check} size={14} color={colors.a1} /> : null}</View>
+      </Pressable>) : null}
+      {candidates.length > 0 && !filtered.length ? <Text style={styles.feedback}>No matches. Try another name.</Text> : null}
+      {candidates.length > 0 ? <Pressable accessibilityRole="button" accessibilityLabel="Continue to access" disabled={!selected.length || !!loading || !!error} style={[styles.primary, !selected.length && styles.disabled]} onPress={() => setStep("access")}><Text style={styles.primaryText}>Continue{selected.length ? ` · ${selected.length} selected` : ""}</Text></Pressable> : null}
+    </> : <>
+      <BackStep onPress={() => { if (!busy) setStep("participants"); }} />
+      <Text style={styles.name}>{selected.length} {kind === "user" ? "people" : "agents"} selected</Text>
+      <ParticipantAccessFields value={draft} onChange={value => { if (!busy) setDraft(value); }} channels={channels}
+        permissions={{ groupAdmin: allowWholeGroup, channelIds: channels.map(channel => channel.id) }} person={kind === "user"} disabled={busy} />
+      <Text style={styles.hint}>{draft.mode === "group" && kind === "user" ? "One group role applies to everyone selected, replacing any channel-specific roles." : "This applies to everyone selected. Existing channel access and roles won't be changed."}</Text>
+      {failure ? <Text accessibilityRole="alert" style={styles.destructiveText}>{failure}</Text> : null}
+      <Pressable accessibilityRole="button" accessibilityLabel="Add selected participants" disabled={busy || !grants.length} style={[styles.primary, (busy || !grants.length) && styles.disabled]} onPress={confirmSubmit}><Text style={styles.primaryText}>{busy ? "Adding…" : failure ? "Retry remaining additions" : "Add participants"}</Text></Pressable>
+    </>}
+  </MemberSheet>;
+}
+export function AddAgent({ agents: availableAgents, totalAgents, onAdd, ...props }: AddPickerProps & {
+  agents: AgentInfo[]; totalAgents: number; onAdd: (agent: AgentInfo, channelId: string | null) => void | Promise<unknown>;
+}) {
+  // Successful additions invalidate the roster during a batch. Keep identities
+  // stable until the sheet closes rather than losing the next selected person.
+  const known = useRef(new Map<string, AgentInfo>());
+  for (const agent of availableAgents) known.current.set(agent.id, agent);
+  const agents = [...known.current.values()];
+  return <AddParticipants {...props} kind="agent" total={totalAgents} candidates={agents.map(agent => ({ id: agent.id, name: agent.name, detail: agent.live ? "Online" : "Offline" }))}
+    onAdd={(id, _role, channelId) => onAdd(agents.find(agent => agent.id === id)!, channelId)} />;
+}
+export function AddPerson({ users: availableUsers, onAdd, ...props }: AddPickerProps & {
+  users: UserInfo[]; onAdd: (user: UserInfo, role: AccessRole, channelId: string | null) => void | Promise<unknown>;
+}) {
+  const known = useRef(new Map<string, UserInfo>());
+  for (const user of availableUsers) known.current.set(user.username, user);
+  const users = [...known.current.values()];
+  return <AddParticipants {...props} kind="user" candidates={users.map(user => ({ id: user.username, name: user.display_name || user.username, detail: "@" + user.username }))}
+    onAdd={(id, role, channelId) => onAdd(users.find(user => user.username === id)!, role, channelId)} />;
 }
 
-/* Two-step add flow: pick an agent, then pick its scope. */
-function AddAgent({
-  agents,
-  channels,
-  pending,
-  onAdd,
-  onCancel,
-  allowWholeGroup = true,
-}: {
-  agents: AgentInfo[];
-  channels: { id: string; name: string }[];
-  pending: boolean;
-  onAdd: (agent: AgentInfo, channelId: string | null) => void;
-  onCancel: () => void;
-  allowWholeGroup?: boolean;
+function AccessEditor({ scopes, channels, permissions, isSelf, instanceAdmin, isPublic, onSave, onRemove, onLeave, onClose }: {
+  scopes: Member[]; channels: { id: string; name: string }[]; permissions: AccessPermissions;
+  isSelf: boolean; instanceAdmin: boolean; isPublic: boolean; onSave: (draft: AccessDraft) => Promise<void>;
+  onRemove: (scope: Member) => void; onLeave?: () => void; onClose: () => void;
 }) {
-  const [picked, setPicked] = useState<AgentInfo | null>(null);
-
-  if (!picked) {
-    return (
-      <View style={styles.addBox}>
-        <Text style={styles.addTitle}>Pick an agent</Text>
-        {agents.map((a) => (
-          <Pressable key={a.id} style={styles.row} onPress={() => setPicked(a)}>
-            <AgentAvatar agentId={a.id} size={26} />
-            <LiveDot live={a.live} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{a.name}</Text>
-              <Text style={styles.meta}>{a.live ? "online" : "offline"}</Text>
-            </View>
-            <Icon icon={ChevronRight} size={17} color={colors.faint} />
-          </Pressable>
-        ))}
-        {agents.length === 0 ? (
-          <Text style={styles.hint}>
-            No agents yet. Link a Pantheo instance or pair a bridge under{" "}
-            <Link href="/(app)/agents" style={styles.hintLink}>
-              Agents
-            </Link>{" "}
-            first.
-          </Text>
-        ) : null}
-        <Pressable style={styles.cancelBtn} onPress={onCancel}>
-          <Text style={styles.cancelText}>Cancel</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.addBox}>
-      <Text style={styles.addTitle}>
-        Where should <Text style={styles.name}>{picked.name}</Text> listen?
-      </Text>
-      <Text style={styles.hint}>Scope it to one channel, or give it the whole group.</Text>
-      <View style={styles.scopeChips}>
-        {allowWholeGroup ? <Pressable
-          style={styles.scopeChip}
-          disabled={pending}
-          onPress={() => onAdd(picked, null)}
-        >
-          <Text style={styles.scopeText}>Whole group</Text>
-        </Pressable> : null}
-        {channels.map((c) => (
-          <Pressable
-            key={c.id}
-            style={styles.scopeChip}
-            disabled={pending}
-            onPress={() => onAdd(picked, c.id)}
-          >
-            <Text style={styles.scopeText}># {c.name}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <Pressable style={styles.cancelBtn} onPress={() => setPicked(null)}>
-        <View style={styles.cancelRow}>
-          <Icon icon={ChevronLeft} size={15} />
-          <Text style={styles.cancelText}>Back</Text>
-        </View>
-      </Pressable>
-    </View>
-  );
-}
-
-/* Two-step add flow: pick a workspace user, then a role. */
-function AddPerson({
-  users,
-  channels,
-  pending,
-  onAdd,
-  onCancel,
-  allowWholeGroup = true,
-}: {
-  users: UserInfo[];
-  channels: { id: string; name: string }[];
-  pending: boolean;
-  onAdd: (user: UserInfo, role: "admin" | "member", channelId: string | null) => void;
-  onCancel: () => void;
-  allowWholeGroup?: boolean;
-}) {
-  const [picked, setPicked] = useState<UserInfo | null>(null);
-  const [pickedScope, setPickedScope] = useState<{ id: string | null; name: string } | null>(null);
-
-  if (!picked) {
-    return (
-      <View style={styles.addBox}>
-        <Text style={styles.addTitle}>Pick a person</Text>
-        {users.map((u) => (
-          <Pressable key={u.username} style={styles.row} onPress={() => setPicked(u)}>
-            <Icon icon={User} size={20} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{u.display_name || u.username}</Text>
-              <Text style={styles.meta}>{u.username}</Text>
-            </View>
-            <Icon icon={ChevronRight} size={17} color={colors.faint} />
-          </Pressable>
-        ))}
-        {users.length === 0 ? (
-          <Text style={styles.hint}>
-            Everyone in the workspace is already in this group. Instance admins can
-            invite new people from the web app.
-          </Text>
-        ) : null}
-        <Pressable style={styles.cancelBtn} onPress={onCancel}>
-          <Text style={styles.cancelText}>Cancel</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  const scopes = [
-    ...(allowWholeGroup ? [{ id: null, name: "Whole group" }] : []),
-    ...channels,
-  ] as { id: string | null; name: string }[];
-
-  if (!pickedScope) {
-    return <View style={styles.addBox}>
-      <Text style={styles.addTitle}>Where should {picked.display_name || picked.username} have access?</Text>
-      <Text style={styles.hint}>Choose one scope. You can add another afterward.</Text>
-      <View style={styles.optionList}>{scopes.map(scope =>
-        <Pressable key={scope.id ?? "group"} style={styles.optionRow} onPress={() => setPickedScope(scope)}>
-          <Text style={styles.scopeName}>{scope.id ? `# ${scope.name}` : scope.name}</Text>
-          <Icon icon={ChevronRight} size={17} color={colors.faint} />
-        </Pressable>
-      )}</View>
-      <Pressable style={styles.cancelBtn} onPress={() => setPicked(null)}><Text style={styles.cancelText}>‹ Back</Text></Pressable>
-    </View>;
-  }
-
-  return (
-    <View style={styles.addBox}>
-      <Text style={styles.addTitle}>Choose a role for {pickedScope.id ? `# ${pickedScope.name}` : pickedScope.name}</Text>
-      <View style={styles.roleOptions}>
-        <Pressable style={styles.roleOption} disabled={pending} onPress={() => onAdd(picked, "member", pickedScope.id)}>
-          <Text style={styles.scopeName}>Member</Text><Text style={styles.meta}>Can read and participate</Text>
-        </Pressable>
-        <Pressable style={styles.roleOption} disabled={pending} onPress={() => onAdd(picked, "admin", pickedScope.id)}>
-          <Text style={styles.scopeName}>Admin</Text><Text style={styles.meta}>Can also manage this access</Text>
-        </Pressable>
-      </View>
-      <Pressable style={styles.cancelBtn} onPress={() => setPickedScope(null)}>
-        <View style={styles.cancelRow}>
-          <Icon icon={ChevronLeft} size={15} />
-          <Text style={styles.cancelText}>Back</Text>
-        </View>
-      </Pressable>
-    </View>
-  );
+  const styles = useStyles();
+  const [draft, setDraft] = useState(() => accessDraft(scopes));
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const original = accessDraft(scopes);
+  const person = scopes[0].member_type === "user";
+  const inherited = original.mode === "group" && !permissions.groupAdmin;
+  const editable = !inherited && (permissions.groupAdmin || permissions.channelIds.length > 0);
+  // Removing one's own global row also revokes the authority needed to add narrower rows.
+  const lockScope = person && isSelf && !instanceAdmin && original.mode === "group";
+  const name = scopes[0].name || scopes[0].member_id;
+  const dirty = JSON.stringify(original) !== JSON.stringify(draft);
+  const close = () => {
+    if (saving) return;
+    if (dirty && !failed) Alert.alert("Discard changes?", "Your access changes haven't been saved.", [{ text: "Keep editing", style: "cancel" }, { text: "Discard", style: "destructive", onPress: onClose }]);
+    else onClose();
+  };
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    try { await onSave(draft); onClose(); }
+    catch (e) { setFailed(true); toastErr("Access update failed", e); }
+    finally { setSaving(false); }
+  };
+  const submit = () => {
+    if (original.mode === "group" && draft.mode === "channels") Alert.alert("Use selected channels?", "Whole-group access will be replaced. Channels not selected will no longer have an explicit grant.", [{ text: "Cancel", style: "cancel" }, { text: "Save changes", onPress: () => void save() }]);
+    else if (isSelf && original.role === "admin" && draft.role === "member" && draft.mode === "group") Alert.alert("Change your own role?", "You may lose the ability to manage this group.", [{ text: "Cancel", style: "cancel" }, { text: "Change role", style: "destructive", onPress: () => void save() }]);
+    else void save();
+  };
+  return <MemberSheet title="Participant access" onClose={close}>
+    <View style={styles.detailIdentity}>{person ? <PersonAvatar name={name} /> : <AgentAvatar agentId={scopes[0].member_id} size={40} />}
+      <View style={styles.identity}><Text style={styles.name}>{name}</Text><Text style={styles.meta}>{isSelf ? "Your access" : person ? "Person" : "Agent · reads and replies in its channels"}</Text></View></View>
+    <ParticipantAccessFields value={draft} onChange={setDraft} channels={channels} permissions={permissions} person={person} inherited={inherited} lockScope={lockScope} disabled={saving || failed} />
+    {person && isPublic ? <Text style={styles.hint}>This group is public. Everyone signed in can still participate, even without an explicit membership. Admin roles remain scoped.</Text> : null}
+    {failed ? <Text accessibilityRole="alert" style={styles.destructiveText}>Access may have changed. Close and reopen this participant to review the latest state before editing again.</Text> : null}
+    {editable ? <Pressable accessibilityRole="button" accessibilityLabel="Save access changes" disabled={!dirty || saving || failed || (draft.mode === "channels" && !Object.keys(draft.channels).length)}
+      style={[styles.primary, (!dirty || saving || failed || (draft.mode === "channels" && !Object.keys(draft.channels).length)) && styles.disabled]} onPress={submit}><Text style={styles.primaryText}>{saving ? "Saving…" : "Save changes"}</Text></Pressable> : null}
+    {!dirty && !saving && !failed ? scopes.filter(scope => !scope.channel_id || original.mode !== "group").map(scope => {
+      const manageable = !scope.channel_id ? permissions.groupAdmin : permissions.groupAdmin || permissions.channelIds.includes(scope.channel_id);
+      if (!manageable && !(person && isSelf && scope.channel_id)) return null;
+      const scopeName = scope.channel_id ? "#" + (channels.find(channel => channel.id === scope.channel_id)?.name ?? scope.channel_id) : "Whole group";
+      return <Pressable key={scope.channel_id ?? "group"} accessibilityRole="button" accessibilityLabel={`${isSelf ? "Leave" : "Remove " + name + " from"} ${scopeName}`} style={styles.destructiveAction} onPress={() => onRemove(scope)}>
+        <Text style={styles.destructiveText}>{isSelf ? "Leave " : "Remove from "}{scopeName}</Text>
+      </Pressable>;
+    }) : null}
+    {onLeave && !dirty && !saving ? <Pressable accessibilityRole="button" accessibilityLabel="Leave group" style={styles.destructiveAction} onPress={onLeave}><Text style={styles.destructiveText}>Leave group</Text></Pressable> : null}
+  </MemberSheet>;
 }
 
 export default function MembersScreen() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const params = useLocalSearchParams<{ groupId: string; name?: string; channelId?: string }>();
   const groupId = params.groupId;
   const members = useMembers(groupId);
@@ -375,327 +222,169 @@ export default function MembersScreen() {
   const groups = useGroups();
   const addMember = useAddMember(groupId);
   const removeMember = useRemoveMember(groupId);
+  const [tab, setTab] = useState<"people" | "agents">("people");
+  const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
-  const [addingPerson, setAddingPerson] = useState(false);
-  const username = useSession((s) => s.username);
-
-  const group = useMemo(
-    () => (groups.data ?? []).find((g) => g.id === groupId) ?? null,
-    [groups.data, groupId],
-  );
-  const groupAdmin = group ? group.role === "admin" : true;
-  const selectedChannel = group?.channels.find(channel => channel.id === params.channelId);
-  const admin = groupAdmin || selectedChannel?.role === "admin";
-  const channelFocused = !!params.channelId;
-  // Only fetch the workspace roster when the picker can actually be used.
-  const users = useUsers(admin);
+  const [editing, setEditing] = useState<Member[] | null>(null);
+  const username = useSession(s => s.username);
+  const instanceAdmin = useSession(s => s.instanceAdmin);
+  const group = (groups.data ?? []).find(g => g.id === groupId);
   const channels = group?.channels ?? [];
-  const channelName = (id: string | null) =>
-    id ? (channels.find((c) => c.id === id)?.name ?? id) : null;
-  const liveById = useMemo(
-    () => new Map((agents.data ?? []).map((a) => [a.id, a.live])),
-    [agents.data],
-  );
-
-  const people = (members.data ?? []).filter((m) => m.member_type === "user");
-  const agentMembers = (members.data ?? []).filter((m) => m.member_type === "agent");
-
-  /* Collapse an agent's per-channel membership rows into one entry. */
-  const agentGroups = useMemo(() => {
-    const byId = new Map<string, Member[]>();
-    for (const m of (members.data ?? []).filter((x) => x.member_type === "agent")) {
-      const list = byId.get(m.member_id);
-      if (list) list.push(m);
-      else byId.set(m.member_id, [m]);
-    }
-    return [...byId.entries()].map(([id, scopes]) => ({ id, scopes }));
-  }, [members.data]);
-  const peopleGroups = useMemo(() => {
-    const byId = new Map<string, Member[]>();
-    for (const member of (members.data ?? []).filter(item => item.member_type === "user")) {
-      const scopes = byId.get(member.member_id) ?? [];
-      scopes.push(member);
-      byId.set(member.member_id, scopes);
-    }
-    return [...byId.entries()].map(([id, scopes]) => ({ id, scopes }));
-  }, [members.data]);
-  const visiblePeopleGroups = useMemo(() => peopleGroups.map(person => ({
-    ...person,
-    scopes: visibleMembershipScopes(person.scopes, params.channelId),
-  })).filter(person => person.scopes.length > 0), [params.channelId, peopleGroups]);
-  const visibleAgentGroups = useMemo(() => agentGroups.map(agent => ({
-    ...agent,
-    scopes: visibleMembershipScopes(agent.scopes, params.channelId),
-  })).filter(agent => agent.scopes.length > 0), [agentGroups, params.channelId]);
-
-  /* Desktop lists every known agent in the picker (an agent can be scoped to
-     several channels); only hide the ones that already listen group-wide. */
-  const groupWide = new Set(
-    agentMembers.filter((m) => !m.channel_id).map((m) => m.member_id),
-  );
-  const addable = (agents.data ?? []).filter((a) => !groupWide.has(a.id));
-
-  const memberUsernames = membershipUsernames(people, params.channelId);
-  const addablePeople = (users.data ?? []).filter(
-    (u) => !u.disabled && !memberUsernames.has(u.username),
-  );
-
-  const addPerson = (u: UserInfo, role: "admin" | "member", channelId: string | null) => {
-    addMember.mutate(
-      { member_type: "user", member_id: u.username, role, channel_id: channelId ?? undefined },
-      {
-        onSuccess: () => {
-          setAddingPerson(false);
-          toast(`${u.display_name || u.username} added to the group.`);
-        },
-        onError: (e) => toastErr("Add failed", e),
-      },
-    );
+  const groupAdmin = !!group && (group.role === "admin" || instanceAdmin);
+  const permissions: AccessPermissions = { groupAdmin, channelIds: channels.filter(channel => groupAdmin || channel.role === "admin").map(channel => channel.id) };
+  const admin = groupAdmin || permissions.channelIds.length > 0;
+  const users = useUsers(admin);
+  const selectedChannel = channels.find(channel => channel.id === params.channelId);
+  const channelFocused = !!params.channelId;
+  const channelName = (id: string | null) => id ? channels.find(channel => channel.id === id)?.name ?? id : null;
+  const people = (members.data ?? []).filter(scope => scope.member_type === "user");
+  const agentMembers = (members.data ?? []).filter(scope => scope.member_type === "agent");
+  const roster = (scopes: Member[]) => {
+    const entries = new Map<string, Member[]>();
+    for (const scope of scopes) entries.set(scope.member_id, [...(entries.get(scope.member_id) ?? []), scope]);
+    // Keep every visible scope for the editor, even when arriving from a channel.
+    return [...entries.entries()].map(([id, allScopes]) => ({ id, scopes: allScopes, visible: visibleMembershipScopes(allScopes, params.channelId) }))
+      .filter(entry => entry.visible.length > 0);
   };
-
-  // Re-adding with a new role upserts it server-side — that's promote/demote.
-  const setRole = (m: Member, role: "admin" | "member") => {
-    addMember.mutate(
-      { member_type: "user", member_id: m.member_id, role, channel_id: m.channel_id ?? undefined },
-      { onError: (e) => toastErr("Role change failed", e) },
-    );
+  const peopleGroups = roster(people), agentGroups = roster(agentMembers);
+  const peopleTab = tab === "people";
+  const visible = (peopleTab ? peopleGroups : agentGroups).filter(entry =>
+    (entry.id + " " + (entry.scopes[0].name || "")).toLowerCase().includes(search.trim().toLowerCase()));
+  const managedChannels = channels.filter(channel => permissions.channelIds.includes(channel.id));
+  const canAdd = (id: string, scopes: Member[]) => {
+    const existing = scopes.filter(scope => scope.member_id === id);
+    if (existing.some(scope => !scope.channel_id)) return false;
+    return groupAdmin || managedChannels.some(channel => !existing.some(scope => scope.channel_id === channel.id));
   };
-
-  const add = (agent: AgentInfo, channelId: string | null) => {
-    addMember.mutate(
-      { member_type: "agent", member_id: agent.id, channel_id: channelId ?? undefined },
-      {
-        onSuccess: () => {
-          setAdding(false);
-          if (agent.live) {
-            toast(`${agent.name} added — it will answer messages here.`);
-          } else {
-            toast(
-              `${agent.name} joined, but it's offline right now — it will answer once its connection is live.`,
-              "warn",
-            );
-          }
-        },
-        onError: (e) => toastErr("Add failed", e),
-      },
-    );
+  const addablePeople = (users.data ?? []).filter(user => !user.disabled && canAdd(user.username, people));
+  const addableAgents = (agents.data ?? []).filter(agent => canAdd(agent.id, agentMembers));
+  const add = (type: "user" | "agent", id: string, role: AccessRole, channelId: string | null) =>
+    addMember.mutateAsync({ member_type: type, member_id: id, role, channel_id: channelId ?? undefined });
+  const remove = (scope: Member) => {
+    const self = scope.member_type === "user" && scope.member_id === username;
+    Alert.alert(self ? "Leave this access?" : `Remove ${scope.name || scope.member_id}?`,
+      `Remove ${scopeLabel(scope, channelName)} access?${group?.is_public && scope.member_type === "user" ? " Public member access will remain." : ""}`,
+      [{ text: "Cancel", style: "cancel" }, { text: self ? "Leave" : "Remove", style: "destructive", onPress: () => removeMember.mutate(
+        { member_type: scope.member_type, member_id: scope.member_id, channel_id: scope.channel_id },
+        { onSuccess: () => setEditing(null), onError: e => toastErr("Remove failed", e) },
+      ) }]);
   };
-
-  const remove = (m: Member) =>
-    removeMember.mutate(
-      { member_type: m.member_type, member_id: m.member_id, channel_id: m.channel_id },
-      { onError: (e) => toastErr("Remove failed", e) },
-    );
-
-  const leavePerson = async (scopes: Member[], forceAll = false) => {
-    try {
-      for (const target of personRemovalTargets(scopes, forceAll ? undefined : params.channelId)) {
-        await removeMember.mutateAsync({
-          member_type: "user", ...target,
-        });
-      }
-    } catch (e) { toastErr("Leave failed", e); }
+  const leave = () => Alert.alert(`Leave ${group?.name || params.name || "group"}?`,
+    group?.is_public ? "Your explicit memberships and roles will be removed. Public member access remains." : "You will lose access to this group and its channels.",
+    [{ text: "Cancel", style: "cancel" }, { text: "Leave group", style: "destructive", onPress: async () => {
+      try { await removeMember.mutateAsync({ member_type: "user", member_id: username!, all_scopes: true }); setEditing(null); }
+      catch (e) { toastErr("Leave failed", e); }
+    } }]);
+  const save = async (draft: AccessDraft) => {
+    if (!editing) return;
+    // Re-read before applying a draft so a stale sheet cannot overwrite another admin.
+    const fresh = await members.refetch();
+    if (!fresh.data || fresh.isError) throw new Error("Couldn't verify current access. Please reopen and try again.");
+    const current = fresh.data.filter(scope => scope.member_id === editing[0].member_id && scope.member_type === editing[0].member_type);
+    const signature = (scopes: Member[]) => JSON.stringify(scopes.map(scope => [scope.channel_id, scope.role]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    if (signature(current) !== signature(editing)) throw new Error("This participant's access changed while you were editing. Reopen to review it.");
+    const participant = editing[0];
+    if (participant.member_type === "user" && participant.member_id === username && !instanceAdmin && accessDraft(editing).mode === "group" && draft.mode === "channels")
+      throw new Error("Another group admin must narrow your own group access.");
+    const changes = planAccess(current, draft, permissions);
+    await applyAccess(changes, change => change.kind === "add"
+      ? add(participant.member_type, participant.member_id, change.role, change.channelId)
+      : removeMember.mutateAsync({ member_type: participant.member_type, member_id: participant.member_id, channel_id: change.channelId }));
+    toast("Access updated.");
   };
-
-  return (
-    <>
-      <Stack.Screen
-        options={{
-          title: selectedChannel
-            ? `${selectedChannel.name} · members`
-            : params.name || group?.name ? `${params.name || group?.name} · members` : "Members",
-          headerShown: true,
-        }}
-      />
-      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-        {visiblePeopleGroups.length > 0 ? <Text style={styles.section}>People</Text> : null}
-        {visiblePeopleGroups.map(person => {
-          const isSelf = person.id === username;
-          const hasSelectedChannel = hasChannelScope(person.scopes, params.channelId);
-          const leaveWholeGroupFromChannel = isSelf && !!params.channelId && !hasSelectedChannel;
-          const canManageScope = (scope: Member) => canManageMembershipScope(scope, groupAdmin, params.channelId, !!admin);
-          // Group view: only self can leave (× handles admin removals). Channel view:
-          // exact channel Leave is inline; footer Leave only for inherited whole-group.
-          const onLeave = isSelf && (!channelFocused || leaveWholeGroupFromChannel)
-            ? () => void leavePerson(person.scopes, leaveWholeGroupFromChannel || !channelFocused)
-            : undefined;
-          return <PersonMemberRow
-            key={`user:${person.id}`}
-            name={person.scopes[0].name || person.id}
-            scopes={person.scopes}
-            channelName={channelName}
-            isSelf={isSelf}
-            channelFocused={channelFocused}
-            canManageScope={canManageScope}
-            onRemoveScope={remove}
-            onSetRole={setRole}
-            onLeave={onLeave}
-            leaveLabel={leaveWholeGroupFromChannel
-              ? `Leave ${group?.name ?? params.name ?? "group"}`
-              : "Leave"}
-          />;
-        })}
-        {admin && !addingPerson ? (
-          <Pressable style={styles.addBtn} onPress={() => setAddingPerson(true)}>
-            <Text style={styles.addBtnText}>＋ Add person</Text>
-          </Pressable>
-        ) : null}
-        {admin && addingPerson ? (
-          <AddPerson
-            users={addablePeople}
-            channels={groupAdmin ? channels : channels.filter(channel => channel.id === params.channelId)}
-            pending={addMember.isPending}
-            onAdd={addPerson}
-            onCancel={() => setAddingPerson(false)}
-            allowWholeGroup={groupAdmin}
-          />
-        ) : null}
-
-        {visibleAgentGroups.length > 0 ? <Text style={styles.section}>Agents</Text> : null}
-        {visibleAgentGroups.map((g) => (
-          <AgentMemberRow
-            key={`agent:${g.id}`}
-            memberId={g.id}
-            name={g.scopes[0].name || g.id}
-            scopes={g.scopes}
-            channelName={channelName}
-            offline={liveById.get(g.id) === false}
-            channelFocused={channelFocused}
-            onRemoveScope={remove}
-            canManageScope={(scope) => canManageMembershipScope(scope, groupAdmin, params.channelId, !!admin)}
-          />
-        ))}
-        {members.isSuccess && visibleAgentGroups.length === 0 ? (
-          <EmptyState icon={Bot} title="No agents in this group yet." />
-        ) : null}
-
-        {admin && !adding ? (
-          <Pressable style={styles.addBtn} onPress={() => setAdding(true)}>
-            <Text style={styles.addBtnText}>＋ Add agent</Text>
-          </Pressable>
-        ) : null}
-        {admin && adding ? (
-          <AddAgent
-            agents={addable}
-            channels={groupAdmin ? channels : channels.filter(channel => channel.id === params.channelId)}
-            pending={addMember.isPending}
-            onAdd={add}
-            onCancel={() => setAdding(false)}
-            allowWholeGroup={groupAdmin}
-          />
-        ) : null}
-        {admin ? (
-          <Text style={styles.hint}>
-            Agents answer messages in the channels they listen to. Connect agents on the{" "}
-            <Link href="/(app)/agents" style={styles.hintLink}>
-              Agents
-            </Link>{" "}
-            page first.
-          </Text>
-        ) : null}
+  const count = peopleGroups.length + agentGroups.length;
+  const contextName = selectedChannel ? "#" + selectedChannel.name : params.name || group?.name || "Group";
+  return <>
+    <Stack.Screen options={{ title: "Participants", headerShown: true }} />
+    <View style={styles.root}>
+      <View style={styles.toolbar}>
+        <Text accessibilityRole="header" style={styles.contextTitle} numberOfLines={2}>{contextName}</Text>
+        <Text style={styles.meta}>{members.isSuccess ? `${count} ${count === 1 ? "participant" : "participants"} · people and agents` : "Participant directory"}</Text>
+        <SearchField value={search} onChange={setSearch} placeholder="Search participants" />
+        <View style={styles.tabs}>{(["people", "agents"] as const).map(value => <Pressable key={value} accessibilityRole="tab" accessibilityLabel={value === "people" ? "People" : "Agents"} accessibilityState={{ selected: tab === value }} onPress={() => setTab(value)} style={[styles.tab, tab === value && styles.tabSelected]}>
+          <Icon icon={value === "people" ? Users : Bot} size={16} color={tab === value ? colors.text : colors.faint} /><Text style={[styles.tabText, tab === value && styles.tabTextSelected]}>{value === "people" ? "People" : "Agents"} {value === "people" ? peopleGroups.length : agentGroups.length}</Text>
+        </Pressable>)}</View>
+      </View>
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+        <View style={styles.sectionRow}><Text style={styles.section}>{peopleTab ? "People" : "Agents"}</Text>
+          {admin && members.isSuccess ? <Pressable accessibilityRole="button" accessibilityLabel={peopleTab ? "Add people" : "Add agents"} style={styles.addButton} onPress={() => setAdding(true)}><Text style={styles.link}>＋ {peopleTab ? "Add people" : "Add agents"}</Text></Pressable> : null}
+        </View>
+        {members.isLoading ? <Text style={styles.feedback}>Loading participants…</Text> : null}
+        {members.isError ? <View style={styles.accessCard}><Text style={styles.hint}>Couldn't load participants.</Text><Pressable accessibilityRole="button" style={styles.backStep} onPress={() => void members.refetch()}><Text style={styles.link}>Try again</Text></Pressable></View> : null}
+        {visible.length > 0 ? <View style={styles.roster}>{visible.map(entry => {
+          const name = entry.scopes[0].name || entry.id;
+          const self = peopleTab && entry.id === username;
+          const offline = !peopleTab && agents.data?.find(agent => agent.id === entry.id)?.live === false;
+          return <Pressable key={entry.id} style={styles.memberRow} accessibilityRole="button" accessibilityLabel={`Access for ${name}${self ? ", you" : ""}`}
+            accessibilityValue={{ text: scopeSummary(entry.visible, channelName, peopleTab) }} onPress={() => setEditing(entry.scopes)}>
+            {peopleTab ? <PersonAvatar name={name} /> : <AgentAvatar agentId={entry.id} size={36} />}
+            <View style={styles.identity}><View style={styles.nameLine}><Text style={styles.name} numberOfLines={1}>{name}</Text>{self ? <Text style={styles.you}>You</Text> : null}</View>
+              <Text style={styles.meta} numberOfLines={1}>{scopeSummary(entry.visible, channelName, peopleTab)}{offline ? " · Offline" : ""}</Text></View>
+            <Icon icon={ChevronRight} size={16} color={colors.faint} />
+          </Pressable>;
+        })}</View> : members.isSuccess ? <View style={styles.emptyState}><Icon icon={peopleTab ? Users : Bot} size={28} color={colors.faint} />
+          <Text style={styles.emptyTitle}>{search.trim() ? "No matching participants" : peopleTab ? "No people here yet" : "No agents here yet"}</Text>
+          <Text style={styles.hint}>{search.trim() ? "Try another name or switch tabs." : admin ? "Add participants to get started." : "A group or channel admin can add participants here."}</Text>
+        </View> : null}
+        <Text style={styles.footerHint}>Tap a participant to review their access.{!groupAdmin && admin ? " You can manage your channels from here." : ""}</Text>
       </ScrollView>
-    </>
-  );
+    </View>
+    {editing ? <AccessEditor scopes={editing} channels={channels} permissions={permissions} isSelf={editing[0].member_type === "user" && editing[0].member_id === username}
+      instanceAdmin={instanceAdmin} isPublic={!!group?.is_public} onSave={save} onRemove={remove} onClose={() => setEditing(null)}
+      onLeave={editing[0].member_type === "user" && editing[0].member_id === username && (!channelFocused || editing.some(scope => !scope.channel_id)) && !groupAdmin ? leave : undefined} /> : null}
+    {admin && adding && peopleTab ? <AddPerson users={addablePeople} memberships={people} channels={managedChannels} pending={addMember.isPending}
+      onAdd={(user, role, channelId) => add("user", user.username, role, channelId)} onCancel={() => setAdding(false)} allowWholeGroup={groupAdmin}
+      initialChannelId={managedChannels.some(channel => channel.id === params.channelId) ? params.channelId : undefined}
+      channelFocused={channelFocused} loading={users.isLoading} error={users.isError} onRetry={() => void users.refetch()} /> : null}
+    {admin && adding && !peopleTab ? <AddAgent agents={addableAgents} totalAgents={agents.data?.length ?? 0} memberships={agentMembers} channels={managedChannels} pending={addMember.isPending}
+      onAdd={(agent, channelId) => add("agent", agent.id, "member", channelId)} onCancel={() => setAdding(false)} allowWholeGroup={groupAdmin}
+      initialChannelId={managedChannels.some(channel => channel.id === params.channelId) ? params.channelId : undefined}
+      channelFocused={channelFocused} loading={agents.isLoading} error={agents.isError} onRetry={() => void agents.refetch()} /> : null}
+  </>;
 }
-
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
+  primary: { minHeight: 48, borderRadius: 12, backgroundColor: colors.accentSoft, borderColor: colors.accentBorder, borderWidth: 1, alignItems: "center", justifyContent: "center", padding: 12 },
+  primaryText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.bold },
+  disabled: { opacity: 0.45 },
+  check: { width: 22, height: 22, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 6, alignItems: "center", justifyContent: "center" },
+  checked: { backgroundColor: colors.accentSoft, borderColor: colors.a1 },
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 14, gap: 8, paddingBottom: 40 },
-  section: {
-    color: colors.dim,
-    fontSize: typography.caption.fontSize,
-    fontWeight: weight.bold,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    marginTop: 8,
-    marginBottom: 2,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    backgroundColor: colors.panel,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-  },
-  dot: { width: 9, height: 9, borderRadius: 5 },
-  name: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
+  toolbar: { paddingHorizontal: 20, paddingTop: 10, gap: 8 },
+  contextTitle: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold },
+  content: { paddingHorizontal: 20, paddingBottom: 40, gap: 10 },
+  search: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 },
+  searchInput: { flex: 1, color: colors.text, fontSize: typography.bodySm.fontSize, minHeight: 44, paddingVertical: 8 },
+  tabs: { flexDirection: "row", backgroundColor: colors.panel, padding: 4, borderRadius: 12, marginTop: 2 },
+  tab: { flex: 1, minHeight: 44, borderRadius: 9, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  tabSelected: { backgroundColor: colors.panelStrong },
+  tabText: { color: colors.faint, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  tabTextSelected: { color: colors.text },
+  sectionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 52, paddingTop: 6 },
+  section: { color: colors.dim, fontSize: typography.caption.fontSize, fontWeight: weight.bold, textTransform: "uppercase", letterSpacing: 1 },
+  addButton: { minHeight: 44, paddingHorizontal: 8, justifyContent: "center" },
+  roster: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 16, overflow: "hidden" },
+  memberRow: { minHeight: 56, paddingHorizontal: 12, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  identity: { flex: 1, minWidth: 0, gap: 3 },
+  nameLine: { flexDirection: "row", alignItems: "center", gap: 8 },
+  name: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold, flexShrink: 1 },
   meta: { color: colors.dim, fontSize: typography.caption.fontSize },
-  offline: { color: colors.amber },
-  empty: { color: colors.dim, textAlign: "center", paddingVertical: 14 },
-  addBtn: { alignItems: "center", paddingVertical: 12 },
-  addBtnText: { color: colors.a1, fontSize: typography.message.fontSize, fontWeight: weight.bold },
-  addBox: {
-    backgroundColor: colors.panel,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    borderRadius: 14,
-    padding: 12,
-    gap: 8,
-    marginTop: 6,
-  },
-  addTitle: { color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.bold },
-  scopeChips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  scopeChip: {
-    backgroundColor: colors.accentSoft,
-    borderWidth: 1,
-    borderColor: colors.accentBorder,
-    borderRadius: 9,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  scopeText: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
-  tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 2 },
-  channelScopeList: { gap: 6, marginTop: 2 },
-  channelScopeItem: { gap: 3 },
-  tag: {
-    flexDirection: "row",
-    alignItems: "center",
-    maxWidth: "100%",
-    flexShrink: 1,
-    gap: 4,
-    backgroundColor: colors.accentSoft,
-    borderWidth: 1,
-    borderColor: colors.accentBorder,
-    borderRadius: 7,
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-  },
-  tagFlex: { flex: 1, minWidth: 0 },
-  tagMuted: { opacity: 0.75 },
-  tagText: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.semibold, flexShrink: 1 },
-  tagTextWrap: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.semibold, flexShrink: 1, flexWrap: "wrap" },
-  inlineRemoveRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    width: "100%",
-  },
-  wrapName: { flex: 1, minWidth: 0 },
-  agentCard: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, gap: 8 },
-  agentHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
-  agentIdentity: { flex: 1, flexShrink: 1 },
-  personCard: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 14, gap: 8 },
-  personHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
-  personIdentity: { flex: 1, flexShrink: 1 },
-  scopeList: { gap: 7, marginTop: 5 },
-  scopeRow: { gap: 7, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border },
-  scopeInfo: { flexShrink: 1 },
-  scopeActions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 7 },
+  you: { color: colors.a2, backgroundColor: colors.mintSoft, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, fontSize: typography.caption.fontSize },
+  avatar: { width: 36, height: 36, borderRadius: 12, backgroundColor: colors.mintSoft, justifyContent: "center", alignItems: "center" },
+  initials: { color: colors.a2, fontSize: typography.caption.fontSize, fontWeight: weight.bold },
+  link: { color: colors.a1, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  backdrop: { flex: 1, backgroundColor: colors.scrim, justifyContent: "flex-end" },
+  sheet: { ...surfaces.sheet, maxHeight: "88%" },
+  sheetContent: { gap: 12, paddingBottom: 12 },
+  detailIdentity: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
+  accessCard: { backgroundColor: colors.panel, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 8 },
   scopeName: { color: colors.text, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold, flexShrink: 1 },
-  roleLabel: { color: colors.a1, fontSize: typography.caption.fontSize, fontWeight: weight.bold, textTransform: "capitalize" },
-  iconAction: { padding: 7 },
-  personFooter: { alignItems: "flex-end", paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.border },
-  optionList: { gap: 6 },
-  optionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 12 },
-  roleOptions: { gap: 8 },
-  roleOption: { borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10, padding: 12, gap: 2 },
-  cancelBtn: { alignItems: "center", paddingVertical: 8 },
-  cancelRow: { flexDirection: "row", alignItems: "center", gap: 3 },
-  cancelText: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
-  hint: { color: colors.faint, fontSize: typography.meta.fontSize, lineHeight: 18, paddingHorizontal: 2 },
-  hintLink: { color: colors.a2, textDecorationLine: "underline" },
-});
+  destructiveAction: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start", paddingHorizontal: 8 },
+  destructiveText: { color: colors.red, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
+  optionRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, minHeight: 56, padding: 12, borderRadius: 12, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  backStep: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, alignSelf: "flex-start" },
+  emptyState: { paddingVertical: 24, alignItems: "flex-start", gap: 12 },
+  emptyTitle: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.semibold },
+  hint: { color: colors.dim, fontSize: typography.bodySm.fontSize, lineHeight: 21 },
+  feedback: { color: colors.dim, paddingVertical: 16, fontSize: typography.bodySm.fontSize },
+  footerHint: { color: colors.faint, fontSize: typography.caption.fontSize, lineHeight: 19, paddingVertical: 8 },
+}));

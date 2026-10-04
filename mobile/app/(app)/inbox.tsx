@@ -1,20 +1,21 @@
 import { previewText } from "../../src/lib/previewText";
 import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 import React from "react";
-import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { Check, CheckCheck, Hash, MessageSquare } from "lucide-react-native";
 import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadFilter, type UnreadItem } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
-import { colors, typography, space, radii, weight } from "../../src/lib/theme";
+import { colors, typography, space, radii, weight, type Palette } from "../../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { toastErr } from "../../src/components/Toast";
 import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } from "../../src/components/SwipeRow";
 import { ThreadsScreen } from "./threads";
 import { Icon } from "../../src/components/Icon";
-import { layout, surfaces } from "../../src/lib/theme";
+import { layout } from "../../src/lib/theme";
 
-export function unreadSwipeAction(item: UnreadItem, onRead: (item: UnreadItem) => void): SwipeAction {
-  return { name: "markRead", label: "Mark read", icon: Check, color: colors.a1,
+export function unreadSwipeAction(item: UnreadItem, onRead: (item: UnreadItem) => void, palette: Palette = colors): SwipeAction {
+  return { name: "markRead", label: "Mark read", icon: Check, color: palette.a1,
     onPress: () => onRead(item) };
 }
 
@@ -22,6 +23,8 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
   item: UnreadItem; onRead: (item: UnreadItem) => void;
   controller: SwipeRowController; initialSwipe?: "left";
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const open = () => {
     if (item.thread_id != null) {
       router.push({ pathname: "/(app)/thread/[channelId]/[rootId]", params: {
@@ -36,7 +39,7 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
   };
   return <SwipeRow style={styles.card} onPress={open} controller={controller} initialOpen={initialSwipe}
     accessibilityLabel={`Unread ${item.kind} in ${item.channel_name}, ${item.unread >= 100 ? "more than 99" : item.unread} messages`}
-    swipeLeft={unreadSwipeAction(item, onRead)}
+    swipeLeft={unreadSwipeAction(item, onRead, colors)}
     onLongPress={() => Alert.alert("Mark read", `Mark ${item.kind} read?`, [
       { text: "Open", onPress: open },
       { text: "Mark read", onPress: () => onRead(item) },
@@ -65,6 +68,8 @@ export function inboxTabFromParam(value: string | undefined): "unreads" | "threa
 export default function InboxScreen({ initialTab = null, initialSwipe }: {
   initialTab?: "unreads" | "threads" | null; initialSwipe?: "left";
 }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const { tab: routeTab } = useLocalSearchParams<{ tab?: string }>();
   const unreads = useUnreads();
   const markRead = useMarkUnreadsRead();
@@ -138,7 +143,7 @@ export default function InboxScreen({ initialTab = null, initialSwipe }: {
   </View>;
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   tabs: { flexDirection: "row", marginHorizontal: layout.gutter, marginTop: space.sm, marginBottom: space.sm, padding: space.xs, borderRadius: radii.lg, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
   tab: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: space.sm, paddingVertical: space.sm, borderRadius: radii.md },
@@ -175,4 +180,4 @@ const styles = StyleSheet.create({
   preview: { fontSize: typography.bodySm.fontSize, fontWeight: typography.bodySm.fontWeight, color: colors.dim },
   author: { color: colors.text, fontWeight: weight.medium },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 60 },
-});
+}));

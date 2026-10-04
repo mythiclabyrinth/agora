@@ -5,11 +5,14 @@ import { IconButton } from "./IconButton";
 import { Icon } from "./Icon";
 import { SheetHeader } from "./SheetHeader";
 import { ResponsiveText as Text } from "./ResponsiveText";
-import { colors, radii, space, surfaces, typography } from "../lib/theme";
+import { radii, space, typography } from "../lib/theme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 
 export type ConversationTool = { label: string; detail?: string; icon: LucideIcon; selected?: boolean; onPress: () => void };
 
 export function ConversationTools({ title, actions }: { title: string; actions: ConversationTool[] }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const [open, setOpen] = useState(false);
   const pending = useRef<(() => void) | null>(null);
   const finish = () => { const action = pending.current; pending.current = null; action?.(); };
@@ -40,7 +43,7 @@ export function ConversationTools({ title, actions }: { title: string; actions: 
     </Modal>
   </>;
 }
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   backdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: colors.scrim },
   sheet: { ...surfaces.sheet, maxHeight: "85%" },
   row: { flexDirection: "row", alignItems: "center", gap: space.md, paddingVertical: space.md,
@@ -50,4 +53,4 @@ const styles = StyleSheet.create({
   label: { ...typography.message, color: colors.text },
   detail: { ...typography.caption, color: colors.dim },
   pressed: { backgroundColor: colors.panel },
-});
+}));

@@ -3,16 +3,19 @@
    falling back to the bot icon when the agent has none or the load fails. */
 
 import React, { useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
 import { Image } from "expo-image";
 import { Bot } from "lucide-react-native";
 import { authHeaders } from "@agora/core";
 import { useAgents } from "@agora/core";
 import { useSession } from "../state/session";
-import { colors } from "../lib/theme";
+
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { Icon } from "./Icon";
 
 export function AgentAvatar({ agentId, size = 30 }: { agentId: string; size?: number }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const session = useSession((s) => s.session);
   const agents = useAgents();
   const [failed, setFailed] = useState(false);
@@ -37,11 +40,11 @@ export function AgentAvatar({ agentId, size = 30 }: { agentId: string; size?: nu
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors }) => ({
   image: { backgroundColor: colors.panelStrong },
   fallback: {
     backgroundColor: colors.accentSoft,
     alignItems: "center",
     justifyContent: "center",
   },
-});
+}));

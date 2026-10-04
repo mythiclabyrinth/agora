@@ -114,11 +114,22 @@ test("group create control is separate from collapse control", () => {
 });
 
 
-test.each([1, 2])("all-hidden groups describe their %i hidden channels in the count", count => {
+test.each([1, 2])("groups with %i hidden channels look empty in the normal group list", count => {
   render({ ...group, id: "leadership", kind: undefined,
     channels: Array.from({ length: count }, (_, i) => channel(`hidden-${i}`, 0, 0, true)),
   }, false, GroupCard);
-  expect(text(`${count} hidden ${count === 1 ? "channel" : "channels"}`)).toBe(true);
-  expect(text("0 channels")).toBe(false);
-  expect(text("All channels are hidden.")).toBe(true);
+  expect(text(`${count} hidden ${count === 1 ? "channel" : "channels"}`)).toBe(false);
+  expect(text("0 channels")).toBe(true);
+  expect(text("All channels are hidden.")).toBe(false);
+  expect(text("No channels yet — tap ＋")).toBe(true);
+});
+
+test("hidden channels do not affect the visible count or collapsed unread summary", () => {
+  const data = { ...group, id: "leadership", kind: undefined, channels: [channel("general"), channel("private", 50, 4, true)] };
+  usePrefs.setState({ collapsedGroups: { leadership: true } });
+  render(data, false, GroupCard);
+  expect(text("1 channel")).toBe(true);
+  expect(text("2 channels")).toBe(false);
+  expect(text("private")).toBe(false);
+  expect(text("50")).toBe(false);
 });

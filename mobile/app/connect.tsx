@@ -4,17 +4,7 @@ import { ThemedInput as TextInput } from "../src/components/ThemedInput";
    then sign in using the methods the server offers. */
 
 import React, { useCallback, useEffect, useState } from "react";
-import {
-  ActivityIndicator,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { Redirect, type Href, useLocalSearchParams } from "expo-router";
 import { Image as ExpoImage } from "expo-image";
 import * as AppleAuthentication from "expo-apple-authentication";
@@ -26,7 +16,8 @@ import { runGoogleFlow } from "../src/lib/googleAuth";
 import { openLink } from "../src/lib/openLink";
 import { forgetRecentServer, loadRecentServers } from "../src/state/servers";
 import { useSession } from "../src/state/session";
-import { brand, colors, radii, space, surfaces, typography, weight } from "../src/lib/theme";
+import { brand, radii, space, typography, weight } from "../src/lib/theme";
+import { createThemedStyles, useAppTheme } from "../src/lib/useTheme";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ServerSetupHelp,
@@ -39,6 +30,8 @@ WebBrowser.maybeCompleteAuthSession();
 type Step = "server" | "signin";
 
 export default function Connect() {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
   const insets = useSafeAreaInsets();
   const { next } = useLocalSearchParams<{ next?: string }>();
   const { status, savedUrl, signIn } = useSession();
@@ -347,7 +340,7 @@ export default function Connect() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: {
     flex: 1,
     backgroundColor: colors.bg,
@@ -451,4 +444,4 @@ const styles = StyleSheet.create({
   btnSubtleText: { color: colors.dim, fontSize: typography.bodySm.fontSize, fontWeight: weight.semibold },
   siteLink: { minHeight: 44, justifyContent: "center", alignItems: "center", paddingVertical: 6, marginTop: 2 },
   siteLinkText: { color: colors.dim, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
-});
+}));

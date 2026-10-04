@@ -1,5 +1,13 @@
 import { echartHtml } from "../src/lib/echarts";
 import { normalizeEChart } from "@agora/core";
+import { themes } from "../src/lib/theme";
+
+test.each(["light", "dark"] as const)("embedded charts follow %s appearance", mode => {
+  const html = echartHtml(normalizeEChart(JSON.stringify({ series: [{ type: "bar", data: [1] }] })), themes[mode]);
+  expect(html).toContain(`background:${themes[mode].colors.bg}`);
+  expect(html).toContain(`color:${themes[mode].colors.text}`);
+  expect(html).toContain(`echarts.init(stage,${mode === "dark" ? '"dark"' : "null"},`);
+});
 
 test("chart WebView pins ECharts and keeps option markup out of HTML", () => {
   const chart = normalizeEChart(JSON.stringify({

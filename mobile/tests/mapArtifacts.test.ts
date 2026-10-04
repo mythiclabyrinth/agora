@@ -6,6 +6,7 @@ import {
   projectMapPoints,
 } from "../src/lib/mapArtifacts";
 import type { MapArtifactData } from "@agora/core";
+import { themes } from "../src/lib/theme";
 
 const data: MapArtifactData = {
   initial_view: { mode: "fit" },
@@ -46,6 +47,12 @@ const data: MapArtifactData = {
     },
   ],
 };
+
+test.each(["light", "dark"] as const)("map controls and popup text follow %s appearance", mode => {
+  const html = mapArtifactHtml(data, "https://example.test/style.json", themes[mode]);
+  expect(html).toContain(`background:${themes[mode].colors.bg}`);
+  expect(html).toContain(`background:${themes[mode].colors.sheet}; color:${themes[mode].colors.text}`);
+});
 
 test("filters places by area, day, and category", () => {
   expect(
