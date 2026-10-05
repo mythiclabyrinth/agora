@@ -3151,6 +3151,11 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .notification-setting { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: 12px; cursor: pointer; color: var(--text); font-size: 14px; }
 .notification-setting input { width: 18px; height: 18px; margin: 0; accent-color: var(--a1); }
 .notification-setting:focus-within { outline: 2px solid var(--a1); outline-offset: 3px; }
+.notification-volume { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: 12px; color: var(--text); font-size: 14px; }
+.notification-volume.disabled { opacity: .5; }
+.notification-volume input[type="range"] { flex: 1; min-width: 60px; accent-color: var(--a1); }
+.notification-volume-value { width: 4ch; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+.notification-volume .btn { flex: none; }
 #settings-panel.conn-panel:has(.notification-settings) { height: auto; }
 .settings-section-heading { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 26px; }
 .settings-section-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: rgba(var(--accent-rgb),.1); color: var(--a1); flex: none; }

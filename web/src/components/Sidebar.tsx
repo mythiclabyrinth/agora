@@ -9,6 +9,7 @@ import {
   useCreateChannel, useCreateGroup, useDeleteChannel, useGroups, useHideThread,
   useMe, useRenameThread, useReorderChannels, useReorderGroups, useSetGroupHidden,
   useThreads, useUpdateChannel, useChannelReplying, useGroupReplying, useReplyingChannelIds,
+  useThreadReplying,
   type Channel, type Group, type ThreadRow,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
@@ -50,6 +51,10 @@ function GroupReplying({ channelIds }: { channelIds: string[] }) {
   return <ReplyingIndicator names={useGroupReplying(channelIds)} />;
 }
 
+function ThreadReplying({ channelId, threadId }: { channelId: string; threadId: number }) {
+  return <ReplyingIndicator names={useThreadReplying(channelId, threadId)} />;
+}
+
 function pinSnippet(m: { alias?: string | null; text?: string }): string {
   const alias = (m.alias || "").trim();
   if (alias) return alias;
@@ -85,6 +90,7 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
       }}>
       <span className="tico"><Icon name="corner-down-right" /></span>
       <span className="nm" title={fullName}>{snippet}</span>
+      <ThreadReplying channelId={c.id} threadId={t.root.id} />
       <Badge n={t.unread || 0} mentions={0} />
       <button className="ago-x" title="Rename this thread"
         onClick={e => {

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   applyWsEvent,
+  chimeAllowed,
   createAgoraSocket,
   initialChimeState,
   resetSeenMessageIds,
@@ -13,7 +14,7 @@ import {
   type Message,
 } from "@agora/core";
 import { sessionToken } from "../lib/auth";
-import { armDesktopChime, isDesktopShell, playDesktopChime } from "../lib/desktopChime";
+import { armChime, isDesktopShell, playChime } from "../lib/chime";
 import { useUiState } from "../state/ui";
 
 export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) => void) {
@@ -26,7 +27,7 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
     if (!username) return;
     resetSeenMessageIds(qc);
     const desktop = isDesktopShell();
-    const disarmChime = desktop ? armDesktopChime() : () => {};
+    const disarmChime = armChime();
     let chimeState = initialChimeState();
 
     const url = () => {
@@ -41,12 +42,12 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
           applyWsEvent(qc, ev, {
             username,
             onAgentMessage: (m) => onAgentMessageRef.current?.(m),
-            onMessage: desktop ? (message) => {
-              if (!document.hasFocus() || !useUiState.getState().soundEnabled) return;
+            onMessage: (message) => {
+              if (!chimeAllowed({ desktop, focused: document.hasFocus(), enabled: useUiState.getState().soundEnabled })) return;
               const decision = shouldChime(chimeState, message, username, Date.now());
               chimeState = decision.state;
-              if (decision.play) playDesktopChime();
-            } : undefined,
+              if (decision.play) playChime(useUiState.getState().soundVolume);
+            },
           }),
         onConnectedChange: setConnected,
         onReopen: () => {

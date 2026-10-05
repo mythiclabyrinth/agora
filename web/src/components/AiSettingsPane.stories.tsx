@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { useMe } from "@agora/core";
 import { fixtureMe } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
@@ -182,12 +182,14 @@ function MemberLoadedProbe() {
   return me && !me.instance_admin ? <span data-testid="settings-member-loaded" hidden /> : null;
 }
 
-export const MemberAppearanceOnly: Story = {
+export const MemberSettings: Story = {
+  render: () => <><AiSettingsPane /><MemberLoadedProbe /></>,
   parameters: { apiRoutes: { "GET /api/me": { ...fixtureMe, instance_admin: false } } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await canvas.findByTestId("settings-member-loaded");
+    await waitFor(() => expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Notifications"]));
     await expect(canvas.findByText("Make yourself at home")).resolves.toBeVisible();
-    expect(canvas.queryByRole("tab", { name: "Notifications" })).not.toBeInTheDocument();
     expect(canvas.queryByRole("tab", { name: "Features" })).not.toBeInTheDocument();
     expect(canvas.queryByRole("tab", { name: "Credentials" })).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole("radio", { name: /Light/ }));
@@ -230,13 +232,12 @@ export const Empty: Story = {
   },
 };
 
-export const DesktopNotificationsTab: Story = {
+export const NotificationsTab: Story = {
   render: () => <><AiSettingsPane /><MemberLoadedProbe /></>,
   parameters: {
     apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/me": { ...fixtureMe, instance_admin: false } },
     setup: () => {
-      (window as Window & { __AGORA_DESKTOP__?: boolean }).__AGORA_DESKTOP__ = true;
-      useUiState.setState({ panel: "settings", soundEnabled: true });
+      useUiState.setState({ panel: "settings", soundEnabled: true, soundVolume: 70 });
     },
   },
   play: async ({ canvasElement }) => {
@@ -245,10 +246,18 @@ export const DesktopNotificationsTab: Story = {
     await waitFor(() => expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Notifications"]));
     await userEvent.click(canvas.getByRole("tab", { name: "Notifications" }));
     const toggle = await canvas.findByRole("checkbox", { name: "Sound for new messages" });
-    expect(canvas.getByText("Saved on this device only. Other browsers and Agora apps keep their own setting.")).toBeVisible();
+    const slider = canvas.getByRole("slider", { name: "Chime volume" }) as HTMLInputElement;
+    const testButton = canvas.getByRole("button", { name: "Test" });
+    expect(canvas.getByText("Saved in this browser or app only. Other browsers and Agora apps keep their own setting.")).toBeVisible();
     expect(toggle).toBeChecked();
+    expect(slider.value).toBe("70");
+    await fireEvent.change(slider, { target: { value: "40" } });
+    expect(localStorage.getItem("agora_sound_volume")).toBe("40");
+    expect(canvas.getByText("40%")).toBeVisible();
     await userEvent.click(toggle);
     expect(toggle).not.toBeChecked();
+    expect(slider).toBeDisabled();
+    expect(testButton).toBeDisabled();
     expect(localStorage.getItem("agora_sound_enabled")).toBe("0");
     await userEvent.click(toggle);
     expect(toggle).toBeChecked();
@@ -256,10 +265,9 @@ export const DesktopNotificationsTab: Story = {
   },
 };
 
-export const DesktopNotificationsTabAdmin: Story = {
+export const NotificationsTabAdmin: Story = {
   parameters: {
     setup: () => {
-      (window as Window & { __AGORA_DESKTOP__?: boolean }).__AGORA_DESKTOP__ = true;
       useUiState.setState({ panel: "settings", soundEnabled: true });
     },
   },
