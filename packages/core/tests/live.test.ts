@@ -14,9 +14,11 @@ const progress = (agent_id: string, thread_id: number | null = null): ProgressEv
 describe("replying activity", () => {
   beforeEach(() => useLive.setState({ typing: {}, progress: {}, epoch: 0, touched: {} }));
 
-  it("ignores thread activity and deduplicates typing plus progress", () => {
+  it("keeps thread activity off the channel and on that thread", () => {
     expect(replyingNames({ thread: typing("thread", 42) }, { work: progress("work", 42) })).toEqual([]);
+    expect(replyingNames({ thread: typing("thread", 42) }, { work: progress("work", 42) }, 42)).toEqual(["thread", "work"]);
     expect(replyingNames({ bot: typing("bot") }, { work: progress("bot") })).toEqual(["bot"]);
+    expect(replyingNames({ bot: typing("bot") }, undefined, 42)).toEqual([]);
     expect(replyingNames({ zed: typing("zed"), amy: typing("amy") })).toEqual(["amy", "zed"]);
   });
 

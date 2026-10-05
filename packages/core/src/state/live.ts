@@ -111,10 +111,11 @@ export const useLive = create<LiveState>((set) => ({
 export function replyingNames(
   typing?: Record<string, TypingEvent>,
   progress?: Record<string, ProgressEvent>,
+  threadId: number | null = null,
 ): string[] {
   const agents = new Map<string, string>();
   for (const event of [...Object.values(typing ?? {}), ...Object.values(progress ?? {})]) {
-    if (event.thread_id == null) agents.set(event.agent_id, event.agent_name);
+    if ((event.thread_id ?? null) === threadId) agents.set(event.agent_id, event.agent_name);
   }
   return [...agents.values()].sort();
 }
@@ -123,6 +124,12 @@ export function useChannelReplying(channelId: string): string[] {
   const typing = useLive(s => s.typing[channelId]);
   const progress = useLive(s => s.progress[channelId]);
   return replyingNames(typing, progress);
+}
+
+export function useThreadReplying(channelId: string, threadId: number): string[] {
+  const typing = useLive(s => s.typing[channelId]);
+  const progress = useLive(s => s.progress[channelId]);
+  return replyingNames(typing, progress, threadId);
 }
 
 /** Keep list consumers stable while text-only progress frames arrive. */

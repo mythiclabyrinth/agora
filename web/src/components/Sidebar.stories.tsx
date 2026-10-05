@@ -48,7 +48,10 @@ function setup(): void {
 function setupReplying(multiple = false, collapsed = false): void {
   setup();
   useLive.getState().seedAll({ channels: {
-    general: { typing: [activity("general", "claude", "Claude M5"), ...(multiple ? [activity("general", "codex", "Codex")] : [])], progress: [] },
+    general: { typing: [
+      activity("general", "claude", "Claude M5"),
+      ...(multiple ? [activity("general", "codex", "Codex")] : []),
+    ], progress: [] },
     "dm-claude": { typing: [activity("dm-claude", "claude", "Claude M5")], progress: [] },
     responsive: { typing: [activity("responsive", "codex", "Codex", 42)], progress: [] },
   } }, useLive.getState().epoch);
@@ -135,6 +138,25 @@ export const AgentReplying: Story = {
     const canvas = within(canvasElement);
     expect(await canvas.findAllByRole("img", { name: "Claude M5 is replying" })).toHaveLength(2);
     expect(canvas.queryByRole("img", { name: "Codex is replying" })).not.toBeInTheDocument();
+  },
+};
+
+export const AgentReplyingInThread: Story = {
+  parameters: {
+    setup: () => {
+      setup();
+      useLive.getState().seedAll({ channels: {
+        general: { typing: [activity("general", "claude", "Claude M5", 42)], progress: [] },
+      } }, useLive.getState().epoch);
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const threadText = await canvas.findByText("Can we validate the responsive component layout?");
+    const thread = threadText.closest(".ago-side-thread") as HTMLElement;
+    expect(within(thread).getByRole("img", { name: "Claude M5 is replying" })).toBeVisible();
+    const channel = canvas.getByText("storybook").closest(".ago-chan") as HTMLElement;
+    expect(within(channel).queryByRole("img", { name: "Claude M5 is replying" })).not.toBeInTheDocument();
   },
 };
 
