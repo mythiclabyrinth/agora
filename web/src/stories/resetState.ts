@@ -18,6 +18,7 @@ const STORAGE_KEYS = [
   "agora_open",
   "agora_chan_collapsed",
   "agora_unreads_only",
+  "agora_sound_enabled",
   "agora_threads_sort",
   "agora_threads_filter",
   "agora_threads_group",
@@ -36,6 +37,7 @@ const HOME = new URL(".", window.location.href).pathname;
 
 /** Reset module-scoped zustand stores as well as their persisted inputs. */
 export function resetStoryState(): void {
+  delete (window as Window & { __AGORA_DESKTOP__?: boolean }).__AGORA_DESKTOP__;
   useAppearance.getState().setPreference(import.meta.env.VITE_STORY_THEME === "light" ? "light" : "dark");
   history.replaceState(null, "", HOME + window.location.search);
   for (const key of STORAGE_KEYS) localStorage.removeItem(key);
@@ -47,6 +49,7 @@ export function resetStoryState(): void {
     expanded: null,
     collapsedChannels: [],
     unreadsOnly: false,
+    soundEnabled: true,
     threadsSort: "recent",
     threadsFilter: "all",
     threadsGroup: null,
@@ -62,7 +65,7 @@ export function resetStoryState(): void {
   useDrafts.setState({ drafts: {} });
   useAddressing.setState({ addr: {} });
   useAttachmentDrafts.getState().reset();
-  useLive.setState({ typing: {}, progress: {} });
+  useLive.setState({ typing: {}, progress: {}, epoch: 0, touched: {} });
   useTldrView.setState({ showing: {} });
   useEmojiPicker.getState().close();
   useSourcesView.getState().close();

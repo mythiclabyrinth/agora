@@ -479,6 +479,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/channels/{channel_id}/agents", get(channel_agents))
         .route("/api/channels/{channel_id}/activity", get(channel_activity))
+        .route("/api/activity", get(all_activity))
         .route("/api/agents", get(available_agents))
         .route("/api/agents/{agent_id}", delete(forget_agent))
         .route("/api/agents/{agent_id}/avatar", get(agent_avatar))
@@ -3169,6 +3170,23 @@ async fn channel_activity(
     Ok(Json(state.hub.channel_activity(&channel_id)))
 }
 
+async fn all_activity(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channels: serde_json::Map<String, Value> = state.hub.activity_snapshot()
+        .into_iter()
+        .filter(|(id, _)| {
+            let is_dm = state.hub.store.channel(id).is_some_and(|c| c["kind"] == "agent_dm");
+            (!is_dm && user.instance_admin)
+                || state.hub.store.user_can_see_channel(&user.username, id)
+        })
+        .collect();
+    Ok(Json(json!({ "channels": channels })))
+}
+
 async fn list_agent_dms(State(state): State<AppState>, Query(q): Query<HashMap<String,String>>, headers: HeaderMap) -> Result<Json<Value>,ApiError> {
     let user = require_user(&state,&headers,&q)?; let live = state.hub.live_agent_ids();
     let agents = state.hub.store.known_agents().into_iter().map(|a| { let id=a["id"].as_str().unwrap_or_default(); let p=state.hub.store.agent_dm_policy(id);
@@ -5610,6 +5628,61 @@ mod tests {
             upload_limiter,
         };
         (state, dir)
+    }
+
+    #[tokio::test]
+    async fn all_activity_obeys_channel_and_dm_visibility() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        for (name, role) in [("alice", "member"), ("bob", "member"), ("admin", "admin")] {
+            store.create_user(name, name, None, role).unwrap();
+        }
+        let empty = all_activity(State(state.clone()), Query(HashMap::new()), session_headers(&state, "alice"))
+            .await.unwrap().0;
+        assert_eq!(empty, json!({"channels": {}}));
+
+        let group = store.create_group("Team", "", None);
+        let gid = group["id"].as_str().unwrap();
+        let channel = store.create_channel(gid, "general", "");
+        let cid = channel["id"].as_str().unwrap();
+        store.add_member(gid, "user", "alice", "member", None);
+        let public_group = store.create_group("Open", "", None);
+        let public_gid = public_group["id"].as_str().unwrap();
+        store.set_group_public(public_gid, true).unwrap();
+        let public_channel = store.create_channel(public_gid, "open", "");
+        let public_cid = public_channel["id"].as_str().unwrap();
+        let dm = store.open_agent_dm("bob", "bot", "Bot");
+        let did = dm["id"].as_str().unwrap();
+        for id in [cid, public_cid, did] {
+            state.hub.post_transient(id, json!({
+                "type": "typing", "channel_id": id, "agent_id": "bot",
+                "agent_name": "Bot", "active": true, "thread_id": null,
+            }));
+        }
+        state.hub.post_transient(cid, json!({
+            "type": "progress", "channel_id": cid, "agent_id": "bot",
+            "agent_name": "Bot", "thread_id": null, "handle": "work", "text": "Working",
+        }));
+        assert_eq!(state.hub.activity_snapshot().get(cid).unwrap()["progress"][0]["handle"], "work");
+        let snapshot = |username| all_activity(
+            State(state.clone()), Query(HashMap::new()), session_headers(&state, username),
+        );
+        let alice = snapshot("alice").await.unwrap().0;
+        assert!(alice["channels"].get(cid).is_some());
+        assert!(alice["channels"].get(public_cid).is_some());
+        assert_eq!(alice["channels"][cid]["progress"][0]["handle"], "work");
+        assert!(alice["channels"].get(did).is_none());
+        let bob = snapshot("bob").await.unwrap().0;
+        assert!(bob["channels"].get(cid).is_none());
+        assert!(bob["channels"].get(public_cid).is_some());
+        assert!(bob["channels"].get(did).is_some());
+        let admin = snapshot("admin").await.unwrap().0;
+        assert!(admin["channels"].get(cid).is_some());
+        assert!(admin["channels"].get(did).is_none());
+        let operator = all_activity(State(state.clone()), Query(HashMap::new()), admin_headers(&state))
+            .await.unwrap().0;
+        assert!(operator["channels"].get(cid).is_some());
+        assert!(operator["channels"].get(did).is_none());
     }
 
     #[tokio::test]

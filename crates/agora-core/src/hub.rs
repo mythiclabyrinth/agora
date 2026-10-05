@@ -1916,6 +1916,16 @@ impl Hub {
         })
     }
 
+    /// Copy activity under the hub lock; callers filter channel visibility
+    /// after the lock is released, as broadcast does for socket recipients.
+    pub fn activity_snapshot(&self) -> HashMap<String, Value> {
+        let st = self.state.lock().unwrap();
+        st.activity.iter().map(|(id, chan)| (id.clone(), json!({
+            "typing": chan.typing.values().cloned().collect::<Vec<_>>(),
+            "progress": chan.progress.values().cloned().collect::<Vec<_>>(),
+        }))).collect()
+    }
+
     // ------------------------------------------------------------- fan-out
 
     fn fan_out(

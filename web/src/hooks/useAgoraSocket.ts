@@ -7,10 +7,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   applyWsEvent,
   createAgoraSocket,
+  initialChimeState,
   resetSeenMessageIds,
+  shouldChime,
   type Message,
 } from "@agora/core";
 import { sessionToken } from "../lib/auth";
+import { armDesktopChime, isDesktopShell, playDesktopChime } from "../lib/desktopChime";
+import { useUiState } from "../state/ui";
 
 export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) => void) {
   const qc = useQueryClient();
@@ -21,6 +25,9 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
   useEffect(() => {
     if (!username) return;
     resetSeenMessageIds(qc);
+    const desktop = isDesktopShell();
+    const disarmChime = desktop ? armDesktopChime() : () => {};
+    let chimeState = initialChimeState();
 
     const url = () => {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -34,6 +41,12 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
           applyWsEvent(qc, ev, {
             username,
             onAgentMessage: (m) => onAgentMessageRef.current?.(m),
+            onMessage: desktop ? (message) => {
+              if (!document.hasFocus() || !useUiState.getState().soundEnabled) return;
+              const decision = shouldChime(chimeState, message, username, Date.now());
+              chimeState = decision.state;
+              if (decision.play) playDesktopChime();
+            } : undefined,
           }),
         onConnectedChange: setConnected,
         onReopen: () => {
@@ -56,6 +69,7 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("online", wake);
+      disarmChime();
       sock.close();
     };
   }, [qc, username]);

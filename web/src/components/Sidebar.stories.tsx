@@ -1,6 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
+  useLive,
+  type Group,
+  type TypingEvent,
+} from "@agora/core";
+import {
   fixtureGroups,
   fixtureMe,
   fixtureThreads,
@@ -19,6 +24,15 @@ const groupsWithoutMentions = fixtureGroups.map(group => ({
   ...group,
   channels: group.channels.map(channel => ({ ...channel, mentions: 0 })),
 }));
+const dmGroups: Group[] = [...fixtureGroups, {
+  id: "dms", name: "Direct messages", description: "", created_by: "tom", created_at: 1_750_000_000,
+  role: "admin", is_public: false, kind: "agent_dms",
+  channels: [{ id: "dm-claude", group_id: "dms", name: "Claude M5", topic: "", created_at: 1_750_000_000, unread: 0, mentions: 0 }],
+}];
+
+const activity = (channel_id: string, agent_id: string, agent_name: string, thread_id: number | null = null): TypingEvent => ({
+  type: "typing", channel_id, thread_id, agent_id, agent_name, active: true,
+});
 
 function setup(): void {
   localStorage.removeItem("agora_chan_collapsed");
@@ -29,6 +43,16 @@ function setup(): void {
     expanded: ["product"],
     collapsedChannels: [],
   });
+}
+
+function setupReplying(multiple = false, collapsed = false): void {
+  setup();
+  useLive.getState().seedAll({ channels: {
+    general: { typing: [activity("general", "claude", "Claude M5"), ...(multiple ? [activity("general", "codex", "Codex")] : [])], progress: [] },
+    "dm-claude": { typing: [activity("dm-claude", "claude", "Claude M5")], progress: [] },
+    responsive: { typing: [activity("responsive", "codex", "Codex", 42)], progress: [] },
+  } }, useLive.getState().epoch);
+  useUiState.setState({ expanded: collapsed ? [] : ["product", "dms"] });
 }
 
 const meta = {
@@ -69,14 +93,16 @@ export const RenameThreadDialog: Story = {
     const canvas = within(canvasElement);
     const thread = await canvas.findByText("Can we validate the responsive component layout?");
     await userEvent.hover(thread);
-    await userEvent.click(canvas.getByTitle("Rename this thread"));
+    const renameButton = canvas.getByTitle("Rename this thread");
+    await userEvent.click(renameButton);
     let dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
     await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
     expect(useUiState.getState().threadRoot).toBeNull();
-    await userEvent.click(canvas.getByTitle("Rename this thread"));
+    await waitFor(() => expect(renameButton).toHaveFocus());
+    await userEvent.click(renameButton);
     dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
     const input = dialog.getByLabelText("Thread name");
-    await expect(input).toHaveFocus();
+    await waitFor(() => expect(input).toHaveFocus());
     await userEvent.clear(input);
     await userEvent.type(input, "Desktop sidebar review");
     await userEvent.click(dialog.getByRole("button", { name: "Save" }));
@@ -97,5 +123,48 @@ export const IndependentGroupExpansion: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Collapse Another group" }));
     expect(useUiState.getState().expanded).toContain("product");
     expect(JSON.parse(localStorage.getItem("agora_open") || "[]")).toContain("product");
+  },
+};
+
+export const AgentReplying: Story = {
+  parameters: {
+    apiRoutes: { ...routes, "GET /api/groups": { groups: dmGroups } },
+    setup: () => setupReplying(),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(await canvas.findAllByRole("img", { name: "Claude M5 is replying" })).toHaveLength(2);
+    expect(canvas.queryByRole("img", { name: "Codex is replying" })).not.toBeInTheDocument();
+  },
+};
+
+export const AgentReplyingMultiple: Story = {
+  parameters: { setup: () => setupReplying(true) },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(await canvas.findByRole("img", { name: "Claude M5, Codex are replying" })).toBeVisible();
+  },
+};
+
+export const AgentReplyingUnreadsOnly: Story = {
+  parameters: {
+    apiRoutes: { ...routes, "GET /api/groups": { groups: dmGroups } },
+    setup: () => setupReplying(),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByRole("img", { name: "Claude M5 is replying" });
+    await userEvent.click(canvas.getByTitle("Show unreads only"));
+    expect(canvas.getAllByRole("img", { name: "Claude M5 is replying" })).toHaveLength(2);
+    expect(canvas.queryByText("responsive-web")).not.toBeInTheDocument();
+  },
+};
+
+export const AgentReplyingCollapsedGroup: Story = {
+  parameters: { setup: () => setupReplying(false, true) },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(await canvas.findByRole("img", { name: "Claude M5 is replying" })).toBeVisible();
+    expect(canvas.queryByText("responsive-web")).not.toBeInTheDocument();
   },
 };

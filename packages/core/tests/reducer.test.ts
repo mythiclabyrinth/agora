@@ -259,6 +259,19 @@ describe("applyWsEvent message dedupe", () => {
     expect(qc.getQueryData<MessagePages>(keys.messages("c1", null))!.pages[0][0].reply_count).toBe(1);
   });
 
+  it("calls onMessage once for a new message frame, regardless of author", () => {
+    const qc = new QueryClient();
+    const received: number[] = [];
+    const onMessage = (message: Message) => received.push(message.id);
+    const fromAgent = { ...msg(100), author_type: "agent" as const, author_id: "bot" };
+    const fromUser = { ...msg(101), author_type: "user" as const, author_id: "alice" };
+    for (const message of [fromAgent, fromAgent, fromUser]) {
+      applyWsEvent(qc, { type: "message", message }, { username: "me", onMessage });
+    }
+    applyWsEvent(qc, { type: "message_update", message: fromAgent }, { username: "me", onMessage });
+    expect(received).toEqual([100, 101]);
+  });
+
   it("delete-own-reply plus WS echo only drops reply_count once", () => {
     const qc = new QueryClient();
     qc.setQueryData(keys.messages("c1", null), {

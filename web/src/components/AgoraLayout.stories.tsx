@@ -39,6 +39,7 @@ const routes = {
   "GET /api/groups/product/templates": { templates: fixtureTemplates },
   "GET /api/channels/general/agents": { agents: fixtureChannelAgents },
   "GET /api/channels/general/activity": { typing: [], progress: [] },
+  "GET /api/activity": { channels: {} },
   "GET /api/channels/general/messages?limit=50": { messages: fixtureMessages },
   "GET /api/channels/general/messages?limit=50&thread_id=42": { messages: fixtureReplies },
   "GET /api/messages/42": fixtureMessages[0],

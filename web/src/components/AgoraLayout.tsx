@@ -5,7 +5,7 @@
    agoLoadGroups. */
 
 import { useEffect, useRef, useState } from "react";
-import { parseDeepLink, useGroups, useMe } from "@agora/core";
+import { parseDeepLink, useAllActivity, useGroups, useMe } from "@agora/core";
 import { useAgoraSocket } from "../hooks/useAgoraSocket";
 import { useUiState } from "../state/ui";
 import { Sidebar } from "./Sidebar";
@@ -29,6 +29,7 @@ import { useJump } from "../state/jump";
 
 export function AgoraLayout() {
   const me = useMe().data;
+  useAllActivity(!!me?.username);
   const groups = useGroups().data;
   const ui = useUiState();
   const requestJump = useJump(s => s.request);

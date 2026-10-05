@@ -591,6 +591,12 @@ select {
 .ago-chan.active { background: rgba(var(--accent-rgb),.14); color: var(--text); }
 .ago-chan .hash { opacity: .5; }
 .ago-chan .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ago-replying { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; color: var(--a1); }
+.ago-replying span { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: ago-reply-pulse 1.2s ease-in-out infinite; }
+.ago-replying span:nth-child(2) { animation-delay: .15s; }
+.ago-replying span:nth-child(3) { animation-delay: .3s; }
+@keyframes ago-reply-pulse { 0%, 60%, 100% { opacity: .35; transform: scale(.75); } 30% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .ago-replying span { animation: none; opacity: 1; } }
 .ago-x {
   display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
   min-width: 20px; height: 20px; border: none; border-radius: 6px; background: transparent;
@@ -3141,6 +3147,11 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .ago-search-row mark, .ago-mention { color: var(--accent-text); }
 .toast { background: var(--surface-raised); box-shadow: var(--elevation-panel); }
 .appearance-section { padding: 24px 0 8px; }
+.notification-settings { padding: 24px 0 8px; }
+.notification-setting { display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: 12px; cursor: pointer; color: var(--text); font-size: 14px; }
+.notification-setting input { width: 18px; height: 18px; margin: 0; accent-color: var(--a1); }
+.notification-setting:focus-within { outline: 2px solid var(--a1); outline-offset: 3px; }
+#settings-panel.conn-panel:has(.notification-settings) { height: auto; }
 .settings-section-heading { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 26px; }
 .settings-section-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: rgba(var(--accent-rgb),.1); color: var(--a1); flex: none; }
 .settings-section-icon .ico { width: 21px; height: 21px; }

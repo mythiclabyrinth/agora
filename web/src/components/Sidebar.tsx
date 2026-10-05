@@ -8,7 +8,7 @@ import {
   FEATURES,
   useCreateChannel, useCreateGroup, useDeleteChannel, useGroups, useHideThread,
   useMe, useRenameThread, useReorderChannels, useReorderGroups, useSetGroupHidden,
-  useThreads, useUpdateChannel,
+  useThreads, useUpdateChannel, useChannelReplying, useGroupReplying, useReplyingChannelIds,
   type Channel, type Group, type ThreadRow,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
@@ -32,6 +32,22 @@ function Badge({ n, mentions, totalWithMention = false }: { n: number; mentions:
     );
   }
   return n > 0 ? <span className="ago-unread-badge">{n > 99 ? "99+" : n}</span> : null;
+}
+
+function ReplyingIndicator({ names }: { names: string[] }) {
+  if (!names.length) return null;
+  const label = `${names.join(", ")} ${names.length === 1 ? "is" : "are"} replying`;
+  return <span className="ago-replying" role="img" aria-label={label} title={label}>
+    <span /><span /><span />
+  </span>;
+}
+
+function ChannelReplying({ channelId }: { channelId: string }) {
+  return <ReplyingIndicator names={useChannelReplying(channelId)} />;
+}
+
+function GroupReplying({ channelIds }: { channelIds: string[] }) {
+  return <ReplyingIndicator names={useGroupReplying(channelIds)} />;
 }
 
 function pinSnippet(m: { alias?: string | null; text?: string }): string {
@@ -104,6 +120,8 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
 export function Sidebar() {
   const me = useMe().data;
   const groups = useGroups().data || [];
+  const replyingChannelIds = useReplyingChannelIds();
+  const replyingChannels = new Set(replyingChannelIds);
   const orderedGroups = [...groups.filter(g => g.kind !== "agent_dms"), ...groups.filter(g => g.kind === "agent_dms")];
   const threads = useThreads().data || [];
   const ui = useUiState();
@@ -261,6 +279,7 @@ export function Sidebar() {
                   <Icon name="chevron-right" />
                 </button>
                 <span className="ago-group-title"><span className="nm">{g.name}</span></span>
+                {!open && <GroupReplying channelIds={(g.channels || []).filter(c => !c.hidden).map(c => c.id)} />}
                 {!open && <Badge n={groupUnread(g)} mentions={groupMentions(g)} />}
                 <span className="role">{g.role || ""}</span>
               </div>
@@ -270,7 +289,8 @@ export function Sidebar() {
                 const threadUnread = chThreads.reduce((n, t) => n + (t.unread || 0), 0);
                 const threadsCollapsed = ui.isChannelCollapsed(c.id);
                 const active = sel && c.id === ui.sel.c && ui.view.kind === "channel";
-                if (ui.unreadsOnly && !unread && !mentions && !threadUnread && !active) return null;
+                if (ui.unreadsOnly && !unread && !mentions && !threadUnread && !active
+                  && !replyingChannels.has(c.id)) return null;
                 const chArmed = armedKey === `chan:${c.id}`;
                 return (
                   <div key={c.id}>
@@ -292,6 +312,7 @@ export function Sidebar() {
                         </button>
                       ) : <span className="ago-chan-caret-spacer" aria-hidden="true" />}
                       <span className="hash">{isDms ? "↔" : "#"}</span><span className="nm">{c.name}</span>
+                      <ChannelReplying channelId={c.id} />
                       <Badge n={threadsCollapsed ? unread + threadUnread : unread} mentions={mentions} />
                       {!isDms && <button className="ago-x hide" title={`Hide #${c.name} from your sidebar`}
                         onClick={e => {

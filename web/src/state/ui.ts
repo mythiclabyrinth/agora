@@ -46,6 +46,11 @@ function loadSelection(): Selection {
   return normalizeSelection(loadJSON<Selection>("agora_sel", {}));
 }
 
+function loadSoundEnabled(): boolean {
+  try { return localStorage.getItem("agora_sound_enabled") !== "0"; }
+  catch { return true; }
+}
+
 const initialSelection = loadSelection();
 
 interface UiState {
@@ -58,6 +63,7 @@ interface UiState {
   expanded: string[] | null;
   collapsedChannels: string[];
   unreadsOnly: boolean;
+  soundEnabled: boolean;
   threadsSort: ThreadSort;
   threadsFilter: ThreadFilter;
   threadsGroup: string | null;
@@ -79,6 +85,7 @@ interface UiState {
   isChannelCollapsed: (c: string) => boolean;
   toggleChannelThreads: (c: string) => void;
   setUnreadsOnly: (on: boolean) => void;
+  setSoundEnabled: (on: boolean) => void;
   setThreadsSort: (sort: ThreadSort) => void;
   setThreadsFilter: (filter: ThreadFilter) => void;
   setThreadsGroup: (groupId: string | null) => void;
@@ -102,6 +109,7 @@ export const useUiState = create<UiState>((set, get) => ({
   expanded: loadJSON<string[] | null>("agora_open", null),
   collapsedChannels: loadJSON<string[]>("agora_chan_collapsed", []),
   unreadsOnly: localStorage.getItem("agora_unreads_only") === "1",
+  soundEnabled: loadSoundEnabled(),
   threadsSort: loadEnum("agora_threads_sort", ["recent", "oldest", "az", "za"], "recent"),
   threadsFilter: loadEnum("agora_threads_filter", ["all", "saved", "unset"], "all"),
   threadsGroup: localStorage.getItem("agora_threads_group") || null,
@@ -163,6 +171,11 @@ export const useUiState = create<UiState>((set, get) => ({
   setUnreadsOnly: (on) => {
     localStorage.setItem("agora_unreads_only", on ? "1" : "0");
     set({ unreadsOnly: on });
+  },
+  setSoundEnabled: (on) => {
+    try { localStorage.setItem("agora_sound_enabled", on ? "1" : "0"); }
+    catch { /* Private/managed browsers can deny storage. */ }
+    set({ soundEnabled: on });
   },
   setThreadsSort: (sort) => {
     localStorage.setItem("agora_threads_sort", sort);

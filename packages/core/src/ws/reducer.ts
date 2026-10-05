@@ -414,6 +414,8 @@ export function applyMessageClear(qc: QueryClient, ev: MessageClearEvent): void 
 
 export interface WsContext {
   username: string;
+  /** Called only for a new message frame after the reducer's id gate. */
+  onMessage?: (message: Message) => void;
   /** Called for agent messages so the app can raise a local notification
       while backgrounded. */
   onAgentMessage?: (message: Message) => void;
@@ -506,6 +508,7 @@ export function applyWsEvent(
         useLive.getState().agentDone(message.channel_id, message.author_id);
         ctx.onAgentMessage?.(message);
       }
+      ctx.onMessage?.(message);
       break;
     }
     case "message_update": {
