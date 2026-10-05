@@ -4,7 +4,7 @@
 //! In embedded mode the in-process hub already notifies (see `maybe_notify`
 //! in agora-core); a remote server has no such hook into this process, so
 //! this task mirrors the hub's rules — agent-authored messages only, skipped
-//! while the window is focused, throttled per conversation, "Author — Group /
+//! while the window is focused, throttled per channel, "Author — Group /
 //! #channel" titles — from the client side of the wire.
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use agora_core::hub::ReadNotifyEvent;
 use futures_util::StreamExt;
 use serde_json::Value;
 
-/// Matches the hub's NOTIFY_THROTTLE: bursts in one conversation collapse.
+/// Matches the hub's NOTIFY_THROTTLE: bursts in one channel collapse.
 const THROTTLE: Duration = Duration::from_secs(5);
 
 /// Matches the hub's NOTIFY_BODY_MAX_CHARS.
@@ -98,14 +98,14 @@ fn read_event_for(frame: &Value) -> Option<ReadNotifyEvent> {
     }
 }
 
-fn conversation_key(channel_id: &str, thread_id: Option<i64>) -> String {
-    thread_id.map_or_else(|| format!("channel:{channel_id}"), |id| format!("thread:{id}"))
-}
-
-fn passes_throttle(last: &mut HashMap<String, Instant>, key: String, now: Instant) -> bool {
-    last.retain(|_, at| now.duration_since(*at) < THROTTLE);
-    if last.contains_key(&key) { return false; }
-    last.insert(key, now);
+/// Per-channel throttle; records the notification time when it passes.
+fn passes_throttle(last: &mut HashMap<String, Instant>, channel_id: &str, now: Instant) -> bool {
+    if let Some(at) = last.get(channel_id) {
+        if now.duration_since(*at) < THROTTLE {
+            return false;
+        }
+    }
+    last.insert(channel_id.to_string(), now);
     true
 }
 
@@ -193,8 +193,7 @@ async fn on_frame(
     let focused = UI_FOCUSED.load(Ordering::Relaxed);
     // Cheap pre-pass (no name yet) to decide whether a lookup is even needed.
     let Some(probe) = notification_for(frame, focused, None) else { return };
-    let key = conversation_key(&probe.channel_id, probe.thread_id);
-    if !passes_throttle(last_notified, key, Instant::now()) {
+    if !passes_throttle(last_notified, &probe.channel_id, Instant::now()) {
         return;
     }
     if !names.contains_key(&probe.channel_id) {
@@ -281,20 +280,14 @@ mod tests {
     }
 
     #[test]
-    fn throttle_collapses_bursts_per_conversation() {
+    fn throttle_collapses_bursts_per_channel() {
         let mut last = HashMap::new();
         let t0 = Instant::now();
-        let channel = conversation_key("ch1", None);
-        let thread_a = conversation_key("ch1", Some(42));
-        let thread_b = conversation_key("ch1", Some(43));
-        assert!(passes_throttle(&mut last, channel.clone(), t0));
-        assert!(passes_throttle(&mut last, thread_a.clone(), t0));
-        assert!(passes_throttle(&mut last, thread_b, t0));
-        assert!(!passes_throttle(&mut last, thread_a.clone(), t0 + Duration::from_secs(4)));
-        assert!(passes_throttle(&mut last, thread_a.clone(), t0 + Duration::from_secs(6)));
-        assert_eq!(last.len(), 1);
-        assert!(passes_throttle(&mut last, channel, t0 + Duration::from_secs(6)));
-        assert!(!passes_throttle(&mut last, thread_a, t0 + Duration::from_secs(7)));
+        assert!(passes_throttle(&mut last, "ch1", t0));
+        assert!(!passes_throttle(&mut last, "ch1", t0 + Duration::from_secs(1)));
+        // A different channel is not throttled by ch1's banner.
+        assert!(passes_throttle(&mut last, "ch2", t0 + Duration::from_secs(1)));
+        assert!(passes_throttle(&mut last, "ch1", t0 + THROTTLE + Duration::from_secs(1)));
     }
 
     #[test]
