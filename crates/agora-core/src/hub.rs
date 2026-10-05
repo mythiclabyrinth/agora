@@ -380,9 +380,21 @@ pub fn sanitize_table(table: &Value) -> Option<Value> {
 /// Soft cap for an optional agent-supplied column width hint (CSS px).
 const MAX_COL_WIDTH: usize = 480;
 
-/// Minimum gap between notifications for the same channel, so a burst of
+/// Minimum quiet time between notifications for the same conversation, so a burst of
 /// agent replies (or a bot exchange) becomes one banner, not a pile.
 const NOTIFY_THROTTLE: Duration = Duration::from_secs(5);
+
+fn notification_conversation_key(channel_id: &str, thread_id: Option<i64>) -> String {
+    thread_id.map_or_else(|| format!("channel:{channel_id}"), |id| format!("thread:{id}"))
+}
+
+fn passes_notification_throttle(
+    last: &mut HashMap<String, Instant>, key: String, now: Instant,
+) -> bool {
+    let allowed = last.get(&key).is_none_or(|at| now.duration_since(*at) >= NOTIFY_THROTTLE);
+    last.insert(key, now);
+    allowed
+}
 
 /// Longest notification body; longer messages are cut at a char boundary.
 const NOTIFY_BODY_MAX_CHARS: usize = 180;
@@ -544,7 +556,7 @@ struct HubState {
     bot_streak: HashMap<(String, i64), i64>,
     /// channel_id -> {"typing": {agent_id: event}, "progress": {handle: event}}
     activity: HashMap<String, Activity>,
-    /// channel_id -> when it was last notified (see NOTIFY_THROTTLE).
+    /// conversation key -> last message in a notification burst.
     last_notified: HashMap<String, Instant>,
     action_alert_budget: HashMap<String, crate::notify_actions::AlertBudget>,
     /// Last on-demand usage refresh sent per live agent. Profile opens may be
@@ -669,7 +681,7 @@ impl Hub {
     /// see the channel (never the author's own) — independent of `ui_active`,
     /// because a headless server never flips that flag and a phone can be
     /// suspended while the desktop is focused. Throttled per channel so
-    /// bursts collapse into one banner / push.
+    /// bursts in one channel or thread collapse into one banner / push.
     fn maybe_notify(&self, message: &Value) {
         let mut pending = crate::notify_actions::pending(&message["meta"]);
         let mut actions = crate::notify_actions::for_meta(&message["meta"]);
@@ -696,10 +708,8 @@ impl Hub {
                 overflow = true;
             }
             if !pending {
-                if let Some(at) = st.last_notified.get(channel_id) {
-                    if at.elapsed() < NOTIFY_THROTTLE { return; }
-                }
-                st.last_notified.insert(channel_id.to_string(), Instant::now());
+                let key = notification_conversation_key(channel_id, message["thread_id"].as_i64());
+                if !passes_notification_throttle(&mut st.last_notified, key, Instant::now()) { return; }
             }
         }
         let place = match self.store.channel(channel_id) {
@@ -3661,6 +3671,22 @@ mod tests {
         // A user's own post never notifies.
         h.post_user_message(&cid, "back!", "tom", None, None, vec![]);
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn notification_throttle_is_per_conversation_and_slides_with_bursts() {
+        let mut last = HashMap::new();
+        let start = Instant::now();
+        let channel = notification_conversation_key("c", None);
+        let thread_a = notification_conversation_key("c", Some(41));
+        let thread_b = notification_conversation_key("c", Some(42));
+        assert!(passes_notification_throttle(&mut last, channel.clone(), start));
+        assert!(passes_notification_throttle(&mut last, thread_a.clone(), start));
+        assert!(passes_notification_throttle(&mut last, thread_b, start));
+        assert!(!passes_notification_throttle(&mut last, thread_a.clone(), start + Duration::from_secs(4)));
+        assert!(!passes_notification_throttle(&mut last, thread_a.clone(), start + Duration::from_secs(6)));
+        assert!(passes_notification_throttle(&mut last, thread_a, start + Duration::from_secs(11)));
+        assert!(passes_notification_throttle(&mut last, channel, start + Duration::from_secs(6)));
     }
 
     #[test]

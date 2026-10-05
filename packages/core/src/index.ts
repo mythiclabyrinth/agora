@@ -28,6 +28,7 @@ export * from "./lib/deepLinks";
 export * from "./lib/dropFiles";
 export * from "./lib/uploadLimits";
 export * from "./lib/agentKinds";
+export * from "./lib/chime";
 export * from "./lib/reactions";
 export * from "./lib/sections";
 export * from "./lib/features";

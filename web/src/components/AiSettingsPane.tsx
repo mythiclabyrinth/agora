@@ -16,8 +16,10 @@ import {
 } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
+import { isDesktopShell } from "../lib/desktopChime";
 import { useUiState } from "../state/ui";
 import { AppearancePicker } from "./AppearancePicker";
+import { NotificationSettings } from "./NotificationSettings";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 
@@ -546,9 +548,12 @@ export function AiSettingsPane() {
   const ui = useUiState();
   const me = useMe().data;
   const open = ui.panel === "settings";
-  const [tab, setTab] = useState<"appearance" | "workspace" | "features" | "credentials">("appearance");
+  const [tab, setTab] = useState<"appearance" | "notifications" | "workspace" | "features" | "credentials">("appearance");
   const admin = !!me?.instance_admin;
-  const activeTab = admin ? tab : "appearance";
+  const desktop = isDesktopShell();
+  const activeTab = tab === "notifications"
+    ? (desktop ? tab : "appearance")
+    : (admin ? tab : "appearance");
   const aiTab = activeTab === "features" || activeTab === "credentials";
   const q = useInstanceAi(open && admin && aiTab);
   const dialogRef = useDialogFocus(open, () => ui.openPanel(null));
@@ -568,6 +573,8 @@ export function AiSettingsPane() {
             aria-selected={activeTab === "appearance"} onClick={() => setTab("appearance")}>
             Appearance
           </button>
+          {desktop && <button type="button" role="tab" className={`conn-tab${activeTab === "notifications" ? " active" : ""}`}
+            aria-selected={activeTab === "notifications"} onClick={() => setTab("notifications")}>Notifications</button>}
           {admin && <button type="button" role="tab" className={`conn-tab${tab === "workspace" ? " active" : ""}`}
             aria-selected={tab === "workspace"} onClick={() => setTab("workspace")}>Workspace</button>}
           {admin && <button type="button" role="tab" className={`conn-tab${tab === "features" ? " active" : ""}`}
@@ -581,6 +588,7 @@ export function AiSettingsPane() {
         </div>
         <div className="conn-body">
           {activeTab === "appearance" && <AppearancePicker />}
+          {activeTab === "notifications" && <NotificationSettings />}
           {activeTab === "workspace" && <WorkspaceSettings />}
           {aiTab && q.isLoading && <div className="dim conn-empty">Loading…</div>}
           {aiTab && q.isError && <div className="dim conn-empty">Couldn&apos;t load AI settings. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}

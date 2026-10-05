@@ -741,6 +741,9 @@ fn open_main(handle: &AppHandle, url: Url) {
         _ => WebviewUrl::CustomProtocol(url),
     };
     let result = WebviewWindowBuilder::new(handle, "main", webview_url)
+        // Remote origins do not receive Tauri IPC globals; this marker only
+        // identifies our desktop webview for local UI behavior.
+        .initialization_script("window.__AGORA_DESKTOP__ = true;")
         .title("Agora")
         .inner_size(1240.0, 840.0)
         .min_inner_size(480.0, 400.0)
