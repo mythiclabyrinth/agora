@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialChimeState, shouldChime } from "../src/lib/chime";
+import { chimeAllowed, initialChimeState, shouldChime } from "../src/lib/chime";
 import type { Message } from "../src/api/types";
 
 const message = (id: number, thread_id: number | null, author_id = "bot"): Message => ({
@@ -8,6 +8,14 @@ const message = (id: number, thread_id: number | null, author_id = "bot"): Messa
 } as Message);
 
 describe("message chime coalescing", () => {
+  it("plays in background browser tabs, but only in a focused desktop window", () => {
+    expect(chimeAllowed({ desktop: false, focused: false, enabled: true })).toBe(true);
+    expect(chimeAllowed({ desktop: true, focused: false, enabled: true })).toBe(false);
+    expect(chimeAllowed({ desktop: true, focused: true, enabled: true })).toBe(true);
+    expect(chimeAllowed({ desktop: false, focused: true, enabled: false })).toBe(false);
+    expect(chimeAllowed({ desktop: true, focused: true, enabled: false })).toBe(false);
+  });
+
   it("plays once for a burst in one thread and reopens after five quiet seconds", () => {
     let state = initialChimeState();
     const plays: boolean[] = [];

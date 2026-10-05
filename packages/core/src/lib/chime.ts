@@ -12,6 +12,14 @@ export function initialChimeState(): ChimeState {
   return { lastByConversation: new Map(), lastPlayedAt: null };
 }
 
+export function chimeAllowed({ desktop, focused, enabled }: {
+  desktop: boolean;
+  focused: boolean;
+  enabled: boolean;
+}): boolean {
+  return enabled && (!desktop || focused);
+}
+
 /** Decide from one newly accepted WS message, independent of sound playback. */
 export function shouldChime(
   state: ChimeState, message: Message, username: string, now: number,

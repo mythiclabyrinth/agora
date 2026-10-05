@@ -16,7 +16,6 @@ import {
 } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
-import { isDesktopShell } from "../lib/desktopChime";
 import { useUiState } from "../state/ui";
 import { AppearancePicker } from "./AppearancePicker";
 import { NotificationSettings } from "./NotificationSettings";
@@ -550,9 +549,8 @@ export function AiSettingsPane() {
   const open = ui.panel === "settings";
   const [tab, setTab] = useState<"appearance" | "notifications" | "workspace" | "features" | "credentials">("appearance");
   const admin = !!me?.instance_admin;
-  const desktop = isDesktopShell();
   const activeTab = tab === "notifications"
-    ? (desktop ? tab : "appearance")
+    ? tab
     : (admin ? tab : "appearance");
   const aiTab = activeTab === "features" || activeTab === "credentials";
   const q = useInstanceAi(open && admin && aiTab);
@@ -573,8 +571,8 @@ export function AiSettingsPane() {
             aria-selected={activeTab === "appearance"} onClick={() => setTab("appearance")}>
             Appearance
           </button>
-          {desktop && <button type="button" role="tab" className={`conn-tab${activeTab === "notifications" ? " active" : ""}`}
-            aria-selected={activeTab === "notifications"} onClick={() => setTab("notifications")}>Notifications</button>}
+          <button type="button" role="tab" className={`conn-tab${activeTab === "notifications" ? " active" : ""}`}
+            aria-selected={activeTab === "notifications"} onClick={() => setTab("notifications")}>Notifications</button>
           {admin && <button type="button" role="tab" className={`conn-tab${tab === "workspace" ? " active" : ""}`}
             aria-selected={tab === "workspace"} onClick={() => setTab("workspace")}>Workspace</button>}
           {admin && <button type="button" role="tab" className={`conn-tab${tab === "features" ? " active" : ""}`}

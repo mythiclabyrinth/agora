@@ -7,17 +7,17 @@ export function isDesktopShell(): boolean {
 
 let audio: AudioContext | null = null;
 
-/** WebKit only allows starting audio after a user gesture. */
-export function armDesktopChime(): () => void {
-  window.addEventListener("pointerdown", armDesktopChimeNow, { passive: true });
-  window.addEventListener("keydown", armDesktopChimeNow);
+/** Browsers and WebKit may require a user gesture before audio can play. */
+export function armChime(): () => void {
+  window.addEventListener("pointerdown", armChimeNow, { passive: true });
+  window.addEventListener("keydown", armChimeNow);
   return () => {
-    window.removeEventListener("pointerdown", armDesktopChimeNow);
-    window.removeEventListener("keydown", armDesktopChimeNow);
+    window.removeEventListener("pointerdown", armChimeNow);
+    window.removeEventListener("keydown", armChimeNow);
   };
 }
 
-export function armDesktopChimeNow(): void {
+export function armChimeNow(): void {
   if (!useUiState.getState().soundEnabled) return;
   try {
     audio ??= new AudioContext();
@@ -27,7 +27,7 @@ export function armDesktopChimeNow(): void {
   }
 }
 
-export function playDesktopChime(): void {
+export function playChime(): void {
   if (!audio || audio.state !== "running") return;
   try {
     const start = audio.currentTime;
