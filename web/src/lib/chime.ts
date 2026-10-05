@@ -6,6 +6,7 @@ export function isDesktopShell(): boolean {
 }
 
 let audio: AudioContext | null = null;
+let resuming = false;
 
 /** Browsers and WebKit may require a user gesture before audio can play. */
 export function armChime(): () => void {
@@ -35,9 +36,12 @@ export function playChime(volume: number): void {
     schedule(ctx, volume);
     return;
   }
+  if (resuming) return;
+  resuming = true;
+  const queuedAt = Date.now();
   void ctx.resume().then(() => {
-    if (ctx.state === "running") schedule(ctx, volume);
-  }).catch(() => {});
+    if (ctx.state === "running" && Date.now() - queuedAt < 1_000) schedule(ctx, volume);
+  }).catch(() => {}).finally(() => { resuming = false; });
 }
 
 export function previewChime(volume: number): void {
