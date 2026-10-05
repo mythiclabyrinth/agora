@@ -29,14 +29,12 @@ describe("message chime coalescing", () => {
     expect([first.play, tooSoon.play, afterGap.play]).toEqual([true, false, true]);
   });
 
-  it("ignores own messages and reconnect replays", () => {
+  it("ignores own messages and chimes for another human", () => {
     let state = initialChimeState();
     const own = shouldChime(state, message(1, null, "me"), "me", 0);
     expect(own.play).toBe(false);
     state = own.state;
-    const first = shouldChime(state, message(2, null), "me", 1_000);
-    expect(first.play).toBe(true);
-    const replay = shouldChime(first.state, message(2, null), "me", 7_000);
-    expect(replay.play).toBe(false);
+    const otherHuman = { ...message(2, null, "alice"), author_type: "user" as const };
+    expect(shouldChime(state, otherHuman, "me", 1_000).play).toBe(true);
   });
 });

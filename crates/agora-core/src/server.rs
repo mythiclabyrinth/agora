@@ -5646,22 +5646,35 @@ mod tests {
         let channel = store.create_channel(gid, "general", "");
         let cid = channel["id"].as_str().unwrap();
         store.add_member(gid, "user", "alice", "member", None);
+        let public_group = store.create_group("Open", "", None);
+        let public_gid = public_group["id"].as_str().unwrap();
+        store.set_group_public(public_gid, true).unwrap();
+        let public_channel = store.create_channel(public_gid, "open", "");
+        let public_cid = public_channel["id"].as_str().unwrap();
         let dm = store.open_agent_dm("bob", "bot", "Bot");
         let did = dm["id"].as_str().unwrap();
-        for id in [cid, did] {
+        for id in [cid, public_cid, did] {
             state.hub.post_transient(id, json!({
                 "type": "typing", "channel_id": id, "agent_id": "bot",
                 "agent_name": "Bot", "active": true, "thread_id": null,
             }));
         }
+        state.hub.post_transient(cid, json!({
+            "type": "progress", "channel_id": cid, "agent_id": "bot",
+            "agent_name": "Bot", "thread_id": null, "handle": "work", "text": "Working",
+        }));
+        assert_eq!(state.hub.activity_snapshot().get(cid).unwrap()["progress"][0]["handle"], "work");
         let snapshot = |username| all_activity(
             State(state.clone()), Query(HashMap::new()), session_headers(&state, username),
         );
         let alice = snapshot("alice").await.unwrap().0;
         assert!(alice["channels"].get(cid).is_some());
+        assert!(alice["channels"].get(public_cid).is_some());
+        assert_eq!(alice["channels"][cid]["progress"][0]["handle"], "work");
         assert!(alice["channels"].get(did).is_none());
         let bob = snapshot("bob").await.unwrap().0;
         assert!(bob["channels"].get(cid).is_none());
+        assert!(bob["channels"].get(public_cid).is_some());
         assert!(bob["channels"].get(did).is_some());
         let admin = snapshot("admin").await.unwrap().0;
         assert!(admin["channels"].get(cid).is_some());

@@ -65,7 +65,7 @@ export function resetStoryState(): void {
   useDrafts.setState({ drafts: {} });
   useAddressing.setState({ addr: {} });
   useAttachmentDrafts.getState().reset();
-  useLive.setState({ typing: {}, progress: {} });
+  useLive.setState({ typing: {}, progress: {}, epoch: 0, touched: {} });
   useTldrView.setState({ showing: {} });
   useEmojiPicker.getState().close();
   useSourcesView.getState().close();
