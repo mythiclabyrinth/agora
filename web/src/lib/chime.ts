@@ -28,19 +28,30 @@ export function armChimeNow(): void {
 }
 
 export function playChime(): void {
-  if (!audio || audio.state !== "running") return;
+  const ctx = audio;
+  if (!ctx) return;
+  if (ctx.state === "running") {
+    schedule(ctx);
+    return;
+  }
+  void ctx.resume().then(() => {
+    if (ctx.state === "running") schedule(ctx);
+  }).catch(() => {});
+}
+
+function schedule(ctx: AudioContext): void {
   try {
-    const start = audio.currentTime;
+    const start = ctx.currentTime;
     for (const [offset, frequency] of [[0, 523], [0.065, 659]]) {
-      const oscillator = audio.createOscillator();
-      const gain = audio.createGain();
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
       const at = start + offset;
       oscillator.type = "sine";
       oscillator.frequency.value = frequency;
       gain.gain.setValueAtTime(0.0001, at);
       gain.gain.exponentialRampToValueAtTime(0.035, at + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.085);
-      oscillator.connect(gain).connect(audio.destination);
+      oscillator.connect(gain).connect(ctx.destination);
       oscillator.start(at);
       oscillator.stop(at + 0.09);
     }
