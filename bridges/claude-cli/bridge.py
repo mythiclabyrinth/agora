@@ -1023,7 +1023,7 @@ class JevAdvisor:
     }
 
     def __init__(self) -> None:
-        self.mode = os.environ.get("JEV_MODE", "off").strip().lower()
+        self.mode = os.environ.get("JEV_MODE", "off").strip().lower() or "off"
         self.key = (os.environ.get("JEV_OPENROUTER_API_KEY", "").strip()
                     or os.environ.get("OPENROUTER_API_KEY", "").strip())
         sensitive = {value for name, value in os.environ.items()
@@ -1381,7 +1381,7 @@ class Bridge:
         # ("option", option_id, user) on a button tap, or ("text", reply, user)
         # when a typed message answers a pending question.
         self.pending_perms: dict[str, tuple[asyncio.Future, str, int | None]] = {}
-        self._control_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._control_tasks: dict[tuple[str, str], set[asyncio.Task]] = {}
         # Unanswered AskUserQuestion entries per binding key, oldest first, so
         # a plain channel message can answer one as free text while a run is busy.
         self.pending_questions: dict[str, list[dict]] = {}
@@ -4354,8 +4354,7 @@ class Bridge:
 
     def _cancel_request(self, key: str, req_id: str, note: str) -> None:
         """The owning task resolves its own buttons, including question posts."""
-        task = self._control_tasks.get((key, req_id))
-        if task:
+        for task in self._control_tasks.get((key, req_id), ()):
             task.cancel(note)
 
     def _start_control_request(self, key: str, frame: dict, proc,
@@ -4367,10 +4366,12 @@ class Bridge:
         task = asyncio.create_task(self._handle_control_request(key, frame, proc, event, perm_ids))
         if not req_id:
             return task
-        self._control_tasks[request_key] = task
+        tasks = self._control_tasks.setdefault(request_key, set())
+        tasks.add(task)
 
         def finished(done):
-            if self._control_tasks.get(request_key) is done:
+            tasks.discard(done)
+            if not tasks and self._control_tasks.get(request_key) is tasks:
                 self._control_tasks.pop(request_key, None)
 
         task.add_done_callback(finished)

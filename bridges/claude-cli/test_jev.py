@@ -41,7 +41,8 @@ class JevClientTests(unittest.IsolatedAsyncioTestCase):
             return await client.assess("Bash", {"command": "pwd"}, "/tmp/repo")
 
     async def test_default_off_missing_key_and_invalid_configuration_skip_network(self):
-        cases = [{"JEV_MODE": "off"}, {"JEV_OPENROUTER_API_KEY": ""},
+        cases = [{"JEV_MODE": "off"}, {"JEV_MODE": ""}, {"JEV_MODE": "  "},
+                 {"JEV_OPENROUTER_API_KEY": ""},
                  {"JEV_MODE": "auto"}, {"JEV_TIMEOUT_SECONDS": "nan"},
                  {"JEV_TIMEOUT_SECONDS": "11"}, {"JEV_TIMEOUT_SECONDS": "garbage"},
                  {"JEV_SAFE_THRESHOLD": "0.9"}, {"JEV_RISK_THRESHOLD": "nan"}]
@@ -51,7 +52,11 @@ class JevClientTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(client, "_request") as request:
                     self.assertEqual(await client.assess("Bash", {"command": "pwd"}, "/tmp"), "")
                     request.assert_not_called()
-                self.assertIn("off" if settings.get("JEV_MODE") == "off" else "unavailable", client.status())
+                is_off = settings.get("JEV_MODE") in ("off", "", "  ")
+                self.assertIn("off" if is_off else "unavailable", client.status())
+                if is_off:
+                    self.assertEqual(client.notice("c1"), "")
+                    self.assertEqual(client.notice("c2"), "")
         with patch.dict(bridge.os.environ, {}, clear=True):
             self.assertEqual(bridge.JevAdvisor().mode, "off")
 
@@ -719,6 +724,58 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
             await second
         self.b._send_to_claude.assert_awaited_once()
         self.assertIs(self.b._send_to_claude.call_args.args[0], other_proc)
+        self.assertFalse(self.b._control_tasks)
+
+    async def test_duplicate_request_ids_cancel_both_prompts_in_same_session(self):
+        self.b.permission_timeout = 1
+        both_posted = asyncio.Event()
+        posts = []
+
+        def record(post):
+            if post.get("options"):
+                posts.append(post)
+                if len(posts) == 2:
+                    both_posted.set()
+
+        self.b.send.side_effect = record
+        with patch.object(self.b.jev, "assess", return_value=""):
+            tasks = [self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
+                     for _ in range(2)]
+            await asyncio.wait_for(both_posted.wait(), 0.5)
+            self.assertEqual(self.b._control_tasks[("c1", "r1")], set(tasks))
+            self.assertEqual(len({post["options_id"] for post in posts}), 2)
+            self.b._cancel_request("c1", "r1", "withdrawn")
+            await asyncio.wait_for(asyncio.gather(*tasks), 0.5)
+        resolutions = [call.args[0]["options_id"] for call in self.b.send.call_args_list
+                       if call.args[0]["type"] == "options_resolve"]
+        self.assertCountEqual(resolutions, [post["options_id"] for post in posts])
+        self.b._send_to_claude.assert_not_awaited()
+        self.assertFalse(self.b.pending_perms)
+        self.assertFalse(self.b._control_tasks)
+
+    async def test_completed_duplicate_leaves_other_request_cancellable(self):
+        self.b.permission_timeout = 1
+        both_posted = asyncio.Event()
+        posts = []
+
+        def record(post):
+            if post.get("options"):
+                posts.append(post)
+                if len(posts) == 2:
+                    both_posted.set()
+
+        self.b.send.side_effect = record
+        with patch.object(self.b.jev, "assess", return_value=""):
+            first, second = [self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
+                             for _ in range(2)]
+            await asyncio.wait_for(both_posted.wait(), 0.5)
+            self.b.handle_option_select({"options_id": posts[0]["options_id"], "option_id": "allow"})
+            await first
+            self.assertEqual(self.b._control_tasks[("c1", "r1")], {second})
+            self.b._cancel_request("c1", "r1", "withdrawn")
+            await second
+        self.b._send_to_claude.assert_awaited_once()
+        self.assertFalse(self.b.pending_perms)
         self.assertFalse(self.b._control_tasks)
 
     async def test_same_request_id_posted_buttons_and_questions_stay_isolated(self):
