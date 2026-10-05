@@ -32,7 +32,11 @@ export function PromptDialog({ title, description, label, value: initialValue, p
     document.addEventListener("keydown", keydown);
     return () => {
       document.removeEventListener("keydown", keydown);
-      requestAnimationFrame(() => previous?.isConnected && previous.focus());
+      requestAnimationFrame(() => {
+        // A reopened dialog or another control may have claimed focus since
+        // unmount. Restore only when removing this dialog left focus on the body.
+        if (document.activeElement === document.body && previous?.isConnected) previous.focus();
+      });
     };
   }, []);
 

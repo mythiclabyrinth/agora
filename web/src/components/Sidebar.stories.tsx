@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { flushSync } from "react-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   fixtureGroups,
@@ -69,18 +70,25 @@ export const RenameThreadDialog: Story = {
     const canvas = within(canvasElement);
     const thread = await canvas.findByText("Can we validate the responsive component layout?");
     await userEvent.hover(thread);
-    await userEvent.click(canvas.getByTitle("Rename this thread"));
+    const renameButton = canvas.getByTitle("Rename this thread");
+    await userEvent.click(renameButton);
     let dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
-    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    // Reopen before the next frame so the old dialog's deferred focus restore
+    // runs against the new input. Awaited user events made this race intermittent.
+    flushSync(() => dialog.getByRole("button", { name: "Cancel" }).click());
     expect(useUiState.getState().threadRoot).toBeNull();
-    await userEvent.click(canvas.getByTitle("Rename this thread"));
-    dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
+    expect(within(document.body).queryByRole("dialog", { name: "Rename thread" })).not.toBeInTheDocument();
+    renameButton.focus();
+    flushSync(() => renameButton.click());
+    dialog = within(within(document.body).getByRole("dialog", { name: "Rename thread" }));
     const input = dialog.getByLabelText("Thread name");
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     await expect(input).toHaveFocus();
     await userEvent.clear(input);
     await userEvent.type(input, "Desktop sidebar review");
     await userEvent.click(dialog.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(within(document.body).queryByRole("dialog", { name: "Rename thread" })).not.toBeInTheDocument());
+    await waitFor(() => expect(renameButton).toHaveFocus());
   },
 };
 
