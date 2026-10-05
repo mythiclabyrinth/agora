@@ -287,6 +287,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.warm_compacted_sizes = {}
     instance.turn_activity = {}
     instance.run_generation = {}
+    instance._control_tasks = {}
     instance.cold_compact_failures = {}
     instance.cold_compact_pending = {}
     instance.account_auth_problem = None

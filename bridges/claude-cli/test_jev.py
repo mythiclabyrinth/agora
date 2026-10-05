@@ -241,7 +241,7 @@ class JevPrivacyTransportTests(unittest.TestCase):
         self.assertEqual(advisor(JEV_OPENROUTER_API_KEY="", OPENROUTER_API_KEY="fallback").key, "fallback")
 
     def test_payload_selection_redaction_and_path_normalization(self):
-        client = advisor()
+        client = advisor(SOME_TOKEN="known-env-secret")
         command = ('TOKEN="a secret value" PASSWORD=plain-value '
                    "SECRET='other secret' "
                    '--password "flag secret" -u user:basic-secret '
@@ -259,7 +259,19 @@ class JevPrivacyTransportTests(unittest.TestCase):
                        "/Users/alice", "/home/bob"]:
             self.assertNotIn(secret, state)
         self.assertIn("<project>/file", state)
-        self.assertIn("example.test/api", state)
+        self.assertIn("https://example.test", state)
+        self.assertNotIn("/api", state)
+
+    def test_webhook_and_signed_url_paths_are_not_transmitted(self):
+        client = advisor()
+        state = client._state("Bash", {"command":
+            "curl https://hooks.slack.com/services/T000/B000/webhook-secret "
+            "https://storage.test/presigned-secret/object?sig=query-secret#fragment-secret"}, "")
+        self.assertIn("https://hooks.slack.com", state)
+        self.assertIn("https://storage.test", state)
+        for secret in ("services", "T000", "B000", "webhook-secret", "presigned-secret",
+                       "object", "query-secret", "fragment-secret"):
+            self.assertNotIn(secret, state)
 
     def test_private_key_and_unknown_or_oversize_inputs(self):
         client = advisor()
@@ -320,6 +332,8 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
         self.b.bindings = {"c1": {"cwd": "/tmp/repo"}}
         self.b.run_generation = {}
         self.b.pending_perms = {}
+        self.b._control_tasks = {}
+        self.b.pending_questions = {}
         self.b.session_allows = {}
         self.b.permission_timeout = 0.1
         self.b.jev = advisor()
@@ -449,7 +463,7 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_withdrawal_before_coroutine_start_posts_nothing(self):
         task = self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
-        self.b._cancel_request("r1", "withdrawn")
+        self.b._cancel_request("c1", "r1", "withdrawn")
         await asyncio.gather(task, return_exceptions=True)
         self.b.send.assert_not_called()
         self.b._send_to_claude.assert_not_awaited()
@@ -465,17 +479,18 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
                 task = self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
                 await entered.wait()
                 if cancel == "withdraw":
-                    self.b._cancel_request("r1", "withdrawn")
+                    self.b._cancel_request("c1", "r1", "withdrawn")
                 else:
-                    self.b._cancel_perm(self.ids[0], "run stopped")
+                    task.cancel()  # The run's cleanup cancels its permission tasks.
                 await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 0.5)
-            self.assertFalse([call for call in self.b.send.call_args_list if call.args[0].get("options")])
+            self.b.send.assert_not_called()  # No resolution of unposted buttons either.
             self.b._send_to_claude.assert_not_awaited()
             self.assertFalse(self.b.pending_perms)
 
-    async def test_rebound_or_dead_process_discards_advice(self):
+    async def test_rebinding_answers_live_process_but_dead_process_discards_advice(self):
         for mutation in ("binding", "generation", "process"):
             self.setUp()
+            self.choose("allow")
             async def change(*_):
                 if mutation == "binding":
                     self.b.bindings["c1"] = {"cwd": "/other"}
@@ -486,9 +501,129 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
                 return "Jev: looks safe"
             with patch.object(self.b.jev, "assess", side_effect=change):
                 await self.run_request()
-            self.b.send.assert_not_called()
-            self.b._send_to_claude.assert_not_awaited()
+            if mutation == "process":
+                self.b.send.assert_not_called()
+                self.b._send_to_claude.assert_not_awaited()
+            else:
+                self.assertIn("Jev: looks safe", self.b.send.call_args.args[0]["text"])
+                self.b._send_to_claude.assert_awaited_once()
+                proc, response = self.b._send_to_claude.call_args.args
+                self.assertIs(proc, self.proc)
+                self.assertEqual(response["response"]["request_id"], "r1")
+                self.assertEqual(response["response"]["response"]["behavior"], "allow")
             self.assertFalse(self.b.pending_perms)
+
+    async def test_completed_permission_future_does_not_count_failure_or_post_prompt(self):
+        async def permission_wins(futures, **_):
+            assessment, future = futures
+            self.assertFalse(assessment.done())
+            future.set_result(("option", "allow", "stale tap"))
+            return {future}, {assessment}
+
+        with patch.object(bridge.asyncio, "wait", side_effect=permission_wins), patch.object(
+                self.b.jev, "assess", return_value="Jev: looks safe"):
+            await self.run_request()
+        self.b.send.assert_not_called()
+        self.b._send_to_claude.assert_not_awaited()
+        self.assertEqual(self.b.jev.consecutive_failures, 0)
+        self.assertFalse(self.b.pending_perms)
+
+    async def test_old_tap_is_ignored_during_advice_and_after_new_prompt(self):
+        self.choose("allow")
+        with patch.object(self.b.jev, "assess", return_value=""):
+            await self.run_request()
+        old_id = self.b.send.call_args.args[0]["options_id"]
+        self.b.send.reset_mock(side_effect=True)
+        self.b._send_to_claude.reset_mock()
+        entered, release, posted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def slow(*_):
+            entered.set()
+            await release.wait()
+            return "Jev: looks safe"
+
+        self.b.send.side_effect = lambda _: posted.set()
+        stale_tap = {"options_id": old_id, "option_id": "allow", "user": {"name": "Tom"}}
+        with patch.object(self.b.jev, "assess", side_effect=slow):
+            task = self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
+            await entered.wait()
+            self.assertFalse(self.b.pending_perms)
+            self.b.handle_option_select(stale_tap)
+            release.set()
+            await posted.wait()
+            new_id = self.b.send.call_args.args[0]["options_id"]
+            self.assertNotEqual(old_id, new_id)
+            self.b.handle_option_select(stale_tap)
+            self.b._send_to_claude.assert_not_awaited()
+            self.assertFalse(self.b.pending_perms[new_id][0].done())
+            self.b.handle_option_select({**stale_tap, "options_id": new_id, "option_id": "deny"})
+            await task
+        self.assertEqual(self.b._send_to_claude.call_args.args[1]["response"]["response"]["behavior"], "deny")
+        self.assertEqual(self.b.jev.consecutive_failures, 0)
+
+    async def test_same_request_id_in_two_sessions_cancels_only_owner_during_advice(self):
+        entered = {"/tmp/repo": asyncio.Event(), "/tmp/other": asyncio.Event()}
+        release = asyncio.Event()
+        other_proc, other_ids = Mock(returncode=None), []
+        self.b.bindings["c2"] = {"cwd": "/tmp/other"}
+
+        async def slow(_tool, _input, cwd):
+            entered[cwd].set()
+            await release.wait()
+            return "Jev: looks safe"
+
+        self.choose("allow")
+        with patch.object(self.b.jev, "assess", side_effect=slow):
+            first = self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
+            second = self.b._start_control_request("c2", {"channel_id": "c2"}, other_proc, self.event, other_ids)
+            await asyncio.gather(*(event.wait() for event in entered.values()))
+            self.b._cancel_request("c1", "r1", "withdrawn")
+            await first
+            self.assertFalse(second.done())
+            self.b.send.assert_not_called()
+            release.set()
+            await second
+        self.b._send_to_claude.assert_awaited_once()
+        self.assertIs(self.b._send_to_claude.call_args.args[0], other_proc)
+        self.assertFalse(self.b._control_tasks)
+
+    async def test_same_request_id_posted_buttons_and_questions_stay_isolated(self):
+        for tool in ("Bash", "AskUserQuestion"):
+            self.setUp()
+            self.b.permission_timeout = 1
+            self.event["request"]["tool_name"] = tool
+            if tool == "AskUserQuestion":
+                self.event["request"]["input"] = {"questions": [
+                    {"question": "Which?", "options": [{"label": "One"}, {"label": "Two"}]}]}
+            both_posted = asyncio.Event()
+            posts = {}
+
+            def record(post):
+                if post.get("options"):
+                    posts[post["channel_id"]] = post
+                    if len(posts) == 2:
+                        both_posted.set()
+
+            self.b.send.side_effect = record
+            other_proc = Mock(returncode=None)
+            with patch.object(self.b.jev, "assess", return_value=""):
+                first = self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
+                second = self.b._start_control_request("c2", {"channel_id": "c2"}, other_proc, self.event, [])
+                await both_posted.wait()
+                self.assertNotEqual(posts["c1"]["options_id"], posts["c2"]["options_id"])
+                self.b._cancel_request("c1", "r1", "withdrawn")
+                await first
+                self.assertFalse(second.done())
+                resolutions = [call.args[0] for call in self.b.send.call_args_list
+                               if call.args[0]["type"] == "options_resolve"]
+                self.assertEqual([post["options_id"] for post in resolutions], [posts["c1"]["options_id"]])
+                self.b.handle_option_select({"options_id": posts["c2"]["options_id"],
+                    "option_id": "allow" if tool == "Bash" else "opt-1", "user": {"name": "Tom"}})
+                await second
+            self.b._send_to_claude.assert_awaited_once()
+            self.assertIs(self.b._send_to_claude.call_args.args[0], other_proc)
+            self.assertFalse(self.b.pending_perms)
+            self.assertFalse(self.b.pending_questions)
 
     async def test_never_sends_user_context_to_advisor(self):
         self.choose("allow")

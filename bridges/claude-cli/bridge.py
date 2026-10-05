@@ -1024,6 +1024,12 @@ class JevAdvisor:
         self.mode = os.environ.get("JEV_MODE", "off").strip().lower()
         self.key = (os.environ.get("JEV_OPENROUTER_API_KEY", "").strip()
                     or os.environ.get("OPENROUTER_API_KEY", "").strip())
+        sensitive = {value for name, value in os.environ.items()
+                     if re.search(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", name, re.I)
+                     and len(value) >= 4}
+        self._sensitive_values = tuple(json.dumps(value, ensure_ascii=False)[1:-1]
+                                       for value in sorted((sensitive | {self.key}) - {""},
+                                                           key=len, reverse=True))
         self.timeout = 3.0
         self.safe_at = 0.05
         self.risk_at = 0.8
@@ -1076,7 +1082,7 @@ class JevAdvisor:
         self.reason = reason
         self.until = time.monotonic() + seconds
 
-    def _transient_failure(self) -> None:
+    def note_failure(self) -> None:
         self.consecutive_failures += 1
         # An isolated latency spike should affect only its own approval. A
         # failed recovery probe keeps the circuit open instead of hammering it.
@@ -1099,11 +1105,8 @@ class JevAdvisor:
             return None
         # Redact before serializing the final request. This is best-effort data
         # minimization, not a promise that arbitrary shell text contains no secrets.
-        sensitive = [value for name, value in os.environ.items()
-                     if re.search(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", name, re.I)
-                     and len(value) >= 4]
-        for value in sorted(set(sensitive + [self.key]) - {""}, key=len, reverse=True):
-            state = state.replace(json.dumps(value, ensure_ascii=False)[1:-1], "[redacted]")
+        for value in self._sensitive_values:
+            state = state.replace(value, "[redacted]")
         state = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
                        "[redacted private key]", state, flags=re.S)
         state = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", state)
@@ -1128,7 +1131,8 @@ class JevAdvisor:
         try:
             url = urlsplit(match.group())
             host = url.netloc.rsplit("@", 1)[-1]
-            return urlunsplit((url.scheme, host, url.path, "", ""))
+            # Webhook and signed URLs often carry credentials in the path too.
+            return urlunsplit((url.scheme, host, "", "", ""))
         except ValueError:
             return "[redacted URL]"
 
@@ -1225,7 +1229,7 @@ class JevAdvisor:
                 elif code in (429, 503) and retry:
                     self._pause("service unavailable", retry)
                 elif code is None or code == 429 or (isinstance(code, int) and 500 <= code < 600):
-                    self._transient_failure()
+                    self.note_failure()
                 else:
                     self._pause("service unavailable", retry or 60)
                 return ""
@@ -1258,7 +1262,7 @@ class JevAdvisor:
             raise
         except Exception:
             if epoch == self.epoch:
-                self._transient_failure()
+                self.note_failure()
             return ""
         finally:
             if is_probe:
@@ -1343,6 +1347,7 @@ class Bridge:
         # ("option", option_id, user) on a button tap, or ("text", reply, user)
         # when a typed message answers a pending question.
         self.pending_perms: dict[str, tuple[asyncio.Future, str, int | None]] = {}
+        self._control_tasks: dict[tuple[str, str], asyncio.Task] = {}
         # Unanswered AskUserQuestion entries per binding key, oldest first, so
         # a plain channel message can answer one as free text while a run is busy.
         self.pending_questions: dict[str, list[dict]] = {}
@@ -3602,7 +3607,7 @@ class Bridge:
                             perm_tasks.append(self._start_control_request(
                                 key, frame, proc, event, perm_ids))
                         elif kind == "control_cancel_request":
-                            self._cancel_request(event.get("request_id") or "",
+                            self._cancel_request(key, event.get("request_id") or "",
                                                  "Claude withdrew the request.")
                         elif kind == "result":
                             text = event.get("result") or ""
@@ -3673,6 +3678,8 @@ class Bridge:
                     for oid in perm_ids:
                         self._cancel_perm(oid, "The run ended before a decision.")
                     if perm_tasks:
+                        for task in perm_tasks:
+                            task.cancel()
                         await asyncio.gather(*perm_tasks, return_exceptions=True)
             if result_text is None:
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
@@ -3933,7 +3940,7 @@ class Bridge:
                     perm_tasks.append(self._start_control_request(
                         key, target, proc, event, live.perm_ids))
                 elif kind == "control_cancel_request":
-                    self._cancel_request(event.get("request_id") or "",
+                    self._cancel_request(key, event.get("request_id") or "",
                                          "Claude withdrew the request.")
                 elif kind == "user":
                     for block in (event.get("message") or {}).get("content") or []:
@@ -4055,6 +4062,8 @@ class Bridge:
         for oid in live.perm_ids:
             self._cancel_perm(oid, "The run ended before a decision.")
         if perm_tasks:
+            for task in perm_tasks:
+                task.cancel()
             await asyncio.gather(*perm_tasks, return_exceptions=True)
         # The first idle timer may have fired while the background child was
         # still alive. Start a fresh quiet window once it has actually exited.
@@ -4310,30 +4319,24 @@ class Bridge:
             fut.cancel()
         self._resolve_perm_buttons(options_id, channel_id, thread_id, note)
 
-    def _cancel_request(self, req_id: str, note: str) -> None:
-        """Cancel every pending ask tied to one CLI request id: the single
-        `perm-` prompt of a tool approval, or the per-question `ask-` posts
-        of an AskUserQuestion."""
-        task = getattr(self, "_control_tasks", {}).get(req_id)
+    def _cancel_request(self, key: str, req_id: str, note: str) -> None:
+        """The owning task resolves its own buttons, including question posts."""
+        task = self._control_tasks.get((key, req_id))
         if task:
-            task.cancel()
-        for oid in list(self.pending_perms):
-            if oid == f"perm-{req_id}" or oid.startswith(f"ask-{req_id}-"):
-                self._cancel_perm(oid, note)
+            task.cancel(note)
 
     def _start_control_request(self, key: str, frame: dict, proc,
                                event: dict, perm_ids: list[str]) -> asyncio.Task:
         # Register synchronously: buffered stdout may withdraw this request
         # before the newly scheduled coroutine has had a chance to run.
-        if not hasattr(self, "_control_tasks"):
-            self._control_tasks = {}
         req_id = event.get("request_id") or ""
+        request_key = (key, req_id)
         task = asyncio.create_task(self._handle_control_request(key, frame, proc, event, perm_ids))
-        self._control_tasks[req_id] = task
+        self._control_tasks[request_key] = task
 
         def finished(done):
-            if self._control_tasks.get(req_id) is done:
-                self._control_tasks.pop(req_id, None)
+            if self._control_tasks.get(request_key) is done:
+                self._control_tasks.pop(request_key, None)
 
         task.add_done_callback(finished)
         return task
@@ -4379,41 +4382,41 @@ class Bridge:
         if tool in self.session_allows.get(key, set()):
             await self._send_to_claude(proc, self._perm_response(req_id, True, tool_input))
             return
-        options_id = f"perm-{req_id}"
+        # CLI request IDs can repeat across processes/runs. A fresh opaque ID
+        # keeps old taps and concurrent sessions out of this request's future.
+        options_id = f"perm-{req_id}-{secrets.token_hex(8)}"
         fut = asyncio.get_running_loop().create_future()
-        self.pending_perms[options_id] = (fut, frame["channel_id"], frame.get("thread_id"))
-        perm_ids.append(options_id)
         try:
             prompt = self._perm_prompt_text(tool, tool_input, req.get("description"))
             advisor = getattr(self, "jev", None)
             if advisor and tool != "ExitPlanMode":
                 binding = self.bindings.get(key)
-                generation = self.run_generation.get(key)
                 cwd = (binding or {}).get("cwd", "")
                 assessment = asyncio.create_task(advisor.assess(tool, tool_input, cwd))
                 try:
                     await asyncio.wait((assessment, fut), return_when=asyncio.FIRST_COMPLETED)
-                    if fut.cancelled():
+                    if fut.done():
                         return
-                    advice = assessment.result()
+                    advice = assessment.result() if assessment.done() else ""
                     if advice:
                         prompt += "\n\n" + advice
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     # Even unexpected advisor failures cannot strand a CLI ask.
-                    advisor._transient_failure()
+                    advisor.note_failure()
                     log("jev status=- band=unavailable (advisor failure)")
                 finally:
                     assessment.cancel()
                     await asyncio.gather(assessment, return_exceptions=True)
-                if (fut.cancelled() or self.bindings.get(key) is not binding
-                        or self.run_generation.get(key) != generation
+                if (fut.done()
                         or isinstance(getattr(proc, "returncode", None), int)):
                     return
                 notice = advisor.notice(frame["channel_id"])
                 if notice:
                     self.post(frame, notice)
+            self.pending_perms[options_id] = (fut, frame["channel_id"], frame.get("thread_id"))
+            perm_ids.append(options_id)
             self.send({
                 "type": "post", "agent_id": self.agent_id,
                 "request_id": f"post-{options_id}",
@@ -4432,8 +4435,9 @@ class Bridge:
                 ]),
             })
             _, option_id, who = await asyncio.wait_for(fut, self.permission_timeout)
-        except asyncio.CancelledError:
-            return  # run ended; _cancel_perm already resolved the buttons
+        except asyncio.CancelledError as exc:
+            self._cancel_perm(options_id, str(exc) or "The run ended before a decision.")
+            return
         except TimeoutError:
             option_id, who = "deny", None
             self._resolve_perm_buttons(options_id, frame["channel_id"], frame.get("thread_id"),
@@ -4471,7 +4475,7 @@ class Bridge:
         loop = asyncio.get_running_loop()
         for i, q in enumerate(questions):
             options = [o for o in (q.get("options") or []) if isinstance(o, dict)]
-            options_id = f"ask-{req_id}-{i}"
+            options_id = f"ask-{req_id}-{secrets.token_hex(8)}-{i}"
             fut = loop.create_future()
             self.pending_perms[options_id] = (fut, frame["channel_id"], frame.get("thread_id"))
             perm_ids.append(options_id)
@@ -4498,8 +4502,10 @@ class Bridge:
                 asyncio.gather(*(e["future"] for e in entries)),
                 self.permission_timeout,
             )
-        except asyncio.CancelledError:
-            return  # run ended; _cancel_perm already resolved the buttons
+        except asyncio.CancelledError as exc:
+            for entry in entries:
+                self._cancel_perm(entry["options_id"], str(exc) or "The run ended before a decision.")
+            return
         except TimeoutError:
             for entry in entries:
                 if not entry["future"].done() or entry["future"].cancelled():

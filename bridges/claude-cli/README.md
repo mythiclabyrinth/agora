@@ -308,7 +308,8 @@ Only Bash commands, Read paths, and Grep/Glob patterns and paths are assessed.
 Task messages, transcripts, file contents, tool descriptions and arbitrary MCP
 inputs are excluded. Write/Edit and other tools retain ordinary approvals.
 Selected inputs over 16 KB skip assessment. Paths are normalized and recognizable
-credentials are redacted, but shell text can still contain sensitive information;
+credentials are redacted, and HTTP(S) URLs retain only their scheme and host
+(paths, credentials, query strings and fragments are removed). Shell text can still contain sensitive information;
 enabling this sends selected data to OpenRouter and its TypeSafe provider. Review
 their data policies for your use case. The bridge does not assert zero retention.
 
@@ -348,8 +349,11 @@ After a cooldown, the next eligible permission request makes one recovery probe;
 other requests use ordinary buttons while it runs. A notice appears once per
 channel per outage state, and `/status` shows availability, recovery eligibility,
 and the last successful resumption. Provider failures never terminate Claude;
-they also never waive its existing approval requirements. Requests withdrawn or
-belonging to stopped/replaced runs cannot post late advice or approval buttons.
+they also never waive its existing approval requirements. Withdrawn requests and
+stopped processes cannot post late advice or approval buttons. Rebinding a channel
+while Claude is still running preserves that process's pending approval: it still
+posts buttons and receives the human's decision. Each prompt has a fresh ID, and
+cancellation is scoped to its conversation and CLI request.
 
 Plan approvals, user questions, hidden compaction and existing session-wide
 tool grants skip Jev. `bypassPermissions` and tools Claude allows without asking

@@ -14,6 +14,9 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
 Read paths and Grep/Glob patterns/paths to OpenRouter and TypeSafe. It is disabled
 by default and never changes a permission decision. Task context, file contents,
 transcripts and arbitrary MCP inputs are excluded. Credential redaction is
+applied to known environment secrets captured at bridge startup. HTTP(S) URLs
+retain only scheme and host: userinfo, paths (including webhook tokens), queries
+and fragments are removed. Redaction remains
 best-effort: unrecognized secrets or sensitive text inside commands may still
 leave the machine. Scores do not establish task authorization or prove safety.
 See [setup and failure behavior](README.md#optional-jev-permission-advice).
