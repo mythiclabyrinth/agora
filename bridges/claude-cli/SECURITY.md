@@ -10,6 +10,23 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
 
 ## Security issues
 
+**Optional Jev advisory mode:** `JEV_MODE=advise` sends selected Bash commands,
+Read paths and Grep/Glob patterns/paths to OpenRouter and TypeSafe. It is disabled
+by default and never changes a permission decision. Task context, file contents,
+transcripts and arbitrary MCP inputs are excluded. Credential redaction is
+best-effort: unrecognized secrets or sensitive text inside commands may still
+leave the machine. Scores do not establish task authorization or prove safety.
+See [setup and failure behavior](README.md#optional-jev-permission-advice).
+
+The dedicated `JEV_OPENROUTER_API_KEY` is removed from every Claude child
+environment. `OPENROUTER_API_KEY` is retained only when `ANTHROPIC_BASE_URL`
+has hostname `openrouter.ai`. This limits accidental inheritance, not filesystem
+access: Claude can still read an accessible `.env` file. Jev requests use a fixed
+HTTPS endpoint with redirects disabled, bounded payloads and at most three
+workers. Failures revert to existing manual approvals; logs omit request bodies,
+credentials and raw provider errors. This does not change existing prompt content
+posted to Agora or the permission mode configured for Claude.
+
 1. **Remote code execution by design.** Every non-command message is passed to
    `claude -p` with `--permission-mode acceptEdits` by default (and the README
    suggests `--dangerously-skip-permissions` for unattended use). Claude runs

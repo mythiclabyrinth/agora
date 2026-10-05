@@ -284,6 +284,87 @@ in the thread for a separate folder and a fresh session there. `/use` and
 repo and refuses dirty or unmerged work. `/worktree remove force` discards
 uncommitted changes and can delete an unmerged branch.
 
+## Optional Jev permission advice
+
+Jev can append risk advice to Claude's existing permission messages. Enable it
+in the bridge's `.env`, preferably with a dedicated OpenRouter key:
+
+```dotenv
+JEV_MODE=advise
+JEV_OPENROUTER_API_KEY=your-openrouter-key
+```
+
+The default is `JEV_MODE=off`. Only `off` and `advise` are supported; Jev never
+approves or rejects a tool. Approve / Always allow / Reject still work as before,
+and an unanswered permission request still times out and is denied. This is
+permission advice, not model routing. It does not change Claude's subscription.
+
+The bridge calls OpenRouter's
+[`/api/v1/systemone` endpoint](https://openrouter.ai/docs/guides/community/typesafe-sdk)
+with `typesafe/jev-1.13`. No TypeSafe key or additional SDK is needed.
+`OPENROUTER_API_KEY` is a fallback when the dedicated key is empty.
+
+Only Bash commands, Read paths, and Grep/Glob patterns and paths are assessed.
+Task messages, transcripts, file contents, tool descriptions and arbitrary MCP
+inputs are excluded. Write/Edit and other tools retain ordinary approvals.
+Selected inputs over 16 KB skip assessment. Paths are normalized and recognizable
+credentials are redacted, but shell text can still contain sensitive information;
+enabling this sends selected data to OpenRouter and its TypeSafe provider. Review
+their data policies for your use case. The bridge does not assert zero retention.
+
+Advice appears after the existing prompt so notifications still lead with the
+tool name. Risk is the higher of the destructive and secret-exposure probabilities:
+
+| Risk | Advisory label |
+| --- | --- |
+| At or below `JEV_SAFE_THRESHOLD` (default `0.05`) | Jev: looks safe |
+| At or above `JEV_RISK_THRESHOLD` (default `0.8`) | Jev: ⚠ likely destructive / secret exposure |
+| Between these thresholds | Jev: unsure |
+
+The external-effects score is displayed separately. Scores are model estimates,
+not authorization or a safety guarantee; no assessment checks whether an action
+matches your task. Thresholds must satisfy `0 <= safe < risk <= 1`.
+
+`JEV_TIMEOUT_SECONDS` defaults to 3 (allowed range 0.1–10). The bridge waits at
+most that long for advice before posting ordinary buttons. At most three network
+workers can run at once; additional approvals skip Jev without queuing. A timed-out
+worker keeps its slot until it actually exits, and late results are discarded.
+
+| Jev problem | Result |
+| --- | --- |
+| Missing key or invalid configuration | Jev disabled; fix configuration and restart |
+| HTTP 401 | Jev disabled until restart; ordinary approvals continue |
+| HTTP 402 credit exhaustion | Pause Jev for 30 minutes |
+| HTTP 402 with `openrouter_in_flight_budget` metadata and valid `Retry-After` | Temporary cooldown of 1–300 seconds |
+| HTTP 429/503 with valid `Retry-After` | Temporary cooldown of 1–300 seconds |
+| Timeout, network error, malformed response, or HTTP 429/5xx without applicable retry guidance | Ordinary buttons for that request; pause for 60 seconds after three consecutive failures |
+| Other HTTP errors | 60-second pause, or bounded `Retry-After` |
+
+A successful assessment resets the consecutive-failure counter. One or two
+transient failures produce no outage notice. A failed recovery probe keeps Jev
+paused for another 60 seconds rather than repeatedly probing an unhealthy service.
+
+After a cooldown, the next eligible permission request makes one recovery probe;
+other requests use ordinary buttons while it runs. A notice appears once per
+channel per outage state, and `/status` shows availability, recovery eligibility,
+and the last successful resumption. Provider failures never terminate Claude;
+they also never waive its existing approval requirements. Requests withdrawn or
+belonging to stopped/replaced runs cannot post late advice or approval buttons.
+
+Plan approvals, user questions, hidden compaction and existing session-wide
+tool grants skip Jev. `bypassPermissions` and tools Claude allows without asking
+produce no permission request to assess.
+
+`JEV_OPENROUTER_API_KEY` is always stripped from Claude's child environment.
+The fallback `OPENROUTER_API_KEY` is also stripped unless `ANTHROPIC_BASE_URL`
+has the exact hostname `openrouter.ai`, indicating that Claude uses that provider
+independently. Environment filtering does not stop Claude from reading a local
+`.env` file or other accessible credentials. Jev logs contain only status,
+elapsed time and decision band, never request bodies or provider error text.
+
+This integration currently covers the Claude bridge only. Codex approval support
+requires a separate app-server adapter; Cursor integration is deferred.
+
 ## Multiple accounts
 
 Claude Code scopes its login, settings and sessions to `CLAUDE_CONFIG_DIR`, so
