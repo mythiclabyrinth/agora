@@ -51,7 +51,7 @@ function setupReplying(multiple = false, collapsed = false): void {
     general: { typing: [activity("general", "claude", "Claude M5"), ...(multiple ? [activity("general", "codex", "Codex")] : [])], progress: [] },
     "dm-claude": { typing: [activity("dm-claude", "claude", "Claude M5")], progress: [] },
     responsive: { typing: [activity("responsive", "codex", "Codex", 42)], progress: [] },
-  } });
+  } }, useLive.getState().epoch);
   useUiState.setState({ expanded: collapsed ? [] : ["product", "dms"] });
 }
 
@@ -93,11 +93,13 @@ export const RenameThreadDialog: Story = {
     const canvas = within(canvasElement);
     const thread = await canvas.findByText("Can we validate the responsive component layout?");
     await userEvent.hover(thread);
-    await userEvent.click(canvas.getByTitle("Rename this thread"));
+    const renameButton = canvas.getByTitle("Rename this thread");
+    await userEvent.click(renameButton);
     let dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
     await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
     expect(useUiState.getState().threadRoot).toBeNull();
-    await userEvent.click(canvas.getByTitle("Rename this thread"));
+    await waitFor(() => expect(renameButton).toHaveFocus());
+    await userEvent.click(renameButton);
     dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
     const input = dialog.getByLabelText("Thread name");
     await waitFor(() => expect(input).toHaveFocus());
