@@ -270,6 +270,8 @@ class AttachmentFetchTests(unittest.TestCase):
 def make_bridge(peer_agents="", peer_commands=""):
     """A Bridge with just enough state to drive handle_inbound."""
     instance = bridge.Bridge.__new__(bridge.Bridge)
+    with patch.dict(bridge.os.environ, {"JEV_MODE": "off"}):
+        instance.jev = bridge.JevAdvisor()
     instance.agent_id = "claude-cli"
     instance.agent_name = "Claude"
     instance.accounts = {"test": Path("/tmp")}
@@ -331,6 +333,11 @@ def peer_frame(**overrides):
 
 
 class NotificationApprovalTests(unittest.TestCase):
+    def test_status_includes_initialized_advisor_when_off(self):
+        b = make_bridge()
+        self.assertIsInstance(b.jev, bridge.JevAdvisor)
+        self.assertIn("Jev: off", b._cmd_status("c1"))
+
     def test_tool_approval_keeps_detail_and_supplies_explicit_notification_label(self):
         async def run():
             b = make_bridge()
@@ -3290,6 +3297,8 @@ class UsageTests(unittest.TestCase):
 class ClaudeAccountTests(unittest.TestCase):
     def _bridge(self, tmp):
         b = bridge.Bridge.__new__(bridge.Bridge)
+        with patch.dict(bridge.os.environ, {"JEV_MODE": "off"}):
+            b.jev = bridge.JevAdvisor()
         b.accounts = bridge.parse_accounts(
             f"work:{tmp}/work,personal:{tmp}/personal")
         b.account = "work"

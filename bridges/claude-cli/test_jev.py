@@ -70,6 +70,60 @@ class JevClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("external 0.99", text)
         self.assertIn("advice only", text)
 
+    async def test_null_error_with_valid_answers_is_success(self):
+        client = advisor()
+        client.note_failure()
+        for _ in range(3):
+            self.assertIn("looks safe", await self.evaluate(client, {**answer(), "error": None}))
+            self.assertEqual(client.consecutive_failures, 0)
+            self.assertEqual(client.reason, "")
+
+    async def test_string_error_codes_in_success_http_response_keep_failure_policy(self):
+        for code, reason, delay in [("401", "API key rejected", math.inf),
+                                    ("402", "out of credits", 1800)]:
+            with self.subTest(code=code):
+                client = advisor()
+                before = time.monotonic()
+                self.assertEqual(await self.evaluate(client, {"error": {"code": code}}), "")
+                self.assertEqual(client.reason, reason)
+                self.assertAlmostEqual(client.until - before, delay, delta=1)
+                with patch.object(client, "_request") as request:
+                    self.assertEqual(await client.assess("Bash", {"command": "pwd"}, ""), "")
+                    request.assert_not_called()
+
+    async def test_failed_credit_recovery_preserves_reason_backoff_and_notice(self):
+        for failure in (TimeoutError(), ValueError("malformed response")):
+            with self.subTest(failure=type(failure).__name__):
+                client = advisor()
+                await self.evaluate(client, status=402)
+                self.assertIn("out of credits", client.notice("c1"))
+                client.until = 0  # The original 30-minute wait has elapsed.
+                before = time.monotonic()
+                with patch.object(client, "_request", side_effect=failure):
+                    self.assertEqual(await client.assess("Bash", {"command": "pwd"}, ""), "")
+                self.assertEqual(client.reason, "out of credits")
+                self.assertAlmostEqual(client.until - before, 1800, delta=1)
+                self.assertEqual(client.notice("c1"), "")
+                client.until = 0
+                self.assertIn("looks safe", await self.evaluate(client))
+                self.assertEqual(client.pause_seconds, 0)
+
+    async def test_transient_failure_never_shortens_active_pause_or_relabels_it(self):
+        for code, reason in [(401, "API key rejected"), (402, "out of credits")]:
+            with self.subTest(code=code):
+                client = advisor()
+                await self.evaluate(client, status=code)
+                deadline = client.until
+                client.note_failure()
+                self.assertGreaterEqual(client.until, deadline)
+                self.assertEqual(client.reason, reason)
+        client = advisor()
+        client._pause("in-flight budget limit", 8)
+        client.until = 0
+        client.note_failure()
+        self.assertAlmostEqual(client.until - time.monotonic(), 60, delta=1)
+        self.assertEqual(client.reason, "in-flight budget limit")
+
     async def test_invalid_scores_and_response_shapes_disable_only_advice(self):
         payloads = [answer(value) for value in [True, False, None, "0.01", -1, 1.1, math.nan, math.inf]]
         payloads += [{"answers": []}, {"answers": {"destructive": {"noul": 0}}},

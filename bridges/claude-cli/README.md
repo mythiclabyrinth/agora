@@ -347,8 +347,9 @@ approval message so the tool request is the first push notification.
 | Other HTTP errors | 60-second pause, or bounded `Retry-After` |
 
 A successful assessment resets the consecutive-failure counter. One or two
-transient failures produce no outage notice. A failed recovery probe keeps Jev
-paused for another 60 seconds rather than repeatedly probing an unhealthy service.
+transient failures produce no outage notice. A failed recovery probe preserves the
+original outage reason and renews its cooldown for at least 60 seconds (30 minutes
+for exhausted credits). It never shortens an existing pause or restart requirement.
 
 After a cooldown, the next eligible permission request makes one recovery probe;
 other requests use ordinary buttons while it runs. A notice appears once per

@@ -1037,6 +1037,7 @@ class JevAdvisor:
         self.risk_at = 0.8
         self.reason = ""
         self.until = 0.0
+        self.pause_seconds = 0.0
         self.resumed_at = ""
         self.notified: set[str] = set()
         self.probing = False
@@ -1087,13 +1088,17 @@ class JevAdvisor:
         if reason != self.reason:
             self.notified.clear()
         self.reason = reason
+        self.pause_seconds = seconds
         self.until = time.monotonic() + seconds
 
     def note_failure(self) -> None:
         self.consecutive_failures += 1
         # An isolated latency spike should affect only its own approval. A
-        # failed recovery probe keeps the circuit open instead of hammering it.
-        if self.consecutive_failures >= 3 or self.reason:
+        # failed recovery probe retains the original outage and its backoff.
+        if self.reason:
+            self._pause(self.reason, max(60, self.pause_seconds,
+                                         self.until - time.monotonic()))
+        elif self.consecutive_failures >= 3:
             self._pause("service unavailable", 60)
 
     def _state(self, tool: str, tool_input: dict, cwd: str) -> str | None:
@@ -1236,10 +1241,15 @@ class JevAdvisor:
             status, payload, headers = result
             if epoch != self.epoch:
                 return ""  # An earlier concurrent failure already opened the circuit.
-            if status != 200 or "error" in payload:
+            if status != 200 or payload.get("error"):
                 error = payload.get("error")
                 error = error if isinstance(error, dict) else {}
                 code = status if status != 200 else error.get("code")
+                if isinstance(code, str):
+                    try:
+                        code = int(code)
+                    except ValueError:
+                        code = None
                 retry = self._retry_after(headers)
                 metadata = error.get("metadata")
                 metadata = metadata if isinstance(metadata, dict) else {}
@@ -1276,6 +1286,7 @@ class JevAdvisor:
                 self.resumed_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 self.epoch += 1
             self.reason, self.until = "", 0.0
+            self.pause_seconds = 0.0
             self.consecutive_failures = 0
             self.notified.clear()
             return (f"Jev: {band} (risk {risk:.2f}; external {scores['external']:.2f})"
@@ -2892,8 +2903,7 @@ class Bridge:
     def _cmd_status(self, key: str) -> str:
         account_line = f"Account: {self.account} ({self.config_dir})\n" if len(self.accounts) > 1 else ""
         auth_line = f"\n{self.account_auth_problem}" if self.account_auth_problem else ""
-        jev = getattr(self, "jev", None)
-        jev_line = f"\n{jev.status()}" if jev else ""
+        jev_line = f"\n{self.jev.status()}"
         b = self.bindings.get(key)
         if not b:
             return (account_line + "No session bound here. Run /sessions then /use <n>."
@@ -4412,8 +4422,8 @@ class Bridge:
         options_id = f"perm-{req_id}-{secrets.token_hex(8)}"
         try:
             prompt = self._perm_prompt_text(tool, tool_input, req.get("description"))
-            advisor = getattr(self, "jev", None)
-            if advisor and tool != "ExitPlanMode":
+            advisor = self.jev
+            if tool != "ExitPlanMode":
                 binding = self.bindings.get(key)
                 cwd = (binding or {}).get("cwd", "")
                 try:
@@ -4448,7 +4458,7 @@ class Bridge:
                     {"id": "deny", "label": "Reject"},
                 ]),
             })
-            if advisor and tool != "ExitPlanMode":
+            if tool != "ExitPlanMode":
                 notice = advisor.notice(frame["channel_id"])
                 if notice:
                     self.post(frame, notice)
