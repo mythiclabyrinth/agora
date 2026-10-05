@@ -100,7 +100,7 @@ export const RenameThreadDialog: Story = {
     await userEvent.click(canvas.getByTitle("Rename this thread"));
     dialog = within(await within(document.body).findByRole("dialog", { name: "Rename thread" }));
     const input = dialog.getByLabelText("Thread name");
-    await expect(input).toHaveFocus();
+    await waitFor(() => expect(input).toHaveFocus());
     await userEvent.clear(input);
     await userEvent.type(input, "Desktop sidebar review");
     await userEvent.click(dialog.getByRole("button", { name: "Save" }));
