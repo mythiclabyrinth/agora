@@ -556,7 +556,7 @@ struct HubState {
     bot_streak: HashMap<(String, i64), i64>,
     /// channel_id -> {"typing": {agent_id: event}, "progress": {handle: event}}
     activity: HashMap<String, Activity>,
-    /// conversation key -> last message in a notification burst.
+    /// conversation key -> time of the last emitted notification.
     last_notified: HashMap<String, Instant>,
     action_alert_budget: HashMap<String, crate::notify_actions::AlertBudget>,
     /// Last on-demand usage refresh sent per live agent. Profile opens may be

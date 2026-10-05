@@ -1,4 +1,5 @@
 import { Icon } from "../lib/icons";
+import { armDesktopChimeNow } from "../lib/desktopChime";
 import { useUiState } from "../state/ui";
 
 /** Preferences in this section belong to this app install, not the server. */
@@ -11,7 +12,11 @@ export function NotificationSettings() {
       <div><h2>Notifications</h2><p>Choose how Agora alerts you while this app is open.</p></div>
     </div>
     <label className="notification-setting">
-      <input type="checkbox" checked={soundEnabled} onChange={e => setSoundEnabled(e.target.checked)} />
+      <input type="checkbox" checked={soundEnabled} onChange={e => {
+        const enabled = e.target.checked;
+        setSoundEnabled(enabled);
+        if (enabled) armDesktopChimeNow();
+      }} />
       <span>Sound for new messages</span>
     </label>
     <p className="appearance-note"><Icon name="info" /> Saved on this device only. Other browsers and Agora apps keep their own setting.</p>

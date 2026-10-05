@@ -12,34 +12,41 @@ interface LiveState {
   typing: Record<string, Record<string, TypingEvent>>;
   /** channel_id -> handle -> progress frame */
   progress: Record<string, Record<string, ProgressEvent>>;
+  epoch: number;
+  /** channel_id:agent_id -> last WS update epoch */
+  touched: Record<string, number>;
   onTyping: (ev: TypingEvent) => void;
   onProgress: (ev: ProgressEvent) => void;
   agentDone: (channelId: string, agentId: string) => void;
   /** Seed from GET /api/channels/{id}/activity when opening a channel. */
   seed: (channelId: string, activity: ChannelActivity) => void;
-  seedAll: (snapshot: AllActivity) => void;
+  seedAll: (snapshot: AllActivity, startEpoch: number) => void;
 }
 
 export const useLive = create<LiveState>((set) => ({
   typing: {},
   progress: {},
+  epoch: 0,
+  touched: {},
 
   onTyping(ev) {
     set((s) => {
       if (ev.active) {
         return {
+          ...touchAgent(s, ev.channel_id, ev.agent_id),
           typing: {
             ...s.typing,
             [ev.channel_id]: { ...s.typing[ev.channel_id], [ev.agent_id]: ev },
           },
         };
       }
-      return clearAgent(s, ev.channel_id, ev.agent_id);
+      return { ...clearAgent(s, ev.channel_id, ev.agent_id), ...touchAgent(s, ev.channel_id, ev.agent_id) };
     });
   },
 
   onProgress(ev) {
     set((s) => ({
+      ...touchAgent(s, ev.channel_id, ev.agent_id),
       progress: {
         ...s.progress,
         [ev.channel_id]: { ...s.progress[ev.channel_id], [ev.handle]: ev },
@@ -48,7 +55,7 @@ export const useLive = create<LiveState>((set) => ({
   },
 
   agentDone(channelId, agentId) {
-    set((s) => clearAgent(s, channelId, agentId));
+    set((s) => ({ ...clearAgent(s, channelId, agentId), ...touchAgent(s, channelId, agentId) }));
   },
 
   seed(channelId, activity) {
@@ -68,14 +75,36 @@ export const useLive = create<LiveState>((set) => ({
     }));
   },
 
-  seedAll(snapshot) {
-    const typing: LiveState["typing"] = {};
-    const progress: LiveState["progress"] = {};
-    for (const [channelId, activity] of Object.entries(snapshot.channels)) {
-      typing[channelId] = Object.fromEntries(activity.typing.map(t => [t.agent_id, t]));
-      progress[channelId] = Object.fromEntries(activity.progress.map(p => [p.handle, p]));
-    }
-    set({ typing, progress });
+  seedAll(snapshot, startEpoch) {
+    set((s) => {
+      const typing: LiveState["typing"] = {};
+      const progress: LiveState["progress"] = {};
+      for (const [channelId, activity] of Object.entries(snapshot.channels)) {
+        typing[channelId] = Object.fromEntries(activity.typing.map(t => [t.agent_id, t]));
+        progress[channelId] = Object.fromEntries(activity.progress.map(p => [p.handle, p]));
+      }
+      const touched: LiveState["touched"] = {};
+      for (const [key, epoch] of Object.entries(s.touched)) {
+        if (epoch <= startEpoch) continue;
+        touched[key] = epoch;
+        const separator = key.indexOf(":");
+        const channelId = key.slice(0, separator);
+        const agentId = key.slice(separator + 1);
+        const channelTyping = { ...typing[channelId] };
+        delete channelTyping[agentId];
+        const currentTyping = s.typing[channelId]?.[agentId];
+        if (currentTyping) channelTyping[agentId] = currentTyping;
+        typing[channelId] = channelTyping;
+        const channelProgress = Object.fromEntries(
+          Object.entries(progress[channelId] ?? {}).filter(([, ev]) => ev.agent_id !== agentId),
+        );
+        for (const [handle, ev] of Object.entries(s.progress[channelId] ?? {})) {
+          if (ev.agent_id === agentId) channelProgress[handle] = ev;
+        }
+        progress[channelId] = channelProgress;
+      }
+      return { typing, progress, touched };
+    });
   },
 }));
 
@@ -87,7 +116,7 @@ export function replyingNames(
   for (const event of [...Object.values(typing ?? {}), ...Object.values(progress ?? {})]) {
     if (event.thread_id == null) agents.set(event.agent_id, event.agent_name);
   }
-  return [...agents.values()];
+  return [...agents.values()].sort();
 }
 
 export function useChannelReplying(channelId: string): string[] {
@@ -113,7 +142,12 @@ export function useGroupReplying(channelIds: string[]): string[] {
   for (const id of channelIds) {
     for (const name of replyingNames(typing[id], progress[id])) names.add(name);
   }
-  return [...names];
+  return [...names].sort();
+}
+
+function touchAgent(s: Pick<LiveState, "epoch" | "touched">, channelId: string, agentId: string) {
+  const epoch = s.epoch + 1;
+  return { epoch, touched: { ...s.touched, [`${channelId}:${agentId}`]: epoch } };
 }
 
 function clearAgent(

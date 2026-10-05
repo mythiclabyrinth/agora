@@ -9,21 +9,22 @@ let audio: AudioContext | null = null;
 
 /** WebKit only allows starting audio after a user gesture. */
 export function armDesktopChime(): () => void {
-  const arm = () => {
-    if (!useUiState.getState().soundEnabled) return;
-    try {
-      audio ??= new AudioContext();
-      if (audio.state === "suspended") void audio.resume().catch(() => {});
-    } catch {
-      // A missing or blocked audio device must not interrupt messaging.
-    }
-  };
-  window.addEventListener("pointerdown", arm, { passive: true });
-  window.addEventListener("keydown", arm);
+  window.addEventListener("pointerdown", armDesktopChimeNow, { passive: true });
+  window.addEventListener("keydown", armDesktopChimeNow);
   return () => {
-    window.removeEventListener("pointerdown", arm);
-    window.removeEventListener("keydown", arm);
+    window.removeEventListener("pointerdown", armDesktopChimeNow);
+    window.removeEventListener("keydown", armDesktopChimeNow);
   };
+}
+
+export function armDesktopChimeNow(): void {
+  if (!useUiState.getState().soundEnabled) return;
+  try {
+    audio ??= new AudioContext();
+    if (audio.state === "suspended") void audio.resume().catch(() => {});
+  } catch {
+    // A missing or blocked audio device must not interrupt messaging.
+  }
 }
 
 export function playDesktopChime(): void {

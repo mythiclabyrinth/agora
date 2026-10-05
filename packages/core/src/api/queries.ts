@@ -1028,12 +1028,16 @@ export function useAllActivity(enabled: boolean) {
   const seedAll = useLive(s => s.seedAll);
   const query = useQuery({
     queryKey: keys.allActivity,
-    queryFn: () => api.get<AllActivity>("/api/activity"),
+    queryFn: async () => {
+      const epoch = useLive.getState().epoch;
+      const snapshot = await api.get<AllActivity>("/api/activity");
+      return { snapshot, epoch };
+    },
     staleTime: Infinity,
     enabled,
   });
   useEffect(() => {
-    if (query.data) seedAll(query.data);
+    if (query.data) seedAll(query.data.snapshot, query.data.epoch);
   }, [query.data, query.dataUpdatedAt, seedAll]);
 }
 
