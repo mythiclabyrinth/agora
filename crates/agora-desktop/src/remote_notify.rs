@@ -102,11 +102,11 @@ fn conversation_key(channel_id: &str, thread_id: Option<i64>) -> String {
     thread_id.map_or_else(|| format!("channel:{channel_id}"), |id| format!("thread:{id}"))
 }
 
-/// Record every message so the quiet window extends across a burst.
 fn passes_throttle(last: &mut HashMap<String, Instant>, key: String, now: Instant) -> bool {
-    let allowed = last.get(&key).is_none_or(|at| now.duration_since(*at) >= THROTTLE);
+    last.retain(|_, at| now.duration_since(*at) < THROTTLE);
+    if last.contains_key(&key) { return false; }
     last.insert(key, now);
-    allowed
+    true
 }
 
 /// channel_id -> "Group / #channel", from a `/api/groups` payload.
@@ -291,9 +291,10 @@ mod tests {
         assert!(passes_throttle(&mut last, thread_a.clone(), t0));
         assert!(passes_throttle(&mut last, thread_b, t0));
         assert!(!passes_throttle(&mut last, thread_a.clone(), t0 + Duration::from_secs(4)));
-        assert!(!passes_throttle(&mut last, thread_a.clone(), t0 + Duration::from_secs(6)));
-        assert!(passes_throttle(&mut last, thread_a, t0 + Duration::from_secs(11)));
+        assert!(passes_throttle(&mut last, thread_a.clone(), t0 + Duration::from_secs(6)));
+        assert_eq!(last.len(), 1);
         assert!(passes_throttle(&mut last, channel, t0 + Duration::from_secs(6)));
+        assert!(!passes_throttle(&mut last, thread_a, t0 + Duration::from_secs(7)));
     }
 
     #[test]

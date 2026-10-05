@@ -380,8 +380,7 @@ pub fn sanitize_table(table: &Value) -> Option<Value> {
 /// Soft cap for an optional agent-supplied column width hint (CSS px).
 const MAX_COL_WIDTH: usize = 480;
 
-/// Minimum quiet time between notifications for the same conversation, so a burst of
-/// agent replies (or a bot exchange) becomes one banner, not a pile.
+/// Minimum time between notifications for the same conversation.
 const NOTIFY_THROTTLE: Duration = Duration::from_secs(5);
 
 fn notification_conversation_key(channel_id: &str, thread_id: Option<i64>) -> String {
@@ -391,9 +390,10 @@ fn notification_conversation_key(channel_id: &str, thread_id: Option<i64>) -> St
 fn passes_notification_throttle(
     last: &mut HashMap<String, Instant>, key: String, now: Instant,
 ) -> bool {
-    let allowed = last.get(&key).is_none_or(|at| now.duration_since(*at) >= NOTIFY_THROTTLE);
+    last.retain(|_, at| now.duration_since(*at) < NOTIFY_THROTTLE);
+    if last.contains_key(&key) { return false; }
     last.insert(key, now);
-    allowed
+    true
 }
 
 /// Longest notification body; longer messages are cut at a char boundary.
@@ -680,8 +680,8 @@ impl Hub {
     /// is installed). Mobile: Expo push to the devices of accounts that can
     /// see the channel (never the author's own) — independent of `ui_active`,
     /// because a headless server never flips that flag and a phone can be
-    /// suspended while the desktop is focused. Throttled per channel so
-    /// bursts in one channel or thread collapse into one banner / push.
+    /// suspended while the desktop is focused. Throttled per conversation so
+    /// bursts in one channel or thread collapse into fewer banners / pushes.
     fn maybe_notify(&self, message: &Value) {
         let mut pending = crate::notify_actions::pending(&message["meta"]);
         let mut actions = crate::notify_actions::for_meta(&message["meta"]);
@@ -3655,7 +3655,7 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
 
         h.set_ui_active(false);
-        h.post_agent_message("bot-a", "Bot A", &cid, "are you there?", None);
+        let root = h.post_agent_message("bot-a", "Bot A", &cid, "are you there?", None);
         {
             let events = seen.lock().unwrap();
             assert_eq!(events.len(), 1);
@@ -3664,17 +3664,26 @@ mod tests {
             assert_eq!(events[0].channel_id, cid);
         }
 
-        // A burst right after stays one banner (per-channel throttle).
+        // A burst right after stays one banner for the main channel.
         h.post_agent_message("bot-a", "Bot A", &cid, "hello?", None);
         assert_eq!(seen.lock().unwrap().len(), 1);
 
+        // A thread in that channel has its own notification window.
+        let root_id = root["id"].as_i64().unwrap();
+        h.post_agent_message("bot-a", "Bot A", &cid, "thread reply", Some(root_id));
+        {
+            let events = seen.lock().unwrap();
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[1].thread_id, Some(root_id));
+        }
+
         // A user's own post never notifies.
         h.post_user_message(&cid, "back!", "tom", None, None, vec![]);
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn notification_throttle_is_per_conversation_and_slides_with_bursts() {
+    fn notification_throttle_is_per_conversation_and_prunes_stale_keys() {
         let mut last = HashMap::new();
         let start = Instant::now();
         let channel = notification_conversation_key("c", None);
@@ -3684,9 +3693,10 @@ mod tests {
         assert!(passes_notification_throttle(&mut last, thread_a.clone(), start));
         assert!(passes_notification_throttle(&mut last, thread_b, start));
         assert!(!passes_notification_throttle(&mut last, thread_a.clone(), start + Duration::from_secs(4)));
-        assert!(!passes_notification_throttle(&mut last, thread_a.clone(), start + Duration::from_secs(6)));
-        assert!(passes_notification_throttle(&mut last, thread_a, start + Duration::from_secs(11)));
+        assert!(passes_notification_throttle(&mut last, thread_a.clone(), start + Duration::from_secs(6)));
+        assert_eq!(last.len(), 1);
         assert!(passes_notification_throttle(&mut last, channel, start + Duration::from_secs(6)));
+        assert!(!passes_notification_throttle(&mut last, thread_a, start + Duration::from_secs(7)));
     }
 
     #[test]

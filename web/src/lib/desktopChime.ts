@@ -1,3 +1,5 @@
+import { useUiState } from "../state/ui";
+
 /** Shell-owned marker works for both embedded and remote webview URLs. */
 export function isDesktopShell(): boolean {
   return (window as Window & { __AGORA_DESKTOP__?: boolean }).__AGORA_DESKTOP__ === true;
@@ -8,6 +10,7 @@ let audio: AudioContext | null = null;
 /** WebKit only allows starting audio after a user gesture. */
 export function armDesktopChime(): () => void {
   const arm = () => {
+    if (!useUiState.getState().soundEnabled) return;
     try {
       audio ??= new AudioContext();
       if (audio.state === "suspended") void audio.resume().catch(() => {});
