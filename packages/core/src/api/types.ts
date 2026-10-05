@@ -657,6 +657,10 @@ export interface ChannelActivity {
   progress: ProgressEvent[];
 }
 
+export interface AllActivity {
+  channels: Record<string, ChannelActivity>;
+}
+
 export interface ConnStatus {
   name: string;
   url: string;

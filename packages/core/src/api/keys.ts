@@ -15,6 +15,7 @@ export const keys = {
     ["attachments", channelId, threadId ?? 0] as const,
   channelAgents: (channelId: string) => ["channelAgents", channelId] as const,
   activity: (channelId: string) => ["activity", channelId] as const,
+  allActivity: ["allActivity"] as const,
   members: (groupId: string) => ["members", groupId] as const,
   memberships: ["memberships"] as const,
   templates: (groupId: string) => ["templates", groupId] as const,

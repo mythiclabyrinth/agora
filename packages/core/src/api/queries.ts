@@ -32,6 +32,7 @@ import type {
   AskResponse,
   Channel,
   ChannelActivity,
+  AllActivity,
   ChannelAgent,
   Connection,
   Group,
@@ -1019,6 +1020,21 @@ export function useSeedActivity(channelId: string) {
   useEffect(() => {
     if (query.data) seed(channelId, query.data);
   }, [channelId, query.data, seed]);
+}
+
+/** Reconcile all visible in-flight activity on load and socket reconnect. */
+export function useAllActivity(enabled: boolean) {
+  const api = useApi();
+  const seedAll = useLive(s => s.seedAll);
+  const query = useQuery({
+    queryKey: keys.allActivity,
+    queryFn: () => api.get<AllActivity>("/api/activity"),
+    staleTime: Infinity,
+    enabled,
+  });
+  useEffect(() => {
+    if (query.data) seedAll(query.data);
+  }, [query.data, query.dataUpdatedAt, seedAll]);
 }
 
 export function useAgents(staleTime?: number) {
