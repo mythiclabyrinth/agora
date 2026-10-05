@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { useMe } from "@agora/core";
 import { fixtureMe } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
@@ -237,7 +237,7 @@ export const NotificationsTab: Story = {
   parameters: {
     apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/me": { ...fixtureMe, instance_admin: false } },
     setup: () => {
-      useUiState.setState({ panel: "settings", soundEnabled: true });
+      useUiState.setState({ panel: "settings", soundEnabled: true, soundVolume: 70 });
     },
   },
   play: async ({ canvasElement }) => {
@@ -246,10 +246,18 @@ export const NotificationsTab: Story = {
     await waitFor(() => expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Notifications"]));
     await userEvent.click(canvas.getByRole("tab", { name: "Notifications" }));
     const toggle = await canvas.findByRole("checkbox", { name: "Sound for new messages" });
+    const slider = canvas.getByRole("slider", { name: "Chime volume" }) as HTMLInputElement;
+    const testButton = canvas.getByRole("button", { name: "Test" });
     expect(canvas.getByText("Saved in this browser or app only. Other browsers and Agora apps keep their own setting.")).toBeVisible();
     expect(toggle).toBeChecked();
+    expect(slider.value).toBe("70");
+    await fireEvent.change(slider, { target: { value: "40" } });
+    expect(localStorage.getItem("agora_sound_volume")).toBe("40");
+    expect(canvas.getByText("40%")).toBeVisible();
     await userEvent.click(toggle);
     expect(toggle).not.toBeChecked();
+    expect(slider).toBeDisabled();
+    expect(testButton).toBeDisabled();
     expect(localStorage.getItem("agora_sound_enabled")).toBe("0");
     await userEvent.click(toggle);
     expect(toggle).toBeChecked();

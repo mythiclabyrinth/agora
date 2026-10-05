@@ -46,7 +46,7 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
               if (!chimeAllowed({ desktop, focused: document.hasFocus(), enabled: useUiState.getState().soundEnabled })) return;
               const decision = shouldChime(chimeState, message, username, Date.now());
               chimeState = decision.state;
-              if (decision.play) playChime();
+              if (decision.play) playChime(useUiState.getState().soundVolume);
             },
           }),
         onConnectedChange: setConnected,

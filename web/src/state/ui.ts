@@ -51,6 +51,17 @@ function loadSoundEnabled(): boolean {
   catch { return true; }
 }
 
+function soundVolume(value: number): number {
+  return Math.round(Math.min(100, Math.max(0, Number.isFinite(value) ? value : 70)));
+}
+
+function loadSoundVolume(): number {
+  try {
+    const raw = localStorage.getItem("agora_sound_volume");
+    return raw === null || raw.trim() === "" ? 70 : soundVolume(Number(raw));
+  } catch { return 70; }
+}
+
 const initialSelection = loadSelection();
 
 interface UiState {
@@ -64,6 +75,7 @@ interface UiState {
   collapsedChannels: string[];
   unreadsOnly: boolean;
   soundEnabled: boolean;
+  soundVolume: number;
   threadsSort: ThreadSort;
   threadsFilter: ThreadFilter;
   threadsGroup: string | null;
@@ -86,6 +98,7 @@ interface UiState {
   toggleChannelThreads: (c: string) => void;
   setUnreadsOnly: (on: boolean) => void;
   setSoundEnabled: (on: boolean) => void;
+  setSoundVolume: (volume: number) => void;
   setThreadsSort: (sort: ThreadSort) => void;
   setThreadsFilter: (filter: ThreadFilter) => void;
   setThreadsGroup: (groupId: string | null) => void;
@@ -110,6 +123,7 @@ export const useUiState = create<UiState>((set, get) => ({
   collapsedChannels: loadJSON<string[]>("agora_chan_collapsed", []),
   unreadsOnly: localStorage.getItem("agora_unreads_only") === "1",
   soundEnabled: loadSoundEnabled(),
+  soundVolume: loadSoundVolume(),
   threadsSort: loadEnum("agora_threads_sort", ["recent", "oldest", "az", "za"], "recent"),
   threadsFilter: loadEnum("agora_threads_filter", ["all", "saved", "unset"], "all"),
   threadsGroup: localStorage.getItem("agora_threads_group") || null,
@@ -176,6 +190,12 @@ export const useUiState = create<UiState>((set, get) => ({
     try { localStorage.setItem("agora_sound_enabled", on ? "1" : "0"); }
     catch { /* Private/managed browsers can deny storage. */ }
     set({ soundEnabled: on });
+  },
+  setSoundVolume: (volume) => {
+    const next = soundVolume(volume);
+    try { localStorage.setItem("agora_sound_volume", String(next)); }
+    catch { /* Private/managed browsers can deny storage. */ }
+    set({ soundVolume: next });
   },
   setThreadsSort: (sort) => {
     localStorage.setItem("agora_threads_sort", sort);
