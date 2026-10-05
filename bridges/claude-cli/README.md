@@ -308,8 +308,9 @@ Only Bash commands, Read paths, and Grep/Glob patterns and paths are assessed.
 Task messages, transcripts, file contents, tool descriptions and arbitrary MCP
 inputs are excluded. Write/Edit and other tools retain ordinary approvals.
 Selected inputs over 16 KB skip assessment. Paths are normalized and recognizable
-credentials are redacted, and HTTP(S) URLs retain only their scheme and host
-(paths, credentials, query strings and fragments are removed). Shell text can still contain sensitive information;
+credentials are redacted, and URLs with any `scheme://` (including database and
+message-broker URLs) retain only their scheme and host. Paths, credentials, query
+strings and fragments are removed. Shell text can still contain sensitive information;
 enabling this sends selected data to OpenRouter and its TypeSafe provider. Review
 their data policies for your use case. The bridge does not assert zero retention.
 
@@ -330,6 +331,10 @@ matches your task. Thresholds must satisfy `0 <= safe < risk <= 1`.
 most that long for advice before posting ordinary buttons. At most three network
 workers can run at once; additional approvals skip Jev without queuing. A timed-out
 worker keeps its slot until it actually exits, and late results are discarded.
+Input preparation and redaction run in those same workers, within the advisory
+deadline. Each busy-worker skip is logged; after three consecutive skips `/status`
+shows "workers busy" until capacity becomes available. Outage notices follow the
+approval message so the tool request is the first push notification.
 
 | Jev problem | Result |
 | --- | --- |

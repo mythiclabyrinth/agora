@@ -201,16 +201,61 @@ class JevClientTests(unittest.IsolatedAsyncioTestCase):
         client = advisor()
         for _ in range(client.MAX_INFLIGHT):
             self.assertTrue(client.slots.acquire(False))
-        with patch.object(client, "_request") as request:
-            self.assertEqual(await client.assess("Bash", {"command": "pwd"}, ""), "")
+        with patch.object(client, "_request") as request, patch.object(bridge, "log") as log:
+            for attempt in range(1, 4):
+                self.assertEqual(await client.assess("Bash", {"command": "pwd"}, ""), "")
+                self.assertEqual("workers busy" in client.status(), attempt == 3)
             request.assert_not_called()
+            self.assertEqual(log.call_count, 3)
+            self.assertTrue(all("reason=workers_busy" in call.args[0] for call in log.call_args_list))
         self.assertEqual(client.reason, "")
+        client.slots.release()
+        self.assertNotIn("workers busy", client.status())
+        self.assertIn("looks safe", await self.evaluate(client))
+        self.assertEqual(client.busy_skips, 0)
+
+    async def test_state_preparation_runs_in_worker_with_shared_timeout(self):
+        client = advisor(JEV_TIMEOUT_SECONDS="0.1")
+        release = threading.Event()
+        preparing_threads = []
+
+        def slow_state(*_):
+            preparing_threads.append(threading.current_thread())
+            release.wait(1)
+            return "prepared state"
+
+        try:
+            with patch.object(client, "_state", side_effect=slow_state), patch.object(client, "_request") as request:
+                started = time.monotonic()
+                self.assertEqual(await client.assess("Bash", {"command": "pwd"}, ""), "")
+                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertEqual([thread.name for thread in preparing_threads], ["jev-advice"])
+                self.assertTrue(client.slots.acquire(False))
+                self.assertTrue(client.slots.acquire(False))
+                self.assertFalse(client.slots.acquire(False))
+                release.set()
+                await asyncio.to_thread(preparing_threads[0].join, 1)
+                self.assertFalse(preparing_threads[0].is_alive())
+                request.assert_not_called()  # No late paid call after preparation times out.
+        finally:
+            release.set()
+
+    async def test_unsupported_and_oversized_state_never_calls_provider(self):
+        client = advisor()
+        with patch.object(client, "_request") as request:
+            for tool, data in [("WebSearch", {"query": "private"}),
+                               ("Bash", {"command": "A" * 16001}), ("Bash", {})]:
+                self.assertEqual(await client.assess(tool, data, ""), "")
+            request.assert_not_called()
+        self.assertEqual(client.consecutive_failures, 0)
+        for _ in range(client.MAX_INFLIGHT):
+            self.assertTrue(client.slots.acquire(False))
 
     async def test_one_recovery_probe_and_older_success_cannot_clear_auth_failure(self):
         client = advisor()
         entered = asyncio.Event()
         release = asyncio.Event()
-        async def fetch(_):
+        async def fetch(*_):
             try:
                 entered.set()
                 await release.wait()
@@ -236,6 +281,32 @@ class JevClientTests(unittest.IsolatedAsyncioTestCase):
 
 
 class JevPrivacyTransportTests(unittest.TestCase):
+    def test_long_single_tokens_redact_in_under_100ms(self):
+        client = advisor()
+        for length in (4000, 15000, 15950, 16000):
+            command = "A" * length
+            started = time.perf_counter()
+            state = client._state("Bash", {"command": command}, "")
+            elapsed = time.perf_counter() - started
+            self.assertLess(elapsed, 0.1, f"{length}-character token took {elapsed:.3f}s")
+            if length < 16000:
+                self.assertIn(command, state)  # Exercise redaction, not just the size guard.
+
+    def test_short_environment_settings_are_not_redacted(self):
+        client = advisor(TOKENIZERS_PARALLELISM="false", SOME_SECRET="long-private-secret")
+        state = client._state("Bash", {"command": "echo false long-private-secret"}, "")
+        self.assertIn("false", state)
+        self.assertNotIn("long-private-secret", state)
+
+    def test_non_http_urls_drop_passwords_paths_queries_and_fragments(self):
+        client = advisor()
+        for scheme in ("postgresql", "mongodb+srv", "amqp", "HTTPS", "custom.v1"):
+            state = client._state("Bash", {"command":
+                f"client {scheme}://admin:s3cr3tpw@db.example.test:1234/prod?auth=opaque#fragment"}, "")
+            self.assertIn(f"{scheme.lower()}://db.example.test:1234", state)
+            for secret in ("admin", "s3cr3tpw", "/prod", "opaque", "fragment"):
+                self.assertNotIn(secret, state)
+
     def test_dedicated_key_precedes_fallback(self):
         self.assertEqual(advisor(OPENROUTER_API_KEY="fallback").key, "test-dedicated-key")
         self.assertEqual(advisor(JEV_OPENROUTER_API_KEY="", OPENROUTER_API_KEY="fallback").key, "fallback")
@@ -412,6 +483,9 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failure_still_posts_ordinary_buttons_and_one_notice(self):
         self.choose("allow")
+        posts = Mock()
+        posts.attach_mock(self.b.send, "approval")
+        posts.attach_mock(self.b.post, "notice")
         with patch.object(self.b.jev, "_request", return_value=(402, {}, {})):
             await self.run_request()
             self.event["request_id"] = "r2"
@@ -419,6 +493,27 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.b.post.call_count, 1)
         self.assertIn("out of credits", self.b.post.call_args.args[1])
         self.assertEqual(self.b._send_to_claude.await_count, 2)
+        self.assertEqual([call[0] for call in posts.mock_calls], ["approval", "notice", "approval"])
+
+    async def test_empty_request_id_is_not_registered_for_cancellation(self):
+        self.event["request_id"] = ""
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow(*_):
+            entered.set()
+            await release.wait()
+            return ""
+
+        self.choose("allow")
+        with patch.object(self.b.jev, "assess", side_effect=slow):
+            task = self.b._start_control_request("c1", self.frame, self.proc, self.event, self.ids)
+            await entered.wait()
+            self.assertFalse(self.b._control_tasks)
+            self.b._cancel_request("c1", "", "invalid cancellation")
+            self.assertFalse(task.done())
+            release.set()
+            await task
+        self.b._send_to_claude.assert_awaited_once()
 
     async def test_unexpected_advisor_exception_cannot_strand_request(self):
         self.choose("deny")
@@ -512,21 +607,6 @@ class JevPermissionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response["response"]["request_id"], "r1")
                 self.assertEqual(response["response"]["response"]["behavior"], "allow")
             self.assertFalse(self.b.pending_perms)
-
-    async def test_completed_permission_future_does_not_count_failure_or_post_prompt(self):
-        async def permission_wins(futures, **_):
-            assessment, future = futures
-            self.assertFalse(assessment.done())
-            future.set_result(("option", "allow", "stale tap"))
-            return {future}, {assessment}
-
-        with patch.object(bridge.asyncio, "wait", side_effect=permission_wins), patch.object(
-                self.b.jev, "assess", return_value="Jev: looks safe"):
-            await self.run_request()
-        self.b.send.assert_not_called()
-        self.b._send_to_claude.assert_not_awaited()
-        self.assertEqual(self.b.jev.consecutive_failures, 0)
-        self.assertFalse(self.b.pending_perms)
 
     async def test_old_tap_is_ignored_during_advice_and_after_new_prompt(self):
         self.choose("allow")

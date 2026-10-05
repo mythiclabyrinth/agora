@@ -1008,6 +1008,8 @@ class JevAdvisor:
     MAX_INPUT = 16000
     MAX_RESPONSE = 32768
     MAX_INFLIGHT = 3
+    FIELDS = {"Bash": ("command",), "Read": ("file_path",),
+              "Grep": ("pattern", "path", "glob"), "Glob": ("pattern", "path")}
     QUESTIONS = {
         "destructive": {"type": "noul", "instructions":
             "Could this tool action delete or irreversibly damage data, disrupt services, "
@@ -1026,7 +1028,7 @@ class JevAdvisor:
                     or os.environ.get("OPENROUTER_API_KEY", "").strip())
         sensitive = {value for name, value in os.environ.items()
                      if re.search(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", name, re.I)
-                     and len(value) >= 4}
+                     and len(value) >= 12}
         self._sensitive_values = tuple(json.dumps(value, ensure_ascii=False)[1:-1]
                                        for value in sorted((sensitive | {self.key}) - {""},
                                                            key=len, reverse=True))
@@ -1040,6 +1042,7 @@ class JevAdvisor:
         self.probing = False
         self.epoch = 0
         self.consecutive_failures = 0
+        self.busy_skips = 0
         # A timed-out urllib/DNS call cannot be killed by asyncio. Keep its slot
         # until the actual worker exits, and never queue replacement workers.
         self.slots = threading.BoundedSemaphore(self.MAX_INFLIGHT)
@@ -1059,15 +1062,19 @@ class JevAdvisor:
     def status(self) -> str:
         if self.mode == "off":
             return "Jev: off"
+        if self.busy_skips >= 3 and self.slots.acquire(blocking=False):
+            self.slots.release()
+            self.busy_skips = 0
+        busy = "; workers busy" if self.busy_skips >= 3 else ""
         if self.reason:
             if math.isinf(self.until):
                 retry = "restart after fixing configuration"
             else:
                 left = max(0, math.ceil(self.until - time.monotonic()))
                 retry = f"recovery probe eligible in {left}s" if left else "recovery probe on next eligible request"
-            return f"Jev: unavailable ({self.reason}; {retry}); manual approvals"
+            return f"Jev: unavailable ({self.reason}; {retry}{busy}); manual approvals"
         resumed = f"; resumed {self.resumed_at}" if self.resumed_at else ""
-        return f"Jev: advise (manual approvals{resumed})"
+        return f"Jev: advise (manual approvals{busy}{resumed})"
 
     def notice(self, channel: str) -> str:
         if self.mode == "off" or not self.reason or channel in self.notified:
@@ -1092,11 +1099,9 @@ class JevAdvisor:
     def _state(self, tool: str, tool_input: dict, cwd: str) -> str | None:
         # Contents, transcripts, descriptions and arbitrary MCP payloads are
         # deliberately excluded. Unknown tools need the ordinary human review.
-        fields = {"Bash": ("command",), "Read": ("file_path",),
-                  "Grep": ("pattern", "path", "glob"), "Glob": ("pattern", "path")}
-        if tool not in fields or not isinstance(tool_input, dict):
+        if tool not in self.FIELDS or not isinstance(tool_input, dict):
             return None
-        selected = {name: tool_input[name] for name in fields[tool]
+        selected = {name: tool_input[name] for name in self.FIELDS[tool]
                     if isinstance(tool_input.get(name), str) and tool_input[name]}
         if not selected or any(len(value) > self.MAX_INPUT for value in selected.values()):
             return None
@@ -1114,12 +1119,15 @@ class JevAdvisor:
                        "[redacted]", state)
         # Shell assignments may include quoted values and escaped JSON quotes.
         state = re.sub(
-            r'''(?i)([\w-]*(?:key|token|secret|password|credential)[\w-]*\s*[=:]\s*)(?:\\".*?\\"|'[^']*'|[^\s,;"}]+)''',
+            r'''(?i)(?<![\w-])([\w-]{0,64}(?:key|token|secret|password|credential)[\w-]{0,64}\s*[=:]\s*)(?:\\".*?\\"|'[^']*'|[^\s,;"}]+)''',
             r"\1[redacted]", state)
         state = re.sub(
             r'''(?i)((?:--(?:api-key|token|secret|password|credential|user)|-u)\s+)(?:\\".*?\\"|'[^']*'|[^\s,;"}]+)''',
             r"\1[redacted]", state)
-        state = re.sub(r"https?://[^\s\\\"'<>]+", self._redact_url, state)
+        # Anchor scheme starts as well: an unanchored scheme regex would retry
+        # its greedy prefix at every character of a long non-URL token.
+        state = re.sub(r"(?<![A-Za-z0-9+.\-])[A-Za-z][A-Za-z0-9+.\-]*://[^\s\\\"'<>]+",
+                       self._redact_url, state)
         if cwd:
             state = state.replace(json.dumps(cwd, ensure_ascii=False)[1:-1], "<project>")
         state = state.replace(json.dumps(str(Path.home()), ensure_ascii=False)[1:-1], "<home>")
@@ -1155,9 +1163,11 @@ class JevAdvisor:
                 payload = {}
             return response.code, payload if isinstance(payload, dict) else {}, response.headers
 
-    async def _fetch(self, state: str) -> tuple[int, dict, object]:
+    async def _fetch(self, tool: str, tool_input: dict, cwd: str) -> tuple[int, dict, object] | None:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
+        abandoned = threading.Event()
+        deadline = time.monotonic() + self.timeout
 
         def deliver(result, error):
             if not future.done():
@@ -1169,7 +1179,9 @@ class JevAdvisor:
         def worker():
             result, error = None, None
             try:
-                result = self._request(state)
+                state = self._state(tool, tool_input, cwd)
+                if state is not None and not abandoned.is_set() and time.monotonic() < deadline:
+                    result = self._request(state)
             except Exception as exc:
                 error = exc
             finally:
@@ -1184,7 +1196,10 @@ class JevAdvisor:
         except Exception:
             self.slots.release()
             raise
-        return await asyncio.wait_for(future, self.timeout)
+        try:
+            return await asyncio.wait_for(future, self.timeout)
+        finally:
+            abandoned.set()
 
     @staticmethod
     def _retry_after(headers) -> float:
@@ -1201,16 +1216,24 @@ class JevAdvisor:
     async def assess(self, tool: str, tool_input: dict, cwd: str) -> str:
         if self.mode != "advise" or time.monotonic() < self.until or self.probing:
             return ""
-        state = self._state(tool, tool_input, cwd)
-        if state is None or not self.slots.acquire(blocking=False):
+        if tool not in self.FIELDS or not isinstance(tool_input, dict):
             return ""
+        if not self.slots.acquire(blocking=False):
+            self.busy_skips = min(3, self.busy_skips + 1)
+            log("jev status=- elapsed=0.000s band=skipped reason=workers_busy")
+            return ""
+        self.busy_skips = 0
         is_probe = bool(self.reason)
         if is_probe:
             self.probing = True
         started, status, band = time.monotonic(), None, "unavailable"
         epoch = self.epoch
         try:
-            status, payload, headers = await self._fetch(state)
+            result = await self._fetch(tool, tool_input, cwd)
+            if result is None:
+                band = "skipped"
+                return ""
+            status, payload, headers = result
             if epoch != self.epoch:
                 return ""  # An earlier concurrent failure already opened the circuit.
             if status != 200 or "error" in payload:
@@ -4332,6 +4355,8 @@ class Bridge:
         req_id = event.get("request_id") or ""
         request_key = (key, req_id)
         task = asyncio.create_task(self._handle_control_request(key, frame, proc, event, perm_ids))
+        if not req_id:
+            return task
         self._control_tasks[request_key] = task
 
         def finished(done):
@@ -4385,19 +4410,14 @@ class Bridge:
         # CLI request IDs can repeat across processes/runs. A fresh opaque ID
         # keeps old taps and concurrent sessions out of this request's future.
         options_id = f"perm-{req_id}-{secrets.token_hex(8)}"
-        fut = asyncio.get_running_loop().create_future()
         try:
             prompt = self._perm_prompt_text(tool, tool_input, req.get("description"))
             advisor = getattr(self, "jev", None)
             if advisor and tool != "ExitPlanMode":
                 binding = self.bindings.get(key)
                 cwd = (binding or {}).get("cwd", "")
-                assessment = asyncio.create_task(advisor.assess(tool, tool_input, cwd))
                 try:
-                    await asyncio.wait((assessment, fut), return_when=asyncio.FIRST_COMPLETED)
-                    if fut.done():
-                        return
-                    advice = assessment.result() if assessment.done() else ""
+                    advice = await advisor.assess(tool, tool_input, cwd)
                     if advice:
                         prompt += "\n\n" + advice
                 except asyncio.CancelledError:
@@ -4406,15 +4426,9 @@ class Bridge:
                     # Even unexpected advisor failures cannot strand a CLI ask.
                     advisor.note_failure()
                     log("jev status=- band=unavailable (advisor failure)")
-                finally:
-                    assessment.cancel()
-                    await asyncio.gather(assessment, return_exceptions=True)
-                if (fut.done()
-                        or isinstance(getattr(proc, "returncode", None), int)):
+                if isinstance(getattr(proc, "returncode", None), int):
                     return
-                notice = advisor.notice(frame["channel_id"])
-                if notice:
-                    self.post(frame, notice)
+            fut = asyncio.get_running_loop().create_future()
             self.pending_perms[options_id] = (fut, frame["channel_id"], frame.get("thread_id"))
             perm_ids.append(options_id)
             self.send({
@@ -4434,6 +4448,10 @@ class Bridge:
                     {"id": "deny", "label": "Reject"},
                 ]),
             })
+            if advisor and tool != "ExitPlanMode":
+                notice = advisor.notice(frame["channel_id"])
+                if notice:
+                    self.post(frame, notice)
             _, option_id, who = await asyncio.wait_for(fut, self.permission_timeout)
         except asyncio.CancelledError as exc:
             self._cancel_perm(options_id, str(exc) or "The run ended before a decision.")
