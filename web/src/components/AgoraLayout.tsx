@@ -27,12 +27,6 @@ import { liveOnAgentMessage, useLiveVoice } from "../state/liveVoice";
 import { speakEnqueue, useSpeak } from "../state/speak";
 import { useJump } from "../state/jump";
 
-function isPageReload(): boolean {
-  return (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type === "reload";
-}
-
-let initialUrlResolved = false;
-
 export function AgoraLayout() {
   const me = useMe().data;
   useAllActivity(!!me?.username);
@@ -63,16 +57,10 @@ export function AgoraLayout() {
   // fall through to the ordinary first-visible selection.
   useEffect(() => {
     if (!groups || !groups.length) return;
+    const location = `${locationKey}:${window.location.pathname}`;
     if (window.location.pathname === "/threads") {
       history.replaceState(null, "", "/inbox/threads");
     }
-    if (!initialUrlResolved) {
-      initialUrlResolved = true;
-      if (window.location.pathname === "/inbox/threads" && isPageReload()) {
-        history.replaceState(null, "", "/inbox/unreads");
-      }
-    }
-    const location = `${locationKey}:${window.location.pathname}`;
     if (window.location.pathname === "/inbox" || window.location.pathname.startsWith("/inbox/")) {
       if (ui.view.kind !== "inbox" || ui.threadRoot != null) {
         resolvedLocation.current = location;

@@ -16,6 +16,7 @@ import {
 import type { Me } from "@agora/core";
 import { unregisterPushToken } from "../lib/notifications";
 import { rememberServer } from "./servers";
+import { useInboxTab } from "./inboxTab";
 import { KEY_URL, KEY_TOKEN, clearActionRegistration, readCredential, writeCredential,
   deleteCredential, registrationEpoch } from "../lib/notificationRegistration";
 
@@ -187,6 +188,7 @@ export const useSession = create<SessionState>((set) => ({
     const session = useSession.getState().session;
     useMessageDrafts.getState().resetAll();
     useAddressed.getState().resetAll();
+    useInboxTab.setState({ tab: "unreads", filter: "all" });
     await unregisterPushToken(session);
     // Keep KEY_URL: the login screen should only ask for credentials again.
     await Promise.all([
@@ -212,6 +214,7 @@ export const useSession = create<SessionState>((set) => ({
     const session = useSession.getState().session;
     useMessageDrafts.getState().resetAll();
     useAddressed.getState().resetAll();
+    useInboxTab.setState({ tab: "unreads", filter: "all" });
     await unregisterPushToken(session);
     await Promise.all([
       deleteCredential(KEY_URL),

@@ -4,6 +4,7 @@ import { fixtureGroups, fixtureMe, fixtureThreads } from "@agora/core/testing/fi
 import type { UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
 import { useUiState } from "../state/ui";
+import { inboxPathAfterReload } from "../lib/inboxReload";
 
 const now = Date.now() / 1000;
 const channel: UnreadItem = {
@@ -73,5 +74,14 @@ export const RememberedTab: Story = {
     history.replaceState(null, "", "/inbox/unreads");
     useUiState.getState().openInbox("replace");
     expect(window.location.pathname).toBe("/inbox/threads");
+  },
+};
+
+export const ReloadResetRules: Story = {
+  play: async () => {
+    expect(inboxPathAfterReload("/inbox/threads", "reload", {})).toBe("/inbox/unreads");
+    expect(inboxPathAfterReload("/inbox/threads", "reload", null)).toBeNull();
+    expect(inboxPathAfterReload("/inbox/threads", "navigate", {})).toBeNull();
+    expect(inboxPathAfterReload("/inbox/unreads", "reload", {})).toBeNull();
   },
 };

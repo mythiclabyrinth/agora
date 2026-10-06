@@ -4,7 +4,10 @@
    agora_thread = "expanded"/"open"; agora_unreads_only = "1"/"0";
    agora_chan_collapsed = channel ids whose sidebar threads are collapsed;
    agora_threads_sort and agora_threads_filter control the Threads inbox.
-   Inbox tab and unread filter stay in memory so a reload resets both. */
+   The unread filter stays in memory, so a reload resets it to All. The Inbox
+   tab lives in the URL: reloading an app-written /inbox/threads entry resets
+   it to Unreads (lib/inboxReload.ts), while a pasted or bookmarked link keeps
+   Threads. */
 
 import { create } from "zustand";
 import { deepLinkPath, type ThreadFilter, type ThreadSort, type UnreadFilter } from "@agora/core";
@@ -218,8 +221,8 @@ export const useUiState = create<UiState>((set, get) => ({
     else localStorage.setItem("agora_threads_group", groupId);
     set({ threadsGroup: groupId });
   },
-  setInboxTab: (tab) => set({ inboxTab: tab }),
-  setInboxFilter: (filter) => set({ inboxFilter: filter }),
+  setInboxTab: (tab) => { if (get().inboxTab !== tab) set({ inboxTab: tab }); },
+  setInboxFilter: (filter) => { if (get().inboxFilter !== filter) set({ inboxFilter: filter }); },
   toggleHiddenSection: () => set((s) => ({ hiddenOpen: !s.hiddenOpen })),
   toggleSide: () => set((s) => {
     const next = !s.sideCollapsed;

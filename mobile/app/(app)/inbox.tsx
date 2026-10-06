@@ -66,8 +66,8 @@ export function inboxTabFromParam(value: string | undefined): InboxTab | null {
   return value === "threads" || value === "unreads" ? value : null;
 }
 
-export default function InboxScreen({ initialTab = null, initialSwipe }: {
-  initialTab?: InboxTab | null; initialSwipe?: "left";
+export default function InboxScreen({ initialSwipe }: {
+  initialSwipe?: "left";
 }) {
   const { colors } = useAppTheme();
   const styles = useStyles();
@@ -79,7 +79,7 @@ export default function InboxScreen({ initialTab = null, initialSwipe }: {
   const unreads = useUnreads();
   const markRead = useMarkUnreadsRead();
   const swipeRows = useSwipeRows();
-  const tab = initialTab ?? rememberedTab;
+  const tab = rememberedTab;
   React.useEffect(() => {
     const next = inboxTabFromParam(routeTab);
     if (next) setRememberedTab(next);

@@ -1,7 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react-native";
+import React from "react";
 import { fixtureGroups, fixtureThreads } from "@agora/core/testing/fixtures";
 import InboxScreen from "../../app/(app)/inbox";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { useInboxTab } from "../state/inboxTab";
+
+function ResetInboxState({ children }: { children: React.ReactNode }) {
+  React.useState(() => useInboxTab.setState({ tab: "unreads", filter: "all" }));
+  return <>{children}</>;
+}
 
 const root = fixtureThreads[0].root;
 const item = {
@@ -13,6 +20,7 @@ const item = {
 const meta = {
   title: "Native/Screens/Inbox",
   component: InboxScreen,
+  decorators: [(Story) => <ResetInboxState><Story /></ResetInboxState>],
   parameters: { apiRoutes: {
     "GET /api/groups": { groups: fixtureGroups },
     "GET /api/threads?limit=100": { threads: fixtureThreads },
@@ -24,7 +32,7 @@ type Story = StoryObj<typeof meta>;
 export const Populated: Story = {};
 export const UnreadsAtRest: Story = {
   render: () => <GestureHandlerRootView style={{ flex: 1 }}>
-    <InboxScreen initialTab="unreads" />
+    <InboxScreen />
   </GestureHandlerRootView>,
 };
 export const Limited: Story = {
@@ -32,16 +40,16 @@ export const Limited: Story = {
 };
 export const UnreadsSwipeLeftMarkRead: Story = {
   render: () => <GestureHandlerRootView style={{ flex: 1 }}>
-    <InboxScreen initialTab="unreads" initialSwipe="left" />
+    <InboxScreen initialSwipe="left" />
   </GestureHandlerRootView>,
 };
 export const Empty: Story = {
-  render: () => <InboxScreen initialTab="unreads" />,
+  render: () => <InboxScreen />,
   parameters: { apiRoutes: { "GET /api/unreads": { items: [], total: 0 } } },
 };
 
 export const LongThreadTitle: Story = {
-  render: () => <InboxScreen initialTab="unreads" />,
+  render: () => <InboxScreen />,
   parameters: { apiRoutes: { "GET /api/unreads": { items: [{ ...item,
     kind: "thread", thread_id: 42,
     title: "Customer interview synthesis and the decisions we need before the next release",
