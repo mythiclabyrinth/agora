@@ -4,6 +4,7 @@ import { ScrollView, StyleSheet } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useMarkUnreadsRead, useUnreads } from "@agora/core";
 import InboxScreen from "../app/(app)/inbox";
+import { useInboxTab } from "../src/state/inboxTab";
 
 jest.mock("@agora/core", () => ({
   ...jest.requireActual("@agora/core"), useUnreads: jest.fn(), useMarkUnreadsRead: jest.fn(),
@@ -24,6 +25,7 @@ const query = { data: [channel, thread], total: 2, isLoading: false, isError: fa
 let tree: TestRenderer.ReactTestRenderer;
 beforeEach(() => {
   jest.clearAllMocks();
+  useInboxTab.setState({ tab: "unreads", filter: "all" });
   (useUnreads as jest.Mock).mockReturnValue(query);
   (useMarkUnreadsRead as jest.Mock).mockReturnValue({ mutate, isPending: false });
   (useLocalSearchParams as jest.Mock).mockReturnValue({});
@@ -35,7 +37,7 @@ function button(label: string) {
   return tree.root.findAll((node) => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0];
 }
 
-test("Inbox switches between Unreads and Threads without losing the selected tab on refresh", () => {
+test("Inbox remembers the selected tab across screen remounts", () => {
   render();
   expect(tabs()[0].props.accessibilityState.selected).toBe(true);
   expect(tabs()[0].props.accessibilityLabel).toBe("Unreads, 5 unread messages");
@@ -44,8 +46,26 @@ test("Inbox switches between Unreads and Threads without losing the selected tab
   (useUnreads as jest.Mock).mockReturnValue({ ...query, data: [], total: 0 });
   act(() => tree.update(React.createElement(InboxScreen)));
   expect(tabs().find((node) => node.props.accessibilityLabel === "Threads")!.props.accessibilityState.selected).toBe(true);
+  act(() => tree.unmount());
+  render();
+  expect(tabs().find((node) => node.props.accessibilityLabel === "Threads")!.props.accessibilityState.selected).toBe(true);
   act(() => tabs().find((node) => node.props.accessibilityLabel === "Unreads")!.props.onPress());
   expect(tabs()[0].props.accessibilityState.selected).toBe(true);
+});
+
+test("empty inbox defaults to Unreads on a new session", () => {
+  (useUnreads as jest.Mock).mockReturnValue({ ...query, data: [], total: 0 });
+  render();
+  expect(tabs()[0].props.accessibilityState.selected).toBe(true);
+});
+
+test("Inbox remembers the unread filter across screen remounts", () => {
+  render();
+  act(() => button("Filter unreads: mentions").props.onPress());
+  expect(useInboxTab.getState().filter).toBe("mentions");
+  act(() => tree.unmount());
+  render();
+  expect(button("Filter unreads: mentions").props.accessibilityState.selected).toBe(true);
 });
 
 test("incoming Threads deep links select the correct tab", () => {

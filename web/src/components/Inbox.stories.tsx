@@ -3,6 +3,7 @@ import { expect, userEvent, within } from "storybook/test";
 import { fixtureGroups, fixtureMe, fixtureThreads } from "@agora/core/testing/fixtures";
 import type { UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
+import { useUiState } from "../state/ui";
 
 const now = Date.now() / 1000;
 const channel: UnreadItem = {
@@ -30,7 +31,10 @@ const meta = {
       "GET /api/unreads": { items: [thread, channel], total: 2 },
       "PUT /api/unreads/read": { ok: true, marked: 1 },
     },
-    setup: () => history.replaceState(null, "", "/inbox/unreads"),
+    setup: () => {
+      history.replaceState(null, "", "/inbox/unreads");
+      useUiState.setState({ inboxTab: "unreads", inboxFilter: "all" });
+    },
   },
 } satisfies Meta<typeof Inbox>;
 export default meta;
@@ -41,8 +45,12 @@ export const Populated: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/Launch planning in/)).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: "Threads" }));
+    expect(useUiState.getState().inboxTab).toBe("threads");
     await expect(canvas.findByText("Can we validate the responsive component layout?")).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: /Unreads/ }));
+    expect(useUiState.getState().inboxTab).toBe("unreads");
+    await userEvent.click(canvas.getByRole("button", { name: "@Mentions" }));
+    expect(useUiState.getState().inboxFilter).toBe("mentions");
     await userEvent.click(canvas.getByRole("button", { name: "Mark thread read" }));
   },
 };

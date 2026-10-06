@@ -6,7 +6,7 @@
    agora_threads_sort and agora_threads_filter control the Threads inbox. */
 
 import { create } from "zustand";
-import { deepLinkPath, type ThreadFilter, type ThreadSort } from "@agora/core";
+import { deepLinkPath, type ThreadFilter, type ThreadSort, type UnreadFilter } from "@agora/core";
 import { voiceCancel } from "./voiceRec";
 import { liveStop, useLiveVoice } from "./liveVoice";
 import { speakStop } from "./speak";
@@ -17,6 +17,7 @@ export type MainView =
   | { kind: "group" };
 
 export type Panel = "people" | "connections" | "settings" | null;
+export type InboxTab = "unreads" | "threads";
 
 export interface Selection { g?: string | null; c?: string | null; }
 
@@ -79,6 +80,8 @@ interface UiState {
   threadsSort: ThreadSort;
   threadsFilter: ThreadFilter;
   threadsGroup: string | null;
+  inboxTab: InboxTab;
+  inboxFilter: UnreadFilter;
   hiddenOpen: boolean;
   sideCollapsed: boolean;
   threadRoot: number | null;
@@ -102,6 +105,8 @@ interface UiState {
   setThreadsSort: (sort: ThreadSort) => void;
   setThreadsFilter: (filter: ThreadFilter) => void;
   setThreadsGroup: (groupId: string | null) => void;
+  setInboxTab: (tab: InboxTab) => void;
+  setInboxFilter: (filter: UnreadFilter) => void;
   toggleHiddenSection: () => void;
   toggleSide: () => void;
   openThread: (rootId: number, history?: "push" | "replace" | "none") => void;
@@ -127,6 +132,8 @@ export const useUiState = create<UiState>((set, get) => ({
   threadsSort: loadEnum("agora_threads_sort", ["recent", "oldest", "az", "za"], "recent"),
   threadsFilter: loadEnum("agora_threads_filter", ["all", "saved", "unset"], "all"),
   threadsGroup: localStorage.getItem("agora_threads_group") || null,
+  inboxTab: "unreads",
+  inboxFilter: "all",
   hiddenOpen: false,
   sideCollapsed: localStorage.getItem("agora_side") === "collapsed",
   threadRoot: null,
@@ -151,7 +158,7 @@ export const useUiState = create<UiState>((set, get) => ({
       filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
   openInbox: (history = "push") => {
-    writeHistory("/inbox/unreads", history);
+    writeHistory(`/inbox/${get().inboxTab}`, history);
     set({ view: { kind: "inbox" }, threadRoot: null, mobileView: "main" });
   },
   openGroupPage: (g, history = "push") => set((s) => {
@@ -210,6 +217,8 @@ export const useUiState = create<UiState>((set, get) => ({
     else localStorage.setItem("agora_threads_group", groupId);
     set({ threadsGroup: groupId });
   },
+  setInboxTab: (tab) => set({ inboxTab: tab }),
+  setInboxFilter: (filter) => set({ inboxFilter: filter }),
   toggleHiddenSection: () => set((s) => ({ hiddenOpen: !s.hiddenOpen })),
   toggleSide: () => set((s) => {
     const next = !s.sideCollapsed;

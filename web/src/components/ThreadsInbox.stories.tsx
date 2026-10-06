@@ -104,6 +104,15 @@ export const Empty: Story = {
   },
 };
 
+export const ThreadLinkMenu: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Can we validate the responsive component layout?");
+    await userEvent.click(canvas.getAllByRole("button", { name: "Thread options" })[0]);
+    await expect(canvas.findByRole("button", { name: "Copy link" })).resolves.toBeVisible();
+  },
+};
+
 export const SortFilterAndPersistence: Story = {
   parameters: {
     apiRoutes: {

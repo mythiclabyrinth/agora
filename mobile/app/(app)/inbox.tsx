@@ -4,7 +4,7 @@ import React from "react";
 import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { Check, CheckCheck, Hash, MessageSquare } from "lucide-react-native";
-import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadFilter, type UnreadItem } from "@agora/core";
+import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadItem } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
 import { colors, typography, space, radii, weight, type Palette } from "../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
@@ -13,6 +13,7 @@ import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } fro
 import { ThreadsScreen } from "./threads";
 import { Icon } from "../../src/components/Icon";
 import { layout } from "../../src/lib/theme";
+import { useInboxTab, type InboxTab } from "../../src/state/inboxTab";
 
 export function unreadSwipeAction(item: UnreadItem, onRead: (item: UnreadItem) => void, palette: Palette = colors): SwipeAction {
   return { name: "markRead", label: "Mark read", icon: Check, color: palette.a1,
@@ -61,32 +62,29 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
   </SwipeRow>;
 }
 
-export function inboxTabFromParam(value: string | undefined): "unreads" | "threads" | null {
+export function inboxTabFromParam(value: string | undefined): InboxTab | null {
   return value === "threads" || value === "unreads" ? value : null;
 }
 
 export default function InboxScreen({ initialTab = null, initialSwipe }: {
-  initialTab?: "unreads" | "threads" | null; initialSwipe?: "left";
+  initialTab?: InboxTab | null; initialSwipe?: "left";
 }) {
   const { colors } = useAppTheme();
   const styles = useStyles();
   const { tab: routeTab } = useLocalSearchParams<{ tab?: string }>();
+  const rememberedTab = useInboxTab(state => state.tab);
+  const setRememberedTab = useInboxTab(state => state.setTab);
+  const filter = useInboxTab(state => state.filter);
+  const setFilter = useInboxTab(state => state.setFilter);
   const unreads = useUnreads();
   const markRead = useMarkUnreadsRead();
   const swipeRows = useSwipeRows();
-  const [tab, setTab] = React.useState<"unreads" | "threads" | null>(
-    initialTab ?? inboxTabFromParam(routeTab));
-  const [filter, setFilter] = React.useState<UnreadFilter>("all");
+  const [tab, setTab] = React.useState<InboxTab>(
+    initialTab ?? inboxTabFromParam(routeTab) ?? rememberedTab);
   React.useEffect(() => {
     const next = inboxTabFromParam(routeTab);
     if (next) setTab(next);
   }, [routeTab]);
-  React.useEffect(() => {
-    if (tab === null && !unreads.isLoading) {
-      setTab(!unreads.isError && (unreads.data?.length ?? 0) > 0 ? "unreads" : "threads");
-    }
-  }, [tab, unreads.isLoading, unreads.isError, unreads.data]);
-  const activeTab = tab ?? (unreads.isLoading || (!unreads.isError && (unreads.data?.length ?? 0) > 0) ? "unreads" : "threads");
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);
   const unreadTotal = unreads.data?.reduce((sum, item) => sum + item.unread, 0) ?? 0;
@@ -97,16 +95,16 @@ export default function InboxScreen({ initialTab = null, initialSwipe }: {
     <Stack.Screen options={{ title: "Inbox", headerShown: true }} />
     <View style={styles.tabs} accessibilityRole="tablist">
       {(["unreads", "threads"] as const).map(option => <Pressable key={option}
-        accessibilityRole="tab" accessibilityState={{ selected: activeTab === option }}
+        accessibilityRole="tab" accessibilityState={{ selected: tab === option }}
         accessibilityLabel={option === "threads" ? "Threads" : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
-        style={[styles.tab, activeTab === option && styles.tabActive]}
-        onPress={() => { swipeRows.close(); setTab(option); }}>
-        <Text style={[styles.tabText, activeTab === option && styles.tabTextActive]}>
+        style={[styles.tab, tab === option && styles.tabActive]}
+        onPress={() => { swipeRows.close(); setTab(option); setRememberedTab(option); }}>
+        <Text style={[styles.tabText, tab === option && styles.tabTextActive]}>
           {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : "Threads"}
         </Text>
       </Pressable>)}
     </View>
-    {activeTab === "threads" ? <ThreadsScreen embedded /> : <>
+    {tab === "threads" ? <ThreadsScreen embedded /> : <>
       <View style={styles.toolbar}>
         <View style={styles.filterRow}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll} contentContainerStyle={styles.filters}>
