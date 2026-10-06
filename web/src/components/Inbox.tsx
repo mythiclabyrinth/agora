@@ -18,17 +18,25 @@ export function Inbox() {
   const requestJump = useJump(s => s.request);
   const [selectedTab, setSelectedTab] = useState<InboxTab | null>(initialTab);
   const filter = ui.inboxFilter;
-  const tab = selectedTab ?? "unreads";
+  const tab = selectedTab ?? ui.inboxTab;
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);
   const unreadTotal = unreads.data?.reduce((sum, item) => sum + item.unread, 0) ?? 0;
   const showTabCount = !limited && !unreads.data?.some(item => item.unread >= 100);
   useEffect(() => {
-    const onPop = () => setSelectedTab(initialTab());
+    const onPop = () => {
+      const next = initialTab();
+      setSelectedTab(next);
+      if (next) useUiState.getState().setInboxTab(next);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
-  useEffect(() => { setSelectedTab(initialTab()); }, [ui.view]);
+  useEffect(() => {
+    const next = initialTab();
+    setSelectedTab(next);
+    if (next) ui.setInboxTab(next);
+  }, [ui.view]); // eslint-disable-line react-hooks/exhaustive-deps
   const switchTab = (next: InboxTab) => {
     writeHistory(`/inbox/${next}`, "replace");
     setSelectedTab(next);

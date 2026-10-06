@@ -63,6 +63,9 @@ export function AgoraLayout() {
   // fall through to the ordinary first-visible selection.
   useEffect(() => {
     if (!groups || !groups.length) return;
+    if (window.location.pathname === "/threads") {
+      history.replaceState(null, "", "/inbox/threads");
+    }
     if (!initialUrlResolved) {
       initialUrlResolved = true;
       if (window.location.pathname === "/inbox/threads" && isPageReload()) {
@@ -70,9 +73,6 @@ export function AgoraLayout() {
       }
     }
     const location = `${locationKey}:${window.location.pathname}`;
-    if (window.location.pathname === "/threads") {
-      history.replaceState(null, "", "/inbox/threads");
-    }
     if (window.location.pathname === "/inbox" || window.location.pathname.startsWith("/inbox/")) {
       if (ui.view.kind !== "inbox" || ui.threadRoot != null) {
         resolvedLocation.current = location;

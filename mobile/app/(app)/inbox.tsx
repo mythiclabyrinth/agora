@@ -83,7 +83,10 @@ export default function InboxScreen({ initialTab = null, initialSwipe }: {
     initialTab ?? inboxTabFromParam(routeTab) ?? rememberedTab);
   React.useEffect(() => {
     const next = inboxTabFromParam(routeTab);
-    if (next) setTab(next);
+    if (next) {
+      setTab(next);
+      setRememberedTab(next);
+    }
   }, [routeTab]);
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);

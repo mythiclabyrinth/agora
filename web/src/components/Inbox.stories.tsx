@@ -31,10 +31,7 @@ const meta = {
       "GET /api/unreads": { items: [thread, channel], total: 2 },
       "PUT /api/unreads/read": { ok: true, marked: 1 },
     },
-    setup: () => {
-      history.replaceState(null, "", "/inbox/unreads");
-      useUiState.setState({ inboxTab: "unreads", inboxFilter: "all" });
-    },
+    setup: () => history.replaceState(null, "", "/inbox/unreads"),
   },
 } satisfies Meta<typeof Inbox>;
 export default meta;
@@ -69,3 +66,12 @@ export const Mentions: Story = {
   },
 };
 export const Threads: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/threads") } };
+
+export const RememberedTab: Story = {
+  play: async () => {
+    useUiState.getState().setInboxTab("threads");
+    history.replaceState(null, "", "/");
+    useUiState.getState().openInbox("replace");
+    expect(window.location.pathname).toBe("/inbox/threads");
+  },
+};

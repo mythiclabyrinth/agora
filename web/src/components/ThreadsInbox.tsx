@@ -95,7 +95,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
                   onError: error => toast(`Couldn't rename thread: ${(error as Error).message}`, { variant: "warn" }),
                 },
               )} />}
-            <button className="ago-x" onClick={e => {
+            <button className="ago-x" title="Copy link to this thread" onClick={e => {
               e.stopPropagation();
               menuRef.current?.hidePopover();
               triggerRef.current?.focus();

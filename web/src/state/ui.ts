@@ -3,7 +3,8 @@
    array of expanded group ids, or null meaning "just the selected group";
    agora_thread = "expanded"/"open"; agora_unreads_only = "1"/"0";
    agora_chan_collapsed = channel ids whose sidebar threads are collapsed;
-   agora_threads_sort and agora_threads_filter control the Threads inbox. */
+   agora_threads_sort and agora_threads_filter control the Threads inbox.
+   Inbox tab and unread filter stay in memory so a reload resets both. */
 
 import { create } from "zustand";
 import { deepLinkPath, type ThreadFilter, type ThreadSort, type UnreadFilter } from "@agora/core";

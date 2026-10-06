@@ -72,6 +72,11 @@ test("incoming Threads deep links select the correct tab", () => {
   (useLocalSearchParams as jest.Mock).mockReturnValue({ tab: "threads" });
   render();
   expect(tabs().find((node) => node.props.accessibilityLabel === "Threads")!.props.accessibilityState.selected).toBe(true);
+  expect(useInboxTab.getState().tab).toBe("threads");
+  act(() => tree.unmount());
+  (useLocalSearchParams as jest.Mock).mockReturnValue({});
+  render();
+  expect(tabs().find((node) => node.props.accessibilityLabel === "Threads")!.props.accessibilityState.selected).toBe(true);
 });
 
 test("mark read targets the current filter and retains an accessible 44 point action", () => {
