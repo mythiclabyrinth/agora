@@ -233,6 +233,9 @@ BLANK_RESULT_IDLE_GRACE = 45.0
 # an empty task inventory, then emit the task's report as another turn. Keep
 # stdin open briefly so queued turns and permission requests reach the reader.
 RESULT_TAIL_IDLE_GRACE = 1.0
+# Without async follow-ups, cap how long a foreground reply waits for another
+# CLI turn after its result. The live reader owns that turn when enabled.
+RESULT_TAIL_MAX = 10.0
 # Asynchronous follow-ups. The CLI re-invokes the model when a backgrounded
 # task (a `run_in_background` Bash command or subagent) finishes, and with stdin
 # held open the child keeps running long enough to say so — it emits a fresh
@@ -2848,6 +2851,7 @@ class Bridge:
                               if is_fork and any(not entry.get("from_peer") for entry in entries) else None)
                     self._post_reply(batch_frame, binding, reply, notice=notice)
                     self._mark_deferred_followups_ready(key)
+                    self._post_deferred_followups(key)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped as stopped:
@@ -3397,16 +3401,30 @@ class Bridge:
                             and not result_text.startswith("(claude error)")
                             else time.monotonic()
                         )
+                        tail_max_deadline = (
+                            time.monotonic() + RESULT_TAIL_MAX
+                            if not self.async_followups else None
+                        )
                         stdin_closed = False
+                        tail_limit_hit = False
                         while True:
                             if stdin_closed:
                                 raw = await proc.stdout.readline()
                             else:
                                 remaining = tail_deadline - time.monotonic()
+                                if tail_max_deadline is not None:
+                                    remaining = min(
+                                        remaining,
+                                        tail_max_deadline - time.monotonic(),
+                                    )
                                 if remaining <= 0:
                                     if proc.stdin is not None:
                                         proc.stdin.close()
                                     stdin_closed = True
+                                    if (tail_max_deadline is not None
+                                            and time.monotonic() >= tail_max_deadline):
+                                        tail_limit_hit = True
+                                        break
                                     continue
                                 try:
                                     raw = await asyncio.wait_for(
@@ -3415,6 +3433,10 @@ class Bridge:
                                     if proc.stdin is not None:
                                         proc.stdin.close()
                                     stdin_closed = True
+                                    if (tail_max_deadline is not None
+                                            and time.monotonic() >= tail_max_deadline):
+                                        tail_limit_hit = True
+                                        break
                                     continue
                             if not raw:
                                 break
@@ -3434,7 +3456,8 @@ class Bridge:
                                 listed = listed if isinstance(listed, list) else []
                                 if listed:
                                     saw_background_tasks = True
-                                    if self.async_followups:
+                                    if (self.async_followups and not stdin_closed
+                                            and key not in self.stop_requested):
                                         handed_off = True
                                         self._start_live_run(
                                             key, frame, binding, spawned_with, proc,
@@ -3460,6 +3483,17 @@ class Bridge:
                             elif kind == "control_cancel_request":
                                 self._cancel_request(event.get("request_id") or "",
                                                      "Claude withdrew the request.")
+                            elif kind == "assistant":
+                                if (self.async_followups and not stdin_closed
+                                        and key not in self.stop_requested):
+                                    handed_off = True
+                                    self._start_live_run(
+                                        key, frame, binding, spawned_with, proc,
+                                        [], perm_ids, perm_tasks, tmpdir,
+                                    )
+                                    break
+                                if saw_background_tasks:
+                                    tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
                             elif kind == "result":
                                 text = event.get("result") or ""
                                 if text.strip():
@@ -3468,6 +3502,8 @@ class Bridge:
                                     else:
                                         self.clear_expired_limit(successful_turn=True)
                                         new_sid = event.get("session_id")
+                                        if new_sid and new_sid == binding.get("_fork_source"):
+                                            binding["_fork_reused_source"] = True
                                         if (new_sid and new_sid != binding.get("session_id")
                                                 and (key not in self.bindings
                                                      or self.bindings.get(key) is binding)):
@@ -3494,13 +3530,14 @@ class Bridge:
                                     self._save_state()
                             elif saw_background_tasks:
                                 tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
-                        if not handed_off:
+                        if not handed_off and not tail_limit_hit:
                             await proc.wait()
             except TimeoutError:
                 if result_text is not None:
                     log(f"run tail timed out after the result for {key}; "
                         "keeping the foreground reply")
-                    return result_text
+                    return self._annotate_slash_failure(
+                        prompt, result_text, slash_commands)
                 raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
                 if not handed_off:
