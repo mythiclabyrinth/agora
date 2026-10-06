@@ -229,6 +229,10 @@ PROGRESS_THROTTLE = 2.0  # seconds between progress frames
 # 57s later), so an absolute deadline would cut it off just as surely. We only
 # fall back to the blank once the stream has genuinely gone quiet this long.
 BLANK_RESULT_IDLE_GRACE = 45.0
+# A result can race a queued background-task notification: the CLI may report
+# an empty task inventory, then emit the task's report as another turn. Keep
+# stdin open briefly so queued turns and permission requests reach the reader.
+RESULT_TAIL_IDLE_GRACE = 1.0
 # Asynchronous follow-ups. The CLI re-invokes the model when a backgrounded
 # task (a `run_in_background` Bash command or subagent) finishes, and with stdin
 # held open the child keeps running long enough to say so — it emits a fresh
@@ -3373,8 +3377,110 @@ class Bridge:
                                              proc, bg_tasks, perm_ids,
                                              perm_tasks, tmpdir)
                     else:
-                        if proc.stdin is not None:
-                            proc.stdin.close()
+                        # A background task can finish at the same instant as
+                        # the foreground result. In that race the CLI may
+                        # already have reported an empty inventory, but still
+                        # has a queued task-notification turn to emit. Give it
+                        # a short quiet window, then close stdin and drain the
+                        # remaining stdout through EOF.
+                        tail_deadline = (
+                            time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                            if result_text and result_text.strip()
+                            and not result_text.startswith("(claude error)")
+                            else time.monotonic()
+                        )
+                        stdin_closed = False
+                        tail_tasks: list[dict] = []
+                        while True:
+                            pending_perm_tasks = [
+                                task for task in perm_tasks if not task.done()
+                            ]
+                            pending_perms = bool(pending_perm_tasks)
+                            if stdin_closed or tail_tasks:
+                                raw = await proc.stdout.readline()
+                            elif pending_perms:
+                                # A permission prompt may wait for a human
+                                # longer than the quiet grace. Keep stdin open,
+                                # but wake if either stdout advances or the
+                                # approval is answered.
+                                read_task = asyncio.create_task(proc.stdout.readline())
+                                done, _ = await asyncio.wait(
+                                    [read_task, *pending_perm_tasks],
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                                if read_task in done:
+                                    raw = read_task.result()
+                                else:
+                                    read_task.cancel()
+                                    await asyncio.gather(read_task, return_exceptions=True)
+                                    tail_deadline = (
+                                        time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                    )
+                                    continue
+                            else:
+                                remaining = tail_deadline - time.monotonic()
+                                if remaining <= 0:
+                                    if proc.stdin is not None:
+                                        proc.stdin.close()
+                                    stdin_closed = True
+                                    continue
+                                try:
+                                    raw = await asyncio.wait_for(
+                                        proc.stdout.readline(), remaining)
+                                except TimeoutError:
+                                    if proc.stdin is not None:
+                                        proc.stdin.close()
+                                    stdin_closed = True
+                                    continue
+                            if not raw:
+                                break
+                            line = raw.decode("utf-8", errors="replace").strip()
+                            if not line:
+                                continue
+                            try:
+                                event = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            kind = event.get("type")
+                            if kind == "rate_limit_event":
+                                self.capture_usage(event)
+                            elif (kind == "system"
+                                  and event.get("subtype") == "background_tasks_changed"):
+                                listed = event.get("tasks")
+                                tail_tasks = listed if isinstance(listed, list) else []
+                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                            elif kind == "control_request":
+                                perm_tasks.append(asyncio.create_task(
+                                    self._handle_control_request(
+                                        key, frame, proc, event, perm_ids)
+                                ))
+                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                            elif kind == "control_cancel_request":
+                                self._cancel_request(event.get("request_id") or "",
+                                                     "Claude withdrew the request.")
+                            elif kind == "result":
+                                text = event.get("result") or ""
+                                if text.strip():
+                                    if event.get("is_error"):
+                                        text = f"(claude error) {text}"
+                                    else:
+                                        self.clear_expired_limit(successful_turn=True)
+                                        new_sid = event.get("session_id")
+                                        if (new_sid and new_sid != binding.get("session_id")
+                                                and (key not in self.bindings
+                                                     or self.bindings.get(key) is binding)):
+                                            binding["session_id"] = new_sid
+                                            binding.pop("_fork_source", None)
+                                            binding.pop("_fork_reused_source", None)
+                                            self.bindings[key] = binding
+                                            self._save_state()
+                                    self._post_reply(frame, binding, text)
+                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                            else:
+                                # Any activity extends the small quiet window;
+                                # only a later non-blank result is posted.
+                                if not tail_tasks:
+                                    tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
                         await proc.wait()
             except TimeoutError:
                 raise RuntimeError(f"timed out after {self.timeout}s")

@@ -1618,7 +1618,7 @@ class AppendSystemArgsTests(unittest.TestCase):
 
 
 
-def _fake_proc(lines, feed_delay=0.0, returncode=0):
+def _fake_proc(lines, feed_delay=0.0, returncode=0, eof_after_feed=False):
     """A stand-in for the CLI child process that replays `lines` on stdout.
 
     With ``feed_delay`` the lines trickle out from a background task, so a test
@@ -1634,6 +1634,8 @@ def _fake_proc(lines, feed_delay=0.0, returncode=0):
     else:
         for line in lines:
             stdout.feed_data(line.encode() + b"\n")
+        if eof_after_feed:
+            stdout.feed_eof()
     stderr = asyncio.StreamReader()
     stderr.feed_eof()
 
@@ -1642,7 +1644,14 @@ def _fake_proc(lines, feed_delay=0.0, returncode=0):
     proc.stderr = stderr
     proc.stdin = Mock()
     proc.stdin.drain = AsyncMock()
-    proc.stdin.close = Mock()
+
+    def close_stdin():
+        # A real CLI exits after stdin closes; mirror its stdout EOF for the
+        # normal, non-live test process.
+        if not stdout.at_eof():
+            stdout.feed_eof()
+
+    proc.stdin.close = Mock(side_effect=close_stdin)
     proc.wait = AsyncMock(return_value=0)
     proc.returncode = returncode
 
@@ -1664,7 +1673,8 @@ def _result(text, **extra):
     return json.dumps(frame)
 
 
-def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
+def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
+               eof_after_feed=False, control_handler=None):
     """Drive the real run_claude() against a scripted stdout stream."""
     b = make_bridge()
     b.claude_bin = "claude"
@@ -1677,14 +1687,22 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
     b.progress = Mock()
     b._append_system_args = Mock(return_value=[])
     b._stage_attachments = Mock(return_value=("hi", [], None))
+    if control_handler is not None:
+        b._handle_control_request = control_handler
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
     b._save_state = Mock()
 
     original_grace = bridge.BLANK_RESULT_IDLE_GRACE
+    original_tail_grace = bridge.RESULT_TAIL_IDLE_GRACE
     if grace is not None:
         bridge.BLANK_RESULT_IDLE_GRACE = grace
+    bridge.RESULT_TAIL_IDLE_GRACE = 0.01
 
     async def main():
-        proc = _fake_proc(lines, feed_delay)  # StreamReader needs a running loop
+        proc = _fake_proc(lines, feed_delay, eof_after_feed=eof_after_feed)
         b.spawn_calls = []
 
         async def fake_exec(*a, **kw):
@@ -1703,6 +1721,7 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
         return asyncio.run(main()), b
     finally:
         bridge.BLANK_RESULT_IDLE_GRACE = original_grace
+        bridge.RESULT_TAIL_IDLE_GRACE = original_tail_grace
 
 
 def _tasks(*descriptions):
@@ -1868,6 +1887,56 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
 
 
 class AsyncFollowupTests(unittest.TestCase):
+    def test_queued_background_result_after_empty_inventory_is_posted(self):
+        """A result queued behind ours survives the empty-task inventory race."""
+        reply, b = run_bridge([
+            _tasks(), _result("watching for the merge"),
+            _result("merge completed; checks are green"),
+        ])
+        self.assertEqual(reply, "watching for the merge")
+        self.assertEqual([call.args[1] for call in b.post.call_args_list],
+                         ["merge completed; checks are green"])
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_no_queued_result_closes_without_holding_a_live_run(self):
+        reply, b = run_bridge([_tasks(), _result("ordinary answer")],
+                              eof_after_feed=False)
+        self.assertEqual(reply, "ordinary answer")
+        self.assertEqual(b.post.call_count, 0)
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_blank_result_in_post_result_tail_is_not_posted(self):
+        reply, b = run_bridge([
+            _result("ordinary answer"), _result(""), _result("   "),
+        ])
+        self.assertEqual(reply, "ordinary answer")
+        self.assertEqual(b.post.call_count, 0)
+
+    def test_control_requests_in_post_result_tail_are_serviced(self):
+        handler = AsyncMock()
+        control_request = json.dumps({
+            "type": "control_request", "request_id": "tail-approval",
+            "request": {"subtype": "can_use_tool"},
+        })
+        reply, _ = run_bridge(
+            [_result("ordinary answer"), control_request],
+            control_handler=handler,
+        )
+        self.assertEqual(reply, "ordinary answer")
+        handler.assert_awaited_once()
+        self.assertEqual(handler.await_args.args[3]["request_id"], "tail-approval")
+
+    def test_monitor_listed_as_running_holds_child_for_followup(self):
+        first, b, _ = run_bridge_with_followups(
+            [_tasks("Monitor merge and CI"), _result("watching"),
+             _tasks(), _result("merge and CI complete")])
+        self.assertEqual(first, "watching")
+        self.assertEqual([call.args[1] for call in b.post.call_args_list],
+                         ["merge and CI complete"])
+        self.assertEqual(b.live, {})
+
     def test_stopped_mid_turn_task_does_not_steal_next_comment(self):
         first, b, injected = run_bridge_with_followups(
             [_tasks("anchor"), _result("started")],
