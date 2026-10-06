@@ -1039,7 +1039,7 @@ class Bridge:
         self.pending_turns: dict[str, list[dict]] = {}
         # Results emitted after the foreground result are posted only after
         # that result by forward_to_claude, preserving conversation order.
-        self.deferred_followups: dict[str, list[tuple[dict, dict, str]]] = {}
+        self.deferred_followups: dict[str, list[dict]] = {}
         self.auto_compact_tokens = (args.auto_compact_tokens
                                     if args.auto_compact else 0)
         self.warm_timers: dict[str, asyncio.Task] = {}
@@ -2802,7 +2802,7 @@ class Bridge:
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
                     if is_fork and self.bindings.get(key) is not binding:
                         self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
-                        self._post_deferred_followups(key)
+                        self.deferred_followups.pop(key, None)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2813,7 +2813,6 @@ class Bridge:
                             self.bindings.pop(key, None)
                             fork_failed = True
                         self.post(batch_frame, reply + ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
-                        self._post_deferred_followups(key)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2824,7 +2823,6 @@ class Bridge:
                             self.bindings.pop(key, None)
                             fork_failed = True
                         self.post(batch_frame, "This Claude CLI didn't create a separate copy (`--fork-session` unsupported?); the reply was added to the main session. Update the Claude CLI.")
-                        self._post_deferred_followups(key)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2839,7 +2837,6 @@ class Bridge:
                         reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(claude error)"):
                         self.post(batch_frame, reply)
-                        self._post_deferred_followups(key)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2850,7 +2847,7 @@ class Bridge:
                               "The thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Claude session there."
                               if is_fork and any(not entry.get("from_peer") for entry in entries) else None)
                     self._post_reply(batch_frame, binding, reply, notice=notice)
-                    self._post_deferred_followups(key)
+                    self._mark_deferred_followups_ready(key)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped as stopped:
@@ -2859,7 +2856,6 @@ class Bridge:
                         fork_failed = True
                     self.post(batch_frame, (str(stopped) or "Stopped.") +
                               (" Thread copy failed. Resend your message to retry." if fork_failed else ""))
-                    self._post_deferred_followups(key)
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
@@ -2869,12 +2865,12 @@ class Bridge:
                     log(f"claude run failed: {e!r}")
                     self.post(batch_frame, f"Claude run failed: {e}" +
                               ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
-                    self._post_deferred_followups(key)
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 self.active_message_ids.difference_update(active_ids)
                 entries = self._claim_pending_turns(key)
         finally:
+            self._post_deferred_followups(key)
             self.busy.discard(key)
             self.typing(typing_frame, False)
         return True
@@ -3278,6 +3274,7 @@ class Bridge:
             # Live inventory of backgrounded work, from system/background_tasks_changed.
             # Non-empty when the reply lands means the model owes us a follow-up.
             bg_tasks: list[dict] = []
+            saw_background_tasks = False
             try:
                 async with asyncio.timeout(self.timeout):
                     assert proc.stdout is not None
@@ -3326,6 +3323,7 @@ class Bridge:
                         elif kind == "system" and event.get("subtype") == "background_tasks_changed":
                             listed = event.get("tasks")
                             bg_tasks = listed if isinstance(listed, list) else []
+                            saw_background_tasks = saw_background_tasks or bool(bg_tasks)
                         elif kind == "assistant":
                             snippet = self._progress_snippet(event)
                             if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
@@ -3395,38 +3393,14 @@ class Bridge:
                         # remaining stdout through EOF.
                         tail_deadline = (
                             time.monotonic() + RESULT_TAIL_IDLE_GRACE
-                            if result_text and result_text.strip()
+                            if saw_background_tasks and result_text and result_text.strip()
                             and not result_text.startswith("(claude error)")
                             else time.monotonic()
                         )
                         stdin_closed = False
-                        tail_tasks: list[dict] = []
                         while True:
-                            pending_perm_tasks = [
-                                task for task in perm_tasks if not task.done()
-                            ]
-                            pending_perms = bool(pending_perm_tasks)
-                            if stdin_closed or tail_tasks:
+                            if stdin_closed:
                                 raw = await proc.stdout.readline()
-                            elif pending_perms:
-                                # A permission prompt may wait for a human
-                                # longer than the quiet grace. Keep stdin open,
-                                # but wake if either stdout advances or the
-                                # approval is answered.
-                                read_task = asyncio.create_task(proc.stdout.readline())
-                                done, _ = await asyncio.wait(
-                                    [read_task, *pending_perm_tasks],
-                                    return_when=asyncio.FIRST_COMPLETED,
-                                )
-                                if read_task in done:
-                                    raw = read_task.result()
-                                else:
-                                    read_task.cancel()
-                                    await asyncio.gather(read_task, return_exceptions=True)
-                                    tail_deadline = (
-                                        time.monotonic() + RESULT_TAIL_IDLE_GRACE
-                                    )
-                                    continue
                             else:
                                 remaining = tail_deadline - time.monotonic()
                                 if remaining <= 0:
@@ -3457,14 +3431,32 @@ class Bridge:
                             elif (kind == "system"
                                   and event.get("subtype") == "background_tasks_changed"):
                                 listed = event.get("tasks")
-                                tail_tasks = listed if isinstance(listed, list) else []
-                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                listed = listed if isinstance(listed, list) else []
+                                if listed:
+                                    saw_background_tasks = True
+                                    if self.async_followups:
+                                        handed_off = True
+                                        self._start_live_run(
+                                            key, frame, binding, spawned_with, proc,
+                                            listed, perm_ids, perm_tasks, tmpdir,
+                                        )
+                                        break
+                                if saw_background_tasks:
+                                    tail_deadline = (
+                                        time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                    )
                             elif kind == "control_request":
                                 perm_tasks.append(asyncio.create_task(
                                     self._handle_control_request(
                                         key, frame, proc, event, perm_ids)
                                 ))
-                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                # Let the handler post the approval prompt before
+                                # an already-buffered EOF can trigger tail cleanup.
+                                await asyncio.sleep(0)
+                                if saw_background_tasks:
+                                    tail_deadline = (
+                                        time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                    )
                             elif kind == "control_cancel_request":
                                 self._cancel_request(event.get("request_id") or "",
                                                      "Claude withdrew the request.")
@@ -3484,17 +3476,31 @@ class Bridge:
                                             binding.pop("_fork_reused_source", None)
                                             self.bindings[key] = binding
                                             self._save_state()
-                                    self.deferred_followups.setdefault(key, []).append(
-                                        (frame, binding, text)
-                                    )
-                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
-                            else:
-                                # Any activity extends the small quiet window;
-                                # only a later non-blank result is posted.
-                                if not tail_tasks:
+                                    self.deferred_followups.setdefault(key, []).append({
+                                        "frame": frame,
+                                        "binding": binding,
+                                        "reply": text,
+                                        "ready": False,
+                                    })
+                                if saw_background_tasks:
                                     tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
-                        await proc.wait()
+                            elif (kind == "system"
+                                  and event.get("subtype") == "compact_boundary"):
+                                if self.bindings.get(key) is binding:
+                                    binding.pop("roster_note", None)
+                                    binding["_context_epoch"] = (
+                                        binding.get("_context_epoch", 0) + 1
+                                    )
+                                    self._save_state()
+                            elif saw_background_tasks:
+                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                        if not handed_off:
+                            await proc.wait()
             except TimeoutError:
+                if result_text is not None:
+                    log(f"run tail timed out after the result for {key}; "
+                        "keeping the foreground reply")
+                    return result_text
                 raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
                 if not handed_off:
@@ -3511,6 +3517,9 @@ class Bridge:
                     for oid in perm_ids:
                         self._cancel_perm(oid, "The run ended before a decision.")
                     if perm_tasks:
+                        for task in perm_tasks:
+                            if not task.done():
+                                task.cancel()
                         await asyncio.gather(*perm_tasks, return_exceptions=True)
             if result_text is None:
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip()
@@ -4024,10 +4033,16 @@ class Bridge:
             body = (body + "\n\n" if body else "") + notice
         self.post(frame, body, tldr if has_reply_body else None, attachments)
 
+    def _mark_deferred_followups_ready(self, key: str) -> None:
+        """Mark tail results safe to post after their foreground reply."""
+        for item in self.deferred_followups.get(key, []):
+            item["ready"] = True
+
     def _post_deferred_followups(self, key: str) -> None:
-        """Post buffered tail results after the foreground message reply."""
-        for frame, binding, reply in self.deferred_followups.pop(key, []):
-            self._post_reply(frame, binding, reply)
+        """Post only tail results whose foreground reply was posted."""
+        for item in self.deferred_followups.pop(key, []):
+            if item.get("ready"):
+                self._post_reply(item["frame"], item["binding"], item["reply"])
 
     @staticmethod
     def _annotate_slash_failure(prompt: str, result: str, slash_commands: list[str]) -> str:
