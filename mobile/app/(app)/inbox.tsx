@@ -79,14 +79,10 @@ export default function InboxScreen({ initialTab = null, initialSwipe }: {
   const unreads = useUnreads();
   const markRead = useMarkUnreadsRead();
   const swipeRows = useSwipeRows();
-  const [tab, setTab] = React.useState<InboxTab>(
-    initialTab ?? inboxTabFromParam(routeTab) ?? rememberedTab);
+  const tab = initialTab ?? rememberedTab;
   React.useEffect(() => {
     const next = inboxTabFromParam(routeTab);
-    if (next) {
-      setTab(next);
-      setRememberedTab(next);
-    }
+    if (next) setRememberedTab(next);
   }, [routeTab]);
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);
@@ -101,7 +97,7 @@ export default function InboxScreen({ initialTab = null, initialSwipe }: {
         accessibilityRole="tab" accessibilityState={{ selected: tab === option }}
         accessibilityLabel={option === "threads" ? "Threads" : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
         style={[styles.tab, tab === option && styles.tabActive]}
-        onPress={() => { swipeRows.close(); setTab(option); setRememberedTab(option); }}>
+        onPress={() => { swipeRows.close(); setRememberedTab(option); }}>
         <Text style={[styles.tabText, tab === option && styles.tabTextActive]}>
           {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : "Threads"}
         </Text>

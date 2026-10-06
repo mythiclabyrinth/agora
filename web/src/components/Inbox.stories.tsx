@@ -70,7 +70,7 @@ export const Threads: Story = { parameters: { setup: () => history.replaceState(
 export const RememberedTab: Story = {
   play: async () => {
     useUiState.getState().setInboxTab("threads");
-    history.replaceState(null, "", "/");
+    history.replaceState(null, "", "/inbox/unreads");
     useUiState.getState().openInbox("replace");
     expect(window.location.pathname).toBe("/inbox/threads");
   },

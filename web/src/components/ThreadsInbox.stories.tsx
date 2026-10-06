@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import {
   fixtureGroups,
   fixtureMe,
@@ -109,7 +109,19 @@ export const ThreadLinkMenu: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText("Can we validate the responsive component layout?");
     await userEvent.click(canvas.getAllByRole("button", { name: "Thread options" })[0]);
-    await expect(canvas.findByRole("button", { name: "Copy link" })).resolves.toBeVisible();
+    const copyButton = await canvas.findByRole("button", { name: "Copy link" });
+    await expect(copyButton).toBeVisible();
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const writeText = fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      await userEvent.click(copyButton);
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp(`/t/${root.id}$`))));
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+      else Reflect.deleteProperty(navigator, "clipboard");
+    }
   },
 };
 
