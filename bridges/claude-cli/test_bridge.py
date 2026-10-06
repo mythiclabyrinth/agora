@@ -280,6 +280,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.context_buffer_limit = 50
     instance.busy = set()
     instance.pending_turns = {}
+    instance.deferred_followups = {}
     instance.auto_compact_tokens = 0
     instance.warm_timers = {}
     instance.warm_compacting = set()
@@ -1724,6 +1725,53 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
         bridge.RESULT_TAIL_IDLE_GRACE = original_tail_grace
 
 
+def run_forward_with_tail(lines):
+    """Exercise run_claude and its real foreground-message posting caller."""
+    b = make_bridge()
+    del b.forward_to_claude
+    b.claude_bin = "claude"
+    b.base_claude_args = []
+    b.default_model = None
+    b.default_permission_mode = "acceptEdits"
+    b.timeout = 10
+    b.bindings = {"c1": {"cwd": "/tmp"}}
+    b.typing = Mock()
+    b._ensure_thread_fork = AsyncMock(return_value=True)
+    b._append_system_args = Mock(return_value=[])
+    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
+    b._save_state = Mock()
+
+    async def main():
+        proc = _fake_proc(lines, eof_after_feed=True)
+
+        async def fake_exec(*_args, **_kwargs):
+            return proc
+
+        original_exec = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            await b.forward_to_claude(
+                "c1",
+                {"channel_id": "c1", "message_id": 10,
+                 "author": {"type": "user", "name": "Tom"}},
+                "check the merge",
+            )
+        finally:
+            asyncio.create_subprocess_exec = original_exec
+
+    original_tail_grace = bridge.RESULT_TAIL_IDLE_GRACE
+    bridge.RESULT_TAIL_IDLE_GRACE = 0.01
+    try:
+        asyncio.run(main())
+    finally:
+        bridge.RESULT_TAIL_IDLE_GRACE = original_tail_grace
+    return b
+
+
 def _tasks(*descriptions):
     return json.dumps({
         "type": "system", "subtype": "background_tasks_changed",
@@ -1889,13 +1937,14 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
 class AsyncFollowupTests(unittest.TestCase):
     def test_queued_background_result_after_empty_inventory_is_posted(self):
         """A result queued behind ours survives the empty-task inventory race."""
-        reply, b = run_bridge([
+        b = run_forward_with_tail([
             _tasks(), _result("watching for the merge"),
             _result("merge completed; checks are green"),
         ])
-        self.assertEqual(reply, "watching for the merge")
-        self.assertEqual([call.args[1] for call in b.post.call_args_list],
-                         ["merge completed; checks are green"])
+        self.assertEqual([call.args[1] for call in b.post.call_args_list], [
+            "watching for the merge",
+            "merge completed; checks are green",
+        ])
         self.assertEqual(b.live, {})
         self.assertEqual(b.procs, {})
 

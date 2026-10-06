@@ -1037,6 +1037,9 @@ class Bridge:
         self.busy: set[str] = set()
         self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
+        # Results emitted after the foreground result are posted only after
+        # that result by forward_to_claude, preserving conversation order.
+        self.deferred_followups: dict[str, list[tuple[dict, dict, str]]] = {}
         self.auto_compact_tokens = (args.auto_compact_tokens
                                     if args.auto_compact else 0)
         self.warm_timers: dict[str, asyncio.Task] = {}
@@ -2799,6 +2802,7 @@ class Bridge:
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
                     if is_fork and self.bindings.get(key) is not binding:
                         self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
+                        self._post_deferred_followups(key)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2809,6 +2813,7 @@ class Bridge:
                             self.bindings.pop(key, None)
                             fork_failed = True
                         self.post(batch_frame, reply + ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
+                        self._post_deferred_followups(key)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2819,6 +2824,7 @@ class Bridge:
                             self.bindings.pop(key, None)
                             fork_failed = True
                         self.post(batch_frame, "This Claude CLI didn't create a separate copy (`--fork-session` unsupported?); the reply was added to the main session. Update the Claude CLI.")
+                        self._post_deferred_followups(key)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2833,6 +2839,7 @@ class Bridge:
                         reply = await self._serve_history_asks(key, batch_frame, binding, reply)
                     if reply.startswith("(claude error)"):
                         self.post(batch_frame, reply)
+                        self._post_deferred_followups(key)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
@@ -2843,6 +2850,7 @@ class Bridge:
                               "The thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Claude session there."
                               if is_fork and any(not entry.get("from_peer") for entry in entries) else None)
                     self._post_reply(batch_frame, binding, reply, notice=notice)
+                    self._post_deferred_followups(key)
                     for queued in entries:
                         self.set_reaction(queued["frame"], "✅", remember=False)
                 except RunStopped as stopped:
@@ -2851,6 +2859,7 @@ class Bridge:
                         fork_failed = True
                     self.post(batch_frame, (str(stopped) or "Stopped.") +
                               (" Thread copy failed. Resend your message to retry." if fork_failed else ""))
+                    self._post_deferred_followups(key)
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 except Exception as e:
@@ -2860,6 +2869,7 @@ class Bridge:
                     log(f"claude run failed: {e!r}")
                     self.post(batch_frame, f"Claude run failed: {e}" +
                               ("\n\nThread copy failed. Resend your message to retry." if fork_failed else ""))
+                    self._post_deferred_followups(key)
                     for queued in entries:
                         self.clear_reaction(queued["frame"])
                 self.active_message_ids.difference_update(active_ids)
@@ -3474,7 +3484,9 @@ class Bridge:
                                             binding.pop("_fork_reused_source", None)
                                             self.bindings[key] = binding
                                             self._save_state()
-                                    self._post_reply(frame, binding, text)
+                                    self.deferred_followups.setdefault(key, []).append(
+                                        (frame, binding, text)
+                                    )
                                 tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
                             else:
                                 # Any activity extends the small quiet window;
@@ -4011,6 +4023,11 @@ class Bridge:
         if notice:
             body = (body + "\n\n" if body else "") + notice
         self.post(frame, body, tldr if has_reply_body else None, attachments)
+
+    def _post_deferred_followups(self, key: str) -> None:
+        """Post buffered tail results after the foreground message reply."""
+        for frame, binding, reply in self.deferred_followups.pop(key, []):
+            self._post_reply(frame, binding, reply)
 
     @staticmethod
     def _annotate_slash_failure(prompt: str, result: str, slash_commands: list[str]) -> str:
