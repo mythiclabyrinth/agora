@@ -233,9 +233,10 @@ BLANK_RESULT_IDLE_GRACE = 45.0
 # an empty task inventory, then emit the task's report as another turn. Keep
 # stdin open briefly so queued turns and permission requests reach the reader.
 RESULT_TAIL_IDLE_GRACE = 1.0
+RESULT_TAIL_BG_GRACE = 15.0
 # Without async follow-ups, cap how long a foreground reply waits for another
 # CLI turn after its result. The live reader owns that turn when enabled.
-RESULT_TAIL_MAX = 10.0
+RESULT_TAIL_MAX = 30.0
 # Asynchronous follow-ups. The CLI re-invokes the model when a backgrounded
 # task (a `run_in_background` Bash command or subagent) finishes, and with stdin
 # held open the child keeps running long enough to say so — it emits a fresh
@@ -3397,7 +3398,7 @@ class Bridge:
                         # a short quiet window, then close stdin and drain the
                         # remaining stdout through EOF.
                         tail_deadline = (
-                            time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                            time.monotonic() + RESULT_TAIL_BG_GRACE
                             if saw_background_tasks and result_text and result_text.strip()
                             and not result_text.startswith("(claude error)")
                             else time.monotonic()
@@ -3470,7 +3471,7 @@ class Bridge:
                                         break
                                 if saw_background_tasks:
                                     tail_deadline = (
-                                        time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                        time.monotonic() + RESULT_TAIL_BG_GRACE
                                     )
                             elif kind == "control_request":
                                 perm_tasks.append(asyncio.create_task(
@@ -3482,7 +3483,7 @@ class Bridge:
                                 await asyncio.sleep(0)
                                 if saw_background_tasks:
                                     tail_deadline = (
-                                        time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                        time.monotonic() + RESULT_TAIL_BG_GRACE
                                     )
                             elif kind == "control_cancel_request":
                                 self._cancel_request(event.get("request_id") or "",
@@ -3498,7 +3499,7 @@ class Bridge:
                                     self.live[key].last_event_was_result = False
                                     break
                                 if saw_background_tasks:
-                                    tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                    tail_deadline = time.monotonic() + RESULT_TAIL_BG_GRACE
                             elif kind == "result":
                                 text = event.get("result") or ""
                                 if text.strip():
@@ -3524,7 +3525,7 @@ class Bridge:
                                         "ready": False,
                                     })
                                 if saw_background_tasks:
-                                    tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                    tail_deadline = time.monotonic() + RESULT_TAIL_BG_GRACE
                             elif (kind == "system"
                                   and event.get("subtype") == "compact_boundary"):
                                 if self.bindings.get(key) is binding:
@@ -3534,7 +3535,7 @@ class Bridge:
                                     )
                                     self._save_state()
                             elif saw_background_tasks:
-                                tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
+                                tail_deadline = time.monotonic() + RESULT_TAIL_BG_GRACE
                         if not handed_off and not tail_limit_hit:
                             await proc.wait()
             except TimeoutError:

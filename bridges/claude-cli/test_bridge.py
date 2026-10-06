@@ -1687,7 +1687,7 @@ def _result(text, **extra):
 def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
                eof_after_feed=False, control_handler=None, close_feeds_eof=True,
                start_live_handler=None, async_followups=True, tail_grace=0.01,
-               tail_max=None, wait_live=False):
+               bg_grace=0.01, tail_max=None, wait_live=False):
     """Drive the real run_claude() against a scripted stdout stream."""
     b = make_bridge()
     b.claude_bin = "claude"
@@ -1730,10 +1730,12 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
 
     original_grace = bridge.BLANK_RESULT_IDLE_GRACE
     original_tail_grace = bridge.RESULT_TAIL_IDLE_GRACE
+    original_bg_grace = bridge.RESULT_TAIL_BG_GRACE
     original_tail_max = bridge.RESULT_TAIL_MAX
     if grace is not None:
         bridge.BLANK_RESULT_IDLE_GRACE = grace
     bridge.RESULT_TAIL_IDLE_GRACE = tail_grace
+    bridge.RESULT_TAIL_BG_GRACE = bg_grace
     if tail_max is not None:
         bridge.RESULT_TAIL_MAX = tail_max
 
@@ -1765,6 +1767,7 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
     finally:
         bridge.BLANK_RESULT_IDLE_GRACE = original_grace
         bridge.RESULT_TAIL_IDLE_GRACE = original_tail_grace
+        bridge.RESULT_TAIL_BG_GRACE = original_bg_grace
         bridge.RESULT_TAIL_MAX = original_tail_max
 
 
@@ -1792,11 +1795,13 @@ def make_forward_bridge():
     return b
 
 
-def run_forward_with_tail(lines):
+def run_forward_with_tail(lines, feed_delay=0.0, async_followups=True,
+                          idle_grace=0.01, bg_grace=0.05, tail_max=0.1):
     """Exercise run_claude and its real foreground-message posting caller."""
     b = make_forward_bridge()
+    b.async_followups = async_followups
     async def main():
-        proc = _fake_proc(lines, eof_after_feed=True)
+        proc = _fake_proc(lines, feed_delay=feed_delay, eof_after_feed=True)
 
         async def fake_exec(*_args, **_kwargs):
             return proc
@@ -1810,15 +1815,23 @@ def run_forward_with_tail(lines):
                  "author": {"type": "user", "name": "Tom"}},
                 "check the merge",
             )
+            if b.live.get("c1") and b.live["c1"].reader:
+                await asyncio.wait_for(b.live["c1"].reader, 2)
         finally:
             asyncio.create_subprocess_exec = original_exec
 
     original_tail_grace = bridge.RESULT_TAIL_IDLE_GRACE
-    bridge.RESULT_TAIL_IDLE_GRACE = 0.01
+    original_bg_grace = bridge.RESULT_TAIL_BG_GRACE
+    original_tail_max = bridge.RESULT_TAIL_MAX
+    bridge.RESULT_TAIL_IDLE_GRACE = idle_grace
+    bridge.RESULT_TAIL_BG_GRACE = bg_grace
+    bridge.RESULT_TAIL_MAX = tail_max
     try:
         asyncio.run(main())
     finally:
         bridge.RESULT_TAIL_IDLE_GRACE = original_tail_grace
+        bridge.RESULT_TAIL_BG_GRACE = original_bg_grace
+        bridge.RESULT_TAIL_MAX = original_tail_max
     return b
 
 
@@ -1997,6 +2010,24 @@ class AsyncFollowupTests(unittest.TestCase):
         ])
         self.assertEqual(b.live, {})
         self.assertEqual(b.procs, {})
+
+    def test_delayed_background_turn_is_preserved_in_both_modes(self):
+        assistant = json.dumps({"type": "assistant", "message": {"content": []}})
+        events = [
+            _tasks("Monitor"), _tasks(), _result("foreground answer"),
+            assistant, _result("follow-up report"),
+        ]
+        for async_followups in (True, False):
+            with self.subTest(async_followups=async_followups):
+                b = run_forward_with_tail(
+                    events,
+                    feed_delay=[0.001, 0.001, 0.001, 0.025, 0.002],
+                    async_followups=async_followups,
+                )
+                self.assertEqual([call.args[1] for call in b.post.call_args_list], [
+                    "foreground answer", "follow-up report",
+                ])
+                self.assertEqual(b.live, {})
 
     def test_background_report_posts_before_next_queued_message(self):
         b = make_forward_bridge()
