@@ -2802,6 +2802,7 @@ class Bridge:
                     if is_fork and not batch_text.lstrip().startswith("/"):
                         batch_text += ("\n\n[This is a new thread about the root message above. "
                                        "Focus on that message; the copied session also knows later main-chat turns.]")
+                    self.deferred_followups.pop(key, None)
                     reply = await self.run_claude(key, batch_frame, binding, batch_text)
                     if is_fork and self.bindings.get(key) is not binding:
                         self.post(batch_frame, "The thread session changed while I was answering; that in-progress answer was discarded.")
@@ -3401,28 +3402,32 @@ class Bridge:
                             and not result_text.startswith("(claude error)")
                             else time.monotonic()
                         )
-                        tail_max_deadline = (
-                            time.monotonic() + RESULT_TAIL_MAX
-                            if not self.async_followups else None
-                        )
+                        tail_max_deadline = time.monotonic() + RESULT_TAIL_MAX
                         stdin_closed = False
                         tail_limit_hit = False
                         while True:
                             if stdin_closed:
-                                raw = await proc.stdout.readline()
+                                remaining = tail_max_deadline - time.monotonic()
+                                if remaining <= 0:
+                                    tail_limit_hit = True
+                                    break
+                                try:
+                                    raw = await asyncio.wait_for(
+                                        proc.stdout.readline(), remaining)
+                                except TimeoutError:
+                                    tail_limit_hit = True
+                                    break
                             else:
                                 remaining = tail_deadline - time.monotonic()
-                                if tail_max_deadline is not None:
-                                    remaining = min(
-                                        remaining,
-                                        tail_max_deadline - time.monotonic(),
-                                    )
+                                remaining = min(
+                                    remaining,
+                                    tail_max_deadline - time.monotonic(),
+                                )
                                 if remaining <= 0:
                                     if proc.stdin is not None:
                                         proc.stdin.close()
                                     stdin_closed = True
-                                    if (tail_max_deadline is not None
-                                            and time.monotonic() >= tail_max_deadline):
+                                    if time.monotonic() >= tail_max_deadline:
                                         tail_limit_hit = True
                                         break
                                     continue
@@ -3433,8 +3438,7 @@ class Bridge:
                                     if proc.stdin is not None:
                                         proc.stdin.close()
                                     stdin_closed = True
-                                    if (tail_max_deadline is not None
-                                            and time.monotonic() >= tail_max_deadline):
+                                    if time.monotonic() >= tail_max_deadline:
                                         tail_limit_hit = True
                                         break
                                     continue

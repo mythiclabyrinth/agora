@@ -1630,8 +1630,10 @@ def _fake_proc(lines, feed_delay=0.0, returncode=0, eof_after_feed=False,
     if feed_delay:
         async def feed():
             try:
-                for line in lines:
-                    await asyncio.sleep(feed_delay)
+                delays = (feed_delay if isinstance(feed_delay, (list, tuple))
+                          else [feed_delay] * len(lines))
+                for line, delay in zip(lines, delays):
+                    await asyncio.sleep(delay)
                     stdout.feed_data(line.encode() + b"\n")
                 if eof_after_feed:
                     stdout.feed_eof()
@@ -2025,6 +2027,38 @@ class AsyncFollowupTests(unittest.TestCase):
             "A reply", "A background report", "B reply",
         ])
 
+    def test_failed_batch_drops_report_before_queued_batch_succeeds(self):
+        b = make_forward_bridge()
+        second = {"channel_id": "c1", "message_id": 31,
+                  "author": {"type": "user", "name": "Tom"}}
+        calls = 0
+
+        async def fail_then_succeed(key, frame, binding, text):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                b.deferred_followups[key] = [{
+                    "frame": frame, "binding": binding,
+                    "reply": "stale failed-batch report", "ready": True,
+                }]
+                b.pending_turns[key] = [{
+                    "frame": second, "text": "B", "from_peer": False,
+                }]
+                raise RuntimeError("first batch failed")
+            return "B reply"
+
+        b.run_claude = fail_then_succeed
+        asyncio.run(b.forward_to_claude(
+            "c1",
+            {"channel_id": "c1", "message_id": 30,
+             "author": {"type": "user", "name": "Tom"}},
+            "A",
+        ))
+        bodies = [str(call.args[1]) for call in b.post.call_args_list]
+        self.assertIn("Claude run failed: first batch failed", bodies)
+        self.assertIn("B reply", bodies)
+        self.assertNotIn("stale failed-batch report", bodies)
+
     def test_no_queued_result_closes_without_holding_a_live_run(self):
         reply, b = run_bridge([_tasks(), _result("ordinary answer")],
                               eof_after_feed=False)
@@ -2080,6 +2114,20 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.2)
         self.assertEqual(b.live, {})
         b.last_proc.stdin.close.assert_called_once()
+
+    def test_closed_stdin_tail_is_bounded_while_events_keep_arriving(self):
+        assistant = json.dumps({"type": "assistant", "message": {"content": []}})
+        started = time.monotonic()
+        reply, b = run_bridge([
+            _tasks("Monitor"), _tasks(), _result("foreground answer"),
+            assistant, assistant, assistant,
+        ], feed_delay=[0.001, 0.001, 0.001, 0.025, 0.02, 0.02],
+            async_followups=True, tail_grace=0.01, tail_max=0.04,
+            close_feeds_eof=False)
+        self.assertEqual(reply, "foreground answer")
+        self.assertLess(time.monotonic() - started, 0.1)
+        b.last_proc.stdin.close.assert_called_once()
+        self.assertEqual(b.live, {})
 
     def test_tail_timeout_keeps_the_already_received_answer(self):
         reply, b = run_bridge(
