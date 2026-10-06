@@ -280,6 +280,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.context_buffer_limit = 50
     instance.busy = set()
     instance.pending_turns = {}
+    instance.deferred_followups = {}
     instance.auto_compact_tokens = 0
     instance.warm_timers = {}
     instance.warm_compacting = set()
@@ -1618,7 +1619,8 @@ class AppendSystemArgsTests(unittest.TestCase):
 
 
 
-def _fake_proc(lines, feed_delay=0.0, returncode=0):
+def _fake_proc(lines, feed_delay=0.0, returncode=0, eof_after_feed=False,
+               close_feeds_eof=True):
     """A stand-in for the CLI child process that replays `lines` on stdout.
 
     With ``feed_delay`` the lines trickle out from a background task, so a test
@@ -1627,13 +1629,24 @@ def _fake_proc(lines, feed_delay=0.0, returncode=0):
     stdout = asyncio.StreamReader()
     if feed_delay:
         async def feed():
-            for line in lines:
-                await asyncio.sleep(feed_delay)
-                stdout.feed_data(line.encode() + b"\n")
+            try:
+                delays = (feed_delay if isinstance(feed_delay, (list, tuple))
+                          else [feed_delay] * len(lines))
+                for line, delay in zip(lines, delays):
+                    await asyncio.sleep(delay)
+                    stdout.feed_data(line.encode() + b"\n")
+                if eof_after_feed:
+                    stdout.feed_eof()
+            except ValueError:
+                # The simulated child was killed while its scripted output
+                # was still being emitted.
+                pass
         asyncio.get_running_loop().create_task(feed())
     else:
         for line in lines:
             stdout.feed_data(line.encode() + b"\n")
+        if eof_after_feed:
+            stdout.feed_eof()
     stderr = asyncio.StreamReader()
     stderr.feed_eof()
 
@@ -1642,7 +1655,14 @@ def _fake_proc(lines, feed_delay=0.0, returncode=0):
     proc.stderr = stderr
     proc.stdin = Mock()
     proc.stdin.drain = AsyncMock()
-    proc.stdin.close = Mock()
+
+    def close_stdin():
+        # A real CLI exits after stdin closes; mirror its stdout EOF for the
+        # normal, non-live test process.
+        if close_feeds_eof and not stdout.at_eof():
+            stdout.feed_eof()
+
+    proc.stdin.close = Mock(side_effect=close_stdin)
     proc.wait = AsyncMock(return_value=0)
     proc.returncode = returncode
 
@@ -1664,7 +1684,10 @@ def _result(text, **extra):
     return json.dumps(frame)
 
 
-def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
+def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
+               eof_after_feed=False, control_handler=None, close_feeds_eof=True,
+               start_live_handler=None, async_followups=True, tail_grace=0.01,
+               bg_grace=0.01, tail_max=None, wait_live=False):
     """Drive the real run_claude() against a scripted stdout stream."""
     b = make_bridge()
     b.claude_bin = "claude"
@@ -1672,19 +1695,56 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
     b.default_model = None
     b.default_permission_mode = "acceptEdits"
     b.timeout = timeout
+    b.async_followups = async_followups
     b.procs = {}
     b.stop_requested = set()
     b.progress = Mock()
     b._append_system_args = Mock(return_value=[])
     b._stage_attachments = Mock(return_value=("hi", [], None))
+    b.live_start_states = []
+    if control_handler is not None:
+        b._handle_control_request = control_handler
+        control_handler.bridge = b
+    if start_live_handler is not None:
+        b._start_live_run = start_live_handler
+    else:
+        start_live = b._start_live_run
+
+        def capture_live_start(*args):
+            start_live(*args)
+            key = args[0]
+            asyncio.get_running_loop().call_soon(
+                lambda: b.live_start_states.append(
+                    b.live[key].last_event_was_result if key in b.live else None
+                )
+            )
+
+        b._start_live_run = capture_live_start
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
+    b.pending_perms = {}
+    b.send = Mock()
     b._save_state = Mock()
 
     original_grace = bridge.BLANK_RESULT_IDLE_GRACE
+    original_tail_grace = bridge.RESULT_TAIL_IDLE_GRACE
+    original_bg_grace = bridge.RESULT_TAIL_BG_GRACE
+    original_tail_max = bridge.RESULT_TAIL_MAX
     if grace is not None:
         bridge.BLANK_RESULT_IDLE_GRACE = grace
+    bridge.RESULT_TAIL_IDLE_GRACE = tail_grace
+    bridge.RESULT_TAIL_BG_GRACE = bg_grace
+    if tail_max is not None:
+        bridge.RESULT_TAIL_MAX = tail_max
 
     async def main():
-        proc = _fake_proc(lines, feed_delay)  # StreamReader needs a running loop
+        proc = _fake_proc(
+            lines, feed_delay, eof_after_feed=eof_after_feed,
+            close_feeds_eof=close_feeds_eof,
+        )
+        b.last_proc = proc
         b.spawn_calls = []
 
         async def fake_exec(*a, **kw):
@@ -1694,8 +1754,11 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
         original_exec = asyncio.create_subprocess_exec
         asyncio.create_subprocess_exec = fake_exec
         try:
-            return await b.run_claude(
+            result = await b.run_claude(
                 "k", {"channel_id": "c1"}, binding or {"cwd": "/tmp"}, "hi")
+            if wait_live and b.live.get("k") and b.live["k"].reader:
+                await asyncio.wait_for(b.live["k"].reader, 2)
+            return result
         finally:
             asyncio.create_subprocess_exec = original_exec
 
@@ -1703,6 +1766,73 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None):
         return asyncio.run(main()), b
     finally:
         bridge.BLANK_RESULT_IDLE_GRACE = original_grace
+        bridge.RESULT_TAIL_IDLE_GRACE = original_tail_grace
+        bridge.RESULT_TAIL_BG_GRACE = original_bg_grace
+        bridge.RESULT_TAIL_MAX = original_tail_max
+
+
+def make_forward_bridge():
+    """A configured bridge that exercises the real foreground caller."""
+    b = make_bridge()
+    del b.forward_to_claude
+    b.claude_bin = "claude"
+    b.base_claude_args = []
+    b.default_model = None
+    b.default_permission_mode = "acceptEdits"
+    b.timeout = 10
+    b.bindings = {"c1": {"cwd": "/tmp"}}
+    b.typing = Mock()
+    b._ensure_thread_fork = AsyncMock(return_value=True)
+    b._append_system_args = Mock(return_value=[])
+    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b.allowed_roots = []
+    b.max_attachment_bytes = 1024
+    b.tldr_default = False
+    b.tldr_min_chars = 0
+    b._save_state = Mock()
+    b.pending_perms = {}
+    b.send = Mock()
+    return b
+
+
+def run_forward_with_tail(lines, feed_delay=0.0, async_followups=True,
+                          idle_grace=0.01, bg_grace=0.05, tail_max=0.1):
+    """Exercise run_claude and its real foreground-message posting caller."""
+    b = make_forward_bridge()
+    b.async_followups = async_followups
+    async def main():
+        proc = _fake_proc(lines, feed_delay=feed_delay, eof_after_feed=True)
+
+        async def fake_exec(*_args, **_kwargs):
+            return proc
+
+        original_exec = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            await b.forward_to_claude(
+                "c1",
+                {"channel_id": "c1", "message_id": 10,
+                 "author": {"type": "user", "name": "Tom"}},
+                "check the merge",
+            )
+            if b.live.get("c1") and b.live["c1"].reader:
+                await asyncio.wait_for(b.live["c1"].reader, 2)
+        finally:
+            asyncio.create_subprocess_exec = original_exec
+
+    original_tail_grace = bridge.RESULT_TAIL_IDLE_GRACE
+    original_bg_grace = bridge.RESULT_TAIL_BG_GRACE
+    original_tail_max = bridge.RESULT_TAIL_MAX
+    bridge.RESULT_TAIL_IDLE_GRACE = idle_grace
+    bridge.RESULT_TAIL_BG_GRACE = bg_grace
+    bridge.RESULT_TAIL_MAX = tail_max
+    try:
+        asyncio.run(main())
+    finally:
+        bridge.RESULT_TAIL_IDLE_GRACE = original_tail_grace
+        bridge.RESULT_TAIL_BG_GRACE = original_bg_grace
+        bridge.RESULT_TAIL_MAX = original_tail_max
+    return b
 
 
 def _tasks(*descriptions):
@@ -1868,6 +1998,278 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
 
 
 class AsyncFollowupTests(unittest.TestCase):
+    def test_queued_background_result_after_empty_inventory_is_posted(self):
+        """A result queued behind ours survives the empty-task inventory race."""
+        b = run_forward_with_tail([
+            _tasks(), _result("watching for the merge"),
+            _result("merge completed; checks are green"),
+        ])
+        self.assertEqual([call.args[1] for call in b.post.call_args_list], [
+            "watching for the merge",
+            "merge completed; checks are green",
+        ])
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_delayed_background_turn_is_preserved_in_both_modes(self):
+        assistant = json.dumps({"type": "assistant", "message": {"content": []}})
+        events = [
+            _tasks("Monitor"), _tasks(), _result("foreground answer"),
+            assistant, _result("follow-up report"),
+        ]
+        for async_followups in (True, False):
+            with self.subTest(async_followups=async_followups):
+                b = run_forward_with_tail(
+                    events,
+                    feed_delay=[0.001, 0.001, 0.001, 0.025, 0.002],
+                    async_followups=async_followups,
+                )
+                self.assertEqual([call.args[1] for call in b.post.call_args_list], [
+                    "foreground answer", "follow-up report",
+                ])
+                self.assertEqual(b.live, {})
+
+    def test_background_report_posts_before_next_queued_message(self):
+        b = make_forward_bridge()
+        second = {"channel_id": "c1", "message_id": 21,
+                  "author": {"type": "user", "name": "Tom"}}
+
+        async def run_with_queued_message(key, frame, binding, text):
+            if text == "A":
+                b.deferred_followups[key] = [{
+                    "frame": frame, "binding": binding,
+                    "reply": "A background report", "ready": False,
+                }]
+                b.pending_turns[key] = [{
+                    "frame": second, "text": "B", "from_peer": False,
+                }]
+                return "A reply"
+            return "B reply"
+
+        b.run_claude = run_with_queued_message
+        asyncio.run(b.forward_to_claude(
+            "c1",
+            {"channel_id": "c1", "message_id": 20,
+             "author": {"type": "user", "name": "Tom"}},
+            "A",
+        ))
+        bodies = [call.args[1] for call in b.post.call_args_list]
+        self.assertEqual(bodies, [
+            "A reply", "A background report", "B reply",
+        ])
+
+    def test_failed_batch_drops_report_before_queued_batch_succeeds(self):
+        b = make_forward_bridge()
+        second = {"channel_id": "c1", "message_id": 31,
+                  "author": {"type": "user", "name": "Tom"}}
+        calls = 0
+
+        async def fail_then_succeed(key, frame, binding, text):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                b.deferred_followups[key] = [{
+                    "frame": frame, "binding": binding,
+                    "reply": "stale failed-batch report", "ready": True,
+                }]
+                b.pending_turns[key] = [{
+                    "frame": second, "text": "B", "from_peer": False,
+                }]
+                raise RuntimeError("first batch failed")
+            return "B reply"
+
+        b.run_claude = fail_then_succeed
+        asyncio.run(b.forward_to_claude(
+            "c1",
+            {"channel_id": "c1", "message_id": 30,
+             "author": {"type": "user", "name": "Tom"}},
+            "A",
+        ))
+        bodies = [str(call.args[1]) for call in b.post.call_args_list]
+        self.assertIn("Claude run failed: first batch failed", bodies)
+        self.assertIn("B reply", bodies)
+        self.assertNotIn("stale failed-batch report", bodies)
+
+    def test_no_queued_result_closes_without_holding_a_live_run(self):
+        reply, b = run_bridge([_tasks(), _result("ordinary answer")],
+                              eof_after_feed=False)
+        self.assertEqual(reply, "ordinary answer")
+        self.assertEqual(b.post.call_count, 0)
+        self.assertEqual(b.live, {})
+        self.assertEqual(b.procs, {})
+
+    def test_task_list_arriving_in_tail_hands_off_to_live_run(self):
+        handoff = Mock()
+        reply, b = run_bridge([
+            _tasks("Monitor"), _tasks(), _result("foreground answer"),
+            _tasks("Monitor still running"),
+        ], start_live_handler=handoff)
+        self.assertEqual(reply, "foreground answer")
+        handoff.assert_called_once()
+        self.assertEqual(handoff.call_args.args[5][0]["description"],
+                         "Monitor still running")
+        self.assertEqual(b.live, {})
+
+    def test_long_followup_turn_is_posted_separately_when_async_enabled(self):
+        assistant = json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "working"}]},
+        })
+        reply, b = run_bridge([
+            _tasks("Monitor"), _tasks(), _result("foreground answer"),
+            assistant, _result("follow-up report"),
+        ], feed_delay=0.005, eof_after_feed=True, wait_live=True)
+        self.assertEqual(reply, "foreground answer")
+        self.assertEqual([call.args[1] for call in b.post.call_args_list],
+                         ["follow-up report"])
+        self.assertEqual(b.live_start_states, [False])
+        self.assertEqual(b.live, {})
+
+    def test_closed_stdin_does_not_handoff_when_assistant_arrives(self):
+        assistant = json.dumps({"type": "assistant", "message": {"content": []}})
+        reply, b = run_bridge([
+            _tasks("Monitor"), _tasks(), _result("foreground answer"), assistant,
+        ], tail_grace=0)
+        self.assertEqual(reply, "foreground answer")
+        self.assertEqual(b.live, {})
+
+    def test_async_disabled_caps_the_total_tail_wait(self):
+        assistant = json.dumps({"type": "assistant", "message": {"content": []}})
+        started = time.monotonic()
+        reply, b = run_bridge([
+            _tasks("Monitor"), _tasks(), _result("foreground answer"),
+            assistant, assistant, assistant, assistant, assistant, assistant,
+        ], feed_delay=0.005, async_followups=False, tail_grace=0.02,
+            tail_max=0.03, close_feeds_eof=False)
+        self.assertEqual(reply, "foreground answer")
+        self.assertLess(time.monotonic() - started, 0.2)
+        self.assertEqual(b.live, {})
+        b.last_proc.stdin.close.assert_called_once()
+
+    def test_closed_stdin_tail_is_bounded_while_events_keep_arriving(self):
+        assistant = json.dumps({"type": "assistant", "message": {"content": []}})
+        started = time.monotonic()
+        reply, b = run_bridge([
+            _tasks("Monitor"), _tasks(), _result("foreground answer"),
+            assistant, assistant, assistant,
+        ], feed_delay=[0.001, 0.001, 0.001, 0.025, 0.02, 0.02],
+            async_followups=True, tail_grace=0.01, tail_max=0.04,
+            close_feeds_eof=False)
+        self.assertEqual(reply, "foreground answer")
+        self.assertLess(time.monotonic() - started, 0.1)
+        b.last_proc.stdin.close.assert_called_once()
+        self.assertEqual(b.live, {})
+
+    def test_tail_timeout_keeps_the_already_received_answer(self):
+        reply, b = run_bridge(
+            [_result("foreground answer")],
+            timeout=0.03,
+            close_feeds_eof=False,
+        )
+        self.assertEqual(reply, "foreground answer")
+        b.last_proc.stdin.close.assert_called_once()
+
+    def test_blank_result_in_post_result_tail_is_not_posted(self):
+        reply, b = run_bridge([
+            _result("ordinary answer"), _result(""), _result("   "),
+        ])
+        self.assertEqual(reply, "ordinary answer")
+        self.assertEqual(b.post.call_count, 0)
+
+    def test_control_requests_in_post_result_tail_are_serviced(self):
+        handler = AsyncMock()
+        control_request = json.dumps({
+            "type": "control_request", "request_id": "tail-approval",
+            "request": {"subtype": "can_use_tool"},
+        })
+        reply, _ = run_bridge(
+            [_result("ordinary answer"), control_request],
+            control_handler=handler,
+        )
+        self.assertEqual(reply, "ordinary answer")
+        handler.assert_awaited_once()
+        self.assertEqual(handler.await_args.args[3]["request_id"], "tail-approval")
+
+    def test_pending_approval_does_not_delay_foreground_reply(self):
+        async def pending_handler(key, frame, proc, event, perm_ids):
+            options_id = f"perm-{event['request_id']}"
+            future = asyncio.get_running_loop().create_future()
+            pending_handler.bridge.pending_perms[options_id] = (
+                future, frame["channel_id"], frame.get("thread_id")
+            )
+            perm_ids.append(options_id)
+            await future
+
+        reply, b = run_bridge([
+            _result("foreground answer"),
+            json.dumps({"type": "control_request", "request_id": "approval",
+                        "request": {"subtype": "can_use_tool"}}),
+        ], control_handler=pending_handler)
+        self.assertEqual(reply, "foreground answer")
+        b.last_proc.stdin.close.assert_called_once()
+
+    def test_cancelled_or_failed_run_drops_unready_buffered_followups(self):
+        for error in (bridge.RunStopped("cancelled"), RuntimeError("failed")):
+            b = make_forward_bridge()
+
+            async def run_with_buffer(*_args):
+                b.deferred_followups["c1"] = [{
+                    "frame": {"channel_id": "c1"},
+                    "binding": {"cwd": "/tmp"},
+                    "reply": "must not leak",
+                    "ready": False,
+                }]
+                raise error
+
+            b.run_claude = run_with_buffer
+            asyncio.run(b.forward_to_claude(
+                "c1",
+                {"channel_id": "c1", "message_id": 11,
+                 "author": {"type": "user", "name": "Tom"}},
+                "fail this run",
+            ))
+            self.assertNotIn("c1", b.deferred_followups)
+            self.assertFalse(any(
+                "must not leak" in str(call.args)
+                for call in b.post.call_args_list
+            ))
+
+    def test_discarded_thread_copy_drops_followup_results(self):
+        b = make_forward_bridge()
+        binding = {"cwd": "/tmp", "_fork_source": "source"}
+        b.bindings["c1"] = binding
+
+        async def replaced_session(*_args):
+            b.deferred_followups["c1"] = [{
+                "frame": {"channel_id": "c1"},
+                "binding": binding,
+                "reply": "discarded follow-up",
+                "ready": False,
+            }]
+            b.bindings["c1"] = {"cwd": "/tmp", "session_id": "replacement"}
+            return "discarded main reply"
+
+        b.run_claude = replaced_session
+        asyncio.run(b.forward_to_claude(
+            "c1",
+            {"channel_id": "c1", "message_id": 12,
+             "author": {"type": "user", "name": "Tom"}},
+            "make a thread copy",
+        ))
+        self.assertNotIn("c1", b.deferred_followups)
+        self.assertEqual([call.args[1] for call in b.post.call_args_list], [
+            "The thread session changed while I was answering; that in-progress answer was discarded."
+        ])
+
+    def test_monitor_listed_as_running_holds_child_for_followup(self):
+        first, b, _ = run_bridge_with_followups(
+            [_tasks("Monitor merge and CI"), _result("watching"),
+             _tasks(), _result("merge and CI complete")])
+        self.assertEqual(first, "watching")
+        self.assertEqual([call.args[1] for call in b.post.call_args_list],
+                         ["merge and CI complete"])
+        self.assertEqual(b.live, {})
+
     def test_stopped_mid_turn_task_does_not_steal_next_comment(self):
         first, b, injected = run_bridge_with_followups(
             [_tasks("anchor"), _result("started")],
