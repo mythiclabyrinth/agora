@@ -1699,11 +1699,25 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
     b.progress = Mock()
     b._append_system_args = Mock(return_value=[])
     b._stage_attachments = Mock(return_value=("hi", [], None))
+    b.live_start_states = []
     if control_handler is not None:
         b._handle_control_request = control_handler
         control_handler.bridge = b
     if start_live_handler is not None:
         b._start_live_run = start_live_handler
+    else:
+        start_live = b._start_live_run
+
+        def capture_live_start(*args):
+            start_live(*args)
+            key = args[0]
+            asyncio.get_running_loop().call_soon(
+                lambda: b.live_start_states.append(
+                    b.live[key].last_event_was_result if key in b.live else None
+                )
+            )
+
+        b._start_live_run = capture_live_start
     b.allowed_roots = []
     b.max_attachment_bytes = 1024
     b.tldr_default = False
@@ -2043,6 +2057,7 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual(reply, "foreground answer")
         self.assertEqual([call.args[1] for call in b.post.call_args_list],
                          ["follow-up report"])
+        self.assertEqual(b.live_start_states, [False])
         self.assertEqual(b.live, {})
 
     def test_closed_stdin_does_not_handoff_when_assistant_arrives(self):

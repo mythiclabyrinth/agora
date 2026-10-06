@@ -3491,6 +3491,7 @@ class Bridge:
                                         key, frame, binding, spawned_with, proc,
                                         [], perm_ids, perm_tasks, tmpdir,
                                     )
+                                    self.live[key].last_event_was_result = False
                                     break
                                 if saw_background_tasks:
                                     tail_deadline = time.monotonic() + RESULT_TAIL_IDLE_GRACE
