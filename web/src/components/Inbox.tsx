@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadFilter, type UnreadItem } from "@agora/core";
+import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadItem } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useJump } from "../state/jump";
-import { useUiState, writeHistory } from "../state/ui";
+import { useUiState, writeHistory, type InboxTab } from "../state/ui";
 import { ThreadsInbox } from "./ThreadsInbox";
 
-function initialTab(): "unreads" | "threads" | null {
+function initialTab(): InboxTab | null {
   if (window.location.pathname === "/inbox/threads") return "threads";
   if (window.location.pathname === "/inbox/unreads") return "unreads";
   return null;
@@ -16,27 +16,31 @@ export function Inbox() {
   const markRead = useMarkUnreadsRead();
   const ui = useUiState();
   const requestJump = useJump(s => s.request);
-  const [selectedTab, setSelectedTab] = useState<"unreads" | "threads" | null>(initialTab);
-  const [filter, setFilter] = useState<UnreadFilter>("all");
-  const tab = selectedTab ?? (unreads.isLoading || (!unreads.isError && (unreads.data?.length ?? 0) > 0) ? "unreads" : "threads");
+  const [selectedTab, setSelectedTab] = useState<InboxTab | null>(initialTab);
+  const filter = ui.inboxFilter;
+  const tab = selectedTab ?? ui.inboxTab;
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);
   const unreadTotal = unreads.data?.reduce((sum, item) => sum + item.unread, 0) ?? 0;
   const showTabCount = !limited && !unreads.data?.some(item => item.unread >= 100);
   useEffect(() => {
-    const onPop = () => setSelectedTab(initialTab());
+    const onPop = () => {
+      const next = initialTab();
+      setSelectedTab(next);
+      if (next) useUiState.getState().setInboxTab(next);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
-  useEffect(() => { setSelectedTab(initialTab()); }, [ui.view]);
   useEffect(() => {
-    if (selectedTab === null && !unreads.isLoading) {
-      setSelectedTab(!unreads.isError && (unreads.data?.length ?? 0) > 0 ? "unreads" : "threads");
-    }
-  }, [selectedTab, unreads.isLoading, unreads.isError, unreads.data]);
-  const switchTab = (next: "unreads" | "threads") => {
+    const next = initialTab();
+    setSelectedTab(next);
+    if (next) ui.setInboxTab(next);
+  }, [ui.view]); // eslint-disable-line react-hooks/exhaustive-deps
+  const switchTab = (next: InboxTab) => {
     writeHistory(`/inbox/${next}`, "replace");
     setSelectedTab(next);
+    ui.setInboxTab(next);
   };
   const open = (item: UnreadItem) => {
     ui.selectChannel(item.group_id, item.channel_id);
@@ -57,7 +61,7 @@ export function Inbox() {
       <div className="ago-unreads-toolbar">
         <div className="ago-unreads-filters" aria-label="Filter unreads">
           {(["all", "mentions", "channels", "threads"] as const).map(option =>
-            <button key={option} aria-pressed={filter === option} onClick={() => setFilter(option)}>
+            <button key={option} aria-pressed={filter === option} onClick={() => ui.setInboxFilter(option)}>
               {option === "mentions" ? "@Mentions" : option[0].toUpperCase() + option.slice(1)}
             </button>)}
         </div>

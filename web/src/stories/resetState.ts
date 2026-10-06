@@ -55,6 +55,8 @@ export function resetStoryState(): void {
     threadsSort: "recent",
     threadsFilter: "all",
     threadsGroup: null,
+    inboxTab: "unreads",
+    inboxFilter: "all",
     hiddenOpen: false,
     sideCollapsed: false,
     threadRoot: null,

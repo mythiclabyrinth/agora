@@ -9,6 +9,7 @@ import {
   type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
 import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
+import { copyDeepLink } from "../lib/deepLinks";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
@@ -94,6 +95,12 @@ function InboxRow({ t }: { t: ThreadRow }) {
                   onError: error => toast(`Couldn't rename thread: ${(error as Error).message}`, { variant: "warn" }),
                 },
               )} />}
+            <button className="ago-x" title="Copy link to this thread" onClick={e => {
+              e.stopPropagation();
+              menuRef.current?.hidePopover();
+              triggerRef.current?.focus();
+              void copyDeepLink({ kind: "thread", groupId: t.group_id, channelId: t.channel_id, threadId: root.id }, "Thread");
+            }}><Icon name="link" /> Copy link</button>
             {canRemove && (
               <button className={`ago-x ago-hide-btn ${armed ? "armed" : ""}`}
                 title={armed ? "Click again to remove this thread" : "Remove from Threads (messages stay in the channel; posting again restores it)"}

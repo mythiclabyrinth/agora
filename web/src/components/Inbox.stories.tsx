@@ -3,6 +3,8 @@ import { expect, userEvent, within } from "storybook/test";
 import { fixtureGroups, fixtureMe, fixtureThreads } from "@agora/core/testing/fixtures";
 import type { UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
+import { useUiState } from "../state/ui";
+import { inboxPathAfterReload } from "../lib/inboxReload";
 
 const now = Date.now() / 1000;
 const channel: UnreadItem = {
@@ -41,8 +43,12 @@ export const Populated: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/Launch planning in/)).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: "Threads" }));
+    expect(useUiState.getState().inboxTab).toBe("threads");
     await expect(canvas.findByText("Can we validate the responsive component layout?")).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("tab", { name: /Unreads/ }));
+    expect(useUiState.getState().inboxTab).toBe("unreads");
+    await userEvent.click(canvas.getByRole("button", { name: "@Mentions" }));
+    expect(useUiState.getState().inboxFilter).toBe("mentions");
     await userEvent.click(canvas.getByRole("button", { name: "Mark thread read" }));
   },
 };
@@ -61,3 +67,21 @@ export const Mentions: Story = {
   },
 };
 export const Threads: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/threads") } };
+
+export const RememberedTab: Story = {
+  play: async () => {
+    useUiState.getState().setInboxTab("threads");
+    history.replaceState(null, "", "/inbox/unreads");
+    useUiState.getState().openInbox("replace");
+    expect(window.location.pathname).toBe("/inbox/threads");
+  },
+};
+
+export const ReloadResetRules: Story = {
+  play: async () => {
+    expect(inboxPathAfterReload("/inbox/threads", "reload", {})).toBe("/inbox/unreads");
+    expect(inboxPathAfterReload("/inbox/threads", "reload", null)).toBeNull();
+    expect(inboxPathAfterReload("/inbox/threads", "navigate", {})).toBeNull();
+    expect(inboxPathAfterReload("/inbox/unreads", "reload", {})).toBeNull();
+  },
+};
