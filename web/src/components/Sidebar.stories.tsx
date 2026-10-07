@@ -12,6 +12,7 @@ import {
 } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
 import { Sidebar } from "./Sidebar";
+import { useShortcuts } from "../hooks/useShortcuts";
 
 const routes = {
   "GET /api/me": fixtureMe,
@@ -188,5 +189,33 @@ export const AgentReplyingCollapsedGroup: Story = {
     const canvas = within(canvasElement);
     expect(await canvas.findByRole("img", { name: "Claude M5 is replying" })).toBeVisible();
     expect(canvas.queryByText("responsive-web")).not.toBeInTheDocument();
+  },
+};
+
+function SidebarWithShortcuts() {
+  useShortcuts();
+  return <Sidebar />;
+}
+
+export const ShortcutFollowsVisibleOrder: Story = {
+  parameters: {
+    apiRoutes: { ...routes, "GET /api/groups": { groups: [
+      { ...dmGroups[1], channels: [{ ...dmGroups[1].channels[0], unread: 1 }] },
+      ...fixtureGroups,
+    ] } },
+    setup: () => {
+      setup();
+      useUiState.setState({ expanded: ["product", "dms"], unreadsOnly: true });
+    },
+  },
+  render: () => <SidebarWithShortcuts />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelectorAll(".ago-chan[data-channel-id]")).toHaveLength(2));
+    expect([...canvasElement.querySelectorAll<HTMLElement>(".ago-chan[data-channel-id]")].map(row => row.dataset.channelId)).toEqual(["general", "dm-claude"]);
+    await userEvent.click(canvas.getByRole("button", { name: /Inbox/ }));
+    useUiState.getState().selectChannel("product", "general");
+    await userEvent.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await waitFor(() => expect(useUiState.getState().sel.c).toBe("dm-claude"));
   },
 };

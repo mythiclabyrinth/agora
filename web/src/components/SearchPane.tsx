@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  esc, mdliteHtml, fmtTs, useAskAi, useGroups, useMe, useSearch, useSearchMore,
+  currentPlatform, formatCombo, SHORTCUTS, esc, mdliteHtml, fmtTs, useAskAi, useGroups, useMe, useSearch, useSearchMore,
   type AskResponse, type FileFilter, type SearchMessageHit, type SearchScope,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
@@ -13,9 +13,12 @@ import { fileUrl, humanSize } from "../lib/files";
 import { toast } from "../lib/toast";
 import { useJump } from "../state/jump";
 import { useUiState } from "../state/ui";
-import { useDialogFocus } from "../hooks/useDialogFocus";
+import { isTopDialog, useDialogFocus } from "../hooks/useDialogFocus";
+import { isDesktopShell } from "../lib/chime";
+import { bindingFor, useShortcutState } from "../state/shortcuts";
 
 type Item =
+  | { kind: "command"; id: string }
   | { kind: "ask" }
   | { kind: "group"; g: { id: string; name: string; description?: string } }
   | { kind: "channel"; c: { id: string; group_id: string; name: string; topic?: string; group_name?: string } }
@@ -93,6 +96,7 @@ export function SearchPane() {
   const ui = useUiState();
   const me = useMe().data;
   const groups = useGroups().data || [];
+  useShortcutState(s => s.bindings);
   const [query, setQuery] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [scopeStr, setScopeStr] = useState("");
@@ -159,6 +163,11 @@ export function SearchPane() {
     () => [...(res.data?.messages?.items || []), ...extra],
     [res.data, extra],
   );
+  const commands = view === "results" && !scopeStr && !file && query.trim() === debouncedQ
+    ? SHORTCUTS.filter(s => (s.id === "help.sheet" || s.id.startsWith("nav.") || ["settings", "ui.sidebar", "link.copy"].includes(s.id)) && (!s.feature || !!me?.[s.feature]) && (!s.desktopOnly || isDesktopShell()) &&
+      (debouncedQ ? `${s.label} ${s.id}`.toLowerCase().includes(debouncedQ.toLowerCase()) :
+        ["help.sheet", "nav.inbox", "nav.unreads", "nav.threads", "settings"].includes(s.id)))
+    : [];
 
   // Build the item list in display order.
   const items: Item[] = useMemo(() => {
@@ -169,18 +178,28 @@ export function SearchPane() {
       }
       return list;
     }
+    if (!debouncedQ && !file) {
+      for (const s of commands) list.push({ kind: "command", id: s.id });
+      return list;
+    }
     if (me?.search_ai && debouncedQ) list.push({ kind: "ask" });
     for (const g of res.data?.groups || []) list.push({ kind: "group", g });
     for (const c of res.data?.channels || []) list.push({ kind: "channel", c });
+    for (const s of commands) list.push({ kind: "command", id: s.id });
     for (const m of msgs) list.push({ kind: "message", m });
     if (res.data?.messages?.has_more) list.push({ kind: "more" });
     return list;
-  }, [view, answer, me, debouncedQ, res.data, msgs]);
+  }, [view, answer, me, debouncedQ, res.data, msgs, commands, scopeStr, file]);
 
   const activate = (i: number) => {
     const it = items[i];
     if (!it) return;
     setSel(i);
+    if (it.kind === "command") {
+      ui.setSearchOpen(false);
+      setTimeout(() => (window as Window & { __agoraShortcut?: (id: string) => void }).__agoraShortcut?.(it.id), 0);
+      return;
+    }
     if (it.kind === "ask") { runAsk(); return; }
     if (it.kind === "more") {
       more.mutate({ q: debouncedQ, offset: msgs.length, scope, file }, {
@@ -202,16 +221,11 @@ export function SearchPane() {
     jumpTo(it.m);
   };
 
-  // Global shortcuts: ⌘K toggles; Esc/arrows/Enter while open.
+  // The shortcut hook owns Mod+K; this listener handles search-result keys.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
-        e.preventDefault();
-        ui.setSearchOpen(!useUiState.getState().searchOpen);
-        return;
-      }
-      if (!useUiState.getState().searchOpen) return;
+      if (!useUiState.getState().searchOpen || !isTopDialog(panelRef.current)) return;
       if (e.isComposing) return;
       if ((e.target as HTMLElement)?.id === "ago-search-scope") return;
       if (e.key === "ArrowDown") { e.preventDefault(); setSel(s => items.length ? (s + 1) % items.length : 0); return; }
@@ -234,6 +248,18 @@ export function SearchPane() {
 
   let itemIdx = -1;
   const nextIdx = () => ++itemIdx;
+  const renderCommands = () => commands.length > 0 && <>
+    <div className="ago-search-label">Commands</div>
+    {commands.map(s => {
+      const i = nextIdx();
+      return <div key={s.id} className={`ago-search-row${sel === i ? " sel" : ""}`}
+        role="button" tabIndex={-1} onClick={() => activate(i)}>
+        <span className="ago-search-ico"><Icon name="keyboard" /></span>
+        <span className="ago-search-name">{s.label}</span>
+        {bindingFor(s.id, currentPlatform()) && <kbd>{formatCombo(bindingFor(s.id, currentPlatform()), currentPlatform())}</kbd>}
+      </div>;
+    })}
+  </>;
 
   return (
     <div className="ago-search-overlay" id="ago-search-overlay"
@@ -304,10 +330,12 @@ export function SearchPane() {
                 </>
               )}
             </>
-          ) : !debouncedQ && !file ? (
+          ) : !debouncedQ && !file ? (<>
+            {renderCommands()}
             <div className="ago-search-hint">
               Search messages, channels, and groups{me?.search_ai ? " — or ask the AI a question" : ""}.
             </div>
+          </>
           ) : (
             <>
               {me?.search_ai && debouncedQ && (() => {
@@ -345,6 +373,7 @@ export function SearchPane() {
                   </div>
                 );
               })}
+              {renderCommands()}
               {msgs.length > 0 && <div className="ago-search-label">Messages</div>}
               {msgs.map(m => {
                 const i = nextIdx();

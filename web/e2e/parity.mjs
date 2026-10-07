@@ -168,6 +168,20 @@ async function main() {
     if (stored !== TOKEN) throw new Error("token not in localStorage");
   });
 
+  await check("shortcuts: sheet and Inbox sequences", async () => {
+    await page.keyboard.press("ControlOrMeta+/");
+    await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor({ state: "detached" });
+    await page.locator(".ago-inbox-item").focus();
+    await page.keyboard.press("g"); await page.keyboard.press("u");
+    await page.waitForURL(/\/inbox\/unreads$/);
+    await page.locator(".ago-inbox-item").focus();
+    await page.keyboard.press("g"); await page.keyboard.press("t");
+    await page.waitForURL(/\/inbox\/threads$/);
+    if (await page.getByRole("tab", { name: "Threads" }).getAttribute("aria-selected") !== "true") throw new Error("Threads shortcut did not switch tab");
+  });
+
   await check("navigation: legacy /threads opens Inbox's Threads tab", async () => {
     await page.goto(BASE + "/threads");
     await page.waitForURL(/\/inbox\/threads$/);

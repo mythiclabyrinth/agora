@@ -22,7 +22,7 @@ export function AgentDmPanel({ onClose }: { onClose: () => void }) {
     const previous = document.activeElement as HTMLElement | null;
     panel?.focus();
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { onCloseRef.current(); return; }
+      if (event.key === "Escape") { event.preventDefault(); onCloseRef.current(); return; }
       if (event.key !== "Tab" || !panel) return;
       const focusable = [...panel.querySelectorAll<HTMLElement>(
         'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',

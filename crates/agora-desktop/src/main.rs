@@ -20,7 +20,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tauri::menu::{Menu, SubmenuBuilder};
+use tauri::menu::{Menu, MenuItem, MenuItemKind, SubmenuBuilder, HELP_SUBMENU_ID};
 use tauri::path::BaseDirectory;
 #[cfg(target_os = "linux")]
 use tauri::{
@@ -147,6 +147,9 @@ fn main() {
                 server
             };
             menu.append(&server.build()?)?;
+            if let Some(MenuItemKind::Submenu(help)) = menu.get(HELP_SUBMENU_ID) {
+                help.append(&MenuItem::with_id(handle, "keyboard-shortcuts", "Keyboard Shortcuts", true, None::<&str>)?)?;
+            }
             #[cfg(all(feature = "updater", target_os = "macos"))]
             if let Some(tauri::menu::MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {
                 app_menu.insert(
@@ -163,6 +166,13 @@ fn main() {
             Ok(menu)
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "keyboard-shortcuts" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.eval("window.__agoraShortcut?.('help.open')");
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             "server-settings" => open_main(app, connect_page_url(true)),
             "sign-out" => sign_out(app),
             "website" => {

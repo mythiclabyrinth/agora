@@ -12,7 +12,7 @@ export function initToken(): void {
   if (t) {
     localStorage.setItem("agora_token", t);
     // Drop the token from the visible URL/history.
-    history.replaceState(null, "", location.pathname);
+    history.replaceState(window.history.state, "", location.pathname);
   }
   if (location.hash.length > 1) {
     const frag = new URLSearchParams(location.hash.slice(1));
@@ -23,7 +23,7 @@ export function initToken(): void {
     if (join) sessionStorage.setItem("agora_join", join);
     if (session || AUTH_ERROR || join) {
       const pendingPath = sessionStorage.getItem(AUTH_PATH_KEY);
-      history.replaceState(null, "", pendingPath || location.pathname);
+      history.replaceState(window.history.state, "", pendingPath || location.pathname);
       if (session) sessionStorage.removeItem(AUTH_PATH_KEY);
     }
   }

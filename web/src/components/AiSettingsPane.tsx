@@ -20,6 +20,7 @@ import { useUiState } from "../state/ui";
 import { AppearancePicker } from "./AppearancePicker";
 import { NotificationSettings } from "./NotificationSettings";
 import { useDialogFocus } from "../hooks/useDialogFocus";
+import { KeyboardSettings } from "./KeyboardSettings";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 
 function SectionHead({
@@ -547,11 +548,12 @@ export function AiSettingsPane() {
   const ui = useUiState();
   const me = useMe().data;
   const open = ui.panel === "settings";
-  const [tab, setTab] = useState<"appearance" | "notifications" | "workspace" | "features" | "credentials">("appearance");
+  const tab = ui.settingsTab;
+  const setTab = ui.setSettingsTab;
   const admin = !!me?.instance_admin;
   const activeTab = tab === "notifications"
     ? tab
-    : (admin ? tab : "appearance");
+    : (admin || tab === "keyboard" ? tab : "appearance");
   const aiTab = activeTab === "features" || activeTab === "credentials";
   const q = useInstanceAi(open && admin && aiTab);
   const dialogRef = useDialogFocus(open, () => ui.openPanel(null));
@@ -571,6 +573,8 @@ export function AiSettingsPane() {
             aria-selected={activeTab === "appearance"} onClick={() => setTab("appearance")}>
             Appearance
           </button>
+          <button type="button" role="tab" className={`conn-tab${activeTab === "keyboard" ? " active" : ""}`}
+            aria-selected={activeTab === "keyboard"} onClick={() => setTab("keyboard")}>Keyboard</button>
           <button type="button" role="tab" className={`conn-tab${activeTab === "notifications" ? " active" : ""}`}
             aria-selected={activeTab === "notifications"} onClick={() => setTab("notifications")}>Notifications</button>
           {admin && <button type="button" role="tab" className={`conn-tab${tab === "workspace" ? " active" : ""}`}
@@ -586,6 +590,7 @@ export function AiSettingsPane() {
         </div>
         <div className="conn-body">
           {activeTab === "appearance" && <AppearancePicker />}
+          {activeTab === "keyboard" && <KeyboardSettings />}
           {activeTab === "notifications" && <NotificationSettings />}
           {activeTab === "workspace" && <WorkspaceSettings />}
           {aiTab && q.isLoading && <div className="dim conn-empty">Loading…</div>}

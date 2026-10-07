@@ -38,7 +38,7 @@ export function Reactions({ message, onPick }: {
     closeTimer.current = window.setTimeout(() => setOpen(null), 80);
   };
   useEffect(() => {
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(null); };
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape" && open) { event.preventDefault(); setOpen(null); } };
     const closeOutside = (event: PointerEvent) => {
       const target = event.target as HTMLElement;
       if (!root.current?.contains(target) && !target.closest?.(".ago-react-pop")) setOpen(null);
@@ -48,10 +48,9 @@ export function Reactions({ message, onPick }: {
     return () => {
       window.removeEventListener("keydown", close);
       document.removeEventListener("pointerdown", closeOutside);
-      clearHold();
-      cancelClose();
     };
-  }, []);
+  }, [open]);
+  useEffect(() => () => { clearHold(); cancelClose(); }, []);
   const list = message.reactions || [];
   if (!list.length) return null;
   return (

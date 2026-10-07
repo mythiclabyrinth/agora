@@ -26,6 +26,13 @@ import { useToggleReactionById } from "../hooks/useToggleReactionById";
 import { liveOnAgentMessage, useLiveVoice } from "../state/liveVoice";
 import { speakEnqueue, useSpeak } from "../state/speak";
 import { useJump } from "../state/jump";
+import { useShortcuts } from "../hooks/useShortcuts";
+import { ShortcutsDialog } from "./ShortcutsDialog";
+
+function ShortcutsHost() {
+  useShortcuts();
+  return null;
+}
 
 export function AgoraLayout() {
   const me = useMe().data;
@@ -59,7 +66,7 @@ export function AgoraLayout() {
     if (!groups || !groups.length) return;
     const location = `${locationKey}:${window.location.pathname}`;
     if (window.location.pathname === "/threads") {
-      history.replaceState(null, "", "/inbox/threads");
+      history.replaceState(window.history.state, "", "/inbox/threads");
     }
     if (window.location.pathname === "/inbox" || window.location.pathname.startsWith("/inbox/")) {
       if (ui.view.kind !== "inbox" || ui.threadRoot != null) {
@@ -153,6 +160,7 @@ export function AgoraLayout() {
 
   return (
     <div id="content">
+      <ShortcutsHost />
       <div
         className={`agora-layout ${viewClass}${ui.sideCollapsed ? " side-collapsed" : ""}${ui.threadRoot != null && ui.threadExpanded ? " thread-expanded" : ""}`}
         id="agora-layout">
@@ -168,6 +176,7 @@ export function AgoraLayout() {
       </div>
       <EmojiPickerHost onPick={(mid, emoji) => toggleReaction(mid, emoji)} />
       <SearchPane />
+      <ShortcutsDialog />
       <PeoplePane />
       <AiSettingsPane />
       <ConnectionsPane />

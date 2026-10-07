@@ -21,6 +21,7 @@ export type MainView =
   | { kind: "group" };
 
 export type Panel = "people" | "connections" | "settings" | null;
+export type SettingsTab = "appearance" | "keyboard" | "notifications" | "workspace" | "features" | "credentials";
 export type InboxTab = "unreads" | "threads";
 
 export interface Selection { g?: string | null; c?: string | null; }
@@ -75,6 +76,7 @@ interface UiState {
   /** Slack-style phone drill-down: which column a narrow viewport shows. */
   mobileView: "side" | "main" | "thread";
   panel: Panel;
+  settingsTab: SettingsTab;
   /** Expanded group ids; null = "the selected group counts as expanded". */
   expanded: string[] | null;
   collapsedChannels: string[];
@@ -96,6 +98,7 @@ interface UiState {
   searchOpen: boolean;
   selectChannel: (g: string, c: string, history?: "push" | "replace" | "none") => void;
   openInbox: (history?: "push" | "replace" | "none") => void;
+  goInbox: (tab?: InboxTab, history?: "push" | "replace" | "none") => void;
   openGroupPage: (g: string, history?: "push" | "replace" | "none") => void;
   backToGroups: () => void;
   isExpanded: (g: string) => boolean;
@@ -120,6 +123,7 @@ interface UiState {
   setFilesOpen: (on: boolean, threadId?: number | null) => void;
   setSearchOpen: (on: boolean) => void;
   openPanel: (p: Panel) => void;
+  setSettingsTab: (tab: SettingsTab) => void;
 }
 
 export const useUiState = create<UiState>((set, get) => ({
@@ -128,6 +132,7 @@ export const useUiState = create<UiState>((set, get) => ({
   // Phones land on the channel when one is remembered, else the group list.
   mobileView: initialSelection.c ? "main" : "side",
   panel: null,
+  settingsTab: "appearance",
   expanded: loadJSON<string[] | null>("agora_open", null),
   collapsedChannels: loadJSON<string[]>("agora_chan_collapsed", []),
   unreadsOnly: localStorage.getItem("agora_unreads_only") === "1",
@@ -161,9 +166,11 @@ export const useUiState = create<UiState>((set, get) => ({
     return { sel: { g: normalizedGroupId, c }, view: { kind: "channel" }, threadRoot: null,
       filesOpen: false, filesThread: null, mobileView: "main" as const };
   }),
-  openInbox: (history = "push") => {
-    writeHistory(`/inbox/${get().inboxTab}`, history);
-    set({ view: { kind: "inbox" }, threadRoot: null, mobileView: "main" });
+  openInbox: (history = "push") => get().goInbox(undefined, history),
+  goInbox: (tab, history = "push") => {
+    const inboxTab = tab ?? get().inboxTab;
+    writeHistory(`/inbox/${inboxTab}`, history);
+    set({ inboxTab, view: { kind: "inbox" }, threadRoot: null, mobileView: "main" });
   },
   openGroupPage: (g, history = "push") => set((s) => {
     const sel = { ...s.sel, g };
@@ -261,9 +268,32 @@ export const useUiState = create<UiState>((set, get) => ({
   }),
   setSearchOpen: (on) => set({ searchOpen: on }),
   openPanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
+  setSettingsTab: settingsTab => set({ settingsTab }),
 }));
+
+const historyIndex = (): number | null => {
+  const index = window.history.state?.agoraHistoryIndex;
+  return Number.isSafeInteger(index) && index >= 0 ? index : null;
+};
+let maxAgoraHistoryIndex = historyIndex() ?? 0;
+
+export function navigateAgoraHistory(direction: "back" | "forward"): boolean {
+  const index = historyIndex();
+  if (index === null || (direction === "back" ? index <= 0 : index >= maxAgoraHistoryIndex)) return false;
+  window.history[direction]();
+  return true;
+}
 
 export function writeHistory(path: string, mode: "push" | "replace" | "none"): void {
   if (mode === "none" || window.location.pathname === path) return;
-  window.history[mode === "replace" ? "replaceState" : "pushState"]({}, "", path);
+  const index = historyIndex();
+  if (mode === "push") {
+    const next = (index ?? 0) + 1;
+    maxAgoraHistoryIndex = next;
+    window.history.pushState({ agoraHistoryIndex: next }, "", path);
+  } else {
+    const current = index ?? 0;
+    maxAgoraHistoryIndex = Math.max(maxAgoraHistoryIndex, current);
+    window.history.replaceState({ agoraHistoryIndex: current }, "", path);
+  }
 }

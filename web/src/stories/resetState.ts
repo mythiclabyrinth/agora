@@ -11,6 +11,7 @@ import { useSpeak } from "../state/speak";
 import { useRequireAgent } from "../state/requireAgent";
 import { useToasts } from "../lib/toast";
 import { useAppearance } from "../state/appearance";
+import { useShortcutState } from "../state/shortcuts";
 
 const STORAGE_KEYS = [
   "agora_token",
@@ -23,6 +24,7 @@ const STORAGE_KEYS = [
   "agora_threads_sort",
   "agora_threads_filter",
   "agora_threads_group",
+  "agora_shortcuts",
   "agora_side",
   "agora_thread",
   "agora_thread_width",
@@ -47,6 +49,7 @@ export function resetStoryState(): void {
     view: { kind: "channel" },
     mobileView: "side",
     panel: null,
+    settingsTab: "appearance",
     expanded: null,
     collapsedChannels: [],
     unreadsOnly: false,
@@ -67,7 +70,8 @@ export function resetStoryState(): void {
   useConfirm.getState().disarm();
   useJump.getState().clear();
   useDrafts.setState({ drafts: {} });
-  useAddressing.setState({ addr: {} });
+  useAddressing.setState({ addr: {}, pickerKey: null });
+  useShortcutState.setState({ bindings: {}, sheetOpen: false });
   useAttachmentDrafts.getState().reset();
   useLive.setState({ typing: {}, progress: {}, epoch: 0, touched: {} });
   useTldrView.setState({ showing: {} });
