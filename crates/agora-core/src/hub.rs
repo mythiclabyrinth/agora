@@ -982,6 +982,9 @@ impl Hub {
         let previous_plan = if availability == "available" && frame.get("plan").is_none() {
             previous.as_ref().and_then(|usage| usage["plan"].as_str())
         } else { None };
+        let previous_account = if availability == "available" && frame.get("account").is_none() {
+            previous.as_ref().and_then(|usage| usage["account"].as_str())
+        } else { None };
         let previous_credits = if availability == "available" && frame.get("credits").is_none() {
             previous.as_ref().and_then(|usage| usage.get("credits")).filter(|credits| credits.is_object())
         } else { None };
@@ -989,6 +992,7 @@ impl Hub {
             "agent_id": agent_id, "provider": provider, "availability": availability,
             "captured_at": captured_at, "windows": windows,
             "plan": frame["plan"].as_str().or(previous_plan).map(|s| s.chars().take(64).collect::<String>()),
+            "account": frame["account"].as_str().or(previous_account).map(|s| s.chars().take(64).collect::<String>()),
             "credits": frame.get("credits").filter(|v| v.as_object().is_some_and(|object|
                 ["has_credits", "unlimited", "balance"].iter().any(|key| object.contains_key(*key))))
                 .or(previous_credits).map(|credits| json!({
@@ -5113,6 +5117,23 @@ mod tests {
     }
 
     #[test]
+    fn usage_account_is_capped_and_carried_when_omitted() {
+        let h = hub();
+        let _agent = add_agent(&h, "bot-a", "Bot A", false);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "account": "a".repeat(70), "captured_at": now(),
+            "windows": [{"key": "weekly", "used_percent": 25}]
+        }));
+        assert_eq!(h.current_agent_usage("bot-a").unwrap()["account"].as_str().unwrap().len(), 64);
+        h.handle_agent_frame(&json!({
+            "type": "usage_update", "agent_id": "bot-a", "provider": "claude",
+            "captured_at": now(), "windows": [{"key": "weekly", "used_percent": 30}]
+        }));
+        assert_eq!(h.current_agent_usage("bot-a").unwrap()["account"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
     fn usage_request_requires_shared_membership_and_returns_snapshot() {
         let h = hub();
         let mut requester = add_agent(&h, "bot-a", "Bot A", false);
@@ -5122,7 +5143,7 @@ mod tests {
             "type": "usage_update", "agent_id": "bot-b", "provider": "claude",
             "captured_at": now(), "windows": [{"key": "five_hour", "used_percent": 100}],
             "limited_until": until, "limited_window": "five_hour",
-            "plan": "Pro", "credits": {"has_credits": true, "balance": "5"}
+            "plan": "Pro", "account": "work", "credits": {"has_credits": true, "balance": "5"}
         }));
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "denied", "agent_id": "bot-a",
@@ -5144,8 +5165,10 @@ mod tests {
         assert_eq!(allowed["usage"]["limited_until"], until);
         assert_eq!(allowed["usage"]["limited_window"], "five_hour");
         assert!(allowed["usage"].get("plan").is_none());
+        assert!(allowed["usage"].get("account").is_none());
         assert!(allowed["usage"].get("credits").is_none());
         assert_eq!(h.current_agent_usage("bot-b").unwrap()["plan"], "Pro");
+        assert_eq!(h.current_agent_usage("bot-b").unwrap()["account"], "work");
         assert_eq!(allowed["stale"], false);
         h.handle_agent_frame(&json!({
             "type": "usage_request", "request_id": "handle", "agent_id": "bot-a",

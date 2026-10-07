@@ -1263,6 +1263,31 @@ class OutboundAttachmentTests(unittest.TestCase):
 
 
 class UsageTests(unittest.TestCase):
+    def test_pinned_run_does_not_refresh_bridge_wide_usage(self):
+        async def events():
+            yield b'{"type":"thread.started","thread_id":"personal-session"}\n'
+            yield b'{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}\n'
+            yield b'{"type":"turn.completed"}\n'
+
+        b = make_bridge()
+        b.accounts["personal"] = Path("/tmp/codex-personal")
+        b.codex_bin = "codex"
+        b.timeout = 30
+        b.default_sandbox = "read-only"
+        b.base_codex_args = []
+        b._resolved_model = Mock(return_value=None)
+        b._stage_attachments = Mock(return_value=("prompt", [], None))
+        b.refresh_usage = AsyncMock()
+        b._save_state = Mock()
+        binding = {"cwd": "/tmp", "account": "personal"}
+        proc = Mock(returncode=0, stdout=events(), stdin=Mock())
+        proc.wait = AsyncMock()
+        proc.stderr.read = AsyncMock(return_value=b"")
+        with patch.object(bridge.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)) as spawn:
+            asyncio.run(b.run_codex("c1", {"channel_id": "c1"}, binding, "prompt"))
+        self.assertEqual(spawn.await_args.kwargs["env"]["CODEX_HOME"], "/tmp/codex-personal")
+        b.refresh_usage.assert_not_awaited()
+
     def test_refresh_reads_rollouts_off_the_event_loop(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         instance.agent_id = "codex-cli"
@@ -1280,6 +1305,7 @@ class UsageTests(unittest.TestCase):
             bridge.read_codex_usage, "thread-1", Path("/home/u/.codex/sessions")
         )
         instance.send.assert_called_once_with(instance.last_usage_frame)
+        self.assertEqual(instance.last_usage_frame["account"], "default")
 
     def test_usage_reads_the_active_accounts_sessions_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1304,6 +1330,7 @@ class UsageTests(unittest.TestCase):
         frame = instance.send.call_args[0][0]
         self.assertIsNone(instance.last_usage_frame)
         self.assertEqual(frame["availability"], "unavailable")
+        self.assertEqual(frame["account"], "default")
         self.assertEqual(frame["windows"], [])
 
     def test_rollout_rate_limits_keep_percentage_units_and_duration_labels(self):
@@ -1405,6 +1432,76 @@ class AccountParsingTests(unittest.TestCase):
 class AccountSwitchTests(unittest.TestCase):
     def _two(self, tmp, **kw):
         return make_account_bridge(tmp, f"a:{tmp}/a,b:{tmp}/b", **kw)
+
+    def test_here_switch_preserves_other_chats_and_global_switch_preserves_pin(self):
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
+            b = self._two(tmp, bindings={
+                "c1": {"session_id": "one", "cwd": "/repo"},
+                "c2": {"session_id": "two", "cwd": "/repo"},
+            })
+            self.assertIn("This chat switched", b._cmd_switch("b --here", "c1"))
+            self.assertEqual(b.bindings["c1"]["account"], "b")
+            self.assertIsNone(b.bindings["c1"]["session_id"])
+            self.assertEqual(json.loads(b.state_file.read_text())["bindings"]["c1"]["account"], "b")
+            self.assertEqual(b.bindings["c2"]["session_id"], "two")
+            self.assertEqual(b.child_env(b.binding_account(b.bindings["c1"]))["CODEX_HOME"], str(b.accounts["b"]))
+            b.bindings["c1"]["session_id"] = "personal-session"
+            self.assertIn("1 chat(s) kept", b._cmd_switch("b"))
+            self.assertEqual(b.bindings["c1"]["session_id"], "personal-session")
+            self.assertIsNone(b.bindings["c2"]["session_id"])
+            self.assertIn("session was kept", b._cmd_switch("--here --reset", "c1"))
+            self.assertNotIn("account", b.bindings["c1"])
+            self.assertEqual(b.bindings["c1"]["session_id"], "personal-session")
+
+    def test_here_requires_binding_and_inherits_parent_settings_in_new_thread(self):
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
+            b = self._two(tmp, bindings={"c1": {"session_id": "parent", "cwd": "/repo",
+                                                     "model": "gpt-6-sol", "sandbox": "read-only",
+                                                     "worktree": {"path": "/repo", "branch": "feature"}}})
+            self.assertIn("No session bound", b._cmd_switch("b --here", "unbound"))
+            self.assertNotIn("unbound", b.bindings)
+            self.assertIn("This chat switched", b._cmd_switch("b --here", "c1:42"))
+            child = b.bindings["c1:42"]
+            self.assertEqual(child["cwd"], "/repo")
+            self.assertEqual(child["model"], "gpt-6-sol")
+            self.assertEqual(child["sandbox"], "read-only")
+            self.assertEqual(child["worktree"]["branch"], "feature")
+            self.assertEqual(child["account"], "b")
+            self.assertIsNone(child["session_id"])
+
+    def test_noop_here_leaves_new_thread_free_to_fork(self):
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
+            b = self._two(tmp, bindings={"c1": {"session_id": "parent", "cwd": "/repo"}})
+            b.thread_fork_locks = {}
+            b.deleted_thread_roots = {}
+            b.set_reaction = Mock()
+            b.clear_reaction = Mock()
+            self.assertIn("Already on a", b._cmd_switch("a --here", "c1:42"))
+            self.assertIn("Already on a", b._cmd_switch("--here --reset", "c1:42"))
+            self.assertNotIn("c1:42", b.bindings)
+            self.assertTrue(asyncio.run(b._ensure_thread_fork(
+                "c1:42", {"channel_id": "c1", "thread_id": 42})))
+            self.assertEqual(b.bindings["c1:42"]["_fork_source"], "parent")
+
+    def test_use_in_unstarted_thread_reads_and_keeps_parent_pin(self):
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
+            b = self._two(tmp, bindings={"c1": {"session_id": "parent", "cwd": "/repo",
+                                                     "model": "gpt-6-sol", "account": "b"}})
+            with patch.object(bridge, "find_session", return_value={
+                "session_id": "personal-session", "cwd": "/repo", "last_prompt": "hello",
+            }) as find:
+                self.assertIn("Bound to session", b._cmd_use("c1:42", "personal-session"))
+            find.assert_called_once_with("personal-session", b.accounts["b"] / "sessions")
+            self.assertEqual(b.bindings["c1:42"]["account"], "b")
+            self.assertEqual(b.bindings["c1:42"]["model"], "gpt-6-sol")
+
+    def test_here_switch_checks_only_this_chat_busy_and_refuses_override(self):
+        with tempfile.TemporaryDirectory() as tmp, no_api_key():
+            b = self._two(tmp, bindings={"c1": {"session_id": "one", "cwd": "/repo"}})
+            b.busy.add("c2")
+            self.assertIn("This chat switched", b._cmd_switch("b --here", "c1"))
+            with patch.dict(bridge.os.environ, {"OPENAI_API_KEY": "sk-test"}):
+                self.assertIn("OPENAI_API_KEY", b._cmd_switch("a --here", "c1"))
 
     def test_switch_releases_sessions_but_keeps_cwd_and_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2222,8 +2319,9 @@ class ThreadForkTests(unittest.TestCase):
         self.assertEqual(b.bindings["c2:42"]["cwd"], "/tmp")
         self.assertNotIn("worktree", b.bindings["c2:42"])
 
-    def test_fork_cli_uses_bound_folder_and_active_account_home(self):
+    def test_fork_cli_uses_bound_folder_and_chat_account_home(self):
         b = make_bridge()
+        b.accounts["personal"] = Path("/tmp/account-b")
         b.codex_bin = "codex"
         b.default_sandbox = "read-only"
         b.default_model = None
@@ -2232,7 +2330,7 @@ class ThreadForkTests(unittest.TestCase):
         b._stage_attachments = Mock(return_value=("prompt", [], None))
         b._prompt_suffixes = Mock(return_value="")
         b.child_env = Mock(return_value={"CODEX_HOME": "/tmp/account-b"})
-        binding = {"cwd": "/tmp/project", "session_id": "source-id",
+        binding = {"cwd": "/tmp/project", "session_id": "source-id", "account": "personal",
                    "_fork_source": "source-id", "sandbox": "read-only"}
         with patch.object(bridge.asyncio, "create_subprocess_exec",
                           AsyncMock(side_effect=RuntimeError("spawn stopped"))) as spawn:
@@ -2243,6 +2341,7 @@ class ThreadForkTests(unittest.TestCase):
         self.assertEqual(argv[:4], ("codex", "exec", "fork", "source-id"))
         self.assertEqual(spawn.await_args.kwargs["cwd"], "/tmp/project")
         self.assertEqual(spawn.await_args.kwargs["env"]["CODEX_HOME"], "/tmp/account-b")
+        b.child_env.assert_called_once_with("personal")
 
     def test_fork_waits_for_main_turn_and_keeps_account_settings(self):
         b = make_bridge()

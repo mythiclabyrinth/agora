@@ -364,7 +364,7 @@ BACKGROUND_SYSTEM_PROMPT = (
 # killing a live child (and any turn injected into it) to apply it sooner costs
 # more than it buys — run_claude's fingerprint check applies it on the next spawn.
 REBINDING_COMMANDS = frozenset({"/use", "/new", "/worktree", "/model",
-                                "/permissions"})
+                                "/permissions", "/switch"})
 BRIDGE_COMMANDS = frozenset({"/commands", "/sessions", "/use", "/new",
                              "/worktree", "/worktrees", "/model",
                              "/permissions", "/tldr", "/switch", "/stop",
@@ -621,7 +621,9 @@ HELP = """Bridge commands (plain text + other Claude slash cmds are forwarded):
 /model <opus|sonnet|haiku|fable|…|default> - set the model for this channel
 /permissions <plan|acceptEdits|bypass|default|reset> - set the permission mode
 /tldr <on|off|default> - add a toggleable short summary to long replies
-/switch [account] - list Claude accounts, or move every channel onto one
+/switch [account] - list Claude accounts, or move every unpinned chat onto one
+/switch <account> --here - use an account only in this chat
+/switch --here --reset - return this chat to the bridge-wide account
 /stop - cancel the run in flight on this channel
 /status - show the current binding
 /commands - this message"""
@@ -1035,8 +1037,10 @@ class Bridge:
         self.state_file = Path(args.state_file)
         self.bindings: dict[str, dict] = self._load_state()  # may select a persisted account
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
+        self._stale_pin_released = self._release_missing_pins()
         self._account_state_valid = True
         self.account_auth_problem: str | None = None
+        self.account_auth_problems: dict[str, str] = {}
         self._shutting_down = False
         self.busy: set[str] = set()
         self.thread_fork_locks: dict[str, dict] = {}
@@ -1171,6 +1175,18 @@ class Bridge:
                 if (self.bindings.get(key) or {}).get("session_id") == sid},
         }, indent=2))
 
+    def _release_missing_pins(self) -> bool:
+        changed = False
+        for binding in self.bindings.values():
+            if isinstance(binding, dict) and binding.get("account") and binding["account"] not in self.accounts:
+                log(f"binding names missing account {binding['account']!r}; releasing its session")
+                binding.pop("account", None)
+                binding["session_id"] = None
+                binding.pop("_fork_source", None)
+                binding.pop("roster_note", None)
+                changed = True
+        return changed
+
     def _resolve_account(self, name: object, saved_dir: Path | None) -> str:
         if isinstance(name, str) and name.lower() in self.accounts:
             return name.lower()
@@ -1191,6 +1207,33 @@ class Bridge:
     @property
     def projects_dir(self) -> Path:
         return self.config_dir / "projects"
+
+    def binding_account(self, binding: dict | None) -> str:
+        name = (binding or {}).get("account")
+        if name and name not in self.accounts:
+            log(f"binding names missing account {name!r}; using {self.account!r}")
+        return name if name in self.accounts else self.account
+
+    def switch_binding(self, key: str) -> dict | None:
+        """Return this chat's settings, inheriting a new thread's parent settings."""
+        if key in self.bindings:
+            return self.bindings[key]
+        main_key, separator, _thread = key.partition(":")
+        parent = self.bindings.get(main_key) if separator else None
+        if not parent:
+            return None
+        binding = {"session_id": None, "cwd": parent["cwd"]}
+        for field in ("model", "permission_mode", "tldr", "worktree", "account"):
+            if field in parent:
+                binding[field] = parent[field]
+        return binding
+
+    def projects_dir_for(self, account: str) -> Path:
+        return self.accounts[account] / "projects"
+
+    def auth_problem_for(self, key: str) -> str | None:
+        account = self.binding_account(self.switch_binding(key))
+        return getattr(self, "account_auth_problems", {}).get(account) or (getattr(self, "account_auth_problem", None) if account == self.account else None)
 
     def child_env(self, account: str | None = None) -> dict[str, str]:
         accounts = getattr(self, "accounts", None)
@@ -1241,6 +1284,7 @@ class Bridge:
                 f"Account {self.account!r} is not logged in. Run "
                 f"`CLAUDE_CONFIG_DIR={self.config_dir} claude auth login`, then restart the bridge."
             )
+            self.account_auth_problems[self.account] = self.account_auth_problem
             log(f"warning: account {self.account!r} ({self.config_dir}) is not logged in; "
                 "preserving bindings from the previous account. Run "
                 f"`CLAUDE_CONFIG_DIR={self.config_dir} claude auth login`, then restart")
@@ -1253,6 +1297,7 @@ class Bridge:
                 f"Claude reports projectsDirectory={reported}, expected {self.projects_dir}; "
                 "check CLAUDE_ACCOUNTS and restart the bridge."
             )
+            self.account_auth_problems[self.account] = self.account_auth_problem
             log(f"warning: {self.account_auth_problem}")
             return
         if self._previous_config_dir == self.config_dir:
@@ -1341,6 +1386,7 @@ class Bridge:
             windows = self.last_usage_frame.get("windows", [])
         self.last_usage_frame = {
             "type": "usage_update", "agent_id": self.agent_id, "provider": "claude",
+            "account": getattr(self, "account", "default"),
             "availability": "available", "captured_at": time.time(), "windows": windows,
         }
         if limited_until is not None:
@@ -1392,6 +1438,7 @@ class Bridge:
             limited = self.last_usage_frame or {}
             self.last_usage_frame = {
                 "type": "usage_update", "agent_id": self.agent_id,
+                "account": getattr(self, "account", "default"),
                 "provider": "claude", "availability": "available",
                 "captured_at": time.time(), "windows": windows,
             }
@@ -1404,6 +1451,7 @@ class Bridge:
     def clear_usage(self) -> None:
         self.last_usage_frame = {
             "type": "usage_update", "agent_id": self.agent_id,
+            "account": getattr(self, "account", "default"),
             "provider": "claude", "availability": "unavailable",
             "captured_at": time.time(), "windows": [],
         }
@@ -1747,7 +1795,7 @@ class Bridge:
                  "unresolved error messages. Drop resolved dead ends and tool "
                  "output already acted on.")
         started = time.time()
-        if self.account_auth_problem or key in self.busy or self.pending_turns.get(key):
+        if self.auth_problem_for(key) or key in self.busy or self.pending_turns.get(key):
             raise CompactionDeferred
         if await self.forward_to_claude(key, frame, "/compact " + focus) is False:
             queue = self.pending_turns.get(key, [])
@@ -1762,7 +1810,7 @@ class Bridge:
         for candidate in dict.fromkeys((current_sid, sid)):
             if candidate:
                 after = await asyncio.to_thread(
-                    compacted_tokens, candidate, self.projects_dir, started)
+                    compacted_tokens, candidate, self.projects_dir_for(self.binding_account(self.switch_binding(key))), started)
                 if after is not None:
                     break
         return after if after is not None and after < before else None
@@ -1806,7 +1854,7 @@ class Bridge:
             activity = self.turn_activity.get(key, 0)
             proc = self.procs.get(key)
             live = self.live.get(key)
-            if (self.auto_compact_tokens <= 0 or self.account_auth_problem
+            if (self.auto_compact_tokens <= 0 or self.auth_problem_for(key)
                     or key in self.busy or (proc is not None and proc.returncode is None)
                     or (live is not None and live.alive)
                     or self.pending_turns.get(key)
@@ -1814,7 +1862,7 @@ class Bridge:
                     or binding.get("session_id") != sid or binding.get("_fork_source")):
                 return
             info = await asyncio.to_thread(
-                cold_resume_info, sid, self.projects_dir,
+                cold_resume_info, sid, self.projects_dir_for(self.binding_account(binding)),
                 self.auto_compact_tokens, min_idle=0)
             fresh_proc = self.procs.get(key)
             fresh_live = self.live.get(key)
@@ -1823,7 +1871,7 @@ class Bridge:
                     or self.pending_questions.get(key)
                     or (self.bindings.get(key) or {}).get("session_id") != sid
                     or (self.bindings.get(key) or {}).get("_fork_source")
-                    or self.account_auth_problem
+                    or self.auth_problem_for(key)
                     or (fresh_proc is not None and fresh_proc.returncode is None)
                     or (fresh_live is not None and fresh_live.alive)):
                 return
@@ -1849,7 +1897,7 @@ class Bridge:
                 self._schedule_warm_timer(key, frame)
 
     async def _compact_before_cold_resume(self, key: str, frame: dict) -> bool:
-        if (self.auto_compact_tokens <= 0 or self.account_auth_problem
+        if (self.auto_compact_tokens <= 0 or self.auth_problem_for(key)
                 or key in self.busy or key in self.warm_compacting):
             return False
         try:
@@ -1868,7 +1916,7 @@ class Bridge:
                 return False
             activity = self.run_generation.get(key, 0)
             info = await asyncio.to_thread(
-                cold_resume_info, sid, self.projects_dir, self.auto_compact_tokens)
+                cold_resume_info, sid, self.projects_dir_for(self.binding_account(binding)), self.auto_compact_tokens)
             if (self.run_generation.get(key, 0) != activity or key in self.busy
                     or self.pending_turns.get(key)
                     or (self.bindings.get(key) or {}).get("session_id") != sid):
@@ -2049,16 +2097,18 @@ class Bridge:
         elif cmd == "/sessions":
             limit = int(rest) if rest.isdigit() else self.sessions_limit
             epoch = self.account_epoch
-            sessions = await asyncio.to_thread(recent_sessions, limit, self.projects_dir)
-            if epoch != self.account_epoch:
-                self.post(frame, f"Switched to {self.account} while listing — run /sessions again.")
+            account = self.binding_account(self.switch_binding(key))
+            sessions = await asyncio.to_thread(recent_sessions, limit, self.projects_dir_for(account))
+            if epoch != self.account_epoch or account != self.binding_account(self.switch_binding(key)):
+                self.post(frame, f"Switched to {self.binding_account(self.switch_binding(key))} while listing — run /sessions again.")
                 self.set_reaction(frame, "✅", remember=False)
                 return
-            self.listings[key] = sessions
+            self.listings[key] = (account, sessions)
             self.post(frame, format_sessions(sessions))
         elif cmd == "/use":
             self.post(frame, await asyncio.to_thread(
-                self._cmd_use, key, rest, self.account_epoch))
+                self._cmd_use, key, rest, self.account_epoch,
+                self.binding_account(self.switch_binding(key))))
         elif cmd == "/new":
             self.post(frame, await asyncio.to_thread(self._cmd_new, key, rest))
         elif cmd == "/worktree":
@@ -2072,7 +2122,7 @@ class Bridge:
         elif cmd == "/tldr":
             self.post(frame, self._cmd_tldr(key, rest))
         elif cmd == "/switch":
-            self.post(frame, await self._cmd_switch(rest))
+            self.post(frame, await self._cmd_switch(rest, key))
         elif cmd == "/stop":
             self.post(frame, self._cmd_stop(key))
         elif cmd == "/status":
@@ -2100,30 +2150,35 @@ class Bridge:
 
     def _set_binding(self, key: str, session_id: str | None, cwd: str) -> None:
         """Write session/cwd for a channel, keeping any model/permission overrides."""
-        prev = self.bindings.get(key) or {}
+        prev = self.switch_binding(key) or {}
         binding: dict = {"session_id": session_id, "cwd": cwd}
-        for k in ("model", "permission_mode", "tldr"):
+        for k in ("model", "permission_mode", "tldr", "account"):
             if k in prev:
                 binding[k] = prev[k]
         self.bindings[key] = binding
         self._save_state()
 
-    def _cmd_use(self, key: str, arg: str, epoch: int | None = None) -> str:
+    def _cmd_use(self, key: str, arg: str, epoch: int | None = None,
+                 account: str | None = None) -> str:
         if not arg:
             return "Usage: /use <n from /sessions | session-id>"
+        account = account or self.binding_account(self.switch_binding(key))
+        projects_dir = self.projects_dir_for(account)
         if arg.isdigit():
-            listing = self.listings.get(key) or recent_sessions(
-                self.sessions_limit, self.projects_dir)
+            saved = self.listings.get(key)
+            listing = (saved[1] if isinstance(saved, tuple) and saved[0] == account
+                       else saved if isinstance(saved, list) else recent_sessions(
+                           self.sessions_limit, projects_dir))
             idx = int(arg) - 1
             if not 0 <= idx < len(listing):
                 return f"No session #{arg} — run /sessions first."
             info = listing[idx]
         else:
-            info = find_session(arg, self.projects_dir)
+            info = find_session(arg, projects_dir)
             if not info:
-                return f"Session {arg} not found under {self.projects_dir}."
-        if epoch is not None and epoch != self.account_epoch:
-            return (f"Switched to {self.account} while looking that session up — "
+                return f"Session {arg} not found under {projects_dir}."
+        if (epoch is not None and epoch != self.account_epoch) or account != self.binding_account(self.switch_binding(key)):
+            return (f"Switched to {self.binding_account(self.switch_binding(key))} while looking that session up — "
                     "it belongs to the previous account. Run /sessions again.")
         self._set_binding(key, info["session_id"], info["cwd"])
         prompt = info["last_prompt"][:120]
@@ -2488,7 +2543,7 @@ class Bridge:
         suffix = f" and removed {len(queued)} queued message(s)" if queued else ""
         return f"Stopping the current run{suffix}…"
 
-    def _format_accounts(self) -> str:
+    def _format_accounts(self, key: str | None = None) -> str:
         if len(self.accounts) == 1:
             name, config_dir = next(iter(self.accounts.items()))
             return (
@@ -2513,29 +2568,109 @@ class Bridge:
         if overrides := credential_overrides():
             warning = ("\n\nSwitching is disabled while credential override(s) are set: "
                        + ", ".join(overrides) + ".")
-        return (
+        listing = (
             "Claude accounts:\n" + "\n".join(lines)
             + "\n\nSwitch with /switch <name>. Bound sessions do not carry over."
             + warning
         )
+        binding = self.switch_binding(key) if key else None
+        return listing + (f"\nThis chat: {self.binding_account(binding)} (this chat only)." if binding and binding.get("account") else "")
 
     def _drop_bound_sessions(self) -> int:
         dropped = 0
         for binding in self.bindings.values():
             if not isinstance(binding, dict):
                 continue
+            if binding.get("account"):
+                continue
             if binding.get("session_id"):
                 binding["session_id"] = None
                 dropped += 1
             binding.pop("_fork_source", None)
             binding.pop("roster_note", None)
-        self.listings.clear()
+        for key in list(self.listings):
+            if not (self.bindings.get(key) or {}).get("account"):
+                self.listings.pop(key, None)
         self._save_state()
         return dropped
 
-    async def _cmd_switch(self, arg: str) -> str:
+    async def _cmd_switch(self, arg: str, key: str | None = None) -> str:
+        parts = arg.lower().split()
+        if "--here" in parts:
+            if key is None:
+                return "This command needs a chat."
+            parts.remove("--here")
+            if not parts:
+                return f"This chat uses {self.binding_account(self.switch_binding(key))}."
+            if len(parts) != 1:
+                return "Usage: /switch <name> --here | /switch --here --reset"
+            name = parts[0]
+            if name != "--reset" and name not in self.accounts:
+                return f"Unknown account {name!r}.\n\n{self._format_accounts()}"
+            if overrides := credential_overrides():
+                return "Cannot switch accounts while Claude credential override(s) are set: " + ", ".join(overrides)
+            binding = self.switch_binding(key)
+            if binding is None:
+                return "No session bound here — run /new <dir> or /use first."
+            if key in self.busy or (self.live.get(key) is not None and self.live[key].alive):
+                return "A run or background follow-up is still active here. Wait for it, or /stop it first."
+            previous_account = self.binding_account(binding)
+            target = self.account if name == "--reset" else name
+            if target == previous_account:
+                if name != "--reset" and self.auth_problem_for(key):
+                    if name == self.account:
+                        return (f"This chat already uses the bridge-wide account {name}. "
+                                f"Run plain /switch {name} to re-check its login and release old sessions.")
+                    epoch = self.account_epoch
+                    bound_before = self.bindings.get(key)
+                    status = await self.account_status(name)
+                    if (epoch != self.account_epoch or bound_before is not self.bindings.get(key)
+                            or key in self.busy):
+                        return "This chat changed while checking the account. Try again."
+                    if not status.get("ok"):
+                        return f"Cannot switch to {name}: not logged in."
+                    reported = status.get("projectsDirectory")
+                    expected = self.accounts[name] / "projects"
+                    if isinstance(reported, str) and Path(reported).expanduser().resolve() != expected:
+                        return f"Cannot switch to {name}: Claude reports its projects directory as {reported}, expected {expected}."
+                    self.account_auth_problems.pop(name, None)
+                    return f"Login verified for {name} in this chat; its session was kept."
+                if name == "--reset" and key in self.bindings and binding.pop("account", None):
+                    self.bindings[key] = binding
+                    self._save_state()
+                    return f"This chat now follows the bridge-wide account {target}. Its session was kept."
+                return f"Already on {target} in this chat."
+            epoch = self.account_epoch
+            bound_before = self.bindings.get(key)
+            if name != "--reset":
+                status = await self.account_status(name)
+                config_dir = self.accounts[name]
+                if not status.get("ok"):
+                    return f"Cannot switch to {name}: not logged in."
+                reported = status.get("projectsDirectory")
+                if isinstance(reported, str) and Path(reported).expanduser().resolve() != config_dir / "projects":
+                    return f"Cannot switch to {name}: Claude reports its projects directory as {reported}, expected {config_dir / 'projects'}."
+            if (epoch != self.account_epoch
+                    or bound_before is not self.bindings.get(key)
+                    or previous_account != self.binding_account(self.switch_binding(key))
+                    or key in self.busy
+                    or (self.live.get(key) is not None and self.live[key].alive)):
+                return "This chat changed while checking the account. Wait for its run to finish and try again."
+            if name != "--reset":
+                self.account_auth_problems.pop(name, None)
+            self.bindings[key] = binding
+            if target == self.account:
+                binding.pop("account", None)
+            else:
+                binding["account"] = target
+            binding["session_id"] = None
+            binding.pop("_fork_source", None)
+            binding.pop("roster_note", None)
+            self.listings.pop(key, None)
+            self._save_state()
+            return f"This chat switched from {previous_account} to {target}. Its next message starts a new session."
         if not arg:
-            return self._format_accounts()
+            return self._format_accounts(key)
         name = arg.split()[0].strip().lower()
         if name not in self.accounts:
             return f"Unknown account {name!r}.\n\n{self._format_accounts()}"
@@ -2571,6 +2706,7 @@ class Bridge:
         if name == self.account and self._previous_config_dir == self.config_dir:
             self._account_state_valid = True
             self.account_auth_problem = None
+            self.account_auth_problems.pop(name, None)
             self._save_state()
             self._spawn(self.refresh_usage())
             return f"Login verified for {name} ({self.config_dir}); existing sessions were kept."
@@ -2579,6 +2715,8 @@ class Bridge:
         self.account_epoch += 1
         self._account_state_valid = True
         self.account_auth_problem = None
+        self.account_auth_problems.pop(name, None)
+        pinned = sum(isinstance(b, dict) and bool(b.get("account")) for b in self.bindings.values())
         dropped = self._drop_bound_sessions()
         self.clear_usage()
         self._spawn(self.refresh_usage())
@@ -2590,13 +2728,16 @@ class Bridge:
             f"starts a fresh Claude session.{carried}\n"
             + ("That session starts with no memory of this chat; ask me to read "
                "the earlier messages and I will.\n" if self.history_enabled else "")
+            + f"{pinned} chat(s) kept their own account.\n"
             + "Refreshing this account's usage now."
         )
 
     def _cmd_status(self, key: str) -> str:
-        account_line = f"Account: {self.account} ({self.config_dir})\n" if len(self.accounts) > 1 else ""
-        auth_line = f"\n{self.account_auth_problem}" if self.account_auth_problem else ""
-        b = self.bindings.get(key)
+        b = self.switch_binding(key)
+        account = self.binding_account(b)
+        account_line = (f"Account: {account}" + (" (this chat only)" if (b or {}).get("account") else "") + "\n") if len(self.accounts) > 1 or (b or {}).get("account") else ""
+        problem = self.auth_problem_for(key)
+        auth_line = f"\n{problem}" if problem else ""
         if not b:
             return (account_line + "No session bound here. Run /sessions then /use <n>."
                     + auth_line)
@@ -2698,9 +2839,9 @@ class Bridge:
         self, key: str, frame: dict, text: str, from_peer: bool = False
     ) -> bool:
         """Run now or enqueue behind the active turn for this conversation."""
-        if getattr(self, "account_auth_problem", None):
+        if problem := self.auth_problem_for(key):
             self.set_reaction(frame, "🚫", remember=False)
-            self.post(frame, self.account_auth_problem)
+            self.post(frame, problem)
             return False
         # A peer agent's turn never answers an AskUserQuestion — those wait
         # for a human.
@@ -3189,7 +3330,8 @@ class Bridge:
         model = binding.get("model") or self.default_model
         # What this run is actually launched with, fixed here rather than read
         # back later — see LiveRun.spawned_with.
-        spawned_with = (model, mode)
+        run_account = self.binding_account(binding)
+        spawned_with = (model, mode, run_account)
         sys_args = self._append_system_args(binding)
         try:
             # A child still working through background tasks already holds this
@@ -3253,7 +3395,7 @@ class Bridge:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE,
-                env=self.child_env(),
+                env=self.child_env(run_account),
                 # stream-json events are single lines that can carry whole file
                 # contents; the default 64 KB readline limit is far too small.
                 limit=64 * 1024 * 1024,
@@ -3315,7 +3457,8 @@ class Bridge:
                             continue
                         kind = event.get("type")
                         if kind == "rate_limit_event":
-                            self.capture_usage(event)
+                            if run_account == self.account:
+                                self.capture_usage(event)
                             continue
                         if kind == "system" and event.get("subtype") == "compact_boundary":
                             if self.bindings.get(key) is binding:
@@ -3347,7 +3490,8 @@ class Bridge:
                             if event.get("is_error"):
                                 result_text = f"(claude error) {text}"
                                 break
-                            self.clear_expired_limit(successful_turn=True)
+                            if run_account == self.account:
+                                self.clear_expired_limit(successful_turn=True)
                             # Resuming with -p can fork to a new session id;
                             # track it (successful runs only) so follow-ups
                             # keep continuing the same conversation.
@@ -3454,7 +3598,8 @@ class Bridge:
                                 continue
                             kind = event.get("type")
                             if kind == "rate_limit_event":
-                                self.capture_usage(event)
+                                if run_account == self.account:
+                                    self.capture_usage(event)
                             elif (kind == "system"
                                   and event.get("subtype") == "background_tasks_changed"):
                                 listed = event.get("tasks")
@@ -3506,7 +3651,8 @@ class Bridge:
                                     if event.get("is_error"):
                                         text = f"(claude error) {text}"
                                     else:
-                                        self.clear_expired_limit(successful_turn=True)
+                                        if run_account == self.account:
+                                            self.clear_expired_limit(successful_turn=True)
                                         new_sid = event.get("session_id")
                                         if new_sid and new_sid == binding.get("_fork_source"):
                                             binding["_fork_reused_source"] = True
@@ -3772,7 +3918,8 @@ class Bridge:
                     live.last_event_was_result = kind == "result"
                 target = live.waiters[0]["frame"] if live.waiters else live.frame
                 if kind == "rate_limit_event":
-                    self.capture_usage(event)
+                    if live.spawned_with[2] == self.account:
+                        self.capture_usage(event)
                     continue
                 if kind == "system" and event.get("subtype") == "compact_boundary":
                     if self.bindings.get(key) is live.binding:
@@ -3841,7 +3988,8 @@ class Bridge:
                     if event.get("is_error"):
                         text = f"(claude error) {text}"
                     else:
-                        self.clear_expired_limit(successful_turn=True)
+                        if live.spawned_with[2] == self.account:
+                            self.clear_expired_limit(successful_turn=True)
                     binding = self.bindings.get(key) or live.binding
                     new_sid = event.get("session_id")
                     # Same identity guard the main loop uses: if the key was
@@ -3958,7 +4106,8 @@ class Bridge:
         held child was actually launched with."""
         b = binding or {}
         return (b.get("model") or self.default_model,
-                b.get("permission_mode") or self.default_permission_mode)
+                b.get("permission_mode") or self.default_permission_mode,
+                self.binding_account(b))
 
     async def _retire_if_stale(self, key: str) -> None:
         """End a held child whose binding no longer matches what it ran under."""
@@ -4448,6 +4597,8 @@ class Bridge:
 
     async def run(self) -> None:
         await self._reconcile_startup_account()
+        if getattr(self, "_stale_pin_released", False):
+            self._save_state()
         backoff = 1.0
         while True:
             try:
