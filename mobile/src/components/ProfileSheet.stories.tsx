@@ -14,6 +14,7 @@ const usage = {
     captured_at: now - 1800,
     windows: [{ key: "primary", label: "Weekly", used_percent: 78, window_minutes: 10080, resets_at: now + 86400 }],
     plan: "pro",
+    account: "work",
   },
   refreshing: false,
   stale: true,
@@ -30,6 +31,11 @@ type Story = StoryObj<typeof meta>;
 
 export const OnlineAgent: Story = {
   parameters: { apiRoutes: { "GET /api/agents/codex/usage": usage } },
+};
+export const DefaultAccount: Story = {
+  parameters: { apiRoutes: { "GET /api/agents/codex/usage": {
+    ...usage, usage: { ...usage.usage, account: undefined },
+  } } },
 };
 export const OfflineLastKnown: Story = {
   parameters: { apiRoutes: {

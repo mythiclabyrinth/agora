@@ -65,7 +65,9 @@ one shows at a time. Messages addressed to another agent have the
 | `/model <astra\|sol\|terra\|luna\|model-id\|default>` | switch this channel's model (`default` resets it to the bridge default, `sol` unless configured otherwise). A family name is resolved to the newest id of that family in the installed Codex CLI on every run, so `codex update` moves `sol` and `luna` forward. A full id such as `gpt-5.6-sol` stays pinned. Passed as `codex -m`. Astra requires Codex CLI 0.153.0 or newer. |
 | `/sandbox <read-only\|workspace-write\|workspace-git\|full\|bypass\|reset>` | set the sandbox mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CODEX_ALLOW_SANDBOX_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override) |
-| `/switch [account]` | list the configured Codex accounts, or move every channel onto one of them (see [Multiple accounts](#multiple-accounts)) |
+| `/switch [account]` | list the configured Codex accounts, or change the bridge-wide account (see [Multiple accounts](#multiple-accounts)) |
+| `/switch <account> --here` | use an account only in this chat |
+| `/switch --here --reset` | return this chat to the bridge-wide account |
 | `/stop` | cancel the run in flight on this channel (kills the `codex` child) |
 | `/status` | show the current binding, model, sandbox mode, TL;DR state, and whether a run is in flight |
 | `/commands` | show this bridge command list |
@@ -282,19 +284,23 @@ to `CODEX_ACCOUNTS`.
 ```
 /switch              list the accounts, marking the active one
 /switch work         move onto "work"
+/switch personal --here  move only this chat onto "personal"
+/switch --here --reset  return this chat to the bridge-wide account
 ```
 
-`/switch` is **bridge-wide**, not per channel — there is one active account at a
-time, and every channel uses it. What you need to know:
+Plain `/switch` changes the bridge-wide account. Chats selected with `--here`
+keep their own account across later bridge-wide switches. `/status` shows the
+account this chat uses. The usage panel shows the bridge-wide account's limits
+and configured name. What you need to know:
 
 - **Sessions do not carry over.** Rollouts live inside each `CODEX_HOME`, so a
   session started on one account cannot be resumed under another. Switching
-  releases every bound session id; the next message in a channel starts a fresh
+  releases bound session ids for chats using the bridge-wide account; their next message starts a fresh
   Codex session *in the same directory*, keeping its `/model`, `/sandbox`,
   `/tldr` and worktree settings. Conversation history does not transfer — but
   Codex can read the channel's own earlier messages when you ask it to, see
   [Reading earlier messages](#reading-earlier-messages).
-  The same release happens on start-up when the bridge comes up on a different
+  The same release happens for unpinned chats on start-up when the bridge comes up on a different
   account than it shut down on — reordering or renaming `CODEX_ACCOUNTS`, or
   adding it for the first time — so an edit to `.env` cannot leave channels
   pointing at sessions the new account cannot see.

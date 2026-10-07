@@ -130,7 +130,7 @@ function AgentUsageBlock({ data, live, refreshing }: { data: ReturnType<typeof u
   const freshness = refreshing ? "Updating…" : usageAge(usage.captured_at);
   return (
     <View style={styles.usageCard}>
-      <View style={styles.usageHeading}><Text style={styles.usageTitle}>USAGE{usage.plan ? ` · ${usage.plan.toUpperCase()}` : ""}</Text><Text style={styles.usageNote}>{freshness}{!live ? " · agent offline" : data?.stale ? " · may be outdated" : ""}</Text></View>
+      <View style={styles.usageHeading}><Text style={styles.usageTitle}>USAGE{usage.plan ? ` · ${usage.plan.toUpperCase()}` : ""} · {usage.account || "default"}</Text><Text style={styles.usageNote}>{freshness}{!live ? " · agent offline" : data?.stale ? " · may be outdated" : ""}</Text></View>
       {usage.windows.map(window => <View key={window.key} style={styles.usageWindow}>
         <View style={styles.usageHeading}><Text style={styles.usageLabel}>{window.label}</Text><Text style={styles.usagePercent}>{Math.round(window.used_percent)}% used</Text></View>
         <View style={styles.usageTrack}><View style={[styles.usageFill, { width: `${Math.max(0, Math.min(100, window.used_percent))}%` }]} /></View>

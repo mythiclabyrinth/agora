@@ -520,6 +520,7 @@ export interface AgentUsageWindow {
 export interface AgentUsage {
   agent_id: string;
   provider: string;
+  account?: string | null;
   availability: "available" | "unavailable";
   captured_at: number;
   updated_at?: number;

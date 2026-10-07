@@ -25,12 +25,13 @@ export const ClaudeLive: Story = {
     "GET /api/agents/claude/usage": usage("claude", [
       { key: "five_hour", label: "Current session", used_percent: 34, window_minutes: 300, resets_at: now + 5400 },
       { key: "seven_day", label: "Current week", used_percent: 61, window_minutes: 10080, resets_at: now + 345600 },
-    ]),
+    ], { account: "work" }),
   }, setup: () => useAgentProfile.getState().show("claude") },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("34% used")).resolves.toBeVisible();
     await expect(canvas.findByText("Current week")).resolves.toBeVisible();
+    await expect(canvas.findByText("Usage · work")).resolves.toBeVisible();
     expect(canvas.queryByText("Responds")).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole("button"));
     expect(useAgentProfile.getState().openId).toBeNull();
@@ -50,6 +51,7 @@ export const CodexCreditsStale: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("78% used")).resolves.toBeVisible();
+    await expect(canvas.findByText("Usage · pro · default")).resolves.toBeVisible();
     await expect(canvas.findByText("Credit balance: 12.50")).resolves.toBeVisible();
   },
 };

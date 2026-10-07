@@ -100,7 +100,7 @@ function AgentUsageRows({ agentId, live }: { agentId: string; live: boolean }) {
   return (
     <div className="ago-usage-section">
       <div className="ago-usage-head">
-        <strong>Usage{usage.plan ? ` · ${usage.plan}` : ""}</strong>
+        <strong>Usage{usage.plan ? ` · ${usage.plan}` : ""} · {usage.account || "default"}</strong>
         <span>{refreshing ? "Updating…" : freshness}{!live ? " · agent offline" : response?.stale ? " · may be outdated" : ""}</span>
       </div>
       {usage.windows.map(window => (

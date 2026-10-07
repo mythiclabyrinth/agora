@@ -120,7 +120,9 @@ follow-up machinery.
 | `/model <opus\|sonnet\|haiku\|fable\|…\|default>` | set the model for this channel (`default` clears the override); persists in the binding and is passed as `claude --model` on every run |
 | `/permissions <plan\|acceptEdits\|bypass\|default\|reset>` | set the permission mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CLAUDE_ALLOW_PERMISSION_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override). When on, Claude is asked to end a long reply with a summary the bridge lifts into the message's `tldr`; clients show a TL;DR toggle |
-| `/switch [account]` | list configured Claude accounts, or move every conversation onto one (see [Multiple accounts](#multiple-accounts)) |
+| `/switch [account]` | list configured Claude accounts, or change the bridge-wide account (see [Multiple accounts](#multiple-accounts)) |
+| `/switch <account> --here` | use an account only in this chat |
+| `/switch --here --reset` | return this chat to the bridge-wide account |
 | `/stop` | cancel the run in flight on this channel (kills the `claude` child) |
 | `/status` | show the current binding, model, permission mode, TL;DR state, and whether a run is in flight |
 | `/commands` | show this bridge command list |
@@ -301,11 +303,15 @@ CLAUDE_ACCOUNTS=work:~/.claude,personal:~/.claude-personal
 ```
 
 Use `/switch` to list them and `/switch personal` to change the bridge-wide
-account. Switching is refused while a turn or background follow-up is alive and
+account. `/switch personal --here` changes only the current chat;
+`/switch --here --reset` returns it to the bridge-wide account. A later plain
+`/switch` leaves chats with their own account in place. The usage panel shows
+the bridge-wide account's limits and configured name, while `/status` shows
+this chat's account. Switching is refused while a turn or background follow-up is alive and
 when `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or
 `CLAUDE_CODE_OAUTH_TOKEN` would override directory-scoped OAuth. The target is
 checked with `claude auth status --json` before anything changes. A successful
-switch releases session ids because sessions are account-local, but retains each
+switch releases session ids for unpinned chats because sessions are account-local, but retains each
 channel's directory, model, permissions, TL;DR and worktree settings. The usage
 panel is cleared immediately and refreshed from the new account.
 

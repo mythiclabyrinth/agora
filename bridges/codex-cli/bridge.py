@@ -511,7 +511,9 @@ HELP = """Bridge commands (anything else is sent to the bound Codex session):
 /model <astra|sol|terra|luna|<model-id>|default> - set the model (a family tracks the newest id in this Codex CLI; a full id pins it)
 /sandbox <read-only|workspace-write|workspace-git|full|bypass|reset> - set the sandbox mode
 /tldr <on|off|default> - add a toggleable short summary to long replies
-/switch [account] - list Codex accounts, or move every channel onto one
+/switch [account] - list Codex accounts, or move every unpinned chat onto one
+/switch <account> --here - use an account only in this chat
+/switch --here --reset - return this chat to the bridge-wide account
 /stop - cancel the run in flight on this channel
 /status - show the current binding
 /commands - this message"""
@@ -972,9 +974,12 @@ class Bridge:
         self.state_file = Path(args.state_file)
         self.bindings: dict[str, dict] = self._load_state()  # may set self.account
         self.listings: dict[str, list[dict]] = {}  # binding key -> last /sessions result
+        released_missing_pins = self._release_missing_pins()
         # Needs bindings and listings in place; a restart onto a different
         # account has to release sessions just as /switch does.
         self._release_sessions_from_a_previous_account()
+        if released_missing_pins:
+            self._save_state()
         self.busy: set[str] = set()
         self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
@@ -1093,6 +1098,18 @@ class Bridge:
             f"({self.codex_home}) released {dropped} session(s) that only exist "
             "in the previous home")
 
+    def _release_missing_pins(self) -> bool:
+        changed = False
+        for binding in self.bindings.values():
+            if isinstance(binding, dict) and binding.get("account") and binding["account"] not in self.accounts:
+                log(f"binding names missing account {binding['account']!r}; releasing its session")
+                binding.pop("account", None)
+                binding["session_id"] = None
+                binding.pop("_fork_source", None)
+                binding.pop("roster_note", None)
+                changed = True
+        return changed
+
     def _save_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(json.dumps(
@@ -1110,13 +1127,36 @@ class Bridge:
     def sessions_dir(self) -> Path:
         return self.codex_home / "sessions"
 
-    def child_env(self) -> dict[str, str]:
+    def binding_account(self, binding: dict | None) -> str:
+        name = (binding or {}).get("account")
+        if name and name not in self.accounts:
+            log(f"binding names missing account {name!r}; using {self.account!r}")
+        return name if name in self.accounts else self.account
+
+    def switch_binding(self, key: str) -> dict | None:
+        """Return this chat's settings, inheriting a new thread's parent settings."""
+        if key in self.bindings:
+            return self.bindings[key]
+        main_key, separator, _thread = key.partition(":")
+        parent = self.bindings.get(main_key) if separator else None
+        if not parent:
+            return None
+        binding = {"session_id": None, "cwd": parent["cwd"]}
+        for field in ("model", "sandbox", "tldr", "worktree", "account"):
+            if field in parent:
+                binding[field] = parent[field]
+        return binding
+
+    def sessions_dir_for(self, account: str) -> Path:
+        return self.accounts[account] / "sessions"
+
+    def child_env(self, account: str | None = None) -> dict[str, str]:
         """Environment for a `codex` child: ours plus the active account's home.
 
         A single-account bridge pins CODEX_HOME to the very directory codex
         would have defaulted to, so the child sees no behaviour change.
         """
-        return {**os.environ, "CODEX_HOME": str(self.codex_home)}
+        return {**os.environ, "CODEX_HOME": str(self.accounts[account or self.account])}
 
     # ------------------------------------------------------------ frames
 
@@ -1132,7 +1172,8 @@ class Bridge:
             # blanking frame with the drained account's numbers.
             return
         if usage:
-            self.last_usage_frame = {"type": "usage_update", "agent_id": self.agent_id, **usage}
+            self.last_usage_frame = {"type": "usage_update", "agent_id": self.agent_id,
+                                     "account": self.account, **usage}
             self.send(self.last_usage_frame)
 
     def clear_usage(self) -> None:
@@ -1147,6 +1188,7 @@ class Bridge:
         self.last_usage_frame = None
         self.send({
             "type": "usage_update", "agent_id": self.agent_id, "provider": "codex",
+            "account": getattr(self, "account", "default"),
             "availability": "unavailable", "windows": [], "captured_at": time.time(),
         })
 
@@ -1543,19 +1585,21 @@ class Bridge:
         elif cmd == "/sessions":
             limit = int(rest) if rest.isdigit() else self.sessions_limit
             epoch = self.account_epoch
-            sessions = await asyncio.to_thread(recent_sessions, limit, self.sessions_dir)
-            if epoch != self.account_epoch:
+            account = self.binding_account(self.switch_binding(key))
+            sessions = await asyncio.to_thread(recent_sessions, limit, self.sessions_dir_for(account))
+            if epoch != self.account_epoch or account != self.binding_account(self.switch_binding(key)):
                 # These rollouts belong to the account /switch just left; keeping
                 # them would re-fill the listing it deliberately cleared, and a
                 # later `/use <n>` would bind a session the new account cannot see.
-                self.post(frame, f"Switched to {self.account} while listing — run /sessions again.")
+                self.post(frame, f"Switched to {self.binding_account(self.switch_binding(key))} while listing — run /sessions again.")
                 self.set_reaction(frame, "✅", remember=False)
                 return
-            self.listings[key] = sessions
+            self.listings[key] = (account, sessions)
             self.post(frame, format_sessions(sessions))
         elif cmd == "/use":
             self.post(frame, await asyncio.to_thread(
-                self._cmd_use, key, rest, self.account_epoch))
+                self._cmd_use, key, rest, self.account_epoch,
+                self.binding_account(self.switch_binding(key))))
         elif cmd == "/new":
             self.post(frame, await asyncio.to_thread(self._cmd_new, key, rest))
         elif cmd == "/worktree":
@@ -1569,7 +1613,7 @@ class Bridge:
         elif cmd == "/tldr":
             self.post(frame, self._cmd_tldr(key, rest))
         elif cmd == "/switch":
-            self.post(frame, self._cmd_switch(rest))
+            self.post(frame, self._cmd_switch(rest, key))
         elif cmd == "/stop":
             self.post(frame, self._cmd_stop(key))
         elif cmd == "/status":
@@ -1586,15 +1630,16 @@ class Bridge:
 
     def _set_binding(self, key: str, session_id: str | None, cwd: str) -> None:
         """Write session/cwd for a channel, keeping any model/sandbox overrides."""
-        prev = self.bindings.get(key) or {}
+        prev = self.switch_binding(key) or {}
         binding: dict = {"session_id": session_id, "cwd": cwd}
-        for k in ("model", "sandbox", "tldr"):
+        for k in ("model", "sandbox", "tldr", "account"):
             if k in prev:
                 binding[k] = prev[k]
         self.bindings[key] = binding
         self._save_state()
 
-    def _cmd_use(self, key: str, arg: str, epoch: int | None = None) -> str:
+    def _cmd_use(self, key: str, arg: str, epoch: int | None = None,
+                 account: str | None = None) -> str:
         """Bind a channel to an existing session.
 
         Runs wholly in a worker thread, so `epoch` carries the active account as
@@ -1603,18 +1648,22 @@ class Bridge:
         """
         if not arg:
             return "Usage: /use <n from /sessions | session-id>"
+        account = account or self.binding_account(self.switch_binding(key))
+        sessions_dir = self.sessions_dir_for(account)
         if arg.isdigit():
-            listing = self.listings.get(key) or recent_sessions(self.sessions_limit, self.sessions_dir)
+            saved = self.listings.get(key)
+            listing = (saved[1] if isinstance(saved, tuple) and saved[0] == account
+                       else saved if isinstance(saved, list) else recent_sessions(self.sessions_limit, sessions_dir))
             idx = int(arg) - 1
             if not 0 <= idx < len(listing):
                 return f"No session #{arg} — run /sessions first."
             info = listing[idx]
         else:
-            info = find_session(arg, self.sessions_dir)
+            info = find_session(arg, sessions_dir)
             if not info:
-                return f"Session {arg} not found under {self.sessions_dir}."
-        if epoch is not None and epoch != self.account_epoch:
-            return (f"Switched to {self.account} while looking that session up — "
+                return f"Session {arg} not found under {sessions_dir}."
+        if (epoch is not None and epoch != self.account_epoch) or account != self.binding_account(self.switch_binding(key)):
+            return (f"Switched to {self.binding_account(self.switch_binding(key))} while looking that session up — "
                     "it belongs to the previous account. Run /sessions again.")
         self._set_binding(key, info["session_id"], info["cwd"])
         prompt = info["last_prompt"][:120]
@@ -2025,7 +2074,7 @@ class Bridge:
         suffix = f" and removed {len(queued)} queued message(s)" if queued else ""
         return f"Stopping the current run{suffix}…"
 
-    def _format_accounts(self) -> str:
+    def _format_accounts(self, key: str | None = None) -> str:
         if len(self.accounts) == 1:
             name, home = next(iter(self.accounts.items()))
             return (
@@ -2038,10 +2087,12 @@ class Bridge:
             active = name == self.account
             state = account_login_problem(home) or ("active" if active else "ready")
             lines.append(f"{'*' if active else ' '} {name} — {home} ({state})")
-        return (
+        listing = (
             "Codex accounts:\n" + "\n".join(lines)
             + "\n\nSwitch with /switch <name>. Bound sessions do not carry over."
         )
+        binding = self.switch_binding(key) if key else None
+        return listing + (f"\nThis chat: {self.binding_account(binding)} (this chat only)." if binding and binding.get("account") else "")
 
     def _drop_bound_sessions(self) -> int:
         """Forget every bound session id, keeping cwd/model/sandbox/worktree.
@@ -2054,6 +2105,8 @@ class Bridge:
         for binding in self.bindings.values():
             if not isinstance(binding, dict):
                 continue
+            if binding.get("account"):
+                continue
             if binding.get("session_id"):
                 binding["session_id"] = None
                 dropped += 1
@@ -2061,14 +2114,56 @@ class Bridge:
             binding.pop("roster_note", None)
         # /sessions listings are rollouts of the account we are leaving; a
         # later `/use <n>` against them would bind an unreachable session.
-        self.listings.clear()
+        for key in list(self.listings):
+            if not (self.bindings.get(key) or {}).get("account"):
+                self.listings.pop(key, None)
         self._save_state()
         return dropped
 
-    def _cmd_switch(self, arg: str) -> str:
+    def _cmd_switch(self, arg: str, key: str | None = None) -> str:
         """Point every future codex run at a different logged-in account."""
+        parts = arg.lower().split()
+        if "--here" in parts:
+            if key is None:
+                return "This command needs a chat."
+            parts.remove("--here")
+            if not parts:
+                return f"This chat uses {self.binding_account(self.switch_binding(key))}."
+            if len(parts) != 1:
+                return "Usage: /switch <name> --here | /switch --here --reset"
+            name = parts[0]
+            if name != "--reset" and name not in self.accounts:
+                return f"Unknown account {name!r}.\n\n{self._format_accounts()}"
+            if os.environ.get("OPENAI_API_KEY"):
+                return "Cannot switch this chat while OPENAI_API_KEY overrides account logins."
+            binding = self.switch_binding(key)
+            if binding is None:
+                return "No session bound here — run /new <dir> or /use first."
+            if key in self.busy:
+                return "A run is still in flight here. Wait for it, or /stop it first."
+            previous = self.binding_account(binding)
+            target = self.account if name == "--reset" else name
+            if target == previous:
+                if name == "--reset" and key in self.bindings and binding.pop("account", None):
+                    self.bindings[key] = binding
+                    self._save_state()
+                    return f"This chat now follows the bridge-wide account {target}. Its session was kept."
+                return f"Already on {target} in this chat."
+            if name != "--reset" and (problem := account_login_problem(self.accounts[name])):
+                return f"Cannot switch to {name}: {problem}."
+            self.bindings[key] = binding
+            if target == self.account:
+                binding.pop("account", None)
+            else:
+                binding["account"] = target
+            binding["session_id"] = None
+            binding.pop("_fork_source", None)
+            binding.pop("roster_note", None)
+            self.listings.pop(key, None)
+            self._save_state()
+            return f"This chat switched from {previous} to {target}. Its next message starts a new session."
         if not arg:
-            return self._format_accounts()
+            return self._format_accounts(key)
         name = arg.split()[0].strip().lower()
         if name not in self.accounts:
             return f"Unknown account {name!r}.\n\n{self._format_accounts()}"
@@ -2091,6 +2186,7 @@ class Bridge:
         # Before dropping anything, so in-flight scans of the old home are already
         # invalidated by the time they resume.
         self.account_epoch += 1
+        pinned = sum(isinstance(b, dict) and bool(b.get("account")) for b in self.bindings.values())
         dropped = self._drop_bound_sessions()
         self.clear_usage()
         log(f"account switch: {previous} -> {name} ({home}), dropped {dropped} session(s)")
@@ -2101,11 +2197,12 @@ class Bridge:
             f"starts a fresh Codex session.{carried}\n"
             + ("That session starts with no memory of this chat; ask me to read "
                "the earlier messages and I will.\n" if self.history_enabled else "")
+            + f"{pinned} chat(s) kept their own account.\n"
             + "Usage will show this account's limits after its first run."
         )
 
     def _cmd_status(self, key: str) -> str:
-        b = self.bindings.get(key)
+        b = self.switch_binding(key)
         if not b:
             return "No session bound here. Run /sessions then /use <n>."
         sid = b["session_id"][:8] + "…" if b["session_id"] else "(new, not started)"
@@ -2116,7 +2213,8 @@ class Bridge:
         wt = b.get("worktree")
         wt_line = f"\nWorktree: {wt['branch']} @ {wt['path']}" if wt else ""
         # Only worth a line when there is actually a choice to report.
-        acct_line = f"\nAccount: {self.account}" if len(self.accounts) > 1 else ""
+        account = self.binding_account(b)
+        acct_line = (f"\nAccount: {account}" + (" (this chat only)" if b.get("account") else "")) if len(self.accounts) > 1 or b.get("account") else ""
         return (
             f"Session {sid} in {b['cwd']}\nModel: {model}\n"
             f"Sandbox: {mode}\nTL;DR: {tldr}{acct_line}{busy}{wt_line}"
@@ -2670,7 +2768,8 @@ class Bridge:
         return ["-c", f"sandbox_mode={mode}"]
 
     async def run_codex(self, key: str, frame: dict, binding: dict, text: str) -> str:
-        sessions_dir = self.sessions_dir
+        run_account = self.binding_account(binding)
+        sessions_dir = self.sessions_dir_for(run_account)
         old_session_id = binding.get("session_id")
         saved_compactions = binding.get("compacted_count")
         same_rollout = binding.get("compacted_session") == old_session_id
@@ -2730,7 +2829,7 @@ class Bridge:
                 # Pins the child to the active account's CODEX_HOME. Fixed at
                 # spawn, so a run already in flight keeps the account it started
                 # on even if /switch lands mid-run.
-                env=self.child_env(),
+                env=self.child_env(run_account),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE,
@@ -2786,7 +2885,8 @@ class Bridge:
                         elif kind == "turn.completed":
                             break
                     await proc.wait()
-                    await self.refresh_usage(new_session_id or binding.get("session_id"))
+                    if run_account == self.account:
+                        await self.refresh_usage(new_session_id or binding.get("session_id"))
             except TimeoutError:
                 raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
