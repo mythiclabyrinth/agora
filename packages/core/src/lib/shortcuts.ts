@@ -32,13 +32,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "nav.nextUnread", section: "Navigation", label: "Next unread", keys: { mac: "Alt+Shift+ArrowDown", other: "Alt+Shift+ArrowDown" }, scope: "notTyping", rebindable: true },
   { id: "read.markChannel", section: "Inbox", label: "Mark channel read", keys: { mac: "Escape", other: "Escape" }, scope: "notTyping" },
   { id: "read.markAll", section: "Inbox", label: "Mark all read", keys: { mac: "Shift+Escape", other: "Shift+Escape" }, scope: "notTyping" },
-  { id: "focus.composer", section: "Composer & agents", label: "Type to focus composer", keys: {}, scope: "notTyping" },
+  { id: "focus.composer", section: "Composer & agents", label: "Focus composer", keys: { mac: "Enter", other: "Enter" }, scope: "notTyping" },
   { id: "thread.close", section: "Composer & agents", label: "Close thread", keys: { mac: "Escape", other: "Escape" }, scope: "thread" },
   { id: "thread.expand", section: "Composer & agents", label: "Expand or shrink thread", keys: { mac: "Mod+Shift+Backslash", other: "Mod+Shift+Backslash" }, scope: "thread", rebindable: true },
   { id: "ui.sidebar", section: "Navigation", label: "Toggle sidebar", keys: { mac: "Mod+Shift+KeyD", other: "Mod+Shift+KeyD" }, scope: "global", rebindable: true },
   { id: "nav.back", section: "Navigation", label: "Back", keys: { mac: "Mod+BracketLeft", other: "Alt+ArrowLeft" }, scope: "global", rebindable: true, desktopOnly: true },
   { id: "nav.forward", section: "Navigation", label: "Forward", keys: { mac: "Mod+BracketRight", other: "Alt+ArrowRight" }, scope: "global", rebindable: true, desktopOnly: true },
-  { id: "link.copy", section: "Navigation", label: "Copy conversation link", keys: { mac: "KeyY", other: "KeyY" }, scope: "notTyping" },
+  { id: "link.copy", section: "Navigation", label: "Copy conversation link", keys: { mac: "Mod+Shift+KeyY", other: "Mod+Shift+KeyY" }, scope: "global", rebindable: true },
   { id: "settings", section: "Navigation", label: "Settings", keys: { mac: "Mod+Shift+Comma", other: "Mod+Shift+Comma" }, scope: "global", sequence: "G S", rebindable: true },
 ];
 
@@ -60,7 +60,7 @@ function eventCode(event: Pick<KeyboardEvent, "code" | "shiftKey"> & Partial<Pic
 export function parseCombo(combo: string, platform: Platform): { code: string; meta: boolean; ctrl: boolean; alt: boolean; shift: boolean } | null {
   const parts = combo.split("+");
   const code = parts.pop();
-  if (!code || !/^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Slash|Comma|Backslash|Bracket(Left|Right)|Space|Enter|Escape|Backspace|F[1-9][0-2]?)$/.test(code)) return null;
+  if (!code || !/^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Slash|Comma|Backslash|Bracket(Left|Right)|Space|Enter|Escape|Backspace|F([1-9]|1[0-2]))$/.test(code)) return null;
   const flags = new Set(parts);
   if (flags.size !== parts.length || [...flags].some(p => !["Mod", "Meta", "Ctrl", "Alt", "Shift"].includes(p))) return null;
   return { code, meta: flags.has("Meta") || (platform === "mac" && flags.has("Mod")), ctrl: flags.has("Ctrl") || (platform === "other" && flags.has("Mod")), alt: flags.has("Alt"), shift: flags.has("Shift") };
@@ -119,10 +119,10 @@ export function findConflicts(id: string, combo: string, platform: Platform, bin
   if (["Mod+KeyC", "Mod+KeyV", "Mod+KeyX", "Mod+KeyZ", "Mod+KeyA", "Mod+KeyY", "Mod+Shift+KeyZ"].includes(canonical)) {
     return [{ kind: "blocked", message: "Reserved for text editing" }];
   }
-  const blocked = platform === "mac" ? ["Mod+KeyW", "Mod+KeyQ", "Mod+KeyT", "Mod+KeyN", "Mod+KeyH", "Mod+KeyM", "Mod+Tab", "Mod+Comma", "Mod+Shift+KeyT", "Mod+Shift+KeyN", "Mod+Shift+KeyW", "Mod+Shift+Digit3", "Mod+Shift+Digit4", "Mod+Shift+Digit5"] : ["Mod+KeyW", "Mod+KeyT", "Mod+KeyN", "Mod+Tab", "Mod+Shift+KeyT", "Mod+Shift+KeyN", "Mod+Shift+KeyW", "Alt+F4"];
+  const blocked = platform === "mac" ? ["Mod+KeyW", "Mod+KeyQ", "Mod+KeyT", "Mod+KeyN", "Mod+KeyH", "Mod+KeyM", "Mod+Comma", "Mod+Shift+KeyT", "Mod+Shift+KeyN", "Mod+Shift+KeyW", "Mod+Shift+Digit3", "Mod+Shift+Digit4", "Mod+Shift+Digit5"] : ["Mod+KeyW", "Mod+KeyT", "Mod+KeyN", "Mod+Shift+KeyT", "Mod+Shift+KeyN", "Mod+Shift+KeyW", "Alt+F4"];
   if (blocked.includes(canonical) || (desktop && canonical === "Mod+Comma")) return [{ kind: "blocked", message: "Reserved by the browser or operating system" }];
   const result: Conflict[] = [];
-  const warned = platform === "mac" ? ["Mod+KeyL", "Mod+KeyR", "Mod+KeyP", "Mod+KeyS", "Mod+KeyF", "Mod+KeyD", "Mod+KeyJ"] : ["Mod+Shift+KeyI", "Mod+Shift+KeyJ", "Mod+Shift+KeyC", "Mod+Shift+KeyM", "Mod+Shift+KeyA", "Mod+Shift+KeyO", "Mod+Shift+KeyB"];
+  const warned = platform === "mac" ? ["Mod+KeyL", "Mod+KeyR", "Mod+KeyP", "Mod+KeyS", "Mod+KeyF", "Mod+KeyD", "Mod+KeyJ"] : ["Mod+Shift+KeyI", "Mod+Shift+KeyJ", "Mod+Shift+KeyC", "Mod+Shift+KeyM", "Mod+Shift+KeyA", "Mod+Shift+KeyO", "Mod+Shift+KeyB", "Mod+Shift+KeyY"];
   if (warned.includes(canonical)) result.push({ kind: "warning", message: "This may override a browser shortcut" });
   for (const other of SHORTCUTS) {
     if (other.desktopOnly && !desktop) continue;

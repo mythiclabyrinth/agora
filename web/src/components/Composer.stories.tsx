@@ -62,6 +62,21 @@ type Story = StoryObj<typeof meta>;
 
 export const Empty: Story = {};
 
+export const EscapeBlursWhileOtherComposerRecords: Story = {
+  parameters: {
+    setup: () => useVoiceRec.setState({ recordingKey: "t:42", startedAt: Date.now(), busyKey: null }),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox");
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}");
+    expect(input).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+    useVoiceRec.setState({ recordingKey: null, startedAt: 0, busyKey: null });
+  },
+};
+
 export const VoiceTranscriptAppend: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -365,6 +380,19 @@ export const KeyboardRequireMention: Story = {
     const canvas = within(canvasElement);
     useRequireAgent.getState().setOn("general:t42", true);
     window.dispatchEvent(new CustomEvent("agora-composer-command", { detail: { id: "thread.requireMention", key: "t:42" } }));
+    await expect(canvas.findByTitle("Agents may reply to my messages without an @mention")).resolves.toHaveAttribute("aria-pressed", "false");
+  },
+};
+
+export const PickerRequireMentionFeedback: Story = {
+  args: { threadId: 42, onSetReplyInThread: undefined },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    useRequireAgent.getState().setOn("general:t42", true);
+    useAddressing.getState().setPickerKey("t:42");
+    const list = await canvas.findByRole("listbox", { name: "Talk to agents" });
+    await waitFor(() => expect(within(list).getAllByRole("option")[0]).toHaveFocus());
+    await userEvent.keyboard("m");
     await expect(canvas.findByTitle("Agents may reply to my messages without an @mention")).resolves.toHaveAttribute("aria-pressed", "false");
   },
 };

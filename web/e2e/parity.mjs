@@ -182,6 +182,16 @@ async function main() {
     if (await page.getByRole("tab", { name: "Threads" }).getAttribute("aria-selected") !== "true") throw new Error("Threads shortcut did not switch tab");
   });
 
+  await check("shortcuts: Escape leaves composer for Inbox sequence", async () => {
+    await page.goto(BASE + `/g/${SEED.group}/c/${SEED.channel}`);
+    await page.locator("#ago-msg").waitFor();
+    await page.locator("#ago-msg").focus();
+    await page.keyboard.press("Escape");
+    if (await page.locator("#ago-msg").evaluate(el => el === document.activeElement)) throw new Error("Escape kept composer focused");
+    await page.keyboard.press("g"); await page.keyboard.press("u");
+    await page.waitForURL(/\/inbox\/unreads$/);
+  });
+
   await check("navigation: legacy /threads opens Inbox's Threads tab", async () => {
     await page.goto(BASE + "/threads");
     await page.waitForURL(/\/inbox\/threads$/);
