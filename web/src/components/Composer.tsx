@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  DroppedFileError, dropMaterializationLimit,
+  ariaCombo, currentPlatform, formatCombo, matchesCombo, DroppedFileError, dropMaterializationLimit,
   droppedTooLargeMessage, uploadMaxBytes,
   draftAttachmentPreviewUrl, isRequireAgentOn, materializeDroppedFile, MAX_MESSAGE_CHARS,
   mentionPrefix, threadAddressKey, useAgents, useAttachmentDrafts, useMe, useSendMessage,
@@ -19,6 +19,8 @@ import { toast } from "../lib/toast";
 import { useRequireAgent } from "../state/requireAgent";
 import { useDrafts } from "../state/drafts";
 import { MicButton } from "./VoiceControls";
+import { useVoiceRec, voiceRecKey, voiceSend, voiceToDraft, voiceToggle } from "../state/voiceRec";
+import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { ImageLightbox } from "./ImageLightbox";
 import { TemplateControls } from "./TemplateControls";
 
@@ -40,6 +42,8 @@ export { useDrafts } from "../state/drafts";
 /* "Talk to" selection per composer target (channel / thread), ephemeral. */
 interface AddrState {
   addr: Record<string, string[]>;
+  pickerKey: string | null;
+  setPickerKey: (key: string | null) => void;
   toggle: (key: string, agentId: string) => void;
   clear: (key: string) => void;
 }
@@ -47,6 +51,8 @@ const NO_ADDR: string[] = [];
 
 export const useAddressing = create<AddrState>((set) => ({
   addr: {},
+  pickerKey: null,
+  setPickerKey: pickerKey => set({ pickerKey }),
   toggle: (key, agentId) => set(s => {
     const cur = s.addr[key] || [];
     const next = cur.includes(agentId) ? cur.filter(id => id !== agentId) : [...cur, agentId];
@@ -134,7 +140,14 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
       document.removeEventListener("focusin", focus, true);
     };
   }, [toolsActive]);
-  const [addrOpen, setAddrOpen] = useState(false);
+  const addrOpen = useAddressing(s => s.pickerKey === draftKey);
+  useShortcutState(s => s.bindings);
+  const setPickerKey = useAddressing(s => s.setPickerKey);
+  const setAddrOpen = (open: boolean) => setPickerKey(open ? draftKey : null);
+  const [pickerActive, setPickerActive] = useState(0);
+  useEffect(() => () => {
+    if (useAddressing.getState().pickerKey === draftKey) useAddressing.getState().setPickerKey(null);
+  }, [draftKey]);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const addrSel = useAddressing(s => s.addr[draftKey] ?? NO_ADDR);
   const addrToggle = useAddressing(s => s.toggle);
@@ -191,19 +204,45 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     .filter(Boolean) as ChannelAgent[];
   // One prefix for typed send and voice notes so formats cannot drift.
   const addr = mentionPrefix(selectedAgents);
+  useEffect(() => {
+    if (!addrOpen) return;
+    setPickerActive(0);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-picker-key="${draftKey}"] .ago-addr-opt`)?.focus());
+  }, [addrOpen, draftKey]);
+  useEffect(() => {
+    const command = (event: Event) => {
+      const { id, key } = (event as CustomEvent<{ id: string; key: string }>).detail;
+      if (key !== draftKey) return;
+      if (id === "thread.requireMention" && showRequireAgent && requireAgentKey) {
+        const next = !useRequireAgent.getState().isOn(requireAgentKey);
+        requireAgentToggle(requireAgentKey);
+        toast(next ? "Agents now require an @mention" : "Agents may reply without an @mention");
+      }
+      if (id === "voice.toggle") {
+        const recState = useVoiceRec.getState();
+        if (recState.busyKey === voiceRecKey(channelId, threadId)) return;
+        if (recState.recordingKey === voiceRecKey(channelId, threadId)) {
+          if (me?.voice_transcribe) voiceToDraft(); else voiceSend(addr || undefined);
+        } else void voiceToggle(channelId, threadId, addr || undefined, !!me?.voice_transcribe);
+      }
+      if (id === "voice.send") voiceSend(addr || undefined);
+    };
+    window.addEventListener("agora-composer-command", command);
+    return () => window.removeEventListener("agora-composer-command", command);
+  }, [draftKey, channelId, threadId, addr, me?.voice_transcribe, showRequireAgent, requireAgentKey, requireAgentToggle]);
   const previewEntry = attachments.find(entry => entry.id === previewId) ?? null;
   const previewUrl = previewEntry ? draftAttachmentPreviewUrl(previewEntry) : null;
 
   // Click-away closes the addressing popup (button/popup exempt).
   useEffect(() => {
     if (!addrOpen) return;
-    const onClick = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       const t = e.target as HTMLElement;
       if (t.closest?.(".ago-addr-pop") || t.closest?.(".ago-addr-btn")) return;
       setAddrOpen(false);
     };
-    document.addEventListener("click", onClick);
-    return () => document.removeEventListener("click", onClick);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [addrOpen]);
 
   const addFiles = (list: FileList | File[]) => {
@@ -381,6 +420,10 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (useVoiceRec.getState().recordingKey === voiceRecKey(channelId, threadId) &&
+      matchesCombo(bindingFor("voice.send", currentPlatform()), e.nativeEvent, currentPlatform())) {
+      e.preventDefault(); e.stopPropagation(); voiceSend(addr || undefined); return;
+    }
     if (mention) {
       const n = mention.items.length;
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -393,9 +436,9 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         pickMention(mention.active);
         return;
       }
-      if (e.key === "Escape") { setMention(null); return; }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setMention(null); return; }
     }
-    if (e.key === "Escape" && addrOpen) { setAddrOpen(false); return; }
+    if (e.key === "Escape" && addrOpen) { e.preventDefault(); e.stopPropagation(); setAddrOpen(false); return; }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); }
   };
 
@@ -498,6 +541,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
       )}
       <div ref={composerRef} onFocusCapture={() => setToolsActive(true)}
         className={`chat-input ${text || attachments.length ? "has-draft" : ""} ${toolsActive || addrOpen ? "tools-active" : ""}`}
+        data-draft-key={draftKey}
         onDragOver={e => e.preventDefault()}
         onDrop={e => {
           e.preventDefault();
@@ -539,8 +583,9 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
           onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
         <div className="ago-composer-tools">
         {agents.length > 0 && (
-          <button className={`btn ago-addr-btn ${addrSel.length ? "active" : ""}`}
-            title="Choose which agents you're talking to"
+          <button className={`btn ago-addr-btn ${addrSel.length ? "active" : ""}`} data-draft-key={draftKey}
+            title={`Choose which agents you're talking to (${formatCombo(bindingFor("agents.picker", currentPlatform()), currentPlatform()) || "off"})`}
+            aria-keyshortcuts={ariaCombo(bindingFor("agents.picker", currentPlatform()), currentPlatform())}
             onClick={() => setAddrOpen(!addrOpen)}>
             <Icon name="bot" />{addrSel.length ? <span className="ago-addr-count">{addrSel.length}</span> : null}
           </button>
@@ -566,6 +611,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         {showRequireAgent && requireAgentKey && (
           <button
             className={`btn ago-require-agent ${requireAgentOn ? "active" : ""}`}
+            aria-keyshortcuts={ariaCombo(bindingFor("thread.requireMention", currentPlatform()), currentPlatform())}
             title={requireAgentOn
               ? "My replies here don't wake agents unless I tag one"
               : "Agents may reply to my messages without an @mention"}
@@ -590,22 +636,47 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         </div>
         </div>
         {addrOpen && (
-          <div className="ago-addr-pop" id="ago-addr-pop">
+          <div className="ago-addr-pop" id="ago-addr-pop" data-picker-key={draftKey} role="listbox"
+            aria-label="Talk to agents" aria-multiselectable="true"
+            onBlur={e => {
+              const next = e.relatedTarget as HTMLElement | null;
+              if (next && !e.currentTarget.contains(next) && !next.closest(`.ago-addr-btn[data-draft-key="${draftKey}"]`)) setAddrOpen(false);
+            }}
+            onKeyDown={e => {
+              if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setAddrOpen(false); taRef.current?.focus(); return; }
+              if (e.key === "m" || e.key === "M") {
+                if (showRequireAgent && requireAgentKey) { e.preventDefault(); requireAgentToggle(requireAgentKey); }
+                return;
+              }
+              if (e.key >= "1" && e.key <= "9" && agents[Number(e.key) - 1]) {
+                e.preventDefault(); addrToggle(draftKey, agents[Number(e.key) - 1].id); return;
+              }
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const focused = (e.target as HTMLElement).closest<HTMLElement>(".ago-addr-opt[data-agent-index]");
+                const current = focused ? Number(focused.dataset.agentIndex) : pickerActive;
+                const next = (current + (e.key === "ArrowDown" ? 1 : agents.length - 1)) % agents.length;
+                setPickerActive(next);
+                e.currentTarget.querySelectorAll<HTMLElement>(".ago-addr-opt")[next]?.focus();
+              }
+            }}>
             <div className="ago-addr-pop-head">
               <span>Talk to</span>
               {addrSel.length > 0 && (
                 <button className="ago-addr-clear" onClick={() => addrClear(draftKey)}>Clear</button>
               )}
             </div>
-            {agents.length ? agents.map(a => {
+            {agents.length ? agents.map((a, index) => {
               const on = addrSel.includes(a.id);
               return (
-                <div key={a.id} className={`ago-addr-opt ${on ? "selected" : ""}`} role="option"
-                  aria-selected={on} onClick={() => addrToggle(draftKey, a.id)}>
+                <button type="button" key={a.id} data-agent-index={index} className={`ago-addr-opt ${on ? "selected" : ""}`} role="option"
+                  aria-selected={on} tabIndex={index === pickerActive ? 0 : -1}
+                  onFocus={() => setPickerActive(index)}
+                  onClick={() => addrToggle(draftKey, a.id)}>
                   <AgentAv a={a} cls="sm" />
                   <span className="mname">{a.name}</span>
                   <span className="ago-addr-check">{on ? <Icon name="check" /> : null}</span>
-                </div>
+                </button>
               );
             }) : <div className="ago-addr-empty">No agents in this channel yet.</div>}
           </div>

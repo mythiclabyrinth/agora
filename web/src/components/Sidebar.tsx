@@ -5,7 +5,7 @@
 
 import { useRef, useState } from "react";
 import {
-  FEATURES,
+  FEATURES, currentPlatform, formatCombo,
   useCreateChannel, useCreateGroup, useDeleteChannel, useGroups, useHideThread,
   useMe, useRenameThread, useReorderChannels, useReorderGroups, useSetGroupHidden,
   useThreads, useUpdateChannel, useChannelReplying, useGroupReplying, useReplyingChannelIds,
@@ -13,13 +13,14 @@ import {
   type Channel, type Group, type ThreadRow,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
+import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { AgentDmPanel } from "./AgentDmPanel";
 import { PromptDialog } from "./PromptDialog";
 
-const SEARCH_KEY = /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl+K";
+const searchKey = () => formatCombo(bindingFor("search", currentPlatform()), currentPlatform());
 
 function Badge({ n, mentions, totalWithMention = false }: { n: number; mentions: number; totalWithMention?: boolean }) {
   if (mentions > 0) {
@@ -124,6 +125,7 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
 }
 
 export function Sidebar() {
+  useShortcutState(s => s.bindings);
   const me = useMe().data;
   const groups = useGroups().data || [];
   const replyingChannelIds = useReplyingChannelIds();
@@ -242,7 +244,7 @@ export function Sidebar() {
       <div className="side-title">
         <span>Workspace</span>
         <span className="side-title-actions">
-          <button className="ago-side-toggle search" title={`Search (${SEARCH_KEY})`}
+          <button className="ago-side-toggle search" title={`Search (${searchKey() || "Off"})`}
             onClick={() => ui.setSearchOpen(true)}><Icon name="search" /></button>
           <button className={`ago-side-toggle filter ${ui.unreadsOnly ? "on" : ""}`}
             title={ui.unreadsOnly ? "Show all channels" : "Show unreads only"}
@@ -301,6 +303,7 @@ export function Sidebar() {
                 return (
                   <div key={c.id}>
                     <div className={`ago-chan ${active ? "active" : ""} ${unread || mentions || (threadsCollapsed && threadUnread) ? "unread" : ""}`}
+                      data-channel-id={c.id} data-group-id={g.id}
                       role="button" tabIndex={0} aria-current={active ? "page" : undefined}
                       onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); ui.selectChannel(g.id, c.id); } }}
                       draggable={!isDms}

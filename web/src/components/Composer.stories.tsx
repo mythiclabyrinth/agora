@@ -1,12 +1,13 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { Composer, useAddressing, useDrafts } from "./Composer";
 import { me, message } from "../stories/fixtures/data";
 import { useAttachmentDrafts } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
 import { useVoiceRec } from "../state/voiceRec";
 import { appendDraft } from "../state/drafts";
+import { useRequireAgent } from "../state/requireAgent";
 
 const agents = [
   { id: "codex", name: "Codex" },
@@ -300,7 +301,7 @@ export const SendAddressedMessage: Story = {
     sendMessage.mockClear();
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("textbox"));
-    await userEvent.click(await canvas.findByTitle("Choose which agents you're talking to"));
+    await userEvent.click(await canvas.findByTitle(/Choose which agents you're talking to/));
     await userEvent.click(await canvas.findByText("Codex"));
     const input = await canvas.findByPlaceholderText("Message #general");
     await userEvent.type(input, "Please review");
@@ -320,9 +321,65 @@ export const AddressingPicker: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("textbox"));
-    await userEvent.click(await canvas.findByTitle("Choose which agents you're talking to"));
+    await userEvent.click(await canvas.findByTitle(/Choose which agents you're talking to/));
     await expect(canvas.findByText("Talk to")).resolves.toBeVisible();
     await expect(canvas.findByText("Claude")).resolves.toBeVisible();
+  },
+};
+
+export const KeyboardAddressingPicker: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    useAddressing.getState().setPickerKey("c:general");
+    const list = await canvas.findByRole("listbox", { name: "Talk to agents" });
+    const options = within(list).getAllByRole("option");
+    await waitFor(() => expect(options[0]).toHaveFocus());
+    await userEvent.keyboard("{ArrowDown}[Space]");
+    await expect(options[1]).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("listbox", { name: "Talk to agents" })).toBeNull());
+  },
+};
+
+export const KeyboardAddressingClear: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    useAddressing.getState().setPickerKey("c:general");
+    const list = await canvas.findByRole("listbox", { name: "Talk to agents" });
+    const first = within(list).getAllByRole("option")[0];
+    await userEvent.click(first);
+    await expect(first).toHaveAttribute("aria-selected", "true");
+    await userEvent.click(within(list).getByRole("button", { name: "Clear" }));
+    await expect(first).toHaveAttribute("aria-selected", "false");
+    await userEvent.click(first);
+    const clear = within(list).getByRole("button", { name: "Clear" });
+    clear.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(first).toHaveAttribute("aria-selected", "false"));
+  },
+};
+
+export const KeyboardRequireMention: Story = {
+  args: { threadId: 42, onSetReplyInThread: undefined },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    useRequireAgent.getState().setOn("general:t42", true);
+    window.dispatchEvent(new CustomEvent("agora-composer-command", { detail: { id: "thread.requireMention", key: "t:42" } }));
+    await expect(canvas.findByTitle("Agents may reply to my messages without an @mention")).resolves.toHaveAttribute("aria-pressed", "false");
+  },
+};
+
+export const VoiceSendShortcutKeepsTypedDraft: Story = {
+  args: { voiceOK: true },
+  parameters: { setup: () => useVoiceRec.setState({ recordingKey: "c:general", startedAt: Date.now(), busyKey: null }) },
+  play: async ({ canvasElement }) => {
+    sendMessage.mockClear();
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox");
+    await userEvent.type(input, "Keep this draft");
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", [navigator.platform.includes("Mac") ? "metaKey" : "ctrlKey"]: true });
+    expect(sendMessage).not.toHaveBeenCalled();
+    await expect(input).toHaveValue("Keep this draft");
   },
 };
 
@@ -474,7 +531,7 @@ export const ThreadToolbar: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByTitle("Attach files")).not.toBeVisible();
     await userEvent.click(canvas.getByRole("textbox"));
-    const bot = canvas.getByTitle("Choose which agents you're talking to").getBoundingClientRect();
+    const bot = canvas.getByTitle(/Choose which agents you're talking to/).getBoundingClientRect();
     const files = canvas.getByTitle("Attach files").getBoundingClientRect();
     const input = canvas.getByPlaceholderText("Reply in thread…").getBoundingClientRect();
     await expect(Math.abs(bot.top - files.top)).toBeLessThan(2);

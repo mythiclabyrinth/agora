@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadItem } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useJump } from "../state/jump";
-import { useUiState, writeHistory, type InboxTab } from "../state/ui";
+import { useUiState, type InboxTab } from "../state/ui";
 import { ThreadsInbox } from "./ThreadsInbox";
 
 function initialTab(): InboxTab | null {
@@ -16,9 +16,8 @@ export function Inbox() {
   const markRead = useMarkUnreadsRead();
   const ui = useUiState();
   const requestJump = useJump(s => s.request);
-  const [selectedTab, setSelectedTab] = useState<InboxTab | null>(initialTab);
   const filter = ui.inboxFilter;
-  const tab = selectedTab ?? ui.inboxTab;
+  const tab = initialTab() ?? ui.inboxTab;
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);
   const unreadTotal = unreads.data?.reduce((sum, item) => sum + item.unread, 0) ?? 0;
@@ -26,7 +25,6 @@ export function Inbox() {
   useEffect(() => {
     const onPop = () => {
       const next = initialTab();
-      setSelectedTab(next);
       if (next) useUiState.getState().setInboxTab(next);
     };
     window.addEventListener("popstate", onPop);
@@ -34,14 +32,9 @@ export function Inbox() {
   }, []);
   useEffect(() => {
     const next = initialTab();
-    setSelectedTab(next);
     if (next) ui.setInboxTab(next);
   }, [ui.view]); // eslint-disable-line react-hooks/exhaustive-deps
-  const switchTab = (next: InboxTab) => {
-    writeHistory(`/inbox/${next}`, "replace");
-    setSelectedTab(next);
-    ui.setInboxTab(next);
-  };
+  const switchTab = (next: InboxTab) => ui.goInbox(next, "replace");
   const open = (item: UnreadItem) => {
     ui.selectChannel(item.group_id, item.channel_id);
     if (item.thread_id != null) ui.openThread(item.thread_id);

@@ -35,4 +35,5 @@ export * from "./lib/features";
 export * from "./lib/links";
 export * from "./lib/requireAgent";
 export * from "./lib/membershipAccess";
+export * from "./lib/shortcuts";
 export * from "./notifications/actions";

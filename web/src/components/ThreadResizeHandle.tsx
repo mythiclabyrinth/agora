@@ -71,7 +71,7 @@ export function ThreadResizeHandle() {
     };
     const key = (event: KeyboardEvent) => {
       if (!enabled()) return;
-      if (event.key === "Escape" && pointer !== null) { pending = startWidth; apply(startWidth); finish(); return; }
+      if (event.key === "Escape" && pointer !== null) { event.preventDefault(); pending = startWidth; apply(startWidth); finish(); return; }
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault(); measure();
       const step = event.shiftKey ? 64 : 24, current = pane.getBoundingClientRect().width;

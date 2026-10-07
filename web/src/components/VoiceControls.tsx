@@ -3,6 +3,8 @@
    strip. */
 
 import { useEffect, useState } from "react";
+import { ariaCombo, currentPlatform, formatCombo } from "@agora/core";
+import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { Icon } from "../lib/icons";
 import { useVoiceRec, voiceCancel, voiceRecKey, voiceSend, voiceToDraft, voiceToggle } from "../state/voiceRec";
 import { liveLabel, liveMuteToggle, liveScopeActive, liveToggle, useLiveVoice } from "../state/liveVoice";
@@ -25,6 +27,10 @@ export function MicButton({ channelId, threadId, mentions, draftOK = false }: {
   mentions?: string;
   draftOK?: boolean;
 }) {
+  useShortcutState(s => s.bindings);
+  const platform = currentPlatform();
+  const toggleKey = bindingFor("voice.toggle", platform);
+  const sendKey = bindingFor("voice.send", platform);
   const { recordingKey, startedAt, busyKey } = useVoiceRec();
   const key = voiceRecKey(channelId, threadId);
   if (busyKey === key) {
@@ -47,6 +53,7 @@ export function MicButton({ channelId, threadId, mentions, draftOK = false }: {
           <Icon name="square" cls="fill" />&nbsp;<RecTimer startedAt={startedAt} />
         </button>}
         <button className={`btn ago-mic send${draftOK ? "" : " recording"}`} title="Stop and send"
+          aria-keyshortcuts={ariaCombo(sendKey, platform)}
           aria-label="Stop and send"
           onClick={() => voiceSend(mentions)}>
           <Icon name={draftOK ? "arrow-up" : "square"} cls={draftOK ? undefined : "fill"} />
@@ -56,7 +63,8 @@ export function MicButton({ channelId, threadId, mentions, draftOK = false }: {
     );
   }
   return (
-    <button className="btn ago-mic" title="Record a voice message"
+    <button className="btn ago-mic" title={`Record a voice message (${formatCombo(toggleKey, platform) || "off"})`}
+      aria-keyshortcuts={ariaCombo(toggleKey, platform)}
       onClick={() => void voiceToggle(channelId, threadId, mentions, draftOK)}>
       <Icon name="mic" />
     </button>

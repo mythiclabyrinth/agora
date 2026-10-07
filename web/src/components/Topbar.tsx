@@ -3,11 +3,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { keys, useMe, useApi, type Me } from "@agora/core";
+import { ariaCombo, currentPlatform, formatCombo, keys, useMe, useApi, type Me } from "@agora/core";
 import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 import { PromptDialog } from "./PromptDialog";
 import { Icon } from "../lib/icons";
+import { bindingFor, useShortcutState } from "../state/shortcuts";
 
 function ServerBadge() {
   const host = location.hostname;
@@ -38,6 +39,9 @@ export function Topbar() {
   const [toolsOpen, setToolsOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renamePending, setRenamePending] = useState(false);
+  useShortcutState(s => s.bindings);
+  const searchKey = formatCombo(bindingFor("search", currentPlatform()), currentPlatform());
+  const helpKey = formatCombo(bindingFor("help.sheet", currentPlatform()), currentPlatform());
   const toolsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!toolsOpen) return;
@@ -73,8 +77,8 @@ export function Topbar() {
     <div ref={toolsRef} className={`topbar ${toolsOpen ? "tools-open" : ""}`}>
       <div className="brand"><span className="brand-mark"><img src="/icon.png" alt="" /></span> Agora</div>
       <ServerBadge />
-      <button className="workspace-search" aria-label="Search conversations" onClick={() => setSearchOpen(true)}>
-        <Icon name="search" /><span>Search conversations</span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘ K" : "Ctrl K"}</kbd>
+      <button className="workspace-search" aria-label="Search conversations" aria-keyshortcuts={ariaCombo(bindingFor("search", currentPlatform()), currentPlatform())} onClick={() => setSearchOpen(true)}>
+        <Icon name="search" /><span>Search conversations</span><kbd>{searchKey || "Off"}</kbd>
       </button>
       <button className="topbar-me" id="topbar-me" title="Change how your name appears"
         onClick={() => setRenaming(true)}>
@@ -89,6 +93,8 @@ export function Topbar() {
       <button className="btn sm ago-mobile-tools" aria-label="Workspace tools" aria-expanded={toolsOpen}
         onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>
       <div className={`ago-topbar-tools ${toolsOpen ? "open" : ""}`}>
+        <button className="btn sm" aria-label="Keyboard shortcuts" aria-keyshortcuts={ariaCombo(bindingFor("help.sheet", currentPlatform()), currentPlatform())} title={`Keyboard shortcuts (${helpKey || "?"})`}
+          onClick={() => { useShortcutState.getState().setSheetOpen(true); setToolsOpen(false); }}><Icon name="keyboard" /></button>
       {isAdmin && (
         <button className="btn sm" id="btn-people" onClick={() => { openPanel("people"); setToolsOpen(false); }}><Icon name="users" />People</button>
       )}

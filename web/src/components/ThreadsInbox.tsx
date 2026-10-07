@@ -75,7 +75,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
             popoverTarget={menuId} onClick={e => e.stopPropagation()}><Icon name="ellipsis" /></button>
           <div id={menuId} ref={menuRef} popover="auto" className="ago-inbox-actions ago-inbox-menu"
             onToggle={e => setMenuOpen(e.newState === "open")} onClick={e => e.stopPropagation()}
-            onKeyDown={e => { if (e.key === "Escape") { menuRef.current?.hidePopover(); triggerRef.current?.focus(); } }}>
+            onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); menuRef.current?.hidePopover(); triggerRef.current?.focus(); } }}>
             <button className="ago-x" title="Rename this thread"
               onClick={e => {
                 e.stopPropagation();

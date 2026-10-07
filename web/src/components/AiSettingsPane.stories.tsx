@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
-import { useMe } from "@agora/core";
+import { currentPlatform, useMe } from "@agora/core";
 import { fixtureMe } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
 import { AiSettingsPane } from "./AiSettingsPane";
@@ -188,7 +188,7 @@ export const MemberSettings: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByTestId("settings-member-loaded");
-    await waitFor(() => expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Notifications"]));
+    await waitFor(() => expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Keyboard", "Notifications"]));
     await expect(canvas.findByText("Make yourself at home")).resolves.toBeVisible();
     expect(canvas.queryByRole("tab", { name: "Features" })).not.toBeInTheDocument();
     expect(canvas.queryByRole("tab", { name: "Credentials" })).not.toBeInTheDocument();
@@ -203,14 +203,33 @@ export const SearchOverSettings: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("Make yourself at home")).resolves.toBeVisible();
-    await userEvent.keyboard("{Control>}k{/Control}");
+    useUiState.getState().setSearchOpen(true);
     const input = await canvas.findByPlaceholderText("Search messages, channels, groups…");
     await userEvent.click(input);
     await userEvent.keyboard("{Escape}");
     expect(useUiState.getState().searchOpen).toBe(false);
     expect(useUiState.getState().panel).toBe("settings");
+    await waitFor(() => expect(canvas.getByRole("dialog", { name: "Settings" })).toHaveFocus());
     await userEvent.keyboard("{Escape}");
     expect(useUiState.getState().panel).toBeNull();
+  },
+};
+
+export const KeyboardCaptureKeepsSettingsOpen: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Keyboard" }));
+    const change = await canvas.findByRole("button", { name: "Change Search conversations shortcut" });
+    await userEvent.click(change);
+    await userEvent.keyboard("{Escape}");
+    expect(useUiState.getState().panel).toBe("settings");
+    await userEvent.click(change);
+    fireEvent.keyDown(change, { key: "u", code: "KeyU", [currentPlatform() === "mac" ? "metaKey" : "ctrlKey"]: true, shiftKey: true });
+    await expect(canvas.findByRole("alertdialog", { name: "Shortcut conflict" })).resolves.toBeVisible();
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Cancel" })).toHaveFocus());
+    await userEvent.keyboard("{Escape}");
+    expect(canvas.queryByRole("alertdialog", { name: "Shortcut conflict" })).toBeNull();
+    expect(useUiState.getState().panel).toBe("settings");
   },
 };
 
@@ -243,7 +262,7 @@ export const NotificationsTab: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByTestId("settings-member-loaded");
-    await waitFor(() => expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Notifications"]));
+    await waitFor(() => expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Appearance", "Keyboard", "Notifications"]));
     await userEvent.click(canvas.getByRole("tab", { name: "Notifications" }));
     const toggle = await canvas.findByRole("checkbox", { name: "Sound for new messages" });
     const slider = canvas.getByRole("slider", { name: "Chime volume" }) as HTMLInputElement;
@@ -275,7 +294,7 @@ export const NotificationsTabAdmin: Story = {
     const canvas = within(canvasElement);
     await canvas.findByRole("tab", { name: "Credentials" });
     expect(canvas.getAllByRole("tab").map(tab => tab.textContent)).toEqual([
-      "Appearance", "Notifications", "Workspace", "Features", "Credentials",
+      "Appearance", "Keyboard", "Notifications", "Workspace", "Features", "Credentials",
     ]);
     await userEvent.click(canvas.getByRole("tab", { name: "Notifications" }));
     const toggle = await canvas.findByRole("checkbox", { name: "Sound for new messages" });
