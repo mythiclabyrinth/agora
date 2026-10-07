@@ -38,7 +38,8 @@ export function KeyboardSettings() {
         <kbd>{formatCombo(bindingFor(s.id, platform), platform) || "Off"}</kbd>
         <button type="button" className="btn sm" aria-label={`Change ${s.label} shortcut`}
           data-capturing-shortcut={recording === s.id ? "" : undefined}
-          onClick={() => { setRecording(s.id); setError(""); }}
+          onClick={e => { e.currentTarget.focus(); setRecording(s.id); setError(""); }}
+          onBlur={() => { if (recording === s.id) setRecording(null); }}
           onKeyDown={recording === s.id ? event => capture(event, s.id) : undefined}>
           {recording === s.id ? "Press keys…" : "Change"}
         </button>

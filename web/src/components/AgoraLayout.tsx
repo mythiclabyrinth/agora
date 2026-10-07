@@ -66,7 +66,7 @@ export function AgoraLayout() {
     if (!groups || !groups.length) return;
     const location = `${locationKey}:${window.location.pathname}`;
     if (window.location.pathname === "/threads") {
-      history.replaceState(null, "", "/inbox/threads");
+      history.replaceState(window.history.state, "", "/inbox/threads");
     }
     if (window.location.pathname === "/inbox" || window.location.pathname.startsWith("/inbox/")) {
       if (ui.view.kind !== "inbox" || ui.threadRoot != null) {

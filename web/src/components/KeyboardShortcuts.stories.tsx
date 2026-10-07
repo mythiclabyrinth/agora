@@ -3,7 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within, fn, fireEvent } from "storybook/test";
 import { fixtureGroups, fixtureMe } from "@agora/core/testing/fixtures";
 import { useShortcuts } from "../hooks/useShortcuts";
-import { useUiState } from "../state/ui";
+import { navigateAgoraHistory, useUiState, writeHistory } from "../state/ui";
+import { inboxPathAfterReload } from "../lib/inboxReload";
 import { useAddressing } from "./Composer";
 
 const markRead = fn(() => ({ ok: true, last_read_id: 0 }));
@@ -129,5 +130,26 @@ export const ThreadLogTypesInThread: Story = {
     await userEvent.keyboard("thread");
     await waitFor(() => expect(canvas.getByRole("textbox", { name: "Thread composer" })).toHaveValue("thread"));
     expect(canvas.getByRole("textbox", { name: "Composer" })).toHaveValue("");
+  },
+};
+
+export const HistoryKeepsBookmarkedInbox: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Message list");
+    const originalUrl = location.pathname + location.search + location.hash;
+    const originalState = history.state;
+    try {
+      history.replaceState(null, "", "/inbox/threads");
+      writeHistory("/inbox/unreads", "push");
+      expect(history.state).toEqual({ agoraHistoryIndex: 1 });
+      expect(navigateAgoraHistory("back")).toBe(true);
+      await waitFor(() => expect(location.pathname).toBe("/inbox/threads"));
+      expect(history.state).toBeNull();
+      expect(inboxPathAfterReload(location.pathname, "reload", history.state)).toBeNull();
+      expect(navigateAgoraHistory("back")).toBe(false);
+    } finally {
+      history.replaceState(originalState, "", originalUrl);
+    }
   },
 };

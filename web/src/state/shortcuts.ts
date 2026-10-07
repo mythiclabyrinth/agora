@@ -6,7 +6,7 @@ import { useUiState } from "./ui";
 const STORAGE_KEY = "agora_shortcuts";
 export type Bindings = Record<string, string | null>;
 
-function load(): Bindings {
+export function loadSavedBindings(): Bindings {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -38,7 +38,7 @@ interface ShortcutState {
   resetAll: () => void;
 }
 export const useShortcutState = create<ShortcutState>((set, get) => ({
-  bindings: load(), sheetOpen: false,
+  bindings: loadSavedBindings(), sheetOpen: false,
   setSheetOpen: sheetOpen => {
     if (sheetOpen) useUiState.setState({ searchOpen: false, panel: null });
     set({ sheetOpen });

@@ -48,10 +48,9 @@ export function Reactions({ message, onPick }: {
     return () => {
       window.removeEventListener("keydown", close);
       document.removeEventListener("pointerdown", closeOutside);
-      clearHold();
-      cancelClose();
     };
   }, [open]);
+  useEffect(() => () => { clearHold(); cancelClose(); }, []);
   const list = message.reactions || [];
   if (!list.length) return null;
   return (

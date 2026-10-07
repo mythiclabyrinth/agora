@@ -288,7 +288,6 @@ export function writeHistory(path: string, mode: "push" | "replace" | "none"): v
   if (mode === "none" || window.location.pathname === path) return;
   const index = historyIndex();
   if (mode === "push") {
-    if (index === null) window.history.replaceState({ agoraHistoryIndex: 0 }, "", window.location.href);
     const next = (index ?? 0) + 1;
     maxAgoraHistoryIndex = next;
     window.history.pushState({ agoraHistoryIndex: next }, "", path);

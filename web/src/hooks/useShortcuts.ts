@@ -135,6 +135,7 @@ export function useShortcuts(): void {
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.key === "Dead") return;
+      if (event.repeat && !(event.altKey && event.key.startsWith("Arrow"))) return;
       if (editing(event.target) && !event.metaKey && !event.ctrlKey && !event.altKey && event.key !== "Escape") return;
       const { me } = latest.current;
       const typing = editing(event.target);
@@ -181,8 +182,8 @@ export function useShortcuts(): void {
         const combo = bindingFor(shortcut.id, platform);
         if (matchesCombo(combo, event, platform)) {
           if ((shortcut.id === "nav.back" || shortcut.id === "nav.forward") && !isDesktopShell()) continue;
-          if (run(shortcut.id)) { event.preventDefault(); clear(); }
-          return;
+          if (run(shortcut.id)) { event.preventDefault(); clear(); return; }
+          continue;
         }
       }
       if (canType) {
