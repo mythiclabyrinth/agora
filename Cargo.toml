@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/agora-core", "crates/agora-server", "crates/agora-desktop"]
 
 [workspace.package]
-version = "1.0.19"
+version = "1.0.20"
 edition = "2021"
 license = "MIT"
 
