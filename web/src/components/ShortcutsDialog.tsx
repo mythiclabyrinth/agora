@@ -31,7 +31,7 @@ export function ShortcutsDialog({ platformOverride }: { platformOverride?: Platf
           {rows.filter(s => s.section === section).map(s => {
             const combo = bindingFor(s.id, platform);
             return <div className="ago-shortcut-row" key={s.id}>
-              <span>{s.label}{s.scope === "thread" && <small>In thread</small>}{s.scope === "recording" && <small>While recording</small>}{s.desktopOnly && <small>Desktop</small>}</span>
+              <span>{s.label}{(s.sequence || s.id === "help.sheet") && <small>After Esc</small>}{s.scope === "thread" && <small>In thread</small>}{s.scope === "recording" && <small>While recording</small>}{s.desktopOnly && <small>Desktop</small>}</span>
               <span className="ago-shortcut-keys">{combo ? <kbd>{s.id === "focus.composer" ? "Type or " : ""}{formatCombo(combo, platform)}</kbd> : s.rebindable ? <em>Off</em> : null}{s.sequence && <kbd>{s.sequence}</kbd>}</span>
             </div>;
           })}</section>)}

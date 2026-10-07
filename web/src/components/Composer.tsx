@@ -20,7 +20,7 @@ import { useRequireAgent } from "../state/requireAgent";
 import { useDrafts } from "../state/drafts";
 import { MicButton } from "./VoiceControls";
 import { useVoiceRec, voiceRecKey, voiceSend, voiceToDraft, voiceToggle } from "../state/voiceRec";
-import { leaveComposerForShortcuts, overlayOpen } from "../hooks/useShortcuts";
+import { leaveComposerForShortcuts, overlayOpen } from "../state/shortcutFocus";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { ImageLightbox } from "./ImageLightbox";
 import { TemplateControls } from "./TemplateControls";
@@ -443,7 +443,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     if (e.key === "Escape" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey &&
       !e.nativeEvent.isComposing && e.keyCode !== 229 &&
       useVoiceRec.getState().recordingKey !== voiceRecKey(channelId, threadId)) {
-      if (!overlayOpen()) {
+      if (!overlayOpen(!!useAddressing.getState().pickerKey)) {
         e.preventDefault();
         leaveComposerForShortcuts(threadId != null ? "thread" : "channel");
         taRef.current?.blur();

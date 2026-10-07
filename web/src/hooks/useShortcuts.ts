@@ -2,37 +2,23 @@ import { useEffect, useRef } from "react";
 import { currentPlatform, matchesCombo, nextSequence, nextUnreadIndex, SHORTCUTS, useGroups, useMarkRead, useMarkUnreadsRead, useMe, useUnreads } from "@agora/core";
 import { copyDeepLink } from "../lib/deepLinks";
 import { useAddressing } from "../components/Composer";
-import { useEmojiPicker } from "../components/EmojiPicker";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { navigateAgoraHistory, useUiState } from "../state/ui";
 import { useVoiceRec, voiceCancel } from "../state/voiceRec";
-import { hasOpenDialog } from "./useDialogFocus";
+import { getPointerZone, isShortcutMode, overlayOpen, setPointerZone, setShortcutMode } from "../state/shortcutFocus";
 import { isDesktopShell } from "../lib/chime";
 
 const editing = (target: EventTarget | null) => target instanceof HTMLElement && !!target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])");
 const typeTarget = (target: EventTarget | null) => target instanceof HTMLElement &&
-  (target === document.body || target.matches(".agora-main, .agora-thread") || !!target.closest("#ago-log, #ago-thread-log")) &&
-  !target.closest("button, a, [role='button'], [role='option'], [role='tab'], summary, [tabindex]:not(.agora-main):not(.agora-thread)");
+  (target === document.body || !!target.closest("#ago-log, #ago-thread-log")) &&
+  !target.closest("button, a, [role='button'], [role='option'], [role='tab'], summary, [tabindex]");
 let lastComposerKey: string | null = null;
-let lastPointerZone: "thread" | "channel" | null = null;
-let shortcutMode = false;
-export function leaveComposerForShortcuts(zone: "thread" | "channel") {
-  lastPointerZone = zone;
-  shortcutMode = true;
-}
-export const overlayOpen = (ignorePicker = false) => {
-  const ui = useUiState.getState();
-  let popoverOpen = false;
-  try { popoverOpen = !!document.querySelector("[popover]:popover-open"); } catch { /* older WebKit */ }
-  return hasOpenDialog() || !!ui.panel || ui.searchOpen || useShortcutState.getState().sheetOpen ||
-    (!ignorePicker && !!useAddressing.getState().pickerKey) || useEmojiPicker.getState().openFor != null ||
-    popoverOpen || !!document.querySelector(".ago-image-lightbox, .ago-pin-pop, .tools-open, .ago-dm-popover, .ago-react-pop, .thread-resizing, #ago-sources-overlay, .ago-template-pop, [role='dialog']");
-};
+const isOverlayOpen = (ignorePicker = false) => overlayOpen(!!useAddressing.getState().pickerKey, ignorePicker);
 function composerKey(): string | null {
   const ui = useUiState.getState();
   if (!ui.sel.c || ui.view.kind !== "channel") return null;
   const focusedThread = !!(document.activeElement as HTMLElement | null)?.closest(".agora-thread");
-  return ui.threadRoot != null && (lastPointerZone === "thread" || (lastPointerZone !== "channel" &&
+  return ui.threadRoot != null && (getPointerZone() === "thread" || (getPointerZone() !== "channel" &&
     (ui.threadExpanded || (window.matchMedia("(max-width: 820px)").matches && ui.mobileView === "thread") || focusedThread || lastComposerKey === `t:${ui.threadRoot}`)))
     ? `t:${ui.threadRoot}` : `c:${ui.sel.c}`;
 }
@@ -75,8 +61,8 @@ export function useShortcuts(): void {
 
   useEffect(() => {
     lastComposerKey = null;
-    lastPointerZone = null;
-    shortcutMode = false;
+    setPointerZone(null);
+    setShortcutMode(false);
     const platform = currentPlatform();
     let sequence = "";
     let pendingText = "";
@@ -89,7 +75,7 @@ export function useShortcuts(): void {
     const clear = () => { sequence = ""; pendingText = ""; startedFromTypeTarget = false; startTarget = null; if (timer) clearTimeout(timer); timer = null; };
     const canForward = () => {
       const state = useUiState.getState();
-      return startedFromTypeTarget && !overlayOpen() && state.sel.c === startChannel &&
+      return startedFromTypeTarget && !isOverlayOpen() && state.sel.c === startChannel &&
         state.threadRoot === startThread && state.view.kind === startView &&
         (document.activeElement === startTarget || document.activeElement === document.body);
     };
@@ -167,19 +153,20 @@ export function useShortcuts(): void {
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.key === "Dead") return;
-      if (editing(event.target)) { clear(); shortcutMode = false; }
+      if (editing(event.target)) { clear(); setShortcutMode(false); }
       if (event.repeat && !(event.altKey && event.key.startsWith("Arrow"))) return;
       if (editing(event.target)) {
         if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key !== "Escape") return;
       }
+      if (sequence && ["Shift", "Meta", "Control", "Alt"].includes(event.key)) return;
       const { me } = latest.current;
       const typing = editing(event.target);
-      const overlay = overlayOpen();
-      const pickerOnly = !!useAddressing.getState().pickerKey && !overlayOpen(true);
+      const overlay = isOverlayOpen();
+      const pickerOnly = !!useAddressing.getState().pickerKey && !isOverlayOpen(true);
       const recording = !!useVoiceRec.getState().recordingKey;
       const state = useUiState.getState();
       const focused = document.activeElement as HTMLElement | null;
-      const activeThread = state.threadRoot != null && (!!focused?.closest(".agora-thread") || (focused === document.body && lastPointerZone === "thread"));
+      const activeThread = state.threadRoot != null && (!!focused?.closest(".agora-thread") || (focused === document.body && getPointerZone() === "thread"));
       const allowedOverlay = (id: string) => id === "help.sheet" || id === "search" || (id === "agents.picker" && pickerOnly);
       const canType = !overlay && !typing && typeTarget(event.target) && !!composerKey() &&
         !event.metaKey && !event.ctrlKey && !event.altKey && event.key.length === 1 && event.key !== " ";
@@ -197,9 +184,9 @@ export function useShortcuts(): void {
         if (forward && canType && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.length === 1) {
           if (typeIntoComposer(prefix + event.key)) { event.preventDefault(); return; }
         }
-        if (forward && typeIntoComposer(prefix) && event.key === "Escape") { event.preventDefault(); return; }
+        if (forward && event.key === "Escape" && typeIntoComposer(prefix)) { event.preventDefault(); return; }
       }
-      const sequenceMode = shortcutMode || !typeTarget(event.target) || !composerKey();
+      const sequenceMode = isShortcutMode() || !typeTarget(event.target) || !composerKey();
       if (!overlay && !typing && !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "?" && sequenceMode) {
         event.preventDefault(); run("help.sheet"); return;
       }
@@ -237,7 +224,7 @@ export function useShortcuts(): void {
       }
       if (canType) {
         const target = event.target as HTMLElement;
-        const zone = target.closest("#ago-thread-log") ? "thread" : target.closest("#ago-log") ? "channel" : lastPointerZone;
+        const zone = target.closest("#ago-thread-log") ? "thread" : target.closest("#ago-log") ? "channel" : getPointerZone();
         const key = zone === "thread" && state.threadRoot != null ? `t:${state.threadRoot}`
           : zone === "channel" ? `c:${state.sel.c}` : composerKey();
         if (typeIntoComposer(event.key, key)) event.preventDefault();
@@ -246,23 +233,22 @@ export function useShortcuts(): void {
     const nativeCommand = (id: string) => { run(id); };
     const pointer = (event: PointerEvent) => {
       clear();
-      shortcutMode = false;
+      setShortcutMode(false);
       const target = event.target as HTMLElement;
-      lastPointerZone = target.closest(".agora-thread") ? "thread" : target.closest("#ago-log") ? "channel" : null;
+      setPointerZone(target.closest(".agora-thread") ? "thread" : target.closest("#ago-log") ? "channel" : null);
     };
     const focus = (event: FocusEvent) => {
       const target = event.target as HTMLElement | null;
-      if (editing(target)) shortcutMode = false;
-      if (target?.id === "ago-msg") { lastComposerKey = `c:${useUiState.getState().sel.c}`; lastPointerZone = "channel"; }
-      if (target?.id === "ago-thread-msg") { lastComposerKey = `t:${useUiState.getState().threadRoot}`; lastPointerZone = "thread"; }
-      if (target?.matches(".agora-main")) lastPointerZone = "channel";
-      if (target?.matches(".agora-thread")) lastPointerZone = "thread";
+      if (editing(target)) setShortcutMode(false);
+      if (target?.id === "ago-msg") { lastComposerKey = `c:${useUiState.getState().sel.c}`; setPointerZone("channel"); }
+      if (target?.id === "ago-thread-msg") { lastComposerKey = `t:${useUiState.getState().threadRoot}`; setPointerZone("thread"); }
     };
     (window as Window & { __agoraShortcut?: (id: string) => void }).__agoraShortcut = nativeCommand;
     document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", pointer, true);
     document.addEventListener("focusin", focus);
     const unsubscribe = useUiState.subscribe((next, previous) => {
+      // Keyboard navigation keeps shortcut mode; pointer or editing returns to typing.
       if (next.sel.c !== previous.sel.c || next.threadRoot !== previous.threadRoot || next.view.kind !== previous.view.kind) clear();
     });
     return () => { clear(); unsubscribe(); document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", pointer, true); document.removeEventListener("focusin", focus); delete (window as Window & { __agoraShortcut?: (id: string) => void }).__agoraShortcut; };

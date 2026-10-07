@@ -3,7 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within, fn, fireEvent } from "storybook/test";
 import { fixtureGroups, fixtureMe } from "@agora/core/testing/fixtures";
 import { currentPlatform } from "@agora/core";
-import { leaveComposerForShortcuts, useShortcuts } from "../hooks/useShortcuts";
+import { useShortcuts } from "../hooks/useShortcuts";
+import { leaveComposerForShortcuts } from "../state/shortcutFocus";
 import { navigateAgoraHistory, useUiState, writeHistory } from "../state/ui";
 import { inboxPathAfterReload } from "../lib/inboxReload";
 import { useAddressing } from "./Composer";
@@ -225,6 +226,23 @@ export const GoThenEscapeOnlyTypesG: Story = {
     await userEvent.keyboard("g{Escape}");
     expect(canvas.getByRole("textbox", { name: "Composer" })).toHaveValue("g");
     expect(markRead).not.toHaveBeenCalled();
+  },
+};
+
+export const GoIgnoresNonPrintableKeys: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox", { name: "Composer" });
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}g{Tab}");
+    expect(input).toHaveValue("");
+    expect(input).not.toHaveFocus();
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}g{Shift}");
+    expect(input).toHaveValue("");
+    expect(input).not.toHaveFocus();
+    await userEvent.keyboard("?");
+    await waitFor(() => expect(input).toHaveValue("g?"));
   },
 };
 

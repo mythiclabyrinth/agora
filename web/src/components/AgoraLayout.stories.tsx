@@ -102,6 +102,7 @@ export const ComposerFocusShortcuts: Story = {
     useUiState.setState({ sel: { g: "product", c: "general" }, view: { kind: "channel" }, threadRoot: null, mobileView: "main" });
     const canvas = within(canvasElement);
     const input = await canvas.findByPlaceholderText("Message #storybook");
+    await new Promise(resolve => setTimeout(resolve, 500));
     markRead.mockClear();
     await userEvent.click(input);
     await userEvent.keyboard("{Escape}");
