@@ -25,6 +25,7 @@ const meta = {
     "GET /api/groups": { groups: fixtureGroups },
     "GET /api/threads?limit=100": { threads: fixtureThreads },
     "GET /api/unreads": { items: [item, { ...item, kind: "thread", thread_id: 42, title: "Launch planning", mentions: 1 }], total: 2 },
+    "GET /api/approvals": { items: [], total: 0 },
   } },
 } satisfies Meta<typeof InboxScreen>;
 export default meta;
@@ -46,6 +47,19 @@ export const UnreadsSwipeLeftMarkRead: Story = {
 export const Empty: Story = {
   render: () => <InboxScreen />,
   parameters: { apiRoutes: { "GET /api/unreads": { items: [], total: 0 } } },
+};
+
+export const Approvals: Story = {
+  render: () => {
+    useInboxTab.setState({ tab: "approvals" });
+    return <InboxScreen />;
+  },
+  parameters: { apiRoutes: { "GET /api/approvals": { items: [{
+    kind: "channel", channel_id: "general", channel_name: "general", group_id: "product", group_name: "Product",
+    thread_id: null, title: null, pending_count: 1,
+    message: { ...root, id: 520, author_type: "agent", author_id: "claude-cli", author_name: "Claude", thread_id: null, text: "Please approve this action", ts: Date.now() / 1000,
+      meta: { approval_inbox: true, options: [{ id: "allow", label: "Approve" }] } },
+  }], total: 1 } } },
 };
 
 export const LongThreadTitle: Story = {

@@ -1,11 +1,11 @@
 /* The pure page-set transforms behind live updates. */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, bumpReplyCount, dropReplyCount, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
-import { flattenMessages } from "../src/api/queries";
+import { approvalPendingAt, approvalServerOffset, flattenMessages } from "../src/api/queries";
 import { keys } from "../src/api/keys";
-import type { AgentUsageResponse, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
+import type { AgentUsageResponse, ApprovalItem, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
 const msg = (id: number, text = `m${id}`): Message =>
   ({
@@ -15,6 +15,50 @@ const msg = (id: number, text = `m${id}`): Message =>
 
 const pages = (...ids: number[][]): MessagePages =>
   ({ pages: ids.map(p => p.map(id => msg(id))), pageParams: ids.map(() => undefined) });
+
+it("uses server time for approval expiry on fast and slow device clocks", () => {
+  const item = { message: { ...msg(1), meta: { expires_at: 1.1 } } } as ApprovalItem;
+  const fastOffset = approvalServerOffset({ items: [item], total: 1, server_now: 1 }, 1300);
+  expect(approvalPendingAt(item, 1300 + fastOffset)).toBe(true);
+  const slowOffset = approvalServerOffset({ items: [item], total: 1, server_now: 1.2 }, 700);
+  expect(approvalPendingAt(item, 700 + slowOffset)).toBe(false);
+});
+
+it("refreshes approvals after an interactive post and later changes", async () => {
+  vi.useFakeTimers();
+  try {
+    const events = [
+      { type: "message" as const, message: { ...msg(901), author_type: "agent" as const, meta: { approval_inbox: true } } },
+      { type: "message_update" as const, message: { ...msg(902), meta: { approval_inbox: true } } },
+      { type: "message_update" as const, message: { ...msg(904), meta: { approval_inbox: false } } },
+      { type: "message_move" as const, channel_id: "c1", thread_id: null, message_id: 902, seq: 2 },
+      { type: "message_delete" as const, channel_id: "c1", thread_id: null, message_id: 903 },
+      { type: "message_clear" as const, channel_id: "c1", thread_id: null },
+    ];
+    for (const event of events) {
+      const qc = new QueryClient();
+      qc.setQueryData(keys.approvals, { items: [], total: 0 });
+      applyWsEvent(qc, event, { username: "me" });
+      await vi.advanceTimersByTimeAsync(800);
+      expect(qc.getQueryState(keys.approvals)?.isInvalidated).toBe(true);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("ignores unrelated message updates when refreshing approvals", async () => {
+  vi.useFakeTimers();
+  try {
+    const qc = new QueryClient();
+    qc.setQueryData(keys.approvals, { items: [], total: 0 });
+    applyWsEvent(qc, { type: "message_update", message: msg(904) }, { username: "me" });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(qc.getQueryState(keys.approvals)?.isInvalidated).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 it("keeps a page set's identity when a deleted reply's root is absent", () => {
   const data = pages([1, 2]);

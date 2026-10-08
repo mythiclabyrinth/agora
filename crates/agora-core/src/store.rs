@@ -369,6 +369,14 @@ fn migrate(conn: &Connection) {
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel_seq ON messages(channel_id, seq)", []).unwrap();
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq)", []).unwrap();
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages(seq)", []).unwrap();
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS idx_messages_pending_approvals \
+        ON messages(channel_id, thread_id, seq) WHERE {APPROVAL_PREDICATE}"
+        ),
+        [],
+    )
+    .unwrap();
     // Push tokens gained an owner when accounts landed; pre-account rows
     // start unowned ('') and are claimed by the boot migration.
     if !has_column("push_tokens", "username") {
@@ -563,6 +571,15 @@ fn message_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<Value
 
 const MSG_COLS: &str =
     "id, seq, channel_id, thread_id, author_type, author_id, author_name, text, ts, meta";
+
+// Keep the index and its queries on the same predicate. The CASE protects
+// writes when an older row contains malformed JSON metadata.
+const APPROVAL_PREDICATE: &str = "CASE WHEN json_valid(meta) THEN \
+    author_type = 'agent' AND json_extract(meta, '$.approval_inbox') = 1 AND ( \
+      (json_type(meta, '$.options') = 'array' AND json_array_length(meta, '$.options') > 0 AND json_extract(meta, '$.resolved') IS NULL) OR \
+      (json_type(meta, '$.form') = 'object' AND json_extract(meta, '$.form_submitted') IS NULL) OR \
+      (json_type(meta, '$.table') = 'object' AND json_extract(meta, '$.table_submitted') IS NULL) \
+    ) ELSE 0 END";
 
 const USER_COLS: &str =
     "username, display_name, email, instance_role, created_at, disabled, session_version";
@@ -2127,6 +2144,13 @@ impl Store {
             let mut meta: Value = raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
             let options = meta["options"].as_array().ok_or("Message has no options")?;
             if !meta["resolved"].is_null() { return Err("Options already resolved"); }
+            if option_id.is_some()
+                && meta["expires_at"]
+                    .as_f64()
+                    .is_some_and(|expires| expires <= now())
+            {
+                return Err("This request has expired");
+            }
             if let Some(id) = option_id {
                 if !options.iter().any(|o| o["id"].as_str() == Some(id)) { return Err("Unknown option"); }
             }
@@ -2342,6 +2366,9 @@ impl Store {
                     "values": values,
                 }),
             );
+            if meta["approval_inbox"] == true && !crate::notify_actions::pending(&meta) {
+                meta["approval_inbox"] = json!(false);
+            }
             conn.execute(
                 "UPDATE messages SET meta = ?1 WHERE id = ?2",
                 params![meta.to_string(), message_id],
@@ -3316,6 +3343,105 @@ impl Store {
             .unwrap().filter_map(Result::ok).collect()
     }
 
+    /// Earliest actionable message in each visible conversation. Visibility is
+    /// supplied by the caller; thread hides deliberately do not apply here.
+    pub fn pending_approvals(&self, channel_ids: &[String], limit: usize) -> (Vec<Value>, usize, Option<f64>) {
+        if channel_ids.is_empty() {
+            return (vec![], 0, None);
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders = vec!["?"; channel_ids.len()].join(",");
+        let sql = format!(
+            "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, \
+            m.author_id, m.author_name, m.text, m.ts, m.meta, \
+            c.name, c.group_id, COALESCE(g.name, ''), c.kind, root.thread_alias, root.text \
+            FROM messages m JOIN channels c ON c.id = m.channel_id \
+            LEFT JOIN groups g ON g.id = c.group_id \
+            LEFT JOIN messages root ON root.id = m.thread_id \
+            WHERE m.id IN (SELECT id FROM messages WHERE {APPROVAL_PREDICATE} \
+                AND channel_id IN ({placeholders})) \
+            ORDER BY m.seq, m.id"
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows = stmt
+            .query_map(params_from_iter(channel_ids.iter()), |r| {
+                Ok((
+                    message_row(r, 0)?,
+                    r.get::<_, String>(10)?,
+                    r.get::<_, String>(11)?,
+                    r.get::<_, String>(12)?,
+                    r.get::<_, String>(13)?,
+                    r.get::<_, Option<String>>(14)?,
+                    r.get::<_, Option<String>>(15)?,
+                ))
+            })
+            .unwrap();
+        let mut items: Vec<Value> = Vec::new();
+        let mut indices: HashMap<(String, Option<i64>), usize> = HashMap::new();
+        let mut total = 0;
+        let mut next_expiry: Option<f64> = None;
+        let now = now();
+        for row in rows.filter_map(Result::ok) {
+            let (message, channel_name, group_id, group_name, channel_kind, alias, root_text) = row;
+            let meta = &message["meta"];
+            if !crate::notify_actions::pending(meta)
+                || meta["expires_at"]
+                    .as_f64()
+                    .is_some_and(|expires| expires <= now)
+            {
+                continue;
+            }
+            if let Some(expires) = meta["expires_at"].as_f64() {
+                next_expiry = Some(next_expiry.map_or(expires, |first| first.min(expires)));
+            }
+            total += 1;
+            let channel_id = message["channel_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let thread_id = message["thread_id"].as_i64();
+            let key = (channel_id, thread_id);
+            if let Some(&index) = indices.get(&key) {
+                items[index]["pending_count"] =
+                    json!(items[index]["pending_count"].as_u64().unwrap_or(0) + 1);
+            } else {
+                indices.insert(key, items.len());
+                items.push(json!({
+                    "kind": if thread_id.is_some() { "thread" } else { "channel" },
+                    "channel_id": message["channel_id"], "channel_name": channel_name,
+                    "group_id": if channel_kind == "agent_dm" { DM_GROUP_ID } else { &group_id },
+                    "group_name": if channel_kind == "agent_dm" { DM_GROUP_NAME } else { &group_name },
+                    "thread_id": thread_id,
+                    "title": alias.filter(|s| !s.trim().is_empty()).or(root_text)
+                        .map(|s| s.chars().take(200).collect::<String>()),
+                    "pending_count": 1, "message": message,
+                }));
+            }
+        }
+        items.sort_by(|a, b| {
+            a["message"]["ts"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&b["message"]["ts"].as_f64().unwrap_or(0.0))
+        });
+        items.truncate(limit);
+        (items, total, next_expiry)
+    }
+
+    pub fn expired_option_ids(&self) -> Vec<i64> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT id FROM messages WHERE {APPROVAL_PREDICATE} \
+            AND json_type(meta, '$.options') = 'array' \
+            AND CAST(json_extract(meta, '$.expires_at') AS REAL) <= ?1"
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
+        stmt.query_map(params![now() - 30.0], |r| r.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
+    }
+
     /// Unread conversations in the channels visible in the caller's sidebar.
     /// Aggregate in SQLite before returning at most three previews per item.
     /// This is independent of `my_threads` so its limit and participation
@@ -4036,6 +4162,152 @@ mod tests {
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn approvals_group_by_conversation_and_advance_after_resolution() {
+        let s = store();
+        let group = s.create_group("Review", "", Some("tom"));
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let root = s.add_message(cid, "root", "user", "tom", None, None, &[]);
+        let tid = root["id"].as_i64().unwrap();
+        s.hide_thread("tom", tid);
+        let make = |text: &str, thread_id: Option<i64>| {
+            let row = s.add_message(cid, text, "agent", "bot", None, thread_id, &[]);
+            let id = row["id"].as_i64().unwrap();
+            s.update_message_meta(
+                id,
+                &json!({"approval_inbox": true,
+                "options": [{"id":"yes","label":"Yes"}], "resolved": null}),
+            );
+            id
+        };
+        let first = make("first", Some(tid));
+        let second = make("second", Some(tid));
+        let expiry = now() + 60.0;
+        s.update_message_meta(second, &json!({"expires_at": expiry}));
+        let top = make("channel", None);
+        let legacy = s.add_message(cid, "old", "agent", "bot", None, None, &[]);
+        s.update_message_meta(
+            legacy["id"].as_i64().unwrap(),
+            &json!({
+            "options": [{"id":"yes"}], "resolved": null}),
+        );
+        let ids = vec![cid.to_string()];
+        let (items, total, next_expiry) = s.pending_approvals(&ids, 20);
+        assert_eq!(total, 3);
+        assert_eq!(next_expiry, Some(expiry));
+        assert_eq!(items.len(), 2);
+        let thread = items.iter().find(|item| item["thread_id"] == tid).unwrap();
+        assert_eq!(thread["message"]["id"], first);
+        assert_eq!(thread["pending_count"], 2);
+        assert!(items.iter().any(|item| item["message"]["id"] == top));
+        let (limited, total, _) = s.pending_approvals(&ids, 1);
+        assert_eq!(limited.len(), 1);
+        assert_eq!(total, 3);
+        s.resolve_options(first, Some("yes"), "tom", None).unwrap();
+        let (items, total, _) = s.pending_approvals(&ids, 20);
+        assert_eq!(total, 2);
+        assert_eq!(
+            items.iter().find(|item| item["thread_id"] == tid).unwrap()["message"]["id"],
+            second
+        );
+        s.set_pref_hidden("tom", "channel", cid, true);
+        assert!(s
+            .pending_approvals(&s.visible_inbox_channels("tom", false), 20)
+            .0
+            .is_empty());
+        assert!(s
+            .pending_approvals(&s.visible_inbox_channels("stranger", false), 20)
+            .0
+            .is_empty());
+    }
+
+    #[test]
+    fn expired_options_reject_people_but_allow_author_and_system() {
+        let s = store();
+        let group = s.create_group("Review", "", Some("tom"));
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let make = || {
+            let row = s.add_message(cid, "permission", "agent", "bot", None, None, &[]);
+            let id = row["id"].as_i64().unwrap();
+            s.update_message_meta(
+                id,
+                &json!({"approval_inbox": true,
+                "options": [{"id":"yes"}], "resolved": null, "expires_at": now()-31.0}),
+            );
+            id
+        };
+        let agent = make();
+        let system = make();
+        assert_eq!(
+            s.resolve_options(agent, Some("yes"), "tom", None)
+                .unwrap_err(),
+            "This request has expired"
+        );
+        assert!(s.pending_approvals(&[cid.to_string()], 10).0.is_empty());
+        assert_eq!(s.expired_option_ids(), vec![agent, system]);
+        assert_eq!(
+            s.resolve_options(agent, None, "agent", Some("Timed out"))
+                .unwrap()["meta"]["resolved"]["by"],
+            "agent"
+        );
+        assert_eq!(
+            s.resolve_options(system, None, "system", Some("Expired — no decision"))
+                .unwrap()["meta"]["resolved"]["by"],
+            "system"
+        );
+        assert!(s.expired_option_ids().is_empty());
+    }
+
+    #[test]
+    fn approvals_include_pending_forms_and_action_tables() {
+        let s = store();
+        let group = s.create_group("Review", "", Some("tom"));
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let form = s.add_message(cid, "Form", "agent", "bot", None, None, &[]);
+        s.update_message_meta(form["id"].as_i64().unwrap(), &json!({
+            "approval_inbox": true, "form": {"fields": []}, "form_submitted": null}));
+        let table = s.add_message(cid, "Table", "agent", "bot", None, None, &[]);
+        s.update_message_meta(table["id"].as_i64().unwrap(), &json!({
+            "approval_inbox": true, "table": {"buttons": [{"id":"submit"}]}, "table_submitted": null}));
+        let (_, total, _) = s.pending_approvals(&[cid.to_string()], 10);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn final_table_row_action_removes_the_approval_marker() {
+        let s = store();
+        let group = s.create_group("Review", "", Some("tom"));
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let message = s.add_message(cid, "Rows", "agent", "bot", None, None, &[]);
+        let id = message["id"].as_i64().unwrap();
+        s.update_message_meta(id, &json!({
+            "approval_inbox": true,
+            "table": {"buttons": [], "rows": [{"id": "r1", "actions": [{"id": "done"}]}]},
+            "table_state": {"r1": {}}, "table_rows": {}, "table_submitted": null,
+        }));
+        assert_eq!(s.pending_approvals(&[cid.to_string()], 10).1, 1);
+        let resolved = s.resolve_row(id, "r1", "done", "tom").unwrap();
+        assert_eq!(resolved["meta"]["approval_inbox"], false);
+        assert_eq!(s.pending_approvals(&[cid.to_string()], 10).1, 0);
+    }
+
+    #[test]
+    fn malformed_meta_does_not_break_the_approval_index() {
+        let s = store();
+        let group = s.create_group("Review", "", Some("tom"));
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let row = s.add_message(cid, "old", "agent", "bot", None, None, &[]);
+        let id = row["id"].as_i64().unwrap();
+        s.conn.lock().unwrap().execute("UPDATE messages SET meta = 'broken' WHERE id = ?1", params![id]).unwrap();
+        assert!(s.pending_approvals(&[cid.to_string()], 10).0.is_empty());
+        s.add_message(cid, "still writable", "agent", "bot", None, None, &[]);
     }
 
     #[test]

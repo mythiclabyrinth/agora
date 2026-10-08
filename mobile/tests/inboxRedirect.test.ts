@@ -15,3 +15,8 @@ it("sends the old Threads route to the Threads tab", () => {
   expect(inboxTabFromParam(new URL(redirect.props.href, "https://agora.test").searchParams.get("tab") ?? undefined))
     .toBe("threads");
 });
+
+it("accepts the Approvals tab parameter", () => {
+  expect(inboxTabFromParam("approvals")).toBe("approvals");
+  expect(inboxTabFromParam("invalid")).toBeNull();
+});

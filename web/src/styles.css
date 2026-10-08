@@ -2601,6 +2601,13 @@ input[type="checkbox"] { accent-color: var(--a1); }
 .ago-unreads-filters button[aria-pressed="true"] { border-color: var(--a1); color: var(--text); background: rgba(var(--accent-rgb),.14); }
 .ago-unreads-list { gap: 8px; padding: 0 16px 16px; }
 .ago-unread-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; border: 1px solid var(--border-strong); border-radius: 12px; padding: 12px; background: var(--panel); }
+.ago-approvals-list { display: flex; flex-direction: column; gap: 10px; }
+.ago-approval-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; background: var(--surface); box-shadow: var(--shadow-sm); }
+.ago-approval-card:hover { border-color: rgba(var(--accent-rgb), .4); }
+.ago-approval-card .ago-unread-preview { grid-column: 1 / -1; grid-row: auto; display: block; font-size: 13px; line-height: 1.5; }
+.ago-approval-time { color: var(--dim); font-size: 12px; }
+.ago-approval-actions { grid-column: 1 / -1; margin-top: 3px; }
+.ago-approval-card .ago-unread-badge { justify-self: start; border-radius: 10px; padding: 2px 6px; background: rgba(var(--accent-rgb), .15); color: var(--accent-text); font-size: 12px; }
 .ago-unread-source, .ago-unread-preview { min-width: 0; border: 0; padding: 0; background: transparent; text-align: left; cursor: pointer; }
 .ago-unread-source { grid-column: 1; grid-row: 1; color: var(--text); font: inherit; font-weight: 700; overflow-wrap: anywhere; white-space: normal; }
 .ago-unread-preview { grid-column: 1 / -1; grid-row: 2; display: flex; flex-direction: column; gap: 3px; color: var(--dim); font: inherit; font-size: 12px; }

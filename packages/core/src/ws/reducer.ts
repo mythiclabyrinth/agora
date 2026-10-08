@@ -29,6 +29,18 @@ import { useLive } from "../state/live";
 export type MessagePages = InfiniteData<Message[], unknown>;
 
 const unreadRefreshTimers = new WeakMap<QueryClient, { timer: ReturnType<typeof setTimeout>; firstAt: number }>();
+const approvalRefreshTimers = new WeakMap<QueryClient, { timer: ReturnType<typeof setTimeout>; firstAt: number }>();
+function refreshApprovals(qc: QueryClient) {
+  const pending = approvalRefreshTimers.get(qc);
+  if (pending) clearTimeout(pending.timer);
+  const firstAt = pending?.firstAt ?? Date.now();
+  const delay = Math.min(750, Math.max(0, 3000 - (Date.now() - firstAt)));
+  const timer = setTimeout(() => {
+    approvalRefreshTimers.delete(qc);
+    void qc.invalidateQueries({ queryKey: keys.approvals });
+  }, delay);
+  approvalRefreshTimers.set(qc, { timer, firstAt });
+}
 function refreshUnreads(qc: QueryClient) {
   const pending = unreadRefreshTimers.get(qc);
   if (pending) clearTimeout(pending.timer);
@@ -477,6 +489,7 @@ export function applyWsEvent(
       // counters — appendMessage already dedupes the list, but the bump
       // helpers do not.
       if (!claimId(seenMessageIds, qc, message.id)) return;
+      if (message.meta?.approval_inbox) refreshApprovals(qc);
       if (!(message.author_type === "user" && message.author_id === ctx.username)) refreshUnreads(qc);
       qc.setQueryData<MessagePages>(
         keys.messages(message.channel_id, message.thread_id),
@@ -513,6 +526,7 @@ export function applyWsEvent(
     }
     case "message_update": {
       const { message } = ev as { type: "message_update"; message: Message };
+      if (message.meta && "approval_inbox" in message.meta) refreshApprovals(qc);
       applyMessageUpdate(qc, message);
       // Attachment deletion deliberately reuses message_update so every
       // message presentation is patched. Refresh any open file browsers too;
@@ -521,6 +535,7 @@ export function applyWsEvent(
       break;
     }
     case "message_move": {
+      refreshApprovals(qc);
       const queryKey = keys.messages(ev.channel_id, ev.thread_id);
       const data = qc.getQueryData<MessagePages>(queryKey);
       const next = moveMessage(data, ev.message_id, ev.seq);
@@ -531,12 +546,14 @@ export function applyWsEvent(
       break;
     }
     case "message_delete": {
+      refreshApprovals(qc);
       refreshUnreads(qc);
       applyMessageDelete(qc, ev);
       void qc.invalidateQueries({ queryKey: ["attachments", ev.channel_id] });
       break;
     }
     case "message_clear": {
+      refreshApprovals(qc);
       refreshUnreads(qc);
       applyMessageClear(qc, ev);
       break;
@@ -564,6 +581,7 @@ export function applyWsEvent(
     }
     case "thread_renamed": {
       refreshUnreads(qc);
+      refreshApprovals(qc);
       qc.setQueryData<ThreadRow[]>(keys.threads, (threads) =>
         applyThreadRename(threads, ev),
       );

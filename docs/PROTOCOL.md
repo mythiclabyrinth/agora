@@ -314,6 +314,10 @@ OpenClaw wrapper, a shell script, whatever:
 
 // approval buttons: a post can carry `options` (each {id, label, style?, notification?}) plus a
 // stable `options_id`. The UI renders them as clickable buttons.
+// Optional `expires_in` is a positive, finite number of seconds (clamped to 1..86400).
+// The server records `meta.expires_at` and refuses human selections after it;
+// an agent can still cancel a timed-out request. Newly posted interactive
+// messages appear in the Approvals inbox until resolved or expired.
 // `notification` may specify {enabled: boolean, label?: string,
 // role?: "confirm" | "cancel" | "destructive"}. See docs/NOTIFICATION_ACTIONS.md
 // for exact-label categories, platform support, and editable-state opt-in.

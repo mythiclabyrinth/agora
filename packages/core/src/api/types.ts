@@ -268,6 +268,9 @@ export interface LinkPreview {
 }
 
 export interface MessageMeta {
+  approval_inbox?: boolean;
+  /** Unix seconds; timed option selections are refused after this instant. */
+  expires_at?: number;
   /** Unix seconds when a human author last changed the message text. */
   edited_at?: number;
   options?: MessageOption[];
@@ -465,6 +468,27 @@ export interface UnreadItem {
 export interface UnreadInboxPage {
   items: UnreadItem[];
   total: number;
+}
+
+export interface ApprovalItem {
+  kind: "channel" | "thread";
+  channel_id: string;
+  channel_name: string;
+  group_id: string;
+  group_name: string;
+  thread_id: number | null;
+  title: string | null;
+  pending_count: number;
+  message: Message;
+}
+
+export interface ApprovalInboxPage {
+  items: ApprovalItem[];
+  /** Number of pending messages, including additional messages on a card. */
+  total: number;
+  next_expiry?: number | null;
+  /** Unix seconds when the server prepared this page. */
+  server_now?: number;
 }
 
 export interface StarredMessage extends Message {

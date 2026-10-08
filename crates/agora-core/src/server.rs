@@ -456,6 +456,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/search/ask", post(search_ask))
         .route("/api/threads", get(list_threads))
         .route("/api/unreads", get(list_unreads))
+        .route("/api/approvals", get(list_approvals))
         .route("/api/unreads/read", put(mark_unreads_read))
         .route("/api/threads/{thread_id}", patch(update_thread))
         .route("/api/threads/{thread_id}/read", put(mark_thread_read))
@@ -2663,6 +2664,26 @@ async fn list_unreads(
         state.hub.store.unread_inbox_page(&user.username, &ids, limit)
     }).await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Unread query failed"))?;
     Ok(Json(json!({"items": items, "total": total})))
+}
+
+async fn list_approvals(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let limit = q
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(1, 2000);
+    let (items, total, next_expiry) = tokio::task::spawn_blocking(move || {
+        let ids = visible_inbox_channels(&state, &user);
+        state.hub.store.pending_approvals(&ids, limit)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Approval query failed"))?;
+    Ok(Json(json!({"items": items, "total": total, "next_expiry": next_expiry, "server_now": crate::store::now()})))
 }
 
 async fn mark_unreads_read(
@@ -6572,6 +6593,51 @@ mod tests {
         assert!(!inbox.iter().any(|item| item["previews"][0]["text"] == "private sibling preview"));
         store.set_pref_hidden("ana", "group", visible_id, true);
         assert!(!visible_inbox_channels(&state, &user).contains(&cid.to_string()));
+    }
+
+    #[tokio::test]
+    async fn approvals_endpoint_scopes_channels_and_includes_hidden_threads() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "", None, "member").unwrap();
+        store.create_user("other", "", None, "member").unwrap();
+        let group = store.create_group("Inbox", "", Some("ana"));
+        let channel = store.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let hidden = store.create_channel(group["id"].as_str().unwrap(), "hidden", "");
+        store.set_pref_hidden("ana", "channel", hidden["id"].as_str().unwrap(), true);
+        let root = store.add_message(cid, "root", "user", "ana", None, None, &[]);
+        let tid = root["id"].as_i64().unwrap();
+        store.hide_thread("ana", tid);
+        for (channel_id, thread_id) in [(cid, Some(tid)), (hidden["id"].as_str().unwrap(), None)] {
+            let row =
+                store.add_message(channel_id, "Approve?", "agent", "bot", None, thread_id, &[]);
+            store.update_message_meta(
+                row["id"].as_i64().unwrap(),
+                &json!({
+                "approval_inbox": true, "options": [{"id":"yes"}], "resolved": null}),
+            );
+        }
+        let ana = list_approvals(
+            State(state.clone()),
+            Query(HashMap::new()),
+            session_headers(&state, "ana"),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(ana["total"], 1);
+        assert!(ana["server_now"].as_f64().is_some());
+        assert_eq!(ana["items"][0]["thread_id"], tid);
+        let other = list_approvals(
+            State(state.clone()),
+            Query(HashMap::new()),
+            session_headers(&state, "other"),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(other["total"], 0);
     }
 
     #[tokio::test]
