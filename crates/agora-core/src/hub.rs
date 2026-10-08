@@ -1645,8 +1645,8 @@ impl Hub {
         Ok(updated)
     }
 
-    /// Resolve orphaned timed options after giving the author's own timeout
-    /// message a short chance to arrive first.
+    /// Resolve timed options as soon as they expire and broadcast the locked
+    /// buttons to clients.
     pub fn sweep_expired_options(&self) -> usize {
         let mut resolved = 0;
         for message_id in self.store.expired_option_ids() {
@@ -4476,7 +4476,7 @@ mod tests {
         );
         let mid = message["id"].as_i64().unwrap();
         h.store
-            .update_message_meta(mid, &json!({"expires_at": crate::store::now() - 31.0}));
+            .update_message_meta(mid, &json!({"expires_at": crate::store::now() - 0.1}));
         let (tx, mut rx) = unbounded_channel();
         h.attach_socket("tom", false, tx);
         assert_eq!(h.sweep_expired_options(), 1);
@@ -4510,6 +4510,16 @@ mod tests {
         let fractional = &h.store.messages(&cid, None, None, 10)[1];
         let expires = fractional["meta"]["expires_at"].as_f64().unwrap();
         assert!(expires >= before_fractional + 1.0 && expires <= crate::store::now() + 1.0);
+
+        let before_capped = crate::store::now();
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "A capped approval", "options": [{"id":"yes","label":"Yes"}],
+            "options_id": "capped-expiry", "expires_in": 172800,
+        }));
+        let capped = &h.store.messages(&cid, None, None, 10)[2];
+        let expires = capped["meta"]["expires_at"].as_f64().unwrap();
+        assert!(expires >= before_capped + 86400.0 && expires <= crate::store::now() + 86400.0);
     }
 
     #[test]

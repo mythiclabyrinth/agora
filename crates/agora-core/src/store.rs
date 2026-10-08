@@ -3436,7 +3436,7 @@ impl Store {
             AND CAST(json_extract(meta, '$.expires_at') AS REAL) <= ?1"
         );
         let mut stmt = conn.prepare(&sql).unwrap();
-        stmt.query_map(params![now() - 30.0], |r| r.get(0))
+        stmt.query_map(params![now()], |r| r.get(0))
             .unwrap()
             .filter_map(Result::ok)
             .collect()
@@ -4236,7 +4236,7 @@ mod tests {
             s.update_message_meta(
                 id,
                 &json!({"approval_inbox": true,
-                "options": [{"id":"yes"}], "resolved": null, "expires_at": now()-31.0}),
+                "options": [{"id":"yes"}], "resolved": null, "expires_at": now()-0.1}),
             );
             id
         };
@@ -4260,6 +4260,25 @@ mod tests {
             "system"
         );
         assert!(s.expired_option_ids().is_empty());
+    }
+
+    #[test]
+    fn human_can_select_timed_option_before_expiry() {
+        let s = store();
+        let group = s.create_group("Review", "", Some("tom"));
+        let channel = s.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let row = s.add_message(cid, "permission", "agent", "bot", None, None, &[]);
+        let id = row["id"].as_i64().unwrap();
+        s.update_message_meta(
+            id,
+            &json!({"approval_inbox": true,
+                "options": [{"id":"yes"}], "resolved": null, "expires_at": now()+60.0}),
+        );
+
+        let resolved = s.resolve_options(id, Some("yes"), "tom", None).unwrap();
+        assert_eq!(resolved["meta"]["resolved"]["by"], "tom");
+        assert_eq!(resolved["meta"]["resolved"]["option_id"], "yes");
     }
 
     #[test]

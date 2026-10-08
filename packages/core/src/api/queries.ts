@@ -867,7 +867,7 @@ export function useApprovals() {
     const timer = setTimeout(() => {
       setClock(Date.now());
       void query.refetch();
-    }, Math.max(1, nearest - (Date.now() + (query.data?.offsetMs ?? 0))));
+    }, Math.max(250, nearest - (Date.now() + (query.data?.offsetMs ?? 0))));
     return () => clearTimeout(timer);
   }, [query.data, serverClock]);
   const items = query.data?.items.filter(item => approvalPendingAt(item, serverClock));

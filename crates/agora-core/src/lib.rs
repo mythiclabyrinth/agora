@@ -87,7 +87,7 @@ pub async fn run(data_dir: PathBuf, ui_dir: Option<PathBuf>) -> anyhow::Result<A
     hub.set_unfurler(unfurl::spawn_worker(Arc::clone(&hub)));
     let expiry_hub = Arc::clone(&hub);
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             ticker.tick().await;
             let hub = Arc::clone(&expiry_hub);
