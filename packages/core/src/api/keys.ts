@@ -9,6 +9,7 @@ export const keys = {
   message: (id: number) => ["message", id] as const,
   threads: ["threads"] as const,
   unreads: ["unreads"] as const,
+  approvals: ["approvals"] as const,
   pins: (channelId: string) => ["pins", channelId] as const,
   stars: (channelId: string) => ["stars", channelId] as const,
   attachments: (channelId: string, threadId: number | null) =>

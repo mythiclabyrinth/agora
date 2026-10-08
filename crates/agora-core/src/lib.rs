@@ -85,6 +85,20 @@ pub async fn run(data_dir: PathBuf, ui_dir: Option<PathBuf>) -> anyhow::Result<A
     // id here; the worker fetches behind SSRF guards and answers with a
     // `message_update` broadcast when metadata lands.
     hub.set_unfurler(unfurl::spawn_worker(Arc::clone(&hub)));
+    let expiry_hub = Arc::clone(&hub);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            ticker.tick().await;
+            let hub = Arc::clone(&expiry_hub);
+            if tokio::task::spawn_blocking(move || hub.sweep_expired_options())
+                .await
+                .is_err()
+            {
+                tracing::warn!("approval expiry sweep failed");
+            }
+        }
+    });
     let connections = connections::ConnectionManager::new(Arc::clone(&hub), Arc::clone(&config));
     connections.sync();
 

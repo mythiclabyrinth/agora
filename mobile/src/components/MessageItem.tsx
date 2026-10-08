@@ -6,7 +6,7 @@ import React from "react";
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Pin, Star } from "lucide-react-native";
 import type { Session } from "@agora/core";
-import { FEATURES, useSelectOption } from "@agora/core";
+import { FEATURES } from "@agora/core";
 import type { Message } from "@agora/core";
 import { fmtLastReply, fmtLastReplyFull, fmtTs, validLastReplyTs } from "@agora/core";
 import { typography, weight, radii, space } from "../lib/theme";
@@ -23,6 +23,7 @@ import { Reactions } from "./Reactions";
 import { Sources, visibleText } from "./Sources";
 import { Unfurls } from "./Unfurls";
 import { ArtifactList } from "./MapArtifacts";
+import { MessageOptions } from "./MessageOptions";
 
 export function Avatar({ message }: { message: Message }) {
   const styles = useStyles();
@@ -35,59 +36,6 @@ export function Avatar({ message }: { message: Message }) {
   return (
     <View style={styles.avatar}>
       <Text maxFontSizeMultiplier={1.2} style={styles.avatarInitial}>{initial}</Text>
-    </View>
-  );
-}
-
-function MessageOptions({ message }: { message: Message }) {
-  const styles = useStyles();
-  const select = useSelectOption();
-  const meta = message.meta;
-  const options = meta?.options;
-  if (!options || options.length === 0) return null;
-  const resolved = meta?.resolved;
-  if (resolved) {
-    const label =
-      resolved.label ||
-      options.find((o) => o.id === resolved.option_id)?.label ||
-      resolved.option_id ||
-      "Resolved";
-    const by = resolved.by ? ` by ${resolved.by}` : "";
-    return (
-      <View style={styles.options}>
-        <Text style={styles.optionResult}>
-          {label}
-          {by}
-        </Text>
-      </View>
-    );
-  }
-  return (
-    <View style={styles.options}>
-      {options.map((o) => (
-        <Pressable
-          key={o.id}
-          style={[
-            styles.optionBtn,
-            o.style === "primary" && styles.optionPrimary,
-            o.style === "danger" && styles.optionDanger,
-          ]}
-          onPress={() =>
-            select.mutate({ messageId: message.id, optionId: o.id })
-          }
-          disabled={select.isPending}
-        >
-          <Text
-            style={[
-              styles.optionLabel,
-              o.style === "primary" && styles.optionPrimaryLabel,
-              o.style === "danger" && styles.optionDangerLabel,
-            ]}
-          >
-            {o.label || o.id}
-          </Text>
-        </Pressable>
-      ))}
     </View>
   );
 }
@@ -382,27 +330,6 @@ const useStyles = createThemedStyles(({ colors }) => ({
     textAlign: "right",
     alignSelf: "stretch",
   },
-  options: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
-  optionBtn: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.panelStrong,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  optionPrimary: {
-    backgroundColor: colors.successSoft,
-    borderColor: colors.successBorder,
-  },
-  optionDanger: {
-    backgroundColor: colors.dangerSoft,
-    borderColor: colors.dangerBorder,
-  },
-  optionLabel: { color: colors.text, fontSize: typography.meta.fontSize, fontWeight: weight.semibold },
-  optionPrimaryLabel: { color: colors.green },
-  optionDangerLabel: { color: colors.red },
-  optionResult: { color: colors.faint, fontSize: typography.caption.fontSize, fontWeight: weight.semibold },
   tldrMark: {
     color: colors.a1,
     fontSize: typography.caption.fontSize,

@@ -8,7 +8,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { keys } from "./keys";
 import { memberRemovalPath, resolveMemberGroupId } from "./memberPaths";
 import { useApi } from "./context";
@@ -24,6 +24,8 @@ import {
 } from "../ws/reducer";
 import type {
   AgentInfo,
+  ApprovalItem,
+  ApprovalInboxPage,
   AgentUsageResponse,
   AgentDmList,
   AgentDmPolicy,
@@ -175,6 +177,7 @@ export function useDeleteGroup() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
     },
   });
 }
@@ -189,6 +192,7 @@ export function useSetGroupHidden() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
     },
   });
 }
@@ -204,6 +208,7 @@ export function useSetGroupPublic() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
     },
   });
 }
@@ -238,6 +243,7 @@ export function useUpdateChannel() {
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: keys.threads });
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
     },
   });
 }
@@ -272,6 +278,7 @@ export function useDeleteChannel() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
     },
   });
 }
@@ -481,6 +488,12 @@ export function useSendMessage(channelId: string) {
   });
 }
 
+export function replaceApprovalMessage(page: ApprovalInboxPage | undefined, message: Message): ApprovalInboxPage | undefined {
+  if (!page) return page;
+  return { ...page, items: page.items.map(item => item.message.id === message.id
+    ? { ...item, message } : item) };
+}
+
 export function useSelectOption() {
   const api = useApi();
   const qc = useQueryClient();
@@ -490,11 +503,14 @@ export function useSelectOption() {
         option_id: v.optionId,
       }),
     onSuccess: (message) => {
+      qc.setQueryData<ApprovalInboxPage>(keys.approvals, page => replaceApprovalMessage(page, message));
+      void qc.invalidateQueries({ queryKey: keys.approvals });
       qc.setQueryData<MessagePages>(
         keys.messages(message.channel_id, message.thread_id),
         (data) => replaceMessage(data, message),
       );
     },
+    onError: () => void qc.invalidateQueries({ queryKey: keys.approvals }),
   });
 }
 
@@ -825,6 +841,47 @@ export function useUnreads() {
   return { ...query, data: query.data?.items, total: query.data?.total ?? query.data?.items?.length ?? 0 };
 }
 
+export function approvalServerOffset(page: ApprovalInboxPage, receivedAtMs: number): number {
+  return typeof page.server_now === "number" ? page.server_now * 1000 - receivedAtMs : 0;
+}
+
+export function approvalPendingAt(item: ApprovalItem, serverTimeMs: number): boolean {
+  const expiry = item.message.meta?.expires_at;
+  return typeof expiry !== "number" || expiry * 1000 > serverTimeMs;
+}
+
+export function useApprovals() {
+  const api = useApi();
+  const [clock, setClock] = useState(Date.now);
+  const query = useQuery({
+    queryKey: keys.approvals,
+    queryFn: async () => {
+      const page = await api.get<ApprovalInboxPage>("/api/approvals");
+      return { ...page, offsetMs: approvalServerOffset(page, Date.now()) };
+    },
+  });
+  const serverClock = clock + (query.data?.offsetMs ?? 0);
+  useEffect(() => {
+    const nearestVisible = query.data?.items.reduce<number | null>((min, item) => {
+      const expiry = item.message.meta?.expires_at;
+      if (typeof expiry !== "number" || expiry * 1000 <= serverClock) return min;
+      return min === null ? expiry * 1000 : Math.min(min, expiry * 1000);
+    }, null);
+    const serverExpiry = query.data?.next_expiry && query.data.next_expiry * 1000 > serverClock
+      ? query.data.next_expiry * 1000 : null;
+    const nearest = serverExpiry === null ? nearestVisible : nearestVisible === null || nearestVisible === undefined
+      ? serverExpiry : Math.min(serverExpiry, nearestVisible);
+    if (nearest === null || nearest === undefined) return;
+    const timer = setTimeout(() => {
+      setClock(Date.now());
+      void query.refetch();
+    }, Math.max(250, nearest - (Date.now() + (query.data?.offsetMs ?? 0))));
+    return () => clearTimeout(timer);
+  }, [query.data, serverClock]);
+  const items = query.data?.items.filter(item => approvalPendingAt(item, serverClock));
+  return { ...query, data: items, total: Math.max(0, (query.data?.total ?? 0) - ((query.data?.items.length ?? 0) - (items?.length ?? 0))) };
+}
+
 export function unreadReadPayload(items: UnreadItem[]) {
   return { items: items.map(item => ({
     kind: item.kind,
@@ -849,9 +906,13 @@ export function useMarkUnreadsRead() {
         return { items: rows, total: Math.max(rows.length, page.total - (page.items.length - rows.length)) };
       });
     },
-    onError: () => { void qc.invalidateQueries({ queryKey: keys.unreads }); },
+    onError: () => {
+      void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
       void qc.invalidateQueries({ queryKey: keys.groups });
       void qc.invalidateQueries({ queryKey: keys.threads });
     },
@@ -906,6 +967,7 @@ export function useHideThread() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.threads });
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
     },
   });
 }
@@ -919,6 +981,7 @@ export function useUnhideThread() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: keys.threads });
       void qc.invalidateQueries({ queryKey: keys.unreads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
     },
   });
 }
@@ -932,7 +995,10 @@ export function useRenameThread() {
   return useMutation({
     mutationFn: (v: { threadId: number; alias: string }) =>
       api.patch(`/api/threads/${v.threadId}`, { alias: v.alias }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.threads }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.threads });
+      void qc.invalidateQueries({ queryKey: keys.approvals });
+    },
   });
 }
 

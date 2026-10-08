@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { UnreadFilter } from "@agora/core";
 
 // Deliberately in memory: a cold start resets the tab to Unreads and the filter to All.
-export type InboxTab = "unreads" | "threads";
+export type InboxTab = "unreads" | "threads" | "approvals";
 
 interface InboxTabState {
   tab: InboxTab;

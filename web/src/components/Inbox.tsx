@@ -1,11 +1,13 @@
 import { useEffect } from "react";
-import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadItem } from "@agora/core";
+import { filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useUnreads, type UnreadItem } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useJump } from "../state/jump";
 import { useUiState, type InboxTab } from "../state/ui";
 import { ThreadsInbox } from "./ThreadsInbox";
+import { ApprovalsInbox } from "./ApprovalsInbox";
 
 function initialTab(): InboxTab | null {
+  if (window.location.pathname === "/inbox/approvals") return "approvals";
   if (window.location.pathname === "/inbox/threads") return "threads";
   if (window.location.pathname === "/inbox/unreads") return "unreads";
   return null;
@@ -13,6 +15,7 @@ function initialTab(): InboxTab | null {
 
 export function Inbox() {
   const unreads = useUnreads();
+  const approvals = useApprovals();
   const markRead = useMarkUnreadsRead();
   const ui = useUiState();
   const requestJump = useJump(s => s.request);
@@ -48,9 +51,10 @@ export function Inbox() {
       <nav className="ago-inbox-tabs" role="tablist" aria-label="Inbox tabs">
         <button role="tab" aria-selected={tab === "unreads"} onClick={() => switchTab("unreads")}>Unreads {showTabCount && unreadTotal ? `(${unreadTotal})` : ""}</button>
         <button role="tab" aria-selected={tab === "threads"} onClick={() => switchTab("threads")}>Threads</button>
+        <button role="tab" aria-selected={tab === "approvals"} onClick={() => switchTab("approvals")}>Approvals{approvals.total ? ` (${approvals.total})` : ""}</button>
       </nav>
     </header>
-    {tab === "threads" ? <ThreadsInbox embedded /> : <div className="ago-inbox-content ago-unreads">
+    {tab === "threads" ? <ThreadsInbox embedded /> : tab === "approvals" ? <ApprovalsInbox query={approvals} /> : <div className="ago-inbox-content ago-unreads">
       <div className="ago-unreads-toolbar">
         <div className="ago-unreads-filters" aria-label="Filter unreads">
           {(["all", "mentions", "channels", "threads"] as const).map(option =>

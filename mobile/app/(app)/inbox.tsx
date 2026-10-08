@@ -4,7 +4,7 @@ import React from "react";
 import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { Check, CheckCheck, Hash, MessageSquare } from "lucide-react-native";
-import { filterUnreads, fmtRelative, formatUnreadCount, useMarkUnreadsRead, useUnreads, type UnreadItem } from "@agora/core";
+import { filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useUnreads, type ApprovalItem, type UnreadItem } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
 import { colors, typography, space, radii, weight, type Palette } from "../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
@@ -12,6 +12,7 @@ import { toastErr } from "../../src/components/Toast";
 import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } from "../../src/components/SwipeRow";
 import { ThreadsScreen } from "./threads";
 import { Icon } from "../../src/components/Icon";
+import { MessageOptions } from "../../src/components/MessageOptions";
 import { layout } from "../../src/lib/theme";
 import { useInboxTab, type InboxTab } from "../../src/state/inboxTab";
 
@@ -63,7 +64,38 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
 }
 
 export function inboxTabFromParam(value: string | undefined): InboxTab | null {
-  return value === "threads" || value === "unreads" ? value : null;
+  return value === "threads" || value === "unreads" || value === "approvals" ? value : null;
+}
+
+export function ApprovalRow({ item }: { item: ApprovalItem }) {
+  const styles = useStyles();
+  const open = () => {
+    if (item.thread_id != null) {
+      router.push({ pathname: "/(app)/thread/[channelId]/[rootId]", params: {
+        channelId: item.channel_id, rootId: String(item.thread_id), messageId: String(item.message.id),
+        groupId: item.group_id, channelName: item.channel_name,
+      } });
+    } else {
+      router.push({ pathname: "/(app)/channel/[id]", params: {
+        id: item.channel_id, groupId: item.group_id, messageId: String(item.message.id),
+      } });
+    }
+  };
+  return <View style={styles.card}>
+    <Pressable style={styles.approvalContent} onPress={open} accessibilityRole="button"
+      accessibilityLabel={`Approval from ${item.message.author_name || item.message.author_id} in ${item.channel_name}`}>
+      <Text style={styles.source} numberOfLines={1}>
+        {item.kind === "thread" ? `↳ ${previewText(item.title || "Thread")} in ` : ""}#{item.channel_name} · {item.group_name}
+      </Text>
+      <Text style={styles.time}>{fmtRelative(item.message.ts)}</Text>
+      <Text style={styles.preview} numberOfLines={2}>
+        <Text style={styles.author}>{item.message.author_name || item.message.author_id}: </Text>
+        {previewText(item.message.text) || "Interactive request"}
+      </Text>
+      {item.pending_count > 1 && <Text style={styles.moreCount}>+{item.pending_count - 1} more</Text>}
+    </Pressable>
+    {!!item.message.meta?.options?.length && <MessageOptions message={item.message} />}
+  </View>;
 }
 
 export default function InboxScreen({ initialSwipe }: {
@@ -77,6 +109,7 @@ export default function InboxScreen({ initialSwipe }: {
   const filter = useInboxTab(state => state.filter);
   const setFilter = useInboxTab(state => state.setFilter);
   const unreads = useUnreads();
+  const approvals = useApprovals();
   const markRead = useMarkUnreadsRead();
   const swipeRows = useSwipeRows();
   const tab = rememberedTab;
@@ -93,17 +126,27 @@ export default function InboxScreen({ initialSwipe }: {
   return <View style={styles.root}>
     <Stack.Screen options={{ title: "Inbox", headerShown: true }} />
     <View style={styles.tabs} accessibilityRole="tablist">
-      {(["unreads", "threads"] as const).map(option => <Pressable key={option}
+      {(["unreads", "threads", "approvals"] as const).map(option => <Pressable key={option}
         accessibilityRole="tab" accessibilityState={{ selected: tab === option }}
-        accessibilityLabel={option === "threads" ? "Threads" : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
+        accessibilityLabel={option === "threads" ? "Threads" : option === "approvals" ? `Approvals${approvals.total ? `, ${approvals.total} pending` : ""}` : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
         style={[styles.tab, tab === option && styles.tabActive]}
         onPress={() => { swipeRows.close(); setRememberedTab(option); }}>
         <Text style={[styles.tabText, tab === option && styles.tabTextActive]}>
-          {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : "Threads"}
+          {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : option === "approvals" ? `Approvals${approvals.total ? ` (${approvals.total})` : ""}` : "Threads"}
         </Text>
       </Pressable>)}
     </View>
-    {tab === "threads" ? <ThreadsScreen embedded /> : <>
+    {tab === "threads" ? <ThreadsScreen embedded /> : tab === "approvals" ?
+      <FlatList style={styles.list} contentContainerStyle={styles.listContent}
+        data={approvals.data ?? []}
+        keyExtractor={item => `${item.channel_id}:${item.thread_id ?? "channel"}`}
+        renderItem={({ item }) => <ApprovalRow item={item} />}
+        refreshControl={<RefreshControl refreshing={approvals.isRefetching} onRefresh={() => void approvals.refetch()} tintColor={colors.dim} />}
+        ListEmptyComponent={approvals.isLoading ? <ActivityIndicator color={colors.dim} style={styles.empty} /> :
+          approvals.isError ? <View style={styles.empty}><Text style={styles.error}>Couldn't load approvals</Text>
+            <Pressable accessibilityRole="button" onPress={() => void approvals.refetch()}><Text style={styles.markAll}>Retry</Text></Pressable>
+          </View> : <EmptyState icon={Check} title="No pending approvals" description="Requests awaiting your response will appear here." />}
+      /> : <>
       <View style={styles.toolbar}>
         <View style={styles.filterRow}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll} contentContainerStyle={styles.filters}>
@@ -161,6 +204,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   list: { flex: 1 },
   listContent: { paddingHorizontal: layout.gutter, paddingTop: space.sm, gap: space.md, paddingBottom: layout.contentBottom },
   card: { ...surfaces.card, padding: space.lg, gap: space.xs },
+  approvalContent: { gap: space.xs },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   sourceIcon: { width: 36, height: 36, borderRadius: radii.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentSoft },
   sourceCopy: { flex: 1, gap: 2, marginBottom: space.sm },
@@ -172,6 +216,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   countPill: { minWidth: 24, paddingHorizontal: space.sm, paddingVertical: space.xs, borderRadius: radii.pill, backgroundColor: colors.accentSoft },
   mentionPill: { backgroundColor: colors.mentionSurface },
   count: { ...typography.caption, color: colors.accentText, fontWeight: weight.bold, textAlign: "center" },
+  moreCount: { ...typography.caption, color: colors.accentText, fontWeight: weight.bold },
   mentionCount: { color: colors.red },
   time: { color: colors.faint, fontSize: typography.caption.fontSize },
   preview: { fontSize: typography.bodySm.fontSize, fontWeight: typography.bodySm.fontWeight, color: colors.dim },

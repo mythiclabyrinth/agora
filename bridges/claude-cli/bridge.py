@@ -4416,6 +4416,7 @@ class Bridge:
             "type": "post", "agent_id": self.agent_id,
             "request_id": f"post-{options_id}",
             "channel_id": frame["channel_id"], "thread_id": frame.get("thread_id"),
+            **({"expires_in": self.permission_timeout} if 0 < self.permission_timeout <= 86400 else {}),
             "text": self._perm_prompt_text(tool, tool_input, req.get("description")),
             "options_id": options_id,
             # Plan approval is a per-plan decision, so no "always" shortcut there.
@@ -4485,6 +4486,7 @@ class Bridge:
                 "type": "post", "agent_id": self.agent_id,
                 "request_id": f"post-{options_id}",
                 "channel_id": frame["channel_id"], "thread_id": frame.get("thread_id"),
+                **({"expires_in": self.permission_timeout} if 0 < self.permission_timeout <= 86400 else {}),
                 "text": self._question_text(q, i, len(questions)),
                 "options_id": options_id,
                 "options": [

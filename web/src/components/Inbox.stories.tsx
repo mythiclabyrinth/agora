@@ -30,6 +30,7 @@ const meta = {
       "GET /api/groups": { groups: fixtureGroups },
       "GET /api/threads?limit=100": { threads: fixtureThreads },
       "GET /api/unreads": { items: [thread, channel], total: 2 },
+      "GET /api/approvals": { items: [], total: 0 },
       "PUT /api/unreads/read": { ok: true, marked: 1 },
     },
     setup: () => history.replaceState(null, "", "/inbox/unreads"),
@@ -67,6 +68,7 @@ export const Mentions: Story = {
   },
 };
 export const Threads: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/threads") } };
+export const Approvals: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/approvals") } };
 
 export const RememberedTab: Story = {
   play: async () => {
@@ -80,6 +82,7 @@ export const RememberedTab: Story = {
 export const ReloadResetRules: Story = {
   play: async () => {
     expect(inboxPathAfterReload("/inbox/threads", "reload", {})).toBe("/inbox/unreads");
+    expect(inboxPathAfterReload("/inbox/approvals", "reload", {})).toBe("/inbox/unreads");
     expect(inboxPathAfterReload("/inbox/threads", "reload", null)).toBeNull();
     expect(inboxPathAfterReload("/inbox/threads", "navigate", {})).toBeNull();
     expect(inboxPathAfterReload("/inbox/unreads", "reload", {})).toBeNull();

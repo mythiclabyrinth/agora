@@ -2,12 +2,12 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { ScrollView, StyleSheet } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import { useMarkUnreadsRead, useUnreads } from "@agora/core";
+import { useApprovals, useMarkUnreadsRead, useUnreads } from "@agora/core";
 import InboxScreen from "../app/(app)/inbox";
 import { useInboxTab } from "../src/state/inboxTab";
 
 jest.mock("@agora/core", () => ({
-  ...jest.requireActual("@agora/core"), useUnreads: jest.fn(), useMarkUnreadsRead: jest.fn(),
+  ...jest.requireActual("@agora/core"), useUnreads: jest.fn(), useApprovals: jest.fn(), useMarkUnreadsRead: jest.fn(),
 }));
 jest.mock("expo-router", () => ({ Stack: { Screen: () => null }, router: { push: jest.fn() }, useLocalSearchParams: jest.fn() }));
 jest.mock("../app/(app)/threads", () => ({ ThreadsScreen: () => null }));
@@ -27,6 +27,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   useInboxTab.setState({ tab: "unreads", filter: "all" });
   (useUnreads as jest.Mock).mockReturnValue(query);
+  (useApprovals as jest.Mock).mockReturnValue({ data: [], total: 0, isLoading: false, isError: false, refetch: jest.fn() });
   (useMarkUnreadsRead as jest.Mock).mockReturnValue({ mutate, isPending: false });
   (useLocalSearchParams as jest.Mock).mockReturnValue({});
 });
@@ -77,6 +78,15 @@ test("incoming Threads deep links select the correct tab", () => {
   (useLocalSearchParams as jest.Mock).mockReturnValue({});
   render();
   expect(tabs().find((node) => node.props.accessibilityLabel === "Threads")!.props.accessibilityState.selected).toBe(true);
+});
+
+test("Approvals is selectable and remembers its tab", () => {
+  render();
+  act(() => tabs().find((node) => node.props.accessibilityLabel === "Approvals")!.props.onPress());
+  expect(useInboxTab.getState().tab).toBe("approvals");
+  act(() => tree.unmount());
+  render();
+  expect(tabs().find((node) => node.props.accessibilityLabel === "Approvals")!.props.accessibilityState.selected).toBe(true);
 });
 
 test("mark read targets the current filter and retains an accessible 44 point action", () => {

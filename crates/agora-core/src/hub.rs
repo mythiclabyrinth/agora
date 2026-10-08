@@ -1435,6 +1435,7 @@ impl Hub {
             reply_in_thread,
             false,
             None,
+            None,
         )
     }
 
@@ -1459,6 +1460,7 @@ impl Hub {
         reply_in_thread: bool,
         scheduled: bool,
         thread_name: Option<&str>,
+        expires_in: Option<f64>,
     ) -> Value {
         let mut meta_obj = serde_json::Map::new();
         let trusted_scheduled = scheduled && self.streak_reset_agents.contains(agent_id);
@@ -1483,6 +1485,12 @@ impl Hub {
                 meta_obj.insert("options".into(), opts);
                 meta_obj.insert("options_id".into(), json!(options_id.unwrap_or("")));
                 meta_obj.insert("resolved".into(), Value::Null);
+                if let Some(seconds) = expires_in.filter(|value| value.is_finite() && *value > 0.0) {
+                    meta_obj.insert(
+                        "expires_at".into(),
+                        json!(crate::store::now() + seconds.clamp(1.0, 86400.0)),
+                    );
+                }
             }
         }
         // An interactive form: the sanitized spec, its shared live state
@@ -1520,6 +1528,9 @@ impl Hub {
             meta_obj.insert("table_state".into(), Value::Object(state));
             meta_obj.insert("table_rows".into(), json!({}));
             meta_obj.insert("table_submitted".into(), Value::Null);
+        }
+        if crate::notify_actions::pending(&Value::Object(meta_obj.clone())) {
+            meta_obj.insert("approval_inbox".into(), json!(true));
         }
         if let Some(t) = tldr {
             meta_obj.insert("tldr".into(), json!(t));
@@ -1632,6 +1643,28 @@ impl Hub {
             let _ = handle.tx.send(frame);
         }
         Ok(updated)
+    }
+
+    /// Resolve timed options as soon as they expire and broadcast the locked
+    /// buttons to clients.
+    pub fn sweep_expired_options(&self) -> usize {
+        let mut resolved = 0;
+        for message_id in self.store.expired_option_ids() {
+            if let Ok(updated) = self.store.resolve_options(
+                message_id,
+                None,
+                "system",
+                Some("Expired — no decision"),
+            ) {
+                let channel_id = updated["channel_id"].as_str().unwrap_or_default();
+                self.broadcast(
+                    channel_id,
+                    &json!({"type": "message_update", "message": updated}),
+                );
+                resolved += 1;
+            }
+        }
+        resolved
     }
 
     /// Persist one member's edit to a form field — a checkbox toggle or a
@@ -2509,6 +2542,7 @@ impl Hub {
                         frame["reply_thread"].as_bool().unwrap_or(false),
                         frame["scheduled"].as_bool().unwrap_or(false),
                         frame["thread_name"].as_str(),
+                        frame["expires_in"].as_f64(),
                     );
                     // A correlated post learns its new message id so it can
                     // address the message later (e.g. post into the thread it
@@ -4415,6 +4449,95 @@ mod tests {
         h.post_agent_message("bot-a", "Bot A", &cid, "cc @nobody", None);
         let u = h.store.unread_counts("tom", &[cid.clone()]);
         assert_eq!(u[&cid]["mentions"], 1);
+    }
+
+    #[test]
+    fn expiry_sweep_resolves_and_broadcasts() {
+        let h = hub();
+        let _agent_rx = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        let message = h.post_agent_message_with_options(
+            "bot-a",
+            "Bot A",
+            &cid,
+            "Approve?",
+            None,
+            Some(&json!([{"id":"yes","label":"Yes"}])),
+            Some("expiry-test"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            false,
+        );
+        let mid = message["id"].as_i64().unwrap();
+        h.store
+            .update_message_meta(mid, &json!({"expires_at": crate::store::now() - 0.1}));
+        let (tx, mut rx) = unbounded_channel();
+        h.attach_socket("tom", false, tx);
+        assert_eq!(h.sweep_expired_options(), 1);
+        let update = rx.try_recv().unwrap();
+        assert_eq!(update["type"], "message_update");
+        assert_eq!(update["message"]["meta"]["resolved"]["by"], "system");
+        assert_eq!(h.sweep_expired_options(), 0);
+    }
+
+    #[test]
+    fn agent_post_stamps_relative_option_expiry() {
+        let h = hub();
+        let _agent_rx = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        let before = crate::store::now();
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "Approve?", "options": [{"id":"yes","label":"Yes"}],
+            "options_id": "relative-expiry", "expires_in": 600,
+        }));
+        let message = &h.store.messages(&cid, None, None, 10)[0];
+        let expires = message["meta"]["expires_at"].as_f64().unwrap();
+        assert!(expires >= before + 600.0 && expires <= crate::store::now() + 600.0);
+        assert_eq!(message["meta"]["approval_inbox"], true);
+        let before_fractional = crate::store::now();
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "A short approval", "options": [{"id":"yes","label":"Yes"}],
+            "options_id": "fractional-expiry", "expires_in": 0.5,
+        }));
+        let fractional = &h.store.messages(&cid, None, None, 10)[1];
+        let expires = fractional["meta"]["expires_at"].as_f64().unwrap();
+        assert!(expires >= before_fractional + 1.0 && expires <= crate::store::now() + 1.0);
+
+        let before_capped = crate::store::now();
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "A capped approval", "options": [{"id":"yes","label":"Yes"}],
+            "options_id": "capped-expiry", "expires_in": 172800,
+        }));
+        let capped = &h.store.messages(&cid, None, None, 10)[2];
+        let expires = capped["meta"]["expires_at"].as_f64().unwrap();
+        assert!(expires >= before_capped + 86400.0 && expires <= crate::store::now() + 86400.0);
+    }
+
+    #[test]
+    fn display_only_table_post_has_no_approval_marker() {
+        let h = hub();
+        let _agent_rx = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        h.handle_agent_frame(&json!({
+            "type": "post", "agent_id": "bot-a", "channel_id": cid,
+            "text": "Status", "table": {
+                "columns": [{"id":"state", "kind":"text", "label":"State"}],
+                "rows": [{"id":"r1", "cells":{"state":"Ready"}}],
+                "buttons": [],
+            },
+        }));
+        let message = &h.store.messages(&cid, None, None, 10)[0];
+        assert!(message["meta"]["approval_inbox"].is_null());
+        assert!(h.store.pending_approvals(&[cid], 10).0.is_empty());
     }
 
     #[test]

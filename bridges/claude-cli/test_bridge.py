@@ -340,6 +340,7 @@ class NotificationApprovalTests(unittest.TestCase):
             b._send_to_claude = AsyncMock()
 
             def choose(post):
+                self.assertEqual(post["expires_in"], b.permission_timeout)
                 self.assertEqual(post["options"][1]["label"], "Always allow Bash (this session)")
                 self.assertEqual(post["options"][1]["notification"], {
                     "enabled": True, "label": "Always allow this tool",
@@ -355,6 +356,55 @@ class NotificationApprovalTests(unittest.TestCase):
             }, [])
             self.assertIn("Bash", b.session_allows["c1"])
             b._send_to_claude.assert_awaited_once()
+
+        asyncio.run(run())
+
+    def test_question_posts_use_the_same_expiry(self):
+        async def run():
+            b = make_bridge()
+            b.pending_perms = {}
+            b.pending_questions = {}
+            b.permission_timeout = 7
+            b._send_to_claude = AsyncMock()
+
+            def answer(post):
+                self.assertEqual(post["expires_in"], 7)
+                b.pending_perms[post["options_id"]][0].set_result(("option", "opt-0", "ana"))
+
+            b.send = Mock(side_effect=answer)
+            await b._ask_user_question("c1", {"channel_id": "c1"}, Mock(), "ask-1", {
+                "questions": [{"question": "Which?", "options": [{"label": "First"}]}],
+            }, [])
+            b._send_to_claude.assert_awaited_once()
+
+        asyncio.run(run())
+
+    def test_long_timeout_omits_server_expiry_for_tools_and_questions(self):
+        async def run():
+            b = make_bridge()
+            b.session_allows = {}
+            b.pending_perms = {}
+            b.pending_questions = {}
+            b.permission_timeout = 86401
+            b._send_to_claude = AsyncMock()
+            posts = []
+
+            def answer(post):
+                self.assertNotIn("expires_in", post)
+                posts.append(post)
+                option = "deny" if post["options_id"].startswith("perm-") else "opt-0"
+                b.pending_perms[post["options_id"]][0].set_result(("option", option, "ana"))
+
+            b.send = Mock(side_effect=answer)
+            await b._handle_control_request("c1", {"channel_id": "c1"}, Mock(), {
+                "request_id": "long-tool", "request": {
+                    "subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "pwd"},
+                },
+            }, [])
+            await b._ask_user_question("c1", {"channel_id": "c1"}, Mock(), "long-question", {
+                "questions": [{"question": "Which?", "options": [{"label": "First"}]}],
+            }, [])
+            self.assertEqual(len(posts), 2)
 
         asyncio.run(run())
 
