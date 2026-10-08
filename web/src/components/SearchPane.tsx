@@ -163,11 +163,11 @@ export function SearchPane() {
     () => [...(res.data?.messages?.items || []), ...extra],
     [res.data, extra],
   );
-  const commands = view === "results" && !scopeStr && !file && query.trim() === debouncedQ
+  const commands = useMemo(() => view === "results" && !scopeStr && !file && query.trim() === debouncedQ
     ? SHORTCUTS.filter(s => (s.id === "help.sheet" || s.id.startsWith("nav.") || ["settings", "ui.sidebar", "link.copy"].includes(s.id)) && (!s.feature || !!me?.[s.feature]) && (!s.desktopOnly || isDesktopShell()) &&
       (debouncedQ ? `${s.label} ${s.id}`.toLowerCase().includes(debouncedQ.toLowerCase()) :
         ["help.sheet", "nav.inbox", "nav.unreads", "nav.threads", "settings"].includes(s.id)))
-    : [];
+    : [], [view, scopeStr, file, query, debouncedQ, me?.voice_stt]);
 
   // Build the item list in display order.
   const items: Item[] = useMemo(() => {
@@ -391,7 +391,7 @@ export function SearchPane() {
                 <div className="ago-search-hint">Search failed: {(res.error as Error).message}</div>
               ) : res.isLoading && (debouncedQ || file) ? (
                 <div className="ago-search-hint">Searching…</div>
-              ) : res.data && !(res.data.groups || []).length && !(res.data.channels || []).length && !msgs.length ? (
+              ) : res.data && !commands.length && !(res.data.groups || []).length && !(res.data.channels || []).length && !msgs.length ? (
                 <div className="ago-search-hint">
                   {debouncedQ
                     ? `No results for “${debouncedQ}”${scopeName ? ` in ${scopeName}` : ""}`

@@ -12,6 +12,8 @@ describe("shortcut bindings", () => {
     expect(formatCombo("Mod+Shift+KeyK", "mac")).toBe("⌘⇧K");
     expect(formatCombo("Mod+Shift+KeyK", "other")).toBe("Ctrl+Shift+K");
     expect(parseCombo("Mod+KeyK", "other")?.ctrl).toBe(true);
+    expect(parseCombo("F12", "mac")?.code).toBe("F12");
+    expect(parseCombo("F92", "mac")).toBeNull();
     expect(matchesCombo("Mod+KeyK", { ...mac, code: "KeyV", key: "k" }, "mac")).toBe(true);
     expect(eventCombo({ ...mac, code: "KeyV", key: "k" }, "mac")).toBe("Mod+KeyK");
     expect(matchesCombo("Mod+Slash", { ...mac, code: "Slash", key: "z" }, "mac")).toBe(false);
@@ -36,6 +38,7 @@ describe("shortcut bindings", () => {
     expect(findConflicts("search", "Alt+KeyL", "mac")[0].kind).toBe("blocked");
     expect(findConflicts("search", "Mod+Alt+KeyL", "other")[0].kind).toBe("blocked");
     expect(findConflicts("search", "Mod+KeyP", "mac")[0].kind).toBe("warning");
+    expect(findConflicts("link.copy", "Mod+Shift+KeyY", "other")[0].kind).toBe("warning");
     expect(findConflicts("search", "Mod+KeyV", "mac")[0]).toMatchObject({ kind: "blocked", message: "Reserved for text editing" });
     expect(findConflicts("search", "Mod+Shift+KeyZ", "other")[0].kind).toBe("blocked");
     expect(findConflicts("search", "Mod+BracketLeft", "mac", {}, false).some(c => c.kind === "duplicate")).toBe(false);

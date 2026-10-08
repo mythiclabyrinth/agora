@@ -13,7 +13,8 @@ export function ShortcutsDialog({ platformOverride }: { platformOverride?: Platf
   const [filter, setFilter] = useState("");
   useEffect(() => { if (!open) setFilter(""); }, [open]);
   const me = useMe().data;
-  const ui = useUiState();
+  const setSettingsTab = useUiState(s => s.setSettingsTab);
+  const openPanel = useUiState(s => s.openPanel);
   const ref = useDialogFocus(open, () => setOpen(false));
   if (!open) return null;
   const platform = platformOverride ?? currentPlatform();
@@ -30,12 +31,12 @@ export function ShortcutsDialog({ platformOverride }: { platformOverride?: Platf
           {rows.filter(s => s.section === section).map(s => {
             const combo = bindingFor(s.id, platform);
             return <div className="ago-shortcut-row" key={s.id}>
-              <span>{s.label}{s.scope === "thread" && <small>In thread</small>}{s.scope === "recording" && <small>While recording</small>}{s.desktopOnly && <small>Desktop</small>}</span>
-              <span className="ago-shortcut-keys">{combo ? <kbd>{formatCombo(combo, platform)}</kbd> : s.rebindable ? <em>Off</em> : null}{s.sequence && <kbd>{s.sequence}</kbd>}</span>
+              <span>{s.label}{(s.sequence || s.id === "help.sheet") && <small>After Esc</small>}{s.scope === "thread" && <small>In thread</small>}{s.scope === "recording" && <small>While recording</small>}{s.desktopOnly && <small>Desktop</small>}</span>
+              <span className="ago-shortcut-keys">{combo ? <kbd>{s.id === "focus.composer" ? "Type or " : ""}{formatCombo(combo, platform)}</kbd> : s.rebindable ? <em>Off</em> : null}{s.sequence && <kbd>{s.sequence}</kbd>}</span>
             </div>;
           })}</section>)}
         {!rows.length && <p className="dim">No matching shortcuts.</p>}
-        <button className="btn sm" onClick={() => { setOpen(false); ui.setSettingsTab("keyboard"); if (ui.panel !== "settings") ui.openPanel("settings"); }}>Customize shortcuts…</button>
+        <button className="btn sm" onClick={() => { setOpen(false); setSettingsTab("keyboard"); if (useUiState.getState().panel !== "settings") openPanel("settings"); }}>Customize shortcuts…</button>
       </div>
     </div>
   </div>;

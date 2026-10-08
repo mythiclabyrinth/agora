@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import {
   fixtureAgents,
   fixtureChannelAgents,
@@ -18,6 +18,7 @@ import { AgoraLayout } from "./AgoraLayout";
 // An empty username keeps useAgoraSocket dormant in this full-layout story.
 // Mine/self presentation states are covered by the focused component stories.
 const staticMe = { ...fixtureMe, username: "" };
+const markRead = fn(() => ({ ok: true, last_read_id: 43 }));
 const attachmentPage = {
   items: [{
     id: "launch-plan", filename: "launch-plan.pdf", mime: "application/pdf", size: 524_288,
@@ -47,7 +48,7 @@ const routes = {
   "GET /api/channels/general/stars": { stars: [] },
   "GET /api/channels/general/attachments?offset=0": attachmentPage,
   "GET /api/channels/general/attachments?offset=0&thread_id=42": attachmentPage,
-  "PUT /api/channels/general/read": { ok: true, last_read_id: 43 },
+  "PUT /api/channels/general/read": markRead,
   "PUT /api/threads/42/read": { ok: true, last_read_id: 45 },
 };
 
@@ -86,6 +87,36 @@ export const ChannelAndGlobalOverlays: Story = {
   },
 };
 
+export const ComposerFocusShortcuts: Story = {
+  parameters: {
+    apiRoutes: {
+      ...routes,
+      "GET /api/groups": { groups: fixtureGroups.map(group => ({
+        ...group,
+        channels: group.channels.map(channel => channel.id === "general" ? { ...channel, unread: 0 } : channel),
+      })) },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    history.replaceState(null, "", "/g/product/c/general");
+    useUiState.setState({ sel: { g: "product", c: "general" }, view: { kind: "channel" }, threadRoot: null, mobileView: "main" });
+    const canvas = within(canvasElement);
+    const input = await canvas.findByPlaceholderText("Message #storybook");
+    await new Promise(resolve => setTimeout(resolve, 500));
+    markRead.mockClear();
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}");
+    expect(input).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+    expect(markRead).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(1));
+    await userEvent.keyboard("{Enter}");
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("");
+  },
+};
+
 export const ThreadOpen: Story = {
   parameters: {
     apiRoutes: routes,
@@ -103,5 +134,25 @@ export const ThreadOpen: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("The 820px phone boundary is covered.")).resolves.toBeVisible();
     expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
+  },
+};
+
+export const ThreadComposerFocusShortcuts: Story = {
+  parameters: {
+    setup: () => {
+      history.replaceState(null, "", "/g/product/c/general/t/42");
+      useUiState.setState({ sel: { g: "product", c: "general" }, view: { kind: "channel" }, mobileView: "thread", threadRoot: 42 });
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByPlaceholderText(/Reply in thread/);
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}");
+    expect(document.activeElement).toBe(document.body);
+    await userEvent.keyboard("{Enter}");
+    expect(input).toHaveFocus();
+    await userEvent.keyboard("{Escape}{Escape}");
+    await waitFor(() => expect(useUiState.getState().threadRoot).toBeNull());
   },
 };

@@ -278,8 +278,8 @@ const historyIndex = (): number | null => {
 let maxAgoraHistoryIndex = historyIndex() ?? 0;
 
 export function navigateAgoraHistory(direction: "back" | "forward"): boolean {
-  const index = historyIndex();
-  if (index === null || (direction === "back" ? index <= 0 : index >= maxAgoraHistoryIndex)) return false;
+  const index = historyIndex() ?? 0;
+  if (direction === "back" ? index <= 0 : index >= maxAgoraHistoryIndex) return false;
   window.history[direction]();
   return true;
 }

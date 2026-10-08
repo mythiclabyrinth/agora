@@ -20,6 +20,7 @@ import { useRequireAgent } from "../state/requireAgent";
 import { useDrafts } from "../state/drafts";
 import { MicButton } from "./VoiceControls";
 import { useVoiceRec, voiceRecKey, voiceSend, voiceToDraft, voiceToggle } from "../state/voiceRec";
+import { leaveComposerForShortcuts, overlayOpen } from "../state/shortcutFocus";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { ImageLightbox } from "./ImageLightbox";
 import { TemplateControls } from "./TemplateControls";
@@ -439,6 +440,16 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setMention(null); return; }
     }
     if (e.key === "Escape" && addrOpen) { e.preventDefault(); e.stopPropagation(); setAddrOpen(false); return; }
+    if (e.key === "Escape" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey &&
+      !e.nativeEvent.isComposing && e.keyCode !== 229 &&
+      useVoiceRec.getState().recordingKey !== voiceRecKey(channelId, threadId)) {
+      if (!overlayOpen(!!useAddressing.getState().pickerKey)) {
+        e.preventDefault();
+        leaveComposerForShortcuts(threadId != null ? "thread" : "channel");
+        taRef.current?.blur();
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); doSend(); }
   };
 
@@ -645,7 +656,12 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
             onKeyDown={e => {
               if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setAddrOpen(false); taRef.current?.focus(); return; }
               if (e.key === "m" || e.key === "M") {
-                if (showRequireAgent && requireAgentKey) { e.preventDefault(); requireAgentToggle(requireAgentKey); }
+                if (showRequireAgent && requireAgentKey) {
+                  e.preventDefault();
+                  const next = !useRequireAgent.getState().isOn(requireAgentKey);
+                  requireAgentToggle(requireAgentKey);
+                  toast(next ? "Agents now require an @mention" : "Agents may reply without an @mention");
+                }
                 return;
               }
               if (e.key >= "1" && e.key <= "9" && agents[Number(e.key) - 1]) {

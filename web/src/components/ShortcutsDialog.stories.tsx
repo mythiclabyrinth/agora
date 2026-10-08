@@ -22,6 +22,7 @@ export const Mac: Story = {
     await expect(canvas.findByRole("dialog", { name: "Keyboard shortcuts" })).resolves.toBeVisible();
     await expect(canvas.findByText("Talk to agents")).resolves.toBeVisible();
     await expect(canvas.findByText("⌘⇧2")).resolves.toBeVisible();
+    await expect(canvas.findByText("⌘⇧Y")).resolves.toBeVisible();
   },
 };
 
@@ -30,6 +31,7 @@ export const Windows: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("Ctrl+Shift+2")).resolves.toBeVisible();
+    await expect(canvas.findByText("Ctrl+Shift+Y")).resolves.toBeVisible();
   },
 };
 
