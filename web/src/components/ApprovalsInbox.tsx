@@ -28,7 +28,7 @@ export function ApprovalsInbox({ query }: { query: Query }) {
             {item.message.text.replace(/\s+/g, " ").trim().slice(0, 240) || "Interactive request"}
           </button>
           {item.pending_count > 1 && <span className="ago-unread-badge">+{item.pending_count - 1} more</span>}
-          {item.message.meta?.options && <div className="ago-approval-actions" onClick={event => event.stopPropagation()}><MessageOptions message={item.message} /></div>}
+          {!!item.message.meta?.options?.length && <div className="ago-approval-actions"><MessageOptions message={item.message} /></div>}
         </div>)}
       {!query.isLoading && !query.isError && !query.data?.length &&
         <div className="empty"><div className="glyph"><Icon name="check" /></div><div>No pending approvals</div></div>}

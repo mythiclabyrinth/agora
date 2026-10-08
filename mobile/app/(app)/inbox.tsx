@@ -12,6 +12,7 @@ import { toastErr } from "../../src/components/Toast";
 import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } from "../../src/components/SwipeRow";
 import { ThreadsScreen } from "./threads";
 import { Icon } from "../../src/components/Icon";
+import { MessageOptions } from "../../src/components/MessageOptions";
 import { layout } from "../../src/lib/theme";
 import { useInboxTab, type InboxTab } from "../../src/state/inboxTab";
 
@@ -66,7 +67,7 @@ export function inboxTabFromParam(value: string | undefined): InboxTab | null {
   return value === "threads" || value === "unreads" || value === "approvals" ? value : null;
 }
 
-function ApprovalRow({ item }: { item: ApprovalItem }) {
+export function ApprovalRow({ item }: { item: ApprovalItem }) {
   const styles = useStyles();
   const open = () => {
     if (item.thread_id != null) {
@@ -80,18 +81,21 @@ function ApprovalRow({ item }: { item: ApprovalItem }) {
       } });
     }
   };
-  return <Pressable style={styles.card} onPress={open} accessibilityRole="button"
-    accessibilityLabel={`Approval from ${item.message.author_name || item.message.author_id} in ${item.channel_name}`}>
-    <Text style={styles.source} numberOfLines={1}>
-      {item.kind === "thread" ? `↳ ${previewText(item.title || "Thread")} in ` : ""}#{item.channel_name} · {item.group_name}
-    </Text>
-    <Text style={styles.time}>{fmtRelative(item.message.ts)}</Text>
-    <Text style={styles.preview} numberOfLines={2}>
-      <Text style={styles.author}>{item.message.author_name || item.message.author_id}: </Text>
-      {previewText(item.message.text) || "Interactive request"}
-    </Text>
-    {item.pending_count > 1 && <Text style={styles.count}>+{item.pending_count - 1} more</Text>}
-  </Pressable>;
+  return <View style={styles.card}>
+    <Pressable style={styles.approvalContent} onPress={open} accessibilityRole="button"
+      accessibilityLabel={`Approval from ${item.message.author_name || item.message.author_id} in ${item.channel_name}`}>
+      <Text style={styles.source} numberOfLines={1}>
+        {item.kind === "thread" ? `↳ ${previewText(item.title || "Thread")} in ` : ""}#{item.channel_name} · {item.group_name}
+      </Text>
+      <Text style={styles.time}>{fmtRelative(item.message.ts)}</Text>
+      <Text style={styles.preview} numberOfLines={2}>
+        <Text style={styles.author}>{item.message.author_name || item.message.author_id}: </Text>
+        {previewText(item.message.text) || "Interactive request"}
+      </Text>
+      {item.pending_count > 1 && <Text style={styles.moreCount}>+{item.pending_count - 1} more</Text>}
+    </Pressable>
+    {!!item.message.meta?.options?.length && <MessageOptions message={item.message} />}
+  </View>;
 }
 
 export default function InboxScreen({ initialSwipe }: {
@@ -200,6 +204,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   list: { flex: 1 },
   listContent: { paddingHorizontal: layout.gutter, paddingTop: space.sm, gap: space.md, paddingBottom: layout.contentBottom },
   card: { ...surfaces.card, padding: space.lg, gap: space.xs },
+  approvalContent: { gap: space.xs },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   sourceIcon: { width: 36, height: 36, borderRadius: radii.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentSoft },
   sourceCopy: { flex: 1, gap: 2, marginBottom: space.sm },
@@ -211,6 +216,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   countPill: { minWidth: 24, paddingHorizontal: space.sm, paddingVertical: space.xs, borderRadius: radii.pill, backgroundColor: colors.accentSoft },
   mentionPill: { backgroundColor: colors.mentionSurface },
   count: { ...typography.caption, color: colors.accentText, fontWeight: weight.bold, textAlign: "center" },
+  moreCount: { ...typography.caption, color: colors.accentText, fontWeight: weight.bold },
   mentionCount: { color: colors.red },
   time: { color: colors.faint, fontSize: typography.caption.fontSize },
   preview: { fontSize: typography.bodySm.fontSize, fontWeight: typography.bodySm.fontWeight, color: colors.dim },

@@ -58,7 +58,7 @@ export const Approvals: Story = {
     kind: "channel", channel_id: "general", channel_name: "general", group_id: "product", group_name: "Product",
     thread_id: null, title: null, pending_count: 1,
     message: { ...root, id: 520, author_type: "agent", author_id: "claude-cli", author_name: "Claude", thread_id: null, text: "Please approve this action", ts: Date.now() / 1000,
-      meta: { approval_inbox: true, options: [{ id: "allow", label: "Approve" }] } },
+      meta: { approval_inbox: true, options: [{ id: "allow", label: "Approve", style: "primary" }, { id: "deny", label: "Reject" }] } },
   }], total: 1 } } },
 };
 

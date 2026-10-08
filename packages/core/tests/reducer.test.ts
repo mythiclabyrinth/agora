@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, bumpReplyCount, dropReplyCount, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
-import { approvalPendingAt, approvalServerOffset, flattenMessages } from "../src/api/queries";
+import { approvalPendingAt, approvalServerOffset, flattenMessages, replaceApprovalMessage } from "../src/api/queries";
 import { keys } from "../src/api/keys";
 import type { AgentUsageResponse, ApprovalItem, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
@@ -22,6 +22,19 @@ it("uses server time for approval expiry on fast and slow device clocks", () => 
   expect(approvalPendingAt(item, 1300 + fastOffset)).toBe(true);
   const slowOffset = approvalServerOffset({ items: [item], total: 1, server_now: 1.2 }, 700);
   expect(approvalPendingAt(item, 700 + slowOffset)).toBe(false);
+});
+
+it("replaces a selected approval in the cache before the next inbox response", () => {
+  const pending = { ...msg(1), meta: { options: [{ id: "allow", label: "Approve" }], resolved: null } } as Message;
+  const resolved = { ...pending, meta: { ...pending.meta, resolved: { option_id: "allow", by: "tom", ts: 2 } } } as Message;
+  const first = { message: pending, pending_count: 2 } as ApprovalItem;
+  const other = { message: msg(2) } as ApprovalItem;
+  const page = { items: [first, other], total: 3, server_now: 1 };
+  const updated = replaceApprovalMessage(page, resolved)!;
+  expect(updated.items[0].message.meta?.resolved).toMatchObject({ option_id: "allow", by: "tom" });
+  expect(updated.items[0].pending_count).toBe(2);
+  expect(updated.items[1]).toBe(other);
+  expect(updated.total).toBe(3);
 });
 
 it("refreshes approvals after an interactive post and later changes", async () => {

@@ -22,6 +22,7 @@ export function MessageOptions({ message }: { message: Message }) {
     <div className="ago-options">
       {meta.options.map(o => (
         <button key={o.id}
+          disabled={select.isPending}
           className={`ago-option-btn ${o.style === "primary" ? "primary" : o.style === "danger" ? "danger" : ""}`}
           onClick={() => select.mutate(
             { messageId: message.id, optionId: o.id },

@@ -488,6 +488,12 @@ export function useSendMessage(channelId: string) {
   });
 }
 
+export function replaceApprovalMessage(page: ApprovalInboxPage | undefined, message: Message): ApprovalInboxPage | undefined {
+  if (!page) return page;
+  return { ...page, items: page.items.map(item => item.message.id === message.id
+    ? { ...item, message } : item) };
+}
+
 export function useSelectOption() {
   const api = useApi();
   const qc = useQueryClient();
@@ -497,12 +503,14 @@ export function useSelectOption() {
         option_id: v.optionId,
       }),
     onSuccess: (message) => {
+      qc.setQueryData<ApprovalInboxPage>(keys.approvals, page => replaceApprovalMessage(page, message));
       void qc.invalidateQueries({ queryKey: keys.approvals });
       qc.setQueryData<MessagePages>(
         keys.messages(message.channel_id, message.thread_id),
         (data) => replaceMessage(data, message),
       );
     },
+    onError: () => void qc.invalidateQueries({ queryKey: keys.approvals }),
   });
 }
 
