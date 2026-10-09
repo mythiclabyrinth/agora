@@ -3283,7 +3283,8 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
   .ago-inbox-list .ago-inbox-row { padding: 10px 12px; }
   .ago-inbox-list .ago-inbox-row:not(.ago-gp-chan) { position: relative; grid-template-columns: minmax(0, 1fr) 44px; }
   .ago-inbox-list .ago-inbox-row:not(.ago-gp-chan) .ago-inbox-top { grid-column: 2; grid-row: 1; align-self: start; }
-  .ago-inbox-list .ago-inbox-time-stack { position: absolute; right: 14px; bottom: 10px; flex-direction: row; gap: 8px; max-width: calc(100% - 28px); }
+  .ago-inbox-list .ago-inbox-time-stack { position: absolute; right: 14px; bottom: 10px; flex-direction: row; align-items: baseline; gap: 8px; max-width: calc(100% - 28px); }
+  .ago-inbox-list .ago-inbox-time-stack:has(.ago-inbox-last-reply) > .ts { display: none; }
   .ago-inbox-list .ago-inbox-last-reply-visible { display: none; }
   .ago-inbox-list .ago-inbox-last-reply-compact { display: block; }
   .ago-inbox-list .ago-inbox-foot { padding-bottom: 20px; }
