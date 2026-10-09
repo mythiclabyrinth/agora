@@ -133,7 +133,8 @@ cannot tell whether their post was queued or saved as context. Agora's
 `scheduled: true` flag resets the server's agent relay streak; bridge queueing
 does not depend on it. The local `AGORA_PEER_AGENTS` allowlist still gates peer
 turns. `/stop` removes queued peer turns from the queue but keeps their text as
-context; queued human messages are discarded.
+context; queued human messages are discarded. Queued peer relay notes
+conservatively estimate the budget remaining when each turn runs.
 
 `AGENT_AVATAR` accepts PNG, JPEG, GIF, or WebP up to 2 MB. Relative paths are
 resolved beside the selected `.env` file; the template uses the bundled

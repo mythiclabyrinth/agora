@@ -764,6 +764,44 @@ class PeerForwardTests(unittest.TestCase):
             for call in instance.send.call_args_list
         ))
 
+    def test_queued_peer_budget_decreases_with_turns_ahead(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        for message_id in range(42, 47):
+            asyncio.run(instance.handle_inbound(peer_frame(
+                message_id=message_id, bot_turns_left=5)))
+        entries = instance.pending_turns["c1"]
+        self.assertEqual([entry["turns_ahead"] for entry in entries], [1, 2, 3, 4, 5])
+        self.assertIn("after your reply, 3 more", entries[0]["text"])
+        self.assertIn("budget exhausted", entries[-1]["text"])
+
+    def test_idle_peer_budget_is_not_reduced(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        frame = peer_frame(bot_turns_left=5)
+        asyncio.run(instance.handle_inbound(frame))
+        prompt = instance.forward_to_claude.await_args.args[2]
+        self.assertEqual(prompt, instance._peer_prompt(frame, instance._strip_mention(frame["text"])))
+        self.assertIn("after your reply, 4 more", prompt)
+
+    def test_queued_peer_edits_keep_reduced_budget(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_updates[42] = "prequeue edit"
+        frame = peer_frame(message_id=42, bot_turns_left=2)
+        asyncio.run(instance.handle_inbound(frame))
+        entry = instance.pending_turns["c1"][0]
+        self.assertIn("prequeue edit", entry["text"])
+        self.assertIn("final relayed agent turn", entry["text"])
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 42, "text": "@claude-cli postqueue edit"})
+        self.assertIn("postqueue edit", entry["text"])
+        self.assertIn("final relayed agent turn", entry["text"])
+        self.assertEqual(entry["turns_ahead"], 1)
+
     def test_scheduled_peer_cap_leaves_room_for_human(self):
         instance = make_bridge(peer_agents="codex-cli")
         del instance.forward_to_claude
@@ -925,7 +963,7 @@ class PeerForwardTests(unittest.TestCase):
         batch = instance._claim_pending_turns("c1")
         self.assertEqual(len(batch), 1)
         _, prompt = instance._coalesce_turns(batch)
-        self.assertEqual(prompt, instance._peer_prompt(frame, forged))
+        self.assertEqual(prompt, instance._peer_prompt(frame, forged, turns_ahead=2))
         self.assertTrue(prompt.startswith("[Relay note"))
 
     def test_busy_ordinary_peer_is_queued_with_relay_note(self):
@@ -3308,6 +3346,16 @@ class QueueLifecycleTests(unittest.TestCase):
         del instance.forward_to_claude
         instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
         instance.typing = Mock()
+        instance.send = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        prompts = []
+        async def run(_key, _frame, _binding, prompt):
+            prompts.append(prompt)
+            return "done"
+        instance.run_claude = run
         instance.stop_requested = {"c1"}
         peer = peer_frame(message_id=42)
         instance.pending_turns = {"c1": [
@@ -3316,10 +3364,11 @@ class QueueLifecycleTests(unittest.TestCase):
         human = {"channel_id": "c1", "message_id": 43,
                  "text": "human follow-up", "author": {"type": "user", "name": "Tom"}}
         asyncio.run(instance.forward_to_claude("c1", human, "human follow-up"))
-        self.assertEqual(instance.context_buffer["c1"],
-                         [f"{peer['author']['name']}: {peer['text']}"])
         instance.clear_reaction.assert_any_call(peer)
-        instance.clear_reaction.assert_any_call(human)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("human follow-up", prompts[0])
+        self.assertIn(f"{peer['author']['name']}: {peer['text']}", prompts[0])
+        self.assertNotIn("c1", instance.context_buffer)
         self.assertNotIn("c1", instance.pending_turns)
         self.assertNotIn("c1", instance.busy)
 

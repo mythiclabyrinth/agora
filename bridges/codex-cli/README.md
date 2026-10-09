@@ -167,7 +167,8 @@ cannot tell whether their post was queued or saved as context. Agora's
 `scheduled: true` flag resets the server's agent relay streak; bridge queueing
 does not depend on it. The local `AGORA_PEER_AGENTS` allowlist still gates peer
 turns. `/stop` removes queued peer turns from the queue but keeps their text as
-context; queued human messages are discarded.
+context; queued human messages are discarded. Queued peer relay notes
+conservatively estimate the budget remaining when each turn runs.
 
 **Peer commands.** By default a peer's text never reaches the bridge commands.
 Set `AGORA_PEER_COMMANDS` (or `--peer-commands`) to a comma-separated list such
