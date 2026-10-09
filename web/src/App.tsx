@@ -3,20 +3,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ApiClient, ApiProvider, DraftSyncGate, draftAuthRejected, draftIdentityChanged, draftSync, resetSeenMessageIds, useAddressed, useAttachmentDrafts, useMe, type DraftIdentity } from "@agora/core";
+import { ApiClient, ApiProvider, DraftSyncGate, draftIdentityChanged, draftSync, resetSeenMessageIds, useAddressed, useAttachmentDrafts, useMe, type DraftIdentity } from "@agora/core";
 import { sessionToken, clearJoinToken } from "./lib/auth";
 import { AuthGate } from "./components/AuthGate";
 import { Topbar } from "./components/Topbar";
 import { AgoraLayout } from "./components/AgoraLayout";
 import { ToastHost } from "./lib/toast";
 
-function AuthedApp({ onAuthFailed, onIdentity }: { onAuthFailed: (error: unknown) => void; onIdentity: (username: string) => void }) {
+function AuthedApp({ onAuthFailed, onIdentity }: { onAuthFailed: () => void; onIdentity: (username: string) => void }) {
   const me = useMe();
   const failed = me.isError || (!me.isLoading && !me.data);
   useEffect(() => {
-    if (failed) onAuthFailed(me.error);
+    if (failed) onAuthFailed();
     else if (me.data) { onIdentity(me.data.username); clearJoinToken(); }
-  }, [failed, me.data, me.error, onAuthFailed, onIdentity]);
+  }, [failed, me.data, onAuthFailed, onIdentity]);
   if (me.isLoading || failed) return null;
   return (
     <>
@@ -57,7 +57,7 @@ export function App() {
   const draftIdentity = useRef<DraftIdentity | null>(null);
   const qc = useQueryClient();
   useEffect(() => {
-    const flush = () => draftSync.flushAll();
+    const flush = () => draftSync.flushAll({ keepalive: true });
     const hidden = () => { if (document.visibilityState === "hidden") flush(); };
     window.addEventListener("pagehide", flush);
     document.addEventListener("visibilitychange", hidden);
@@ -94,12 +94,10 @@ export function App() {
   return (
     <ApiProvider client={client}>
       <DraftSyncGate />
-      <AuthedApp onIdentity={username => { draftIdentity.current = { server: window.location.origin, username }; }} onAuthFailed={error => {
+      <AuthedApp onIdentity={username => { draftIdentity.current = { server: window.location.origin, username }; }} onAuthFailed={() => {
         useAttachmentDrafts.getState().reset();
-        if (draftAuthRejected(error)) {
-          draftSync.resetAll();
-          useAddressed.getState().resetAll();
-        }
+        // An expired token can also leave a draft PUT unsaved. The next
+        // successful sign-in decides whether its account can keep that text.
         setGateVisible(true);
       }} />
     </ApiProvider>

@@ -159,17 +159,17 @@ export default function InboxScreen({ initialSwipe }: {
   const mark = (items: UnreadItem[]) => markRead.mutate(items, { onError: e => toastErr("Mark read failed", e) });
   return <View style={styles.root}>
     <Stack.Screen options={{ title: "Inbox", headerShown: true }} />
-    <View style={styles.tabs} accessibilityRole="tablist">
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroller} contentContainerStyle={styles.tabs} accessibilityRole="tablist">
       {(["unreads", "threads", "approvals", ...(draftsEnabled ? ["drafts"] as const : [])] as const).map(option => <Pressable key={option}
         accessibilityRole="tab" accessibilityState={{ selected: tab === option }}
         accessibilityLabel={option === "threads" ? "Threads" : option === "drafts" ? `Drafts${drafts.length ? `, ${drafts.length}` : ""}` : option === "approvals" ? `Approvals${approvals.total ? `, ${approvals.total} pending` : ""}` : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
         style={[styles.tab, tab === option && styles.tabActive]}
         onPress={() => { swipeRows.close(); setRememberedTab(option); }}>
-        <Text style={[styles.tabText, tab === option && styles.tabTextActive]} numberOfLines={1} maxFontSizeMultiplier={1.1}>
+        <Text style={[styles.tabText, tab === option && styles.tabTextActive]}>
           {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : option === "approvals" ? `Approvals${approvals.total ? ` (${approvals.total})` : ""}` : option === "drafts" ? `Drafts${drafts.length ? ` (${drafts.length})` : ""}` : "Threads"}
         </Text>
       </Pressable>)}
-    </View>
+    </ScrollView>
     {tab === "drafts" && draftsEnabled ? <FlatList style={styles.list} contentContainerStyle={styles.listContent}
       data={drafts} keyExtractor={item => draftKey(item.channel_id, item.thread_id)}
       renderItem={({ item }) => <DraftInboxRow item={item} controller={swipeRows} />}
@@ -226,8 +226,9 @@ export default function InboxScreen({ initialSwipe }: {
 
 const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
-  tabs: { flexDirection: "row", marginHorizontal: layout.gutter, marginTop: space.sm, marginBottom: space.sm, padding: space.xs, borderRadius: radii.lg, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
-  tab: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: space.xs, paddingVertical: space.sm, borderRadius: radii.md },
+  tabScroller: { flexGrow: 0 },
+  tabs: { flexDirection: "row", flexGrow: 1, marginHorizontal: layout.gutter, marginTop: space.sm, marginBottom: space.sm, padding: space.xs, borderRadius: radii.lg, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  tab: { flexGrow: 1, minWidth: 88, minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: space.sm, paddingVertical: space.sm, borderRadius: radii.md },
   tabActive: { backgroundColor: colors.accentSoft },
   tabText: { ...typography.bodySm, textAlign: "center", color: colors.dim, fontWeight: weight.semibold },
   tabTextActive: { color: colors.accentText },

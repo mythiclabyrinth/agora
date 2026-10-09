@@ -29,11 +29,17 @@ it("refreshes drafts only for relevant delete, clear, and rename events", () => 
     applyWsEvent(qc, { type: "message_delete", channel_id: "other", thread_id: null, message_id: 1 }, { username: "ana" });
     applyWsEvent(qc, { type: "message_clear", channel_id: "other", thread_id: null }, { username: "ana" });
     applyWsEvent(qc, { type: "thread_renamed", channel_id: "c1", thread_id: 8, alias: "Other" }, { username: "ana" });
+    applyWsEvent(qc, { type: "drafts_refresh", channel_id: "other", group_id: null }, { username: "ana" });
     expect(hydrate).not.toHaveBeenCalled();
     applyWsEvent(qc, { type: "message_delete", channel_id: "c1", thread_id: null, message_id: 7 }, { username: "ana" });
     applyWsEvent(qc, { type: "message_clear", channel_id: "c1", thread_id: null }, { username: "ana" });
     applyWsEvent(qc, { type: "thread_renamed", channel_id: "c1", thread_id: 7, alias: "New" }, { username: "ana" });
-    expect(hydrate).toHaveBeenCalledTimes(3);
+    applyWsEvent(qc, { type: "drafts_refresh", channel_id: "c1", group_id: null }, { username: "ana" });
+    applyWsEvent(qc, { type: "drafts_refresh", channel_id: null, group_id: "g1" }, { username: "ana" });
+    expect(hydrate).toHaveBeenCalledTimes(5);
+    useMessageDrafts.getState().setRows([]);
+    applyWsEvent(qc, { type: "drafts_refresh", channel_id: null, group_id: "g1", force: true }, { username: "ana" });
+    expect(hydrate).toHaveBeenCalledTimes(6);
   } finally {
     useMessageDrafts.getState().resetAll();
     hydrate.mockRestore();

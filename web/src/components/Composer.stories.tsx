@@ -281,6 +281,92 @@ export const ReplyToggleResetsBeforeSecondSend: Story = {
   },
 };
 
+export const ReplyToggleResetsAfterPendingSend: Story = {
+  parameters: {
+    setup: () => { plainSendCalls = 0; pendingPlainSend.mockClear(); },
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": pendingPlainSend },
+  },
+  render: args => <ReplyToggleComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(input, "q1{Enter}");
+    await waitFor(() => expect(pendingPlainSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).not.toHaveClass("active"));
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveClass("active"));
+    releaseFirstPlainSend?.(message);
+    await waitFor(() => expect(useDrafts.getState().metaByConvo.general.reply_in_thread).toBe(false));
+    expect(toggle).not.toHaveClass("active");
+  },
+};
+
+const failedReplySend = fn(async () => { throw new Error("offline"); });
+
+export const FailedReplySendRestoresToggle: Story = {
+  parameters: {
+    setup: () => failedReplySend.mockClear(),
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": failedReplySend },
+  },
+  render: args => <ReplyToggleComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(input, "hello{Enter}");
+    await waitFor(() => expect(failedReplySend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).toHaveClass("active"));
+    await expect(input).toHaveValue("hello");
+    expect(useDrafts.getState().metaByConvo.general.reply_in_thread).toBe(true);
+  },
+};
+
+let rejectSwitchedSend: ((reason: Error) => void) | undefined;
+const failedAfterSwitch = fn(() => new Promise((_resolve, reject) => { rejectSwitchedSend = reject; }));
+function SwitchableReplyComposer(props: React.ComponentProps<typeof Composer>) {
+  const [channel, setChannel] = useState("general");
+  const [replyInThread, setReplyInThread] = useState(false);
+  return <><button data-testid="switch-channel" onClick={() => setChannel("random")}>switch channel</button>
+    <Composer {...props} channelId={channel} channelName={channel}
+      replyInThread={replyInThread} onSetReplyInThread={setReplyInThread} /></>;
+}
+
+export const FailedReplySendAfterChannelSwitch: Story = {
+  parameters: {
+    setup: () => failedAfterSwitch.mockClear(),
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": failedAfterSwitch },
+  },
+  render: args => <SwitchableReplyComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(canvas.getByPlaceholderText("Message #general"), "hello{Enter}");
+    await waitFor(() => expect(failedAfterSwitch).toHaveBeenCalledTimes(1));
+    await userEvent.click(canvas.getByTestId("switch-channel"));
+    await waitFor(() => expect(toggle).not.toHaveClass("active"));
+    rejectSwitchedSend?.(new Error("offline"));
+    await waitFor(() => expect(useDrafts.getState().byConvo.general).toBe("hello"));
+    expect(toggle).not.toHaveClass("active");
+  },
+};
+
+export const ReplyToggleStaysOnWhenTypingAfterSwitch: Story = {
+  render: args => <SwitchableReplyComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("switch-channel"));
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveClass("active"));
+    await userEvent.type(canvas.getByPlaceholderText("Message #random"), "keep this setting");
+    expect(toggle).toHaveClass("active");
+  },
+};
+
 let rejectCaptionUpload: ((reason: Error) => void) | undefined;
 const failingCaptionUpload = fn(() => new Promise((_resolve, reject) => { rejectCaptionUpload = reject; }));
 
@@ -302,6 +388,34 @@ export const FailedUploadKeepsCaption: Story = {
     rejectCaptionUpload?.(new Error("upload cancelled"));
     await new Promise(resolve => setTimeout(resolve, 0));
     await waitFor(() => expect(input).toHaveValue("final cut"));
+  },
+};
+
+let releaseReplyUpload: ((value: unknown) => void) | undefined;
+const pendingReplyUpload = fn(() => new Promise(resolve => { releaseReplyUpload = resolve; }));
+
+export const ReplyToggleResetsAfterUploadWithTyping: Story = {
+  parameters: {
+    setup: () => {
+      stage([new File(["image"], "photo.png", { type: "image/png" })]);
+      pendingReplyUpload.mockClear();
+    },
+    apiRoutes: { ...withTemplateRoutes, "UPLOAD /api/channels/general/messages/upload": pendingReplyUpload },
+  },
+  render: args => <ReplyToggleComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(input, "see attached");
+    await userEvent.click(canvas.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(pendingReplyUpload).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { value: "follow-up" } });
+    releaseReplyUpload?.(message);
+    await waitFor(() => expect(toggle).not.toHaveClass("active"));
+    await waitFor(() => expect(useDrafts.getState().metaByConvo.general.reply_in_thread).toBe(false));
+    expect(input).toHaveValue("follow-up");
   },
 };
 

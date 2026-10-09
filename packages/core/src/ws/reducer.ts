@@ -482,6 +482,14 @@ export function applyWsEvent(
       draftSync.applyRemote(ev);
       break;
     }
+    case "drafts_refresh": {
+      draftSync.retryForbidden();
+      if (ev.force || useMessageDrafts.getState().rows.some(row =>
+        (ev.channel_id != null && row.channel_id === ev.channel_id) ||
+        (ev.group_id != null && row.group_id === ev.group_id)))
+        void draftSync.hydrate(!!ev.force).catch(() => {});
+      break;
+    }
     case "agent_usage": {
       const usage = ev as AgentUsageEvent;
       qc.setQueryData<AgentUsageResponse>(keys.agentUsage(usage.agent_id), (old) => ({

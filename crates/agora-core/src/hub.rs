@@ -1141,6 +1141,11 @@ impl Hub {
         self.send_to_user(username, &event);
     }
 
+    pub fn publish_drafts_refresh(&self, username: &str, channel_id: Option<&str>, group_id: Option<&str>, force: bool) {
+        self.send_to_user(username, &json!({"type":"drafts_refresh","channel_id":channel_id,
+            "group_id":group_id,"force":force}));
+    }
+
     // ------------------------------------------------------------- reads
 
     pub fn mark_read(&self, username: &str, channel_id: &str, message_id: Option<i64>) -> i64 {
@@ -3040,6 +3045,18 @@ mod tests {
         assert_eq!(ar.try_recv().unwrap()["type"], "draft");
         assert_eq!(br.try_recv().unwrap()["body"], "hello");
         assert!(other_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn draft_refresh_reaches_only_the_affected_user() {
+        let h = hub();
+        let (a, mut ana) = unbounded_channel();
+        let (b, mut bob) = unbounded_channel();
+        h.attach_socket("ana", false, a);
+        h.attach_socket("bob", false, b);
+        h.publish_drafts_refresh("ana", Some("channel"), None, false);
+        assert_eq!(ana.try_recv().unwrap()["type"], "drafts_refresh");
+        assert!(bob.try_recv().is_err());
     }
 
     fn hub_with_streak_reset_agents(ids: &[&str]) -> Hub {

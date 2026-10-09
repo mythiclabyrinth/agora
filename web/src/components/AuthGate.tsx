@@ -47,7 +47,8 @@ export function AuthGate({ onSignedIn }: { onSignedIn: (username: string) => voi
     setSessionToken(t);
     const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${t}` } })
       .catch(() => null);
-    if (res && res.ok) onSignedIn((await res.json()).username);
+    const me = res?.ok ? await res.json().catch(() => null) : null;
+    if (typeof me?.username === "string") onSignedIn(me.username);
     else toast("That token didn't work", { variant: "warn" });
   };
 

@@ -498,7 +498,7 @@ export default function ChannelScreen() {
           sending={send.isPending}
           threadToggle
           onSend={async ({ text, files, replyInThread, draftRev, clientId }) => {
-            await send.mutateAsync({ text, threadId: null, files, replyInThread, draftRev, clientId });
+            return await send.mutateAsync({ text, threadId: null, files, replyInThread, draftRev, clientId });
           }}
           onSendVoice={
             sttOk

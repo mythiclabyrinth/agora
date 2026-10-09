@@ -267,6 +267,7 @@ CREATE TABLE IF NOT EXISTS drafts (
     PRIMARY KEY (username, channel_id, thread_id)
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(username, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_drafts_channel ON drafts(channel_id, thread_id);
 -- Fetched link-preview metadata (see unfurl.rs), keyed by exact URL: one
 -- fetch per URL across all messages. Failures are cached too (ok = 0) so a
 -- dead link is not retried per message; rows expire by fetched_at against
@@ -3407,6 +3408,57 @@ impl Store {
             "meta":{},"rev":rev,"client_id":client_id,"updated_at":updated_at}))
     }
 
+    /// Return the draft state at the point a message consumed it. The update
+    /// and read share the store lock, so the response identifies the exact row
+    /// that won the revision check, even with another device saving at once.
+    pub fn consume_draft_on_send(&self, username: &str, channel_id: &str, thread_id: Option<i64>, rev: i64, client_id: &str) -> Value {
+        let conn = self.conn.lock().unwrap();
+        let tid = thread_id.unwrap_or(0);
+        let changed = conn.execute(
+            "UPDATE drafts SET body='', meta='{}', rev=rev+1, client_id=?4, updated_at=?5 \
+             WHERE username=?1 AND channel_id=?2 AND thread_id=?3 AND body<>'' AND rev<=?6",
+            params![username, channel_id, tid, client_id, now(), rev],
+        ).unwrap();
+        let row = conn.query_row(
+            "SELECT body,meta,rev,client_id,updated_at FROM drafts \
+             WHERE username=?1 AND channel_id=?2 AND thread_id=?3",
+            params![username, channel_id, tid], |r| {
+                let body: String = r.get(0)?;
+                let meta: String = r.get(1)?;
+                Ok(json!({"channel_id":channel_id,"thread_id":thread_id,
+                    "body":if body.is_empty() { Value::Null } else { json!(body) },
+                    "meta":serde_json::from_str::<Value>(&meta).unwrap_or_else(|_|json!({})),
+                    "rev":r.get::<_,i64>(2)?,"client_id":r.get::<_,String>(3)?,
+                    "updated_at":r.get::<_,f64>(4)?}))
+            },
+        ).optional().unwrap();
+        json!({"deleted":changed>0,"row":row})
+    }
+
+    pub fn draft_owners_for_channel(&self, channel_id: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT username FROM drafts WHERE channel_id=?1 AND body<>''").unwrap();
+        stmt.query_map(params![channel_id], |r| r.get(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
+    pub fn draft_owners_for_group(&self, group_id: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT d.username FROM drafts d JOIN channels c ON c.id=d.channel_id WHERE c.group_id=?1 AND d.body<>''").unwrap();
+        stmt.query_map(params![group_id], |r| r.get(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
+    pub fn draft_owners_for_agent_dm(&self, agent_id: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT d.username FROM drafts d JOIN channels c ON c.id=d.channel_id WHERE c.kind='agent_dm' AND c.dm_agent_id=?1 AND d.body<>''").unwrap();
+        stmt.query_map(params![agent_id], |r| r.get(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
+    pub fn agent_dm_owners(&self, agent_id: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT dm_user_id FROM channels WHERE kind='agent_dm' AND dm_agent_id=?1 AND dm_user_id IS NOT NULL").unwrap();
+        stmt.query_map(params![agent_id], |r| r.get(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
     pub fn list_drafts(&self, username: &str, instance_admin: bool) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -4291,6 +4343,8 @@ mod tests {
         assert!(restored["rev"].as_i64().unwrap() > tombstone["rev"].as_i64().unwrap());
         s.delete_message(tid);
         assert!(s.list_drafts("ana", false).is_empty());
+        let conn = s.conn.lock().unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM drafts WHERE channel_id=?1 AND thread_id=?2", params![cid, tid], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
 
     #[test]

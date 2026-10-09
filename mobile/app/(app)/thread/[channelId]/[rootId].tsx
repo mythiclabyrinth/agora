@@ -431,7 +431,7 @@ export default function ThreadScreen() {
           sending={send.isPending}
           requireAgentToggle={!isDm}
           onSend={async ({ text, files, requireAgent, draftRev, clientId }) => {
-            await send.mutateAsync({ text, threadId: rootId, files, requireAgent, draftRev, clientId });
+            return await send.mutateAsync({ text, threadId: rootId, files, requireAgent, draftRev, clientId });
           }}
           onSendVoice={
             sttOk

@@ -91,9 +91,12 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const me = useMe().data;
   const draftKey = threadId != null ? `t:${threadId}` : `c:${channelId}`;
   const syncKey = canonicalDraftKey(channelId, threadId);
+  const mountedSyncKey = useRef(syncKey);
+  mountedSyncKey.current = syncKey;
   const text = useDrafts(s => s.byConvo[syncKey] ?? "");
   const setText = (_key: string, next: string) => draftSync.edit(syncKey, next);
   const remoteMeta = useMessageDrafts(s => s.metaByConvo[syncKey]);
+  const remoteMetaRev = useMessageDrafts(s => s.metaRevByConvo[syncKey] ?? 0);
   useEffect(() => {
     draftSync.setActive(syncKey);
     return () => { void draftSync.flush(syncKey); };
@@ -101,7 +104,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   useEffect(() => {
     if (remoteMeta && onSetReplyInThread && remoteMeta.reply_in_thread !== !!replyInThread)
       onSetReplyInThread(remoteMeta.reply_in_thread);
-  }, [remoteMeta, syncKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [remoteMetaRev, syncKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const attachments = useAttachmentDrafts(s => s.byDraft[draftKey] ?? NO_ATTACHMENTS);
   const [mention, setMention] = useState<{ items: MentionCandidate[]; active: number; start: number } | null>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -407,15 +410,17 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
       signal: controller?.signal,
       draftRev: draftSync.prepareSend(syncKey),
       clientId: draftSync.clientId,
-    }).then(() => {
+    }).then((message) => {
       if (sentIds.length) useAttachmentDrafts.getState().sendSucceeded(draftKey, sentIds);
-      void draftSync.onSent(syncKey, sentText, sentVersion);
-      if (sentIds.length && replyInThread && onSetReplyInThread) {
-        onSetReplyInThread(false);
-        draftSync.editMeta(syncKey, { addressed: useAddressed.getState().byConvo[syncKey] ?? [], reply_in_thread: false });
-      }
+      void draftSync.onSent(syncKey, sentText, sentVersion, message.draft);
+      if (mountedSyncKey.current === syncKey) onSetReplyInThread?.(false);
+      draftSync.editMeta(syncKey, { addressed: useAddressed.getState().byConvo[syncKey] ?? [], reply_in_thread: false });
     }).catch((error) => {
       if (!sentIds.length) draftSync.restoreFailedSend(syncKey, sentText, sentVersion);
+      if (!sentIds.length && replyInThread && onSetReplyInThread) {
+        if (mountedSyncKey.current === syncKey) onSetReplyInThread(true);
+        draftSync.editMeta(syncKey, { addressed: useAddressed.getState().byConvo[syncKey] ?? [], reply_in_thread: true });
+      }
       void draftSync.flush(syncKey);
       if (sentIds.length) useAttachmentDrafts.getState().sendFailed(draftKey, sentIds);
       const aborted = controller?.signal.aborted;

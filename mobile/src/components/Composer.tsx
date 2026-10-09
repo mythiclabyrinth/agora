@@ -218,7 +218,7 @@ export function Composer({
     requireAgent?: boolean;
     draftRev?: number;
     clientId?: string;
-  }) => Promise<void>;
+  }) => Promise<import("@agora/core").Message | void>;
   /** When set (server has voice), a 🎤 button records a voice note and hands
       the file here for the transcribe-and-post upload. `mentions` carries the
       "talk to" prefix ("@a, @b") so the transcript addresses the same agents
@@ -640,21 +640,19 @@ export function Composer({
           addressed: useAddressed.getState().byConvo[addressKey] ?? [], reply_in_thread: false,
         });
       }
-      await sending;
+      const sentMessage = await sending;
       filesRef.current = [];
       setFiles([]);
-      if (hasFiles) {
-        setReplyInThread(false);
-        if (addressKey && replyInThread) draftSync.editMeta(addressKey, {
-          addressed: useAddressed.getState().byConvo[addressKey] ?? [], reply_in_thread: false,
-        });
-      }
       if (addressKey) {
         if (hasFiles) draftSync.clearForSend(addressKey, sentText, sentVersion);
-        await draftSync.onSent(addressKey, sentText, sentVersion);
+        void draftSync.onSent(addressKey, sentText, sentVersion, sentMessage?.draft);
+        draftSync.editMeta(addressKey, {
+          addressed: useAddressed.getState().byConvo[addressKey] ?? [], reply_in_thread: false,
+        });
       } else {
         setLocalText((cur) => (cur === sentText ? "" : cur));
       }
+      setReplyInThread(false);
     } catch (e) {
       if (!hasFiles) {
         if (addressKey) draftSync.restoreFailedSend(addressKey, sentText, sentVersion);

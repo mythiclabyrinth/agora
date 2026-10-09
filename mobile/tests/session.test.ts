@@ -23,8 +23,9 @@ jest.mock("expo-constants", () => ({
 }));
 
 import * as SecureStore from "expo-secure-store";
-import { useAddressed, useMessageDrafts } from "@agora/core";
+import { draftSync, useAddressed, useMessageDrafts } from "@agora/core";
 import { KEY_RECENT } from "../src/state/servers";
+import { useInboxTab } from "../src/state/inboxTab";
 import {
   KEY_INSTANCE_ADMIN,
   KEY_TOKEN,
@@ -45,11 +46,61 @@ function resp(body: unknown, status = 200, url = ""): Response {
 const me = { username: "tom", voice: false };
 
 afterEach(() => {
+  draftSync.resetAll();
+  useSession.setState({ draftIdentity: null, status: "signedOut", session: null });
+  useInboxTab.setState({ tab: "unreads", filter: "all" });
   jest.restoreAllMocks();
   jest.clearAllMocks();
 });
 
 describe("signIn", () => {
+  it("keeps a draft after load's me check fails but the app resolves the same identity", async () => {
+    (SecureStore.getItemAsync as jest.Mock).mockImplementation(async key =>
+      key === KEY_URL ? "https://a.example" : key === KEY_TOKEN ? "old" : null);
+    jest.spyOn(global, "fetch").mockRejectedValue(new Error("offline"));
+    await useSession.getState().load();
+    expect(useSession.getState().draftIdentity).toBeNull();
+    useSession.getState().rememberDraftIdentity("https://a.example", "tom");
+    await useSession.getState().expireSession();
+    draftSync.edit("general", "important offline text");
+    (global.fetch as jest.Mock).mockImplementation(async input =>
+      resp(String(input).endsWith("/api/me") ? me : {}, 200, String(input)));
+    await useSession.getState().signIn("https://a.example", "new");
+    expect(useMessageDrafts.getState().byConvo.general).toBe("important offline text");
+  });
+
+  it("keeps unsynced text through expiry and same-user sign-in", async () => {
+    const identity = { server: "https://a.example", username: "tom" };
+    useSession.setState({ status: "signedIn", session: { baseUrl: identity.server, token: "old" },
+      username: "tom", draftIdentity: identity });
+    useMessageDrafts.setState({ byConvo: { general: "unsynced" } });
+    await useSession.getState().expireSession();
+    expect(useMessageDrafts.getState().byConvo.general).toBe("unsynced");
+    jest.spyOn(global, "fetch").mockImplementation(async input =>
+      resp(String(input).endsWith("/api/me") ? me : {}, 200, String(input)));
+    await useSession.getState().signIn(identity.server, "new");
+    expect(useMessageDrafts.getState().byConvo.general).toBe("unsynced");
+  });
+
+  it("clears an expired session's drafts when a different user signs in", async () => {
+    useSession.setState({ status: "signedOut", session: null,
+      draftIdentity: { server: "https://a.example", username: "other" } });
+    useMessageDrafts.setState({ byConvo: { general: "other account" } });
+    jest.spyOn(global, "fetch").mockImplementation(async input =>
+      resp(String(input).endsWith("/api/me") ? me : {}, 200, String(input)));
+    await useSession.getState().signIn("https://a.example", "new");
+    expect(useMessageDrafts.getState().byConvo).toEqual({});
+  });
+  it("resets the inbox tab and filter after a 401 before another user signs in", async () => {
+    useSession.setState({ status: "signedIn", session: { baseUrl: "https://a.example", token: "old" },
+      username: "other", draftIdentity: { server: "https://a.example", username: "other" } });
+    useInboxTab.setState({ tab: "drafts", filter: "mentions" });
+    await useSession.getState().expireSession();
+    jest.spyOn(global, "fetch").mockImplementation(async input =>
+      resp(String(input).endsWith("/api/me") ? me : {}, 200, String(input)));
+    await useSession.getState().signIn("https://a.example", "new");
+    expect(useInboxTab.getState()).toMatchObject({ tab: "unreads", filter: "all" });
+  });
   it("stores the canonical https origin learned from the probe", async () => {
     useMessageDrafts.setState({ byConvo: { general: "old account" } });
     useAddressed.setState({ byConvo: { general: ["old-agent"] } });

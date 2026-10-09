@@ -1,6 +1,6 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { ScrollView, StyleSheet } from "react-native";
+import { ScrollView, StyleSheet, Text } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useApprovals, useMarkUnreadsRead, useMe, useSyncedDrafts, useUnreads } from "@agora/core";
 import InboxScreen from "../app/(app)/inbox";
@@ -97,6 +97,13 @@ test("Drafts is the fourth tab and shows its count", () => {
   expect(tabs()).toHaveLength(4);
   act(() => tabs().find((node) => node.props.accessibilityLabel === "Drafts, 1")!.props.onPress());
   expect(useInboxTab.getState().tab).toBe("drafts");
+  const tabStrip = tree.root.findAllByType(ScrollView).find(node => node.props.accessibilityRole === "tablist");
+  expect(tabStrip?.props.horizontal).toBe(true);
+  expect(StyleSheet.flatten(tabStrip?.props.contentContainerStyle)).toMatchObject({ flexGrow: 1 });
+  expect(StyleSheet.flatten(tabs()[0].props.style)).toMatchObject({ flexGrow: 1 });
+  const draftLabel = tree.root.findAllByType(Text).find(node => node.props.children === "Drafts (1)");
+  expect(draftLabel?.props.maxFontSizeMultiplier).toBeUndefined();
+  expect(draftLabel?.props.numberOfLines).toBeUndefined();
 });
 
 test("empty Drafts tab omits a zero from its accessibility label", () => {

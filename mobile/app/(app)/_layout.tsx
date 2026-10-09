@@ -6,7 +6,7 @@ import React, { useEffect, useMemo, useRef } from "react";
 import { AppState } from "react-native";
 import { Redirect, Stack, router, type Href, usePathname } from "expo-router";
 import * as Notifications from "expo-notifications";
-import { ApiClient, ApiProvider, DraftSyncGate, draftSync } from "@agora/core";
+import { ApiClient, ApiProvider, DraftSyncGate, draftSync, useMe } from "@agora/core";
 import { useSession } from "../../src/state/session";
 import { useAgoraSocket } from "../../src/ws/useAgoraSocket";
 import { emitAgentMessage } from "../../src/lib/agentBus";
@@ -165,5 +165,13 @@ function ApiWrapped({ session, children }: {
     () => new ApiClient(session),
     [session.baseUrl, session.token], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  return <ApiProvider client={client}><DraftSyncGate />{children}</ApiProvider>;
+  return <ApiProvider client={client}><DraftIdentityGate server={session.baseUrl} /><DraftSyncGate />{children}</ApiProvider>;
+}
+
+function DraftIdentityGate({ server }: { server: string }) {
+  const username = useMe().data?.username;
+  useEffect(() => {
+    if (username) useSession.getState().rememberDraftIdentity(server, username);
+  }, [server, username]);
+  return null;
 }

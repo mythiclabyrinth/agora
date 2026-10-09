@@ -3,6 +3,7 @@
 
 import {
   keepPreviousData,
+  type QueryClient,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -486,17 +487,17 @@ export function useSendMessage(channelId: string) {
         ...(v.clientId ? { client_id: v.clientId } : {}),
       });
     },
-    onSuccess: (message, v) => {
-      // The WS echo will dedupe against this append.
-      qc.setQueryData<MessagePages>(
-        keys.messages(channelId, v.threadId),
-        (data) => appendMessage(data, message),
-      );
-      qc.setQueryData<Group[]>(keys.groups, (groups) =>
-        applyMessageToGroups(groups, message, message.author_id),
-      );
-    },
+    onSuccess: (response, v) => cacheSentMessage(qc, channelId, v.threadId, response),
   });
+}
+
+export function cacheSentMessage(qc: QueryClient, channelId: string, threadId: number | null, response: Message) {
+  // Send responses can carry another device's draft; only message fields belong in caches.
+  const message = { ...response };
+  delete message.draft;
+  // The WS echo will dedupe against this append.
+  qc.setQueryData<MessagePages>(keys.messages(channelId, threadId), data => appendMessage(data, message));
+  qc.setQueryData<Group[]>(keys.groups, groups => applyMessageToGroups(groups, message, message.author_id));
 }
 
 export function replaceApprovalMessage(page: ApprovalInboxPage | undefined, message: Message): ApprovalInboxPage | undefined {

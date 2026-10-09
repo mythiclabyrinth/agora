@@ -344,6 +344,8 @@ export interface ReactionReactor {
 }
 
 export interface Message {
+  /** Present only on responses to sends carrying draft_rev. */
+  draft?: import("../state/drafts").DraftSendOutcome;
   id: number;
   /** Monotonic display order; older servers omit it and clients use id. */
   seq?: number;
@@ -664,8 +666,16 @@ export interface MessageClearEvent {
   thread_id: number | null;
 }
 
+export interface DraftsRefreshEvent {
+  type: "drafts_refresh";
+  channel_id: string | null;
+  group_id: string | null;
+  force?: boolean;
+}
+
 export type WsEvent =
   | import("../state/drafts").DraftEvent
+  | DraftsRefreshEvent
   | TypingEvent
   | ProgressEvent
   | MessageEvent
