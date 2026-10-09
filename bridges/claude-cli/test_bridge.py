@@ -777,6 +777,50 @@ class PeerForwardTests(unittest.TestCase):
         self.assertIn("after your reply, 3 more", entries[0]["text"])
         self.assertIn("budget exhausted", entries[-1]["text"])
 
+    def test_queued_peer_budget_counts_human_batches(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": i}, "text": f"human {i}", "from_peer": False}
+            for i in range(3)
+        ]}
+        asyncio.run(instance.handle_inbound(peer_frame(message_id=42, bot_turns_left=4)))
+        queued = instance.pending_turns["c1"][-1]
+        self.assertEqual(queued["turns_ahead"], 2)
+        self.assertIn("after your reply, 1 more", queued["text"])
+        self.assertNotIn("budget exhausted", queued["text"])
+
+    def test_queued_peer_budget_counts_mixed_batches(self):
+        instance = make_bridge(peer_agents="codex-cli")
+        del instance.forward_to_claude
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": 1}, "text": "human one", "from_peer": False},
+            {"frame": {"message_id": 2}, "text": "human two", "from_peer": False},
+            {"frame": peer_frame(message_id=3), "text": "peer middle", "from_peer": True},
+            {"frame": {"message_id": 4}, "text": "human three", "from_peer": False},
+            {"frame": {"message_id": 5}, "text": "human four", "from_peer": False},
+        ]}
+        asyncio.run(instance.handle_inbound(peer_frame(message_id=42, bot_turns_left=4)))
+        queued = instance.pending_turns["c1"][-1]
+        self.assertEqual(queued["turns_ahead"], 4)
+        self.assertIn("budget exhausted", queued["text"])
+
+    def test_queued_batch_count_matches_drain_grouping(self):
+        def human(text, attachment_count=0):
+            return {"frame": {"attachments": [{}] * attachment_count},
+                    "text": text, "from_peer": False}
+
+        count = bridge.Bridge._queued_batch_count
+        self.assertEqual(count([]), 0)
+        self.assertEqual(count([human("hi"), human("there")]), 1)
+        self.assertEqual(count([human("/compact"), human("hi")]), 2)
+        self.assertEqual(count([human("one", 3), human("two", 3),
+                                human("three", 3)]), 3)
+
     def test_idle_peer_budget_is_not_reduced(self):
         instance = make_bridge(peer_agents="codex-cli")
         frame = peer_frame(bot_turns_left=5)

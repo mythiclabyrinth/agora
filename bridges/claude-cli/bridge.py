@@ -1650,6 +1650,26 @@ class Bridge:
             while len(self.deleted_thread_roots) > 100:
                 self.deleted_thread_roots.pop(next(iter(self.deleted_thread_roots)))
 
+    @staticmethod
+    def _queued_batch_count(entries: list[dict]) -> int:
+        """Count the turns the drain loop will claim from a waiting queue."""
+        batches = 0
+        human_batch = False
+        attachment_count = 0
+        for entry in entries:
+            if entry.get("from_peer") or entry["text"].lstrip().startswith("/"):
+                batches += 1
+                human_batch = False
+                attachment_count = 0
+                continue
+            attachments = len(entry["frame"].get("attachments") or [])
+            if not human_batch or attachment_count + attachments > MAX_ATTACHMENTS:
+                batches += 1
+                human_batch = True
+                attachment_count = 0
+            attachment_count += attachments
+        return batches
+
     def _claim_pending_turns(self, key: str) -> list[dict]:
         queue = self.pending_turns.pop(key, [])
         if not queue:
@@ -2885,7 +2905,7 @@ class Bridge:
                     self.queue_full_notified.add(key)
                     self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). This message was not accepted; resend it after queued work starts.")
                 return False
-            turns_ahead = 1 + len(self.pending_turns.get(key, [])) if from_peer else 0
+            turns_ahead = 1 + self._queued_batch_count(self.pending_turns.get(key, [])) if from_peer else 0
             entry = self._pending_entry(frame, text, from_peer=from_peer,
                                         turns_ahead=turns_ahead)
             if entry is None:

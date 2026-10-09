@@ -29,7 +29,9 @@ Cursor as access to that host within Cursor's configured restrictions.
   context. The server's `scheduled` flag resets the agent relay streak but is
   not required for queueing. `/stop` saves queued peer text as context
   while discarding queued human messages. Peer slots reopen as turns run;
-  the server relay cap bounds a continuing exchange.
+  the server relay cap bounds a continuing exchange. Queued relay notes
+  estimate only this bridge's turns ahead; other agents' posts while waiting
+  are not counted.
 - Peers never reach bridge commands unless `AGORA_PEER_COMMANDS` lists them
   (empty by default; typically just `/new`). A listed command runs only for an
   allowlisted peer that explicitly `@mentions` Cursor, and `/new` still

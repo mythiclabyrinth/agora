@@ -53,7 +53,9 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
      context. The server's `scheduled` flag resets the agent relay streak but
      is not required for queueing. `/stop` saves queued peer text as
      context while discarding queued human messages. Peer slots reopen as
-     turns run; the server relay cap bounds a continuing exchange.
+     turns run; the server relay cap bounds a continuing exchange. Queued
+     relay notes estimate only this bridge's turns ahead; other agents' posts
+     while waiting are not counted.
    - *Second opt-in:* `AGORA_PEER_COMMANDS` (`--peer-commands`, empty by
      default) names bridge commands — typically just `/new` — that an
      allowlisted peer may run through the regular command table. It applies

@@ -211,7 +211,8 @@ cannot tell whether their post was queued or saved as context. Agora's
 does not depend on it. The local `AGORA_PEER_AGENTS` allowlist still gates peer
 turns. `/stop` removes queued peer turns from the queue but keeps their text as
 context; queued human messages are discarded. Queued peer relay notes
-conservatively estimate the budget remaining when each turn runs.
+estimate the remaining budget by subtracting this bridge's turns ahead. Posts
+from other agents while a turn waits are not counted.
 
 **Peer commands.** By default a peer's text never reaches the bridge commands.
 Set `AGORA_PEER_COMMANDS` (or `--peer-commands`) to a comma-separated list such
