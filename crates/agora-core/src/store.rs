@@ -253,6 +253,20 @@ CREATE TABLE IF NOT EXISTS message_templates (
 );
 CREATE INDEX IF NOT EXISTS idx_message_templates_owner
     ON message_templates(username, group_id, created_at, id);
+-- Empty bodies are tombstones: keeping their revision prevents stale clients
+-- from making an older draft appear again after a delete.
+CREATE TABLE IF NOT EXISTS drafts (
+    username TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    thread_id INTEGER NOT NULL DEFAULT 0,
+    body TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}',
+    rev INTEGER NOT NULL DEFAULT 0,
+    client_id TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (username, channel_id, thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(username, updated_at DESC);
 -- Fetched link-preview metadata (see unfurl.rs), keyed by exact URL: one
 -- fetch per URL across all messages. Failures are cached too (ok = 0) so a
 -- dead link is not retried per message; rows expire by fetched_at against
@@ -779,6 +793,7 @@ impl Store {
                 .execute("DELETE FROM groups WHERE id = ?1", params![group_id])
                 .unwrap()
                 > 0;
+            conn.execute("DELETE FROM drafts WHERE channel_id IN (SELECT id FROM channels WHERE group_id = ?1)", params![group_id]).unwrap();
             conn.execute("DELETE FROM channels WHERE group_id = ?1", params![group_id]).unwrap();
             conn.execute("DELETE FROM memberships WHERE group_id = ?1", params![group_id]).unwrap();
             conn.execute("DELETE FROM message_templates WHERE group_id = ?1", params![group_id]).unwrap();
@@ -1273,6 +1288,7 @@ impl Store {
                 .execute("DELETE FROM channels WHERE id = ?1", params![channel_id])
                 .unwrap()
                 > 0;
+            conn.execute("DELETE FROM drafts WHERE channel_id = ?1", params![channel_id]).unwrap();
             delete_thread_reads_for_channel(&conn, channel_id);
             for table in
                 ["messages", "memberships", "pins", "stars", "reactions", "files", "reads", "mentions"]
@@ -1320,6 +1336,8 @@ impl Store {
                 Vec::new()
             } else {
                 let placeholders = vec!["?"; message_ids.len()].join(",");
+                conn.execute(&format!("DELETE FROM drafts WHERE thread_id IN ({placeholders})"),
+                    params_from_iter(message_ids.iter())).unwrap();
                 let ids = {
                     let mut stmt = conn
                         .prepare(&format!(
@@ -1344,7 +1362,7 @@ impl Store {
                 ids
             };
             for table in
-                ["stars", "reads", "thread_reads", "thread_hides", "mentions", "user_prefs", "message_templates"]
+                ["stars", "reads", "thread_reads", "thread_hides", "mentions", "user_prefs", "message_templates", "drafts"]
             {
                 conn.execute(
                     &format!("DELETE FROM {table} WHERE username = ?1"),
@@ -2497,6 +2515,13 @@ impl Store {
                     tx.execute("DELETE FROM thread_reads WHERE thread_id = ?1", params![target_id]).unwrap();
                 }
             }
+            match scope {
+                DeleteScope::Channel => {
+                    tx.execute("DELETE FROM drafts WHERE channel_id=?1 AND thread_id<>0", params![channel_id]).unwrap();
+                }
+                DeleteScope::Message => { tx.execute("DELETE FROM drafts WHERE channel_id=?1 AND thread_id=?2", params![channel_id,target_id]).unwrap(); }
+                DeleteScope::ThreadReplies => {}
+            }
             tx.execute(&format!("DELETE FROM messages WHERE {predicate}"),
                 params![channel_id, target_id]).unwrap();
             tx.commit().unwrap();
@@ -3343,6 +3368,75 @@ impl Store {
             .unwrap().filter_map(Result::ok).collect()
     }
 
+    /// A row is retained on delete so revisions remain monotone for a key.
+    pub fn save_draft(&self, username: &str, channel_id: &str, thread_id: Option<i64>, body: &str, meta: &Value, client_id: &str) -> Value {
+        let conn = self.conn.lock().unwrap();
+        let tid = thread_id.unwrap_or(0);
+        let clean = body.trim();
+        let meta = if clean.is_empty() { json!({}) } else { meta.clone() };
+        conn.execute(
+            "INSERT INTO drafts(username, channel_id, thread_id, body, meta, rev, client_id, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7) \
+             ON CONFLICT(username, channel_id, thread_id) DO UPDATE SET \
+             body=excluded.body, meta=excluded.meta, rev=drafts.rev+1, \
+             client_id=excluded.client_id, updated_at=excluded.updated_at",
+            params![username, channel_id, tid, if clean.is_empty() { "" } else { body }, meta.to_string(), client_id, now()],
+        ).unwrap();
+        let (rev, updated_at): (i64, f64) = conn.query_row(
+            "SELECT rev, updated_at FROM drafts WHERE username=?1 AND channel_id=?2 AND thread_id=?3",
+            params![username, channel_id, tid], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        json!({"channel_id":channel_id,"thread_id":thread_id,"body":if clean.is_empty() { Value::Null } else { json!(body) },
+            "meta":meta,"rev":rev,"client_id":client_id,"updated_at":updated_at})
+    }
+
+    pub fn delete_draft(&self, username: &str, channel_id: &str, thread_id: Option<i64>, if_rev: Option<i64>, client_id: &str) -> Option<Value> {
+        let conn = self.conn.lock().unwrap();
+        let tid = thread_id.unwrap_or(0);
+        let changed = conn.execute(
+            "UPDATE drafts SET body='', meta='{}', rev=rev+1, client_id=?4, updated_at=?5 \
+             WHERE username=?1 AND channel_id=?2 AND thread_id=?3 AND body<>'' AND (?6 IS NULL OR rev<=?6)",
+            params![username, channel_id, tid, client_id, now(), if_rev],
+        ).unwrap();
+        if changed == 0 { return None; }
+        let (rev, updated_at): (i64, f64) = conn.query_row(
+            "SELECT rev, updated_at FROM drafts WHERE username=?1 AND channel_id=?2 AND thread_id=?3",
+            params![username, channel_id, tid], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        Some(json!({"channel_id":channel_id,"thread_id":thread_id,"body":null,
+            "meta":{},"rev":rev,"client_id":client_id,"updated_at":updated_at}))
+    }
+
+    pub fn list_drafts(&self, username: &str, instance_admin: bool) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT d.channel_id,d.thread_id,d.body,d.meta,d.rev,d.client_id,d.updated_at, \
+             c.name,c.group_id,COALESCE(g.name, 'Direct messages'),c.kind, \
+             COALESCE(NULLIF(root.thread_alias,''),substr(root.text,1,140)) \
+             FROM drafts d JOIN channels c ON c.id=d.channel_id \
+             LEFT JOIN groups g ON g.id=c.group_id \
+             LEFT JOIN messages root ON root.id=d.thread_id AND root.channel_id=c.id AND root.thread_id IS NULL \
+             WHERE d.username=?1 AND d.body<>'' AND (d.thread_id=0 OR root.id IS NOT NULL) \
+             AND ((c.kind='agent_dm' AND c.dm_user_id=?1 AND EXISTS (SELECT 1 FROM agents a WHERE a.id=c.dm_agent_id) \
+               AND (?2=1 OR EXISTS (SELECT 1 FROM agent_dm_policies p WHERE p.agent_id=c.dm_agent_id AND p.is_public=1) \
+                 OR EXISTS (SELECT 1 FROM agent_dm_grants x WHERE x.agent_id=c.dm_agent_id AND x.username=?1))) \
+              OR (c.kind<>'agent_dm' AND g.id IS NOT NULL AND (?2=1 OR g.is_public=1 OR EXISTS ( \
+                SELECT 1 FROM memberships m WHERE m.group_id=g.id AND m.member_type='user' AND m.member_id=?1 \
+                  AND (m.channel_id='' OR m.channel_id=c.id))))) \
+             ORDER BY d.updated_at DESC"
+        ).unwrap();
+        stmt.query_map(params![username, instance_admin as i64], |r| {
+            let tid: i64 = r.get(1)?;
+            let kind: String = r.get(10)?;
+            let meta: String = r.get(3)?;
+            Ok(json!({"channel_id":r.get::<_,String>(0)?,"thread_id":if tid==0 { None } else { Some(tid) },
+                "body":r.get::<_,String>(2)?,"meta":serde_json::from_str::<Value>(&meta).unwrap_or_else(|_|json!({})),
+                "rev":r.get::<_,i64>(4)?,"client_id":r.get::<_,String>(5)?,"updated_at":r.get::<_,f64>(6)?,
+                "channel_name":r.get::<_,String>(7)?,"group_id":if kind=="agent_dm" {DM_GROUP_ID.to_string()} else {r.get::<_,String>(8)?},
+                "group_name":r.get::<_,String>(9)?,"thread_title":r.get::<_,Option<String>>(11)?}))
+        }).unwrap().filter_map(Result::ok).collect()
+    }
+
     /// Earliest actionable message in each visible conversation. Visibility is
     /// supplied by the caller; thread hides deliberately do not apply here.
     pub fn pending_approvals(&self, channel_ids: &[String], limit: usize) -> (Vec<Value>, usize, Option<f64>) {
@@ -4162,6 +4256,87 @@ mod tests {
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn drafts_are_private_revisioned_and_scoped_to_postable_channels() {
+        let s = store();
+        s.create_user("ana", "Ana", None, "member").unwrap();
+        s.create_user("bob", "Bob", None, "member").unwrap();
+        let group = s.create_group("Team", "", None);
+        let gid = group["id"].as_str().unwrap();
+        let channel = s.create_channel(gid, "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        s.add_member(gid, "user", "ana", "member", None);
+        let root = s.add_message(cid, "First line\nrest", "user", "ana", None, None, &[]);
+        let tid = root["id"].as_i64().unwrap();
+        s.rename_thread(tid, Some("Named thread"));
+        let first = s.save_draft("ana", cid, Some(tid), "  hello  ", &json!({"addressed":["bot"]}), "a");
+        assert_eq!(first["body"], "  hello  ");
+        let second = s.save_draft("ana", cid, Some(tid), "changed", &json!({"reply_in_thread":true}), "b");
+        assert!(second["rev"].as_i64().unwrap() > first["rev"].as_i64().unwrap());
+        assert!(s.delete_draft("ana", cid, Some(tid), first["rev"].as_i64(), "a").is_none());
+        assert!(s.list_drafts("bob", false).is_empty());
+        s.set_pref_hidden("ana", "group", gid, true);
+        let rows = s.list_drafts("ana", false);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["thread_title"], "Named thread");
+        assert_eq!(rows[0]["body"], "changed");
+        s.remove_member_all(gid, "user", "ana");
+        assert!(s.list_drafts("ana", false).is_empty());
+        s.add_member(gid, "user", "ana", "member", None);
+        let tombstone = s.delete_draft("ana", cid, Some(tid), second["rev"].as_i64(), "a").unwrap();
+        assert!(s.list_drafts("ana", false).is_empty());
+        let restored = s.save_draft("ana", cid, Some(tid), "again", &json!({}), "b");
+        assert!(restored["rev"].as_i64().unwrap() > tombstone["rev"].as_i64().unwrap());
+        s.delete_message(tid);
+        assert!(s.list_drafts("ana", false).is_empty());
+    }
+
+    #[test]
+    fn drafts_clean_up_with_channel_group_and_user() {
+        let s = store();
+        s.create_user("ana", "Ana", None, "member").unwrap();
+        let group = s.create_group("Team", "", None);
+        let gid = group["id"].as_str().unwrap();
+        s.add_member(gid, "user", "ana", "member", None);
+        let c1 = s.create_channel(gid, "one", "");
+        let c2 = s.create_channel(gid, "two", "");
+        let a = c1["id"].as_str().unwrap();
+        let b = c2["id"].as_str().unwrap();
+        s.save_draft("ana", a, None, "one", &json!({}), "a");
+        s.save_draft("ana", b, None, "two", &json!({}), "a");
+        assert_eq!(s.list_drafts("ana", false).len(), 2);
+        s.delete_channel(a);
+        assert_eq!(s.list_drafts("ana", false).len(), 1);
+        s.delete_group(gid);
+        assert!(s.list_drafts("ana", false).is_empty());
+        s.save_draft("ana", "orphan", None, "private", &json!({}), "a");
+        s.delete_user_data("ana");
+        let conn = s.conn.lock().unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM drafts WHERE username='ana'", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn clearing_channel_keeps_channel_drafts_and_removes_thread_drafts() {
+        let s = store();
+        s.create_user("ana", "Ana", None, "member").unwrap();
+        let g = s.create_group("Team", "", None);
+        let c = s.create_channel(g["id"].as_str().unwrap(), "main", "");
+        let cid = c["id"].as_str().unwrap();
+        s.add_member(g["id"].as_str().unwrap(), "user", "ana", "member", None);
+        let first = s.save_draft("ana", cid, None, "before clear", &json!({}), "web");
+        let root = s.add_message(cid, "root", "user", "ana", None, None, &[]);
+        s.save_draft("ana", cid, root["id"].as_i64(), "reply", &json!({}), "web");
+        assert_eq!(s.clear_channel_messages(cid), 1);
+        let kept = s.list_drafts("ana", false);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["body"], "before clear");
+        assert_eq!(kept[0]["rev"], first["rev"]);
+        let next = s.save_draft("ana", cid, None, "after clear", &json!({}), "phone");
+        assert!(next["rev"].as_i64().unwrap() > first["rev"].as_i64().unwrap());
+        assert_eq!(s.clear_channel_messages(cid), 0);
+        assert_eq!(s.list_drafts("ana", false)[0]["body"], "after clear");
     }
 
     #[test]

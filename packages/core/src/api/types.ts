@@ -20,6 +20,7 @@ export interface Me {
   voice_stt?: boolean;
   /** Server exposes the fail-safe transcription-only voice endpoint. */
   voice_transcribe?: boolean;
+  drafts_sync?: boolean;
   /** Text-to-speech Enabled: show speak-aloud. Live voice needs both. */
   voice_tts?: boolean;
   /** Ask AI Enabled (credentials checked when the user asks). */
@@ -664,6 +665,7 @@ export interface MessageClearEvent {
 }
 
 export type WsEvent =
+  | import("../state/drafts").DraftEvent
   | TypingEvent
   | ProgressEvent
   | MessageEvent

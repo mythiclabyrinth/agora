@@ -3,7 +3,7 @@
    audio. One recording at a time across all composers. */
 
 import { create } from "zustand";
-import { threadAddressKey } from "@agora/core";
+import { draftKey, threadAddressKey } from "@agora/core";
 import { recMime, transcribeVoice, uploadVoice, voiceSupported } from "../lib/voice";
 import { toast } from "../lib/toast";
 import { useRequireAgent } from "./requireAgent";
@@ -93,7 +93,7 @@ async function processRecording(session: RecSession, mode: "send" | "draft"): Pr
       const text = await transcribeVoice({
         channelId: session.channelId, threadId: session.threadId, blob,
       });
-      appendDraft(session.key, text);
+      appendDraft(draftKey(session.channelId, session.threadId), text);
     } else {
       await uploadVoice({
         channelId: session.channelId,

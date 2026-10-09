@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-native";
 import React from "react";
-import { fixtureGroups, fixtureThreads } from "@agora/core/testing/fixtures";
+import { fixtureGroups, fixtureThreads, fixtureMe } from "@agora/core/testing/fixtures";
+import { useMessageDrafts } from "@agora/core";
 import InboxScreen from "../../app/(app)/inbox";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useInboxTab } from "../state/inboxTab";
@@ -22,6 +23,8 @@ const meta = {
   component: InboxScreen,
   decorators: [(Story) => <ResetInboxState><Story /></ResetInboxState>],
   parameters: { apiRoutes: {
+    "GET /api/me": { ...fixtureMe, drafts_sync: true },
+    "GET /api/drafts": { items: [], total: 0 },
     "GET /api/groups": { groups: fixtureGroups },
     "GET /api/threads?limit=100": { threads: fixtureThreads },
     "GET /api/unreads": { items: [item, { ...item, kind: "thread", thread_id: 42, title: "Launch planning", mentions: 1 }], total: 2 },
@@ -69,4 +72,15 @@ export const LongThreadTitle: Story = {
     title: "Customer interview synthesis and the decisions we need before the next release",
     unread: 125, mentions: 12,
   }], total: 1 } } },
+};
+
+export const Drafts: Story = {
+  render: () => {
+    useInboxTab.setState({ tab: "drafts" });
+    useMessageDrafts.getState().setRows([{ channel_id: "general", thread_id: 42,
+      body: "I will check the mobile flow", meta: { addressed: ["codex"], reply_in_thread: false },
+      rev: 1, client_id: "phone", updated_at: Date.now() / 1000,
+      channel_name: "general", group_id: "product", group_name: "Product", thread_title: "Launch planning" }]);
+    return <InboxScreen />;
+  },
 };

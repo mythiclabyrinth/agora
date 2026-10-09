@@ -64,7 +64,7 @@ import { toOutgoing, type LocalFile } from "../api/voice";
 import { useKeyboardVisible } from "../lib/keyboard";
 import { typography, weight, composerSizing } from "../lib/theme";
 import { createThemedStyles, useAppTheme } from "../lib/useTheme";
-import { useAddressed, useMessageDrafts } from "@agora/core";
+import { draftSync, useAddressed, useMessageDrafts } from "@agora/core";
 import { usePrefs } from "../state/prefs";
 import { AgentAvatar } from "./AgentAvatar";
 import { Icon } from "./Icon";
@@ -91,7 +91,7 @@ export function appendVoiceTranscript(
     current + (current && !/\s$/.test(current) ? " " : "") + clean;
   if (addressKey) {
     const drafts = useMessageDrafts.getState();
-    drafts.setDraft(addressKey, append(drafts.byConvo[addressKey] ?? ""));
+    draftSync.edit(addressKey, append(drafts.byConvo[addressKey] ?? ""));
   } else {
     setLocal(append);
   }
@@ -216,6 +216,8 @@ export function Composer({
     files: OutgoingFile[];
     replyInThread?: boolean;
     requireAgent?: boolean;
+    draftRev?: number;
+    clientId?: string;
   }) => Promise<void>;
   /** When set (server has voice), a 🎤 button records a voice note and hands
       the file here for the transcribe-and-post upload. `mentions` carries the
@@ -241,11 +243,11 @@ export function Composer({
      than inheriting the test runtime's iOS value captured at module load. */
   const nativePasteInput = Platform.OS === "ios" || Platform.OS === "android";
   const storedText = useMessageDrafts((s) => (addressKey ? s.byConvo[addressKey] ?? "" : undefined));
-  const setStoredText = useMessageDrafts((s) => s.setDraft);
+  const remoteMeta = useMessageDrafts((s) => addressKey ? s.metaByConvo[addressKey] : undefined);
   const [localText, setLocalText] = useState("");
   const text = storedText ?? localText;
   const setText = (next: string) => {
-    if (addressKey) setStoredText(addressKey, next);
+    if (addressKey) draftSync.edit(addressKey, next);
     else setLocalText(next);
   };
   const [files, setFiles] = useState<LocalFile[]>(initialFiles);
@@ -259,6 +261,14 @@ export function Composer({
   const pasteReservations = useRef(0);
   /* "Reply in thread": one message's ask, so it resets after each send. */
   const [replyInThread, setReplyInThread] = useState(false);
+  useEffect(() => {
+    if (remoteMeta) setReplyInThread(remoteMeta.reply_in_thread);
+  }, [remoteMeta, addressKey]);
+  useEffect(() => {
+    if (!addressKey) return;
+    draftSync.setActive(addressKey);
+    return () => { void draftSync.flush(addressKey); };
+  }, [addressKey]);
   /* "Talk to": which agents this conversation addresses. Session-level state
      keyed by addressKey, so it's remembered when you leave and come back;
      their @mentions are prepended on send ("@a, @b, …"), so the server's
@@ -280,7 +290,10 @@ export function Composer({
   );
   const toggleRequireAgent = usePrefs((s) => s.toggleRequireAgent);
   const toggleAddressed = (id: string) => {
-    if (addressKey) toggleAddr(addressKey, id);
+    if (addressKey) {
+      toggleAddr(addressKey, id);
+      draftSync.editMeta(addressKey, { addressed: useAddressed.getState().byConvo[addressKey] ?? [], reply_in_thread: replyInThread });
+    }
   };
   const selection = useRef({ start: 0, end: 0 });
   const hasSelection = useRef(false);
@@ -605,27 +618,55 @@ export function Composer({
   const send = async () => {
     if (pasteOps > 0) return;
     const sentText = text;
+    const sentVersion = addressKey ? draftSync.version(addressKey) : 0;
     const body = text.trim();
     if ((!body || body === "@") && files.length === 0) return;
     const prefix = addressedAgents.map((a) => `@${slugify(a.name)}`).join(", ");
+    const hasFiles = files.length > 0;
     try {
-      await onSend({
+      const sending = onSend({
         text: prefix ? (body ? `${prefix}, ${body}` : prefix) : body,
         files: files.map(toOutgoing),
         replyInThread: threadToggle ? replyInThread : undefined,
         requireAgent: showRequireAgent && requireAgentOn,
+        draftRev: addressKey ? draftSync.prepareSend(addressKey) : undefined,
+        clientId: draftSync.clientId,
       });
+      if (!hasFiles) {
+        if (addressKey) draftSync.clearForSend(addressKey, sentText, sentVersion);
+        else setLocalText("");
+        setReplyInThread(false);
+        if (addressKey && replyInThread) draftSync.editMeta(addressKey, {
+          addressed: useAddressed.getState().byConvo[addressKey] ?? [], reply_in_thread: false,
+        });
+      }
+      await sending;
+      filesRef.current = [];
+      setFiles([]);
+      if (hasFiles) {
+        setReplyInThread(false);
+        if (addressKey && replyInThread) draftSync.editMeta(addressKey, {
+          addressed: useAddressed.getState().byConvo[addressKey] ?? [], reply_in_thread: false,
+        });
+      }
       if (addressKey) {
-        if ((useMessageDrafts.getState().byConvo[addressKey] ?? "") === sentText) {
-          useMessageDrafts.getState().clear(addressKey);
-        }
+        if (hasFiles) draftSync.clearForSend(addressKey, sentText, sentVersion);
+        await draftSync.onSent(addressKey, sentText, sentVersion);
       } else {
         setLocalText((cur) => (cur === sentText ? "" : cur));
       }
-      filesRef.current = [];
-      setFiles([]);
-      setReplyInThread(false);
     } catch (e) {
+      if (!hasFiles) {
+        if (addressKey) draftSync.restoreFailedSend(addressKey, sentText, sentVersion);
+        else setLocalText((cur) => cur || sentText);
+        if (replyInThread) {
+          setReplyInThread(true);
+          if (addressKey) draftSync.editMeta(addressKey, {
+            addressed: useAddressed.getState().byConvo[addressKey] ?? [], reply_in_thread: true,
+          });
+        }
+      }
+      if (addressKey) void draftSync.flush(addressKey);
       toastErr("Send failed", e);
     }
   };
@@ -780,7 +821,7 @@ export function Composer({
             onChangeText={setText}
             onLayout={({ nativeEvent }) => setInputAtMaxHeight(nativeEvent.layout.height >= composerSizing.maxHeight - 1)}
             onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
+            onBlur={() => { setFocused(false); if (addressKey) void draftSync.flush(addressKey); }}
             onSelectionChange={(e) => {
               selection.current = e.nativeEvent.selection;
               hasSelection.current = true;
@@ -874,7 +915,10 @@ export function Composer({
           <View style={{ flex: 1 }} />
           {threadToggle ? (
             <Pressable
-              onPress={() => setReplyInThread((v) => !v)}
+              onPress={() => {
+                setReplyInThread((v) => !v);
+                if (addressKey) draftSync.editMeta(addressKey, { addressed, reply_in_thread: !replyInThread });
+              }}
               hitSlop={8}
               style={styles.toolBtn}
               accessibilityRole="button"
@@ -913,7 +957,10 @@ export function Composer({
               <View style={styles.addrHead}>
                 <Text style={styles.addrTitle}>Talk to</Text>
                 {addressed.length > 0 && addressKey ? (
-                  <Pressable onPress={() => clearAddr(addressKey)} hitSlop={8}>
+                  <Pressable onPress={() => {
+                    clearAddr(addressKey);
+                    draftSync.editMeta(addressKey, { addressed: [], reply_in_thread: replyInThread });
+                  }} hitSlop={8}>
                     <Text style={styles.addrClear}>Clear</Text>
                   </Pressable>
                 ) : null}

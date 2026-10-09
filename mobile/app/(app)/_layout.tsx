@@ -3,9 +3,10 @@
    notification-tap routing plus the unread app badge. */
 
 import React, { useEffect, useMemo, useRef } from "react";
+import { AppState } from "react-native";
 import { Redirect, Stack, router, type Href, usePathname } from "expo-router";
 import * as Notifications from "expo-notifications";
-import { ApiClient, ApiProvider } from "@agora/core";
+import { ApiClient, ApiProvider, DraftSyncGate, draftSync } from "@agora/core";
 import { useSession } from "../../src/state/session";
 import { useAgoraSocket } from "../../src/ws/useAgoraSocket";
 import { emitAgentMessage } from "../../src/lib/agentBus";
@@ -40,6 +41,16 @@ function LiveSocket() {
     emitAgentMessage(m); // speak-aloud / live voice subscribers
     notifyAgentMessage(m);
   });
+  return null;
+}
+
+function DraftBackgroundFlush() {
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", state => {
+      if (state !== "active") draftSync.flushAll();
+    });
+    return () => sub.remove();
+  }, []);
   return null;
 }
 
@@ -126,6 +137,7 @@ export default function AppLayout() {
   return (
     <ApiWrapped session={session}>
       <LiveSocket />
+      <DraftBackgroundFlush />
       <UnreadSync />
       <NotificationTapRouter />
       <StoreReviewHost />
@@ -153,5 +165,5 @@ function ApiWrapped({ session, children }: {
     () => new ApiClient(session),
     [session.baseUrl, session.token], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  return <ApiProvider client={client}>{children}</ApiProvider>;
+  return <ApiProvider client={client}><DraftSyncGate />{children}</ApiProvider>;
 }

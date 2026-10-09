@@ -10,6 +10,7 @@ import {
   useMe, useRenameThread, useReorderChannels, useReorderGroups, useSetGroupHidden,
   useThreads, useUpdateChannel, useChannelReplying, useGroupReplying, useReplyingChannelIds,
   useThreadReplying,
+  useSyncedDrafts,
   type Channel, type Group, type ThreadRow,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
@@ -66,6 +67,7 @@ function channelThreads(threads: ThreadRow[], cid: string): ThreadRow[] {
 }
 
 function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
+  const hasDraft = useSyncedDrafts().some(d => d.channel_id === c.id && d.thread_id === t.root.id);
   const ui = useUiState();
   const hide = useHideThread();
   const rename = useRenameThread();
@@ -113,6 +115,7 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
         }}>
         {armed ? "Sure?" : <Icon name="x" />}
       </button>
+      {hasDraft && <span className="ago-draft-marker" title="Draft in this thread"><Icon name="pencil" /></span>}
     </div>
   );
 }
@@ -120,6 +123,7 @@ function SideThread({ t, g, c }: { t: ThreadRow; g: Group; c: Channel }) {
 export function Sidebar() {
   useShortcutState(s => s.bindings);
   const me = useMe().data;
+  const draftChannels = new Set(useSyncedDrafts().filter(d => d.thread_id == null).map(d => d.channel_id));
   const groups = useGroups().data || [];
   const replyingChannelIds = useReplyingChannelIds();
   const replyingChannels = new Set(replyingChannelIds);
@@ -337,6 +341,7 @@ export function Sidebar() {
                           {chArmed ? "Sure?" : <Icon name="x" />}
                         </button>
                       )}
+                      {draftChannels.has(c.id) && <span className="ago-draft-marker" title="Draft in this channel"><Icon name="pencil" /></span>}
                     </div>
                     {!threadsCollapsed && <div id={`ago-channel-threads-${c.id}`}>
                       {chThreads

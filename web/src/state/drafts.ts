@@ -1,18 +1,10 @@
-import { create } from "zustand";
+import { draftSync, useMessageDrafts } from "@agora/core";
 
-interface DraftState {
-  drafts: Record<string, string>;
-  set: (key: string, text: string) => void;
-}
-
-export const useDrafts = create<DraftState>((set) => ({
-  drafts: {},
-  set: (key, text) => set((state) => ({ drafts: { ...state.drafts, [key]: text } })),
-}));
+export const useDrafts = useMessageDrafts;
 
 export function appendDraft(key: string, text: string): void {
   const clean = text.trim();
   if (!clean) return;
-  const current = useDrafts.getState().drafts[key] ?? "";
-  useDrafts.getState().set(key, current + (current && !/\s$/.test(current) ? " " : "") + clean);
+  const current = useMessageDrafts.getState().byConvo[key] ?? "";
+  draftSync.edit(key, current + (current && !/\s$/.test(current) ? " " : "") + clean);
 }

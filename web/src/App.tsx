@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ApiClient, ApiProvider, resetSeenMessageIds, useAttachmentDrafts, useMe } from "@agora/core";
+import { ApiClient, ApiProvider, DraftSyncGate, draftSync, resetSeenMessageIds, useAddressed, useAttachmentDrafts, useMe } from "@agora/core";
 import { sessionToken, clearJoinToken } from "./lib/auth";
 import { AuthGate } from "./components/AuthGate";
 import { Topbar } from "./components/Topbar";
@@ -55,6 +55,13 @@ export function App() {
   const [token, setToken] = useState(sessionToken());
   const [gateVisible, setGateVisible] = useState(!token);
   const qc = useQueryClient();
+  useEffect(() => {
+    const flush = () => draftSync.flushAll();
+    const hidden = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", hidden);
+    return () => { window.removeEventListener("pagehide", flush); document.removeEventListener("visibilitychange", hidden); };
+  }, []);
 
   const client = useMemo(
     () => new ApiClient({ baseUrl: "", token }),
@@ -65,6 +72,8 @@ export function App() {
     resetSeenMessageIds(qc);
     qc.clear();
     useAttachmentDrafts.getState().reset();
+    draftSync.resetAll();
+    useAddressed.getState().resetAll();
     setToken(sessionToken());
     setGateVisible(false);
   };
@@ -79,8 +88,11 @@ export function App() {
   }
   return (
     <ApiProvider client={client}>
+      <DraftSyncGate />
       <AuthedApp onAuthFailed={() => {
         useAttachmentDrafts.getState().reset();
+        draftSync.resetAll();
+        useAddressed.getState().resetAll();
         setGateVisible(true);
       }} />
     </ApiProvider>

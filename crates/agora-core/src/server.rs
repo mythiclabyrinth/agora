@@ -457,6 +457,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/threads", get(list_threads))
         .route("/api/unreads", get(list_unreads))
         .route("/api/approvals", get(list_approvals))
+        .route("/api/drafts", get(list_drafts).put(put_draft).delete(delete_draft))
         .route("/api/unreads/read", put(mark_unreads_read))
         .route("/api/threads/{thread_id}", patch(update_thread))
         .route("/api/threads/{thread_id}/read", put(mark_thread_read))
@@ -721,6 +722,7 @@ async fn me(
         // Additive capability: older servers omit it, so clients never risk
         // treating their post-only /voice endpoint as draft transcription.
         "voice_transcribe": true,
+        "drafts_sync": true,
         "voice_tts": voice.tts_enabled,
         "search_ai": search.enabled,
         // MapLibre style URL for map artifacts; empty when the operator has
@@ -1761,6 +1763,7 @@ async fn post_message(
         return Err(err(StatusCode::BAD_REQUEST, "Message too long"));
     }
     let thread_id = resolve_thread(&state, &channel_id, payload["thread_id"].as_i64())?;
+    let client_id = payload["client_id"].as_str().filter(|id| id.len() <= 128).unwrap_or("");
     let timezone = client_timezone(payload["timezone"].as_str().unwrap_or(""));
     let reply_in_thread = payload["reply_in_thread"].as_bool().unwrap_or(false);
     let require_agent = payload["require_agent"].as_bool().unwrap_or(false);
@@ -1776,6 +1779,11 @@ async fn post_message(
         reply_in_thread,
         require_agent,
     );
+    if let Some(rev) = payload["draft_rev"].as_i64() {
+        if let Some(draft) = state.hub.store.delete_draft(&user.username, &channel_id, thread_id, Some(rev), client_id) {
+            state.hub.publish_draft(&user.username, &draft);
+        }
+    }
     Ok(Json(message))
 }
 
@@ -1808,6 +1816,8 @@ async fn post_message_upload(
     let mut timezone: Option<String> = None;
     let mut reply_in_thread = false;
     let mut require_agent = false;
+    let mut draft_rev: Option<i64> = None;
+    let mut client_id = String::new();
     let mut attachments: Vec<NewAttachment> = Vec::new();
     let mut uploaded_bytes = 0usize;
     let request_max_bytes = upload_request_max_bytes(&config);
@@ -1834,6 +1844,8 @@ async fn post_message_upload(
             "require_agent" => {
                 require_agent = field.text().await.unwrap_or_default().trim() == "true";
             }
+            "draft_rev" => { draft_rev = field.text().await.unwrap_or_default().parse().ok(); }
+            "client_id" => { client_id = field.text().await.unwrap_or_default(); }
             "files" => {
                 if attachments.len() >= MAX_FILES_PER_MESSAGE {
                     return Err(err(StatusCode::BAD_REQUEST, "Too many files (max 5 per message)"));
@@ -1872,13 +1884,20 @@ async fn post_message_upload(
         return Err(err(StatusCode::BAD_REQUEST, "Message text required"));
     }
     let thread_id = resolve_thread(&state, &channel_id, thread_id)?;
+    if client_id.len() > 128 { client_id.clear(); }
     let hub = Arc::clone(&state.hub);
     let username = user.username.clone();
     let display_name = user.display_name.clone();
+    let post_channel_id = channel_id.clone();
     let message = tokio::task::spawn_blocking(move || hub.post_user_message_opts(
-        &channel_id, &text, &username, Some(&display_name), thread_id, attachments,
+        &post_channel_id, &text, &username, Some(&display_name), thread_id, attachments,
         false, timezone.as_deref(), reply_in_thread, require_agent,
     )).await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Message write failed"))?;
+    if let Some(rev) = draft_rev {
+        if let Some(draft) = state.hub.store.delete_draft(&user.username, &channel_id, thread_id, Some(rev), &client_id) {
+            state.hub.publish_draft(&user.username, &draft);
+        }
+    }
     Ok(Json(message))
 }
 
@@ -2664,6 +2683,58 @@ async fn list_unreads(
         state.hub.store.unread_inbox_page(&user.username, &ids, limit)
     }).await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Unread query failed"))?;
     Ok(Json(json!({"items": items, "total": total})))
+}
+
+async fn list_drafts(
+    State(state): State<AppState>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let store = Arc::clone(&state.hub.store);
+    let rows = tokio::task::spawn_blocking(move || store.list_drafts(&user.username, user.instance_admin))
+        .await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Draft read failed"))?;
+    Ok(Json(json!({"items":rows,"total":rows.len()})))
+}
+
+async fn put_draft(
+    State(state): State<AppState>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channel_id = payload["channel_id"].as_str().ok_or_else(|| err(StatusCode::BAD_REQUEST, "channel_id required"))?;
+    require_channel_postable(&state, &user, channel_id)?;
+    if !payload["thread_id"].is_null() && payload["thread_id"].as_i64().is_none() { return Err(err(StatusCode::BAD_REQUEST, "Invalid thread_id")); }
+    let thread_id = resolve_thread(&state, channel_id, payload["thread_id"].as_i64())?;
+    let body = payload["body"].as_str().ok_or_else(|| err(StatusCode::BAD_REQUEST, "body required"))?;
+    if body.chars().count() > MAX_MESSAGE_CHARS { return Err(err(StatusCode::BAD_REQUEST, "Draft too long")); }
+    let meta = &payload["meta"];
+    let addressed = meta["addressed"].as_array();
+    if !meta.is_null() && (!meta.is_object() || addressed.is_some_and(|a| a.len()>100 || a.iter().any(|v| v.as_str().is_none_or(|s| s.len()>200)))
+        || (!meta["addressed"].is_null() && addressed.is_none()) || (!meta["reply_in_thread"].is_null() && !meta["reply_in_thread"].is_boolean())) {
+        return Err(err(StatusCode::BAD_REQUEST, "Invalid draft settings"));
+    }
+    let meta = if meta.is_null() { json!({}) } else { json!({"addressed":addressed.cloned().unwrap_or_default(),
+        "reply_in_thread":meta["reply_in_thread"].as_bool().unwrap_or(false)}) };
+    let client_id = payload["client_id"].as_str().unwrap_or("");
+    if client_id.len()>128 { return Err(err(StatusCode::BAD_REQUEST, "Invalid client_id")); }
+    let row = state.hub.store.save_draft(&user.username, channel_id, thread_id, body, &meta, client_id);
+    state.hub.publish_draft(&user.username, &row);
+    Ok(Json(row))
+}
+
+async fn delete_draft(
+    State(state): State<AppState>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channel_id = payload["channel_id"].as_str().ok_or_else(|| err(StatusCode::BAD_REQUEST, "channel_id required"))?;
+    require_channel_postable(&state, &user, channel_id)?;
+    if !payload["thread_id"].is_null() && payload["thread_id"].as_i64().is_none() { return Err(err(StatusCode::BAD_REQUEST, "Invalid thread_id")); }
+    let thread_id = resolve_thread(&state, channel_id, payload["thread_id"].as_i64())?;
+    let client_id = payload["client_id"].as_str().unwrap_or("");
+    if client_id.len()>128 { return Err(err(StatusCode::BAD_REQUEST, "Invalid client_id")); }
+    let row = state.hub.store.delete_draft(&user.username, channel_id, thread_id, payload["if_rev"].as_i64(), client_id);
+    if let Some(ref draft) = row { state.hub.publish_draft(&user.username, draft); }
+    Ok(Json(json!({"deleted":row.is_some(),"draft":row})))
 }
 
 async fn list_approvals(
@@ -5652,6 +5723,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn draft_routes_enforce_access_and_clear_only_matching_send_revision() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.create_user("bob", "Bob", None, "member").unwrap();
+        let group = store.create_group("Team", "", None);
+        let gid = group["id"].as_str().unwrap();
+        let channel = store.create_channel(gid, "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        store.add_member(gid, "user", "ana", "member", None);
+        let ana = session_headers(&state, "ana");
+        let bob = session_headers(&state, "bob");
+        let draft = json!({"channel_id":cid,"thread_id":null,"body":"hello","meta":{"addressed":["bot"],"reply_in_thread":true},"client_id":"one"});
+        assert!(put_draft(State(state.clone()), Query(HashMap::new()), bob, Json(draft.clone())).await.is_err());
+        assert!(put_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(json!({"channel_id":cid,"body":"x".repeat(MAX_MESSAGE_CHARS+1)}))).await.is_err());
+        let foreign = store.create_channel(gid, "other", "");
+        let root = store.add_message(foreign["id"].as_str().unwrap(), "root", "user", "ana", None, None, &[]);
+        assert!(put_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(json!({"channel_id":cid,"thread_id":root["id"],"body":"wrong"}))).await.is_err());
+        let first = put_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(draft)).await.unwrap().0;
+        assert_eq!(list_drafts(State(state.clone()), Query(HashMap::new()), ana.clone()).await.unwrap().0["total"], 1);
+        let _ = post_message(State(state.clone()), Path(cid.to_string()), Query(HashMap::new()), ana.clone(), Json(json!({"text":"posted without revision","client_id":"x".repeat(129)}))).await.unwrap();
+        assert_eq!(store.list_drafts("ana", false).len(), 1);
+        let _ = post_message(State(state.clone()), Path(cid.to_string()), Query(HashMap::new()), ana.clone(), Json(json!({"text":"posted","draft_rev":first["rev"]}))).await.unwrap();
+        assert!(store.list_drafts("ana", false).is_empty());
+        assert_eq!(me(State(state), Query(HashMap::new()), ana).await.unwrap().0["drafts_sync"], true);
+    }
+
+    #[tokio::test]
+    async fn draft_delete_permissions_revisions_and_invalid_settings() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.create_user("bob", "Bob", None, "member").unwrap();
+        let group = store.create_group("Team", "", None);
+        let gid = group["id"].as_str().unwrap();
+        let channel = store.create_channel(gid, "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let foreign = store.create_channel(gid, "other", "");
+        let root = store.add_message(foreign["id"].as_str().unwrap(), "root", "user", "ana", None, None, &[]);
+        store.add_member(gid, "user", "ana", "member", None);
+        let ana = session_headers(&state, "ana");
+        let bob = session_headers(&state, "bob");
+        let base = json!({"channel_id":cid,"body":"hello","client_id":"web"});
+        for bad in [
+            json!({"addressed":"bot"}),
+            json!({"addressed":[42]}),
+            json!({"reply_in_thread":"yes"}),
+        ] {
+            let mut payload = base.clone(); payload["meta"] = bad;
+            assert_eq!(put_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(payload)).await.unwrap_err().0, StatusCode::BAD_REQUEST);
+        }
+        let mut payload = base.clone(); payload["client_id"] = json!("x".repeat(129));
+        assert_eq!(put_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(payload)).await.unwrap_err().0, StatusCode::BAD_REQUEST);
+        let first = put_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(base.clone())).await.unwrap().0;
+        let mut newer = base; newer["body"] = json!("newer");
+        let second = put_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(newer)).await.unwrap().0;
+        let delete = json!({"channel_id":cid,"thread_id":null,"if_rev":first["rev"],"client_id":"phone"});
+        assert_eq!(delete_draft(State(state.clone()), Query(HashMap::new()), bob, Json(delete.clone())).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        let mut wrong_thread = delete.clone(); wrong_thread["thread_id"] = root["id"].clone();
+        assert_eq!(delete_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(wrong_thread)).await.unwrap_err().0, StatusCode::NOT_FOUND);
+        assert_eq!(delete_draft(State(state.clone()), Query(HashMap::new()), ana.clone(), Json(delete)).await.unwrap().0["deleted"], false);
+        assert_eq!(store.list_drafts("ana", false)[0]["body"], "newer");
+        let success = json!({"channel_id":cid,"if_rev":second["rev"],"client_id":"phone"});
+        assert_eq!(delete_draft(State(state.clone()), Query(HashMap::new()), ana, Json(success)).await.unwrap().0["deleted"], true);
+        assert!(store.list_drafts("ana", false).is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoked_agent_dm_draft_is_hidden_and_cannot_be_saved() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.upsert_agent("bot", "Bot", "test", false, false, 0);
+        store.set_agent_dm_policy("bot", false, &["ana".to_string()]);
+        let dm = store.open_agent_dm("ana", "bot", "Bot");
+        let cid = dm["id"].as_str().unwrap();
+        let headers = session_headers(&state, "ana");
+        let body = json!({"channel_id":cid,"body":"private draft","meta":{},"client_id":"phone"});
+        let _ = put_draft(State(state.clone()), Query(HashMap::new()), headers.clone(), Json(body.clone())).await.unwrap();
+        assert_eq!(store.list_drafts("ana", false).len(), 1);
+        assert_eq!(store.list_drafts("ana", false)[0]["group_id"], crate::store::DM_GROUP_ID);
+        store.set_agent_dm_policy("bot", false, &[]);
+        assert!(store.list_drafts("ana", false).is_empty());
+        assert!(put_draft(State(state), Query(HashMap::new()), headers, Json(body)).await.is_err());
+    }
+
+    #[tokio::test]
     async fn all_activity_obeys_channel_and_dm_visibility() {
         let (state, _dir) = test_state();
         let store = &state.hub.store;
@@ -7243,6 +7401,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn message_upload_clears_the_matching_draft() {
+        let (state, _dir) = test_state();
+        let group = state.hub.store.create_group("Media", "", None);
+        let channel = state.hub.store.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap();
+        let username = state.config.username();
+        let draft = state.hub.store.save_draft(&username, cid, None, "caption", &json!({}), "web");
+        let boundary = "agora-draft-upload";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\ncaption\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"draft_rev\"\r\n\r\n{}\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"client_id\"\r\n\r\n{}\r\n\
+             --{boundary}--\r\n", draft["rev"], "x".repeat(129)
+        );
+        let token = state.config.snapshot().admin_key;
+        let response = router(state.clone()).oneshot(Request::post(format!("/api/channels/{cid}/messages/upload"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+            .extension(ConnectInfo("127.0.0.1:12345".parse::<SocketAddr>().unwrap()))
+            .body(Body::from(body)).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.hub.store.list_drafts(&username, true).is_empty());
+    }
+
+    #[tokio::test]
     async fn message_upload_accepts_recognized_video_above_the_regular_file_cap() {
         let (state, _dir) = test_state();
         state.config.update(|config| { config.max_file_mb = 1; config.max_video_mb = 2; });
@@ -8139,6 +8322,7 @@ mod tests {
         let c = store.create_channel(gid, "general", "");
         let cid = c["id"].as_str().unwrap().to_string();
         store.add_message(&cid, "keep until admin", "user", "member", None, None, &[]);
+        let draft = store.save_draft("member", &cid, None, "keep my draft", &json!({}), "phone");
         let q = || Query(HashMap::new());
 
         let denied = clear_channel_messages(State(state.clone()), Path(cid.clone()), q(),
@@ -8148,6 +8332,8 @@ mod tests {
         let cleared = clear_channel_messages(State(state.clone()), Path(cid.clone()), q(),
             session_headers(&state, "boss")).await.unwrap();
         assert_eq!(cleared.0["deleted"], 1);
+        assert_eq!(store.list_drafts("member", false)[0]["body"], "keep my draft");
+        assert_eq!(store.list_drafts("member", false)[0]["rev"], draft["rev"]);
         let empty = clear_channel_messages(State(state.clone()), Path(cid), q(),
             session_headers(&state, "boss")).await.unwrap();
         assert_eq!(empty.0["deleted"], 0);

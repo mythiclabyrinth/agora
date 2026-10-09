@@ -430,8 +430,8 @@ export default function ThreadScreen() {
           maxVideoMb={me?.max_video_mb}
           sending={send.isPending}
           requireAgentToggle={!isDm}
-          onSend={async ({ text, files, requireAgent }) => {
-            await send.mutateAsync({ text, threadId: rootId, files, requireAgent });
+          onSend={async ({ text, files, requireAgent, draftRev, clientId }) => {
+            await send.mutateAsync({ text, threadId: rootId, files, requireAgent, draftRev, clientId });
           }}
           onSendVoice={
             sttOk

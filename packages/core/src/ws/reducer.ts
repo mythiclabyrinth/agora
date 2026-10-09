@@ -25,6 +25,7 @@ import type {
 import { keys } from "../api/keys";
 import { mentionsMe } from "../lib/unread";
 import { useLive } from "../state/live";
+import { draftSync } from "../state/draftSync";
 
 export type MessagePages = InfiniteData<Message[], unknown>;
 
@@ -476,6 +477,10 @@ export function applyWsEvent(
   ctx: WsContext,
 ): void {
   switch (ev.type) {
+    case "draft": {
+      draftSync.applyRemote(ev);
+      break;
+    }
     case "agent_usage": {
       const usage = ev as AgentUsageEvent;
       qc.setQueryData<AgentUsageResponse>(keys.agentUsage(usage.agent_id), (old) => ({
@@ -546,6 +551,7 @@ export function applyWsEvent(
       break;
     }
     case "message_delete": {
+      void draftSync.hydrate().catch(() => {});
       refreshApprovals(qc);
       refreshUnreads(qc);
       applyMessageDelete(qc, ev);
@@ -553,6 +559,7 @@ export function applyWsEvent(
       break;
     }
     case "message_clear": {
+      void draftSync.hydrate().catch(() => {});
       refreshApprovals(qc);
       refreshUnreads(qc);
       applyMessageClear(qc, ev);
@@ -580,6 +587,7 @@ export function applyWsEvent(
       break;
     }
     case "thread_renamed": {
+      void draftSync.hydrate().catch(() => {});
       refreshUnreads(qc);
       refreshApprovals(qc);
       qc.setQueryData<ThreadRow[]>(keys.threads, (threads) =>

@@ -1,14 +1,16 @@
 import { useEffect } from "react";
-import { filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useUnreads, type UnreadItem } from "@agora/core";
+import { filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useUnreads, useMe, useSyncedDrafts, type UnreadItem } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useJump } from "../state/jump";
 import { useUiState, type InboxTab } from "../state/ui";
 import { ThreadsInbox } from "./ThreadsInbox";
 import { ApprovalsInbox } from "./ApprovalsInbox";
+import { DraftsInbox } from "./DraftsInbox";
 
 function initialTab(): InboxTab | null {
   if (window.location.pathname === "/inbox/approvals") return "approvals";
   if (window.location.pathname === "/inbox/threads") return "threads";
+  if (window.location.pathname === "/inbox/drafts") return "drafts";
   if (window.location.pathname === "/inbox/unreads") return "unreads";
   return null;
 }
@@ -16,11 +18,14 @@ function initialTab(): InboxTab | null {
 export function Inbox() {
   const unreads = useUnreads();
   const approvals = useApprovals();
+  const drafts = useSyncedDrafts();
+  const draftsEnabled = useMe().data?.drafts_sync === true;
   const markRead = useMarkUnreadsRead();
   const ui = useUiState();
   const requestJump = useJump(s => s.request);
   const filter = ui.inboxFilter;
-  const tab = initialTab() ?? ui.inboxTab;
+  const selectedTab = initialTab() ?? ui.inboxTab;
+  const tab = selectedTab === "drafts" && !draftsEnabled ? "unreads" : selectedTab;
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);
   const unreadTotal = unreads.data?.reduce((sum, item) => sum + item.unread, 0) ?? 0;
@@ -52,9 +57,10 @@ export function Inbox() {
         <button role="tab" aria-selected={tab === "unreads"} onClick={() => switchTab("unreads")}>Unreads {showTabCount && unreadTotal ? `(${unreadTotal})` : ""}</button>
         <button role="tab" aria-selected={tab === "threads"} onClick={() => switchTab("threads")}>Threads</button>
         <button role="tab" aria-selected={tab === "approvals"} onClick={() => switchTab("approvals")}>Approvals{approvals.total ? ` (${approvals.total})` : ""}</button>
+        {draftsEnabled && <button role="tab" aria-selected={tab === "drafts"} onClick={() => switchTab("drafts")}>Drafts{drafts.length ? ` (${drafts.length})` : ""}</button>}
       </nav>
     </header>
-    {tab === "threads" ? <ThreadsInbox embedded /> : tab === "approvals" ? <ApprovalsInbox query={approvals} /> : <div className="ago-inbox-content ago-unreads">
+    {tab === "threads" ? <ThreadsInbox embedded /> : tab === "approvals" ? <ApprovalsInbox query={approvals} /> : tab === "drafts" && draftsEnabled ? <DraftsInbox /> : <div className="ago-inbox-content ago-unreads">
       <div className="ago-unreads-toolbar">
         <div className="ago-unreads-filters" aria-label="Filter unreads">
           {(["all", "mentions", "channels", "threads"] as const).map(option =>

@@ -18,5 +18,6 @@ it("sends the old Threads route to the Threads tab", () => {
 
 it("accepts the Approvals tab parameter", () => {
   expect(inboxTabFromParam("approvals")).toBe("approvals");
+  expect(inboxTabFromParam("drafts")).toBe("drafts");
   expect(inboxTabFromParam("invalid")).toBeNull();
 });

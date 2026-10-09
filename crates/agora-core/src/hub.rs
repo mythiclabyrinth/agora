@@ -1135,6 +1135,12 @@ impl Hub {
         }
     }
 
+    pub fn publish_draft(&self, username: &str, draft: &Value) {
+        let mut event = draft.clone();
+        event["type"] = json!("draft");
+        self.send_to_user(username, &event);
+    }
+
     // ------------------------------------------------------------- reads
 
     pub fn mark_read(&self, username: &str, channel_id: &str, message_id: Option<i64>) -> i64 {
@@ -3019,6 +3025,21 @@ mod tests {
 
     fn hub() -> Hub {
         Hub::new(Arc::new(Store::open_in_memory().unwrap()))
+    }
+
+    #[test]
+    fn draft_events_reach_only_the_owner_sockets() {
+        let h = hub();
+        let (a, mut ar) = unbounded_channel();
+        let (b, mut br) = unbounded_channel();
+        let (other, mut other_rx) = unbounded_channel();
+        h.attach_socket("ana", false, a);
+        h.attach_socket("ana", false, b);
+        h.attach_socket("bob", true, other);
+        h.publish_draft("ana", &json!({"channel_id":"general","body":"hello","rev":1}));
+        assert_eq!(ar.try_recv().unwrap()["type"], "draft");
+        assert_eq!(br.try_recv().unwrap()["body"], "hello");
+        assert!(other_rx.try_recv().is_err());
     }
 
     fn hub_with_streak_reset_agents(ids: &[&str]) -> Hub {

@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   useLive,
+  useMessageDrafts,
   type Group,
   type TypingEvent,
 } from "@agora/core";
@@ -20,6 +21,16 @@ const routes = {
   "GET /api/threads?limit=100": { threads: fixtureThreads },
   "GET /api/unreads": { items: [] },
   "PATCH /api/threads/42": { ok: true },
+};
+
+export const DraftMarkers: StoryObj<typeof Sidebar> = {
+  parameters: { setup: () => {
+    setup();
+    useMessageDrafts.getState().setRows([
+      { channel_id: "general", thread_id: null, body: "Channel draft", meta: { addressed: [], reply_in_thread: false }, rev: 1, client_id: "other", updated_at: Date.now() / 1000, channel_name: "general", group_id: "product", group_name: "Product", thread_title: null },
+      { channel_id: "general", thread_id: 42, body: "Thread draft", meta: { addressed: [], reply_in_thread: false }, rev: 1, client_id: "other", updated_at: Date.now() / 1000, channel_name: "general", group_id: "product", group_name: "Product", thread_title: "Launch planning" },
+    ]);
+  } },
 };
 const groupsWithoutMentions = fixtureGroups.map(group => ({
   ...group,

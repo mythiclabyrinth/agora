@@ -11,6 +11,7 @@ import {
   parseError,
   useAddressed,
   useMessageDrafts,
+  draftSync,
   type Session,
 } from "@agora/core";
 import type { Me } from "@agora/core";
@@ -167,6 +168,7 @@ export const useSession = create<SessionState>((set) => ({
       rememberServer(session.baseUrl),
     ]);
     useMessageDrafts.getState().resetAll();
+    draftSync.resetAll();
     useAddressed.getState().resetAll();
     set({
       status: "signedIn",
@@ -187,6 +189,7 @@ export const useSession = create<SessionState>((set) => ({
     await clearActionRegistration();
     const session = useSession.getState().session;
     useMessageDrafts.getState().resetAll();
+    draftSync.resetAll();
     useAddressed.getState().resetAll();
     useInboxTab.setState({ tab: "unreads", filter: "all" });
     await unregisterPushToken(session);
@@ -213,6 +216,7 @@ export const useSession = create<SessionState>((set) => ({
     await clearActionRegistration();
     const session = useSession.getState().session;
     useMessageDrafts.getState().resetAll();
+    draftSync.resetAll();
     useAddressed.getState().resetAll();
     useInboxTab.setState({ tab: "unreads", filter: "all" });
     await unregisterPushToken(session);

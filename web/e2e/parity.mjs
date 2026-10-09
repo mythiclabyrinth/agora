@@ -168,6 +168,30 @@ async function main() {
     if (stored !== TOKEN) throw new Error("token not in localStorage");
   });
 
+  await check("drafts: two browsers sync, list, send and clear", async () => {
+    const other = await browser.newContext({ viewport: { width: 1400, height: 800 } });
+    const phone = await other.newPage();
+    try {
+      await phone.goto(appUrl(`?token=${TOKEN}`));
+      await phone.waitForSelector("#topbar-me", { timeout: 10000 });
+      await page.locator(`.ago-chan[data-channel-id="${SEED.channel}"]`).first().click();
+      await phone.locator(`.ago-chan[data-channel-id="${SEED.channel}"]`).first().click();
+      const text = `synced draft ${Date.now()}`;
+      await page.fill("#ago-msg", text);
+      await phone.waitForFunction(expected => document.querySelector("#ago-msg")?.value === expected, text, { timeout: 10000 });
+      await phone.locator(".ago-inbox-item", { hasText: "Inbox" }).click();
+      await phone.getByRole("tab", { name: /Drafts/ }).click();
+      await phone.locator(".ago-draft-card", { hasText: text }).waitFor({ timeout: 10000 });
+      await phone.locator(".ago-draft-card", { hasText: text }).locator(".ago-unread-source").click();
+      await phone.waitForFunction(expected => document.querySelector("#ago-msg")?.value === expected, text, { timeout: 10000 });
+      await phone.locator("#ago-msg").press("Enter");
+      await page.waitForFunction(() => document.querySelector("#ago-msg")?.value === "", { timeout: 10000 });
+      await page.locator(".ago-inbox-item", { hasText: "Inbox" }).click();
+      await page.getByRole("tab", { name: /Drafts/ }).click();
+      await page.waitForFunction(expected => !document.querySelector(".ago-drafts-list")?.textContent?.includes(expected), text, { timeout: 10000 });
+    } finally { await other.close(); }
+  });
+
   await check("shortcuts: sheet and Inbox sequences", async () => {
     await page.keyboard.press("ControlOrMeta+/");
     await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor();

@@ -3,7 +3,7 @@
    writes a non-null {} state, and history.state survives a reload of the
    same entry, so a null state means the URL came from outside the app. */
 export function inboxPathAfterReload(pathname: string, navigationType: string | undefined, state: unknown): string | null {
-  return (pathname === "/inbox/threads" || pathname === "/inbox/approvals") && navigationType === "reload" && state !== null ? "/inbox/unreads" : null;
+  return (pathname === "/inbox/threads" || pathname === "/inbox/approvals" || pathname === "/inbox/drafts") && navigationType === "reload" && state !== null ? "/inbox/unreads" : null;
 }
 
 export function resetInboxTabOnReload(): void {

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   applyWsEvent,
+  draftSync,
   chimeAllowed,
   createAgoraSocket,
   initialChimeState,
@@ -55,6 +56,7 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
           // stays put — clear the seen-set so real frames aren't swallowed.
           resetSeenMessageIds(qc);
           void qc.refetchQueries({ type: "active" });
+          void draftSync.hydrate().catch(() => {});
         },
       },
     );
@@ -62,7 +64,7 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
 
     const wake = () => sock.wake();
     const onVis = () => {
-      if (document.visibilityState === "visible") wake();
+      if (document.visibilityState === "visible") { wake(); void draftSync.hydrate().catch(() => {}); }
     };
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("online", wake);

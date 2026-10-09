@@ -5,7 +5,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as FileSystem from "expo-file-system/legacy";
 import { appendVoiceTranscript, Composer, withinUploadLimit } from "../src/components/Composer";
 import { Attachments, VideoAttachment } from "../src/components/Attachments";
-import { useMessageDrafts } from "@agora/core";
+import { draftSync, useMessageDrafts } from "@agora/core";
 
 jest.mock("expo-file-system/legacy", () => ({
   cacheDirectory: "file:///cache/",
@@ -59,10 +59,31 @@ const files = [
 
 beforeEach(() => {
   jest.clearAllMocks();
-  useMessageDrafts.setState({ byConvo: {} });
+  draftSync.resetAll();
   (FileSystem.copyAsync as jest.Mock).mockResolvedValue(undefined);
   (FileSystem.deleteAsync as jest.Mock).mockResolvedValue(undefined);
   (FileSystem.getInfoAsync as jest.Mock).mockResolvedValue({ exists: true, size: 4_096 });
+});
+
+test("remote drafts hydrate the composer without replacing unsent edits", () => {
+  const screen = React.createElement(SafeAreaProvider,
+    { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+    React.createElement(Composer, { placeholder: "Message #test", mentions: [], addressKey: "channel-a", sending: false, onSend: async () => {} }),
+  );
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(screen); });
+  const remote = (body: string, rev: number) => ({
+    type: "draft" as const, channel_id: "channel-a", thread_id: null, body,
+    meta: { addressed: [], reply_in_thread: false }, rev, client_id: "phone",
+    updated_at: 1,
+  });
+  act(() => draftSync.applyRemote(remote("from browser", 1)));
+  expect(tree.root.findByType(TextInput).props.value).toBe("from browser");
+  act(() => tree.root.findByType(TextInput).props.onChangeText("typing here"));
+  act(() => draftSync.applyRemote(remote("newer browser edit", 2)));
+  expect(tree.root.findByType(TextInput).props.value).toBe("typing here");
+  act(() => tree.unmount());
+  draftSync.resetAll();
 });
 
 test("drafts follow in-place conversation changes and restore when returning", () => {
@@ -168,13 +189,17 @@ test("text typed while a send is pending survives when the earlier send complete
       SafeAreaProvider,
       { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
       React.createElement(Composer, {
-        placeholder: "Message #test", mentions: [], addressKey: "channel-a", sending: false, onSend,
+        placeholder: "Message #test", mentions: [], addressKey: "channel-a", sending: false, threadToggle: true, onSend,
       }),
     ));
   });
+  act(() => tree.root.findByType(TextInput).props.onFocus());
+  act(() => labelled(tree.root, "Agents answer this message in a thread under it").props.onPress());
   act(() => tree.root.findByType(TextInput).props.onChangeText("first message"));
   let pending!: Promise<void>;
   act(() => { pending = labelled(tree.root, "Send message").props.onPress(); });
+  expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ replyInThread: true }));
+  expect(labelled(tree.root, "Agents answer this message in a thread under it").props.accessibilityState.selected).toBe(false);
   act(() => tree.root.findByType(TextInput).props.onChangeText("next message"));
   await act(async () => {
     finishSend();
@@ -182,7 +207,55 @@ test("text typed while a send is pending survives when the earlier send complete
   });
 
   expect(useMessageDrafts.getState().byConvo["channel-a"]).toBe("next message");
+  expect(useMessageDrafts.getState().metaByConvo["channel-a"].reply_in_thread).toBe(false);
   expect(tree.root.findByType(TextInput).props.value).toBe("next message");
+  act(() => tree.unmount());
+});
+
+test("failed send keeps the sent text, new typing, and reply-in-thread choice", async () => {
+  let failSend!: (error: Error) => void;
+  const onSend = jest.fn(() => new Promise<void>((_resolve, reject) => { failSend = reject; }));
+  let tree!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    tree = TestRenderer.create(React.createElement(SafeAreaProvider,
+      { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+      React.createElement(Composer, {
+        placeholder: "Message #test", mentions: [], addressKey: "channel-a", sending: false, threadToggle: true, onSend,
+      }),
+    ));
+  });
+  const input = () => tree.root.findByType(TextInput);
+  act(() => input().props.onFocus());
+  act(() => labelled(tree.root, "Agents answer this message in a thread under it").props.onPress());
+  act(() => input().props.onChangeText("first"));
+  let pending!: Promise<void>;
+  act(() => { pending = labelled(tree.root, "Send message").props.onPress(); });
+  act(() => input().props.onChangeText("next"));
+  await act(async () => { failSend(new Error("offline")); await pending; });
+  expect(input().props.value).toBe("first next");
+  expect(labelled(tree.root, "Agents answer this message in a thread under it").props.accessibilityState.selected).toBe(true);
+  expect(useMessageDrafts.getState().metaByConvo["channel-a"].reply_in_thread).toBe(true);
+  act(() => tree.unmount());
+});
+
+test("failed send restores text after typing and erasing during the request", async () => {
+  let failSend!: (error: Error) => void;
+  const onSend = jest.fn(() => new Promise<void>((_resolve, reject) => { failSend = reject; }));
+  let tree!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    tree = TestRenderer.create(React.createElement(SafeAreaProvider,
+      { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+      React.createElement(Composer, { placeholder: "Message #test", mentions: [], addressKey: "channel-a", sending: false, onSend }),
+    ));
+  });
+  const input = () => tree.root.findByType(TextInput);
+  act(() => input().props.onChangeText("hello"));
+  let pending!: Promise<void>;
+  act(() => { pending = labelled(tree.root, "Send message").props.onPress(); });
+  act(() => input().props.onChangeText("x"));
+  act(() => input().props.onChangeText(""));
+  await act(async () => { failSend(new Error("offline")); await pending; });
+  expect(input().props.value).toBe("hello");
   act(() => tree.unmount());
 });
 

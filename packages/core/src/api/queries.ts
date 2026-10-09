@@ -13,6 +13,7 @@ import { keys } from "./keys";
 import { memberRemovalPath, resolveMemberGroupId } from "./memberPaths";
 import { useApi } from "./context";
 import { useLive } from "../state/live";
+import { useMessageDrafts, type DraftRow } from "../state/drafts";
 import {
   appendMessage,
   applyMessageClear,
@@ -59,6 +60,10 @@ import type {
 } from "./types";
 
 const PAGE_SIZE = 50;
+
+export function useSyncedDrafts(): DraftRow[] {
+  return useMessageDrafts(s => s.rows);
+}
 const MAX_FETCHED_PAGE_LENGTHS = 1000;
 const fetchedMessagePageLengths = new WeakMap<object, Map<string, number>>();
 
@@ -447,6 +452,8 @@ export function useSendMessage(channelId: string) {
       replyInThread?: boolean;
       /** Thread sticky: close the agent floor unless someone is @mentioned. */
       requireAgent?: boolean;
+      draftRev?: number;
+      clientId?: string;
     }) => {
       const tz = clientTimezone();
       const askThread = v.replyInThread === true && v.threadId == null;
@@ -458,6 +465,8 @@ export function useSendMessage(channelId: string) {
         if (tz) form.append("timezone", tz);
         if (askThread) form.append("reply_in_thread", "true");
         if (requireAgent) form.append("require_agent", "true");
+        if (v.draftRev !== undefined) form.append("draft_rev", String(v.draftRev));
+        if (v.clientId) form.append("client_id", v.clientId);
         for (const f of v.files) {
           appendFile(form, "files", f);
         }
@@ -473,6 +482,8 @@ export function useSendMessage(channelId: string) {
         ...(tz ? { timezone: tz } : {}),
         ...(askThread ? { reply_in_thread: true } : {}),
         ...(requireAgent ? { require_agent: true } : {}),
+        ...(v.draftRev !== undefined ? { draft_rev: v.draftRev } : {}),
+        ...(v.clientId ? { client_id: v.clientId } : {}),
       });
     },
     onSuccess: (message, v) => {
