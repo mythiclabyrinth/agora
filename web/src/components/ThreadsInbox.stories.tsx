@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { useLive, type TypingEvent } from "@agora/core";
 import {
   fixtureGroups,
   fixtureMe,
@@ -61,6 +62,48 @@ export const UnreadThread: Story = {
     await userEvent.click(canvas.getByText("Can we validate the responsive component layout?"));
     expect(useUiState.getState().threadRoot).toBe(42);
     expect(useUiState.getState().sel).toEqual({ g: "product", c: "general" });
+  },
+};
+
+export const AgentReplying: Story = {
+  parameters: {
+    setup: () => {
+      useUiState.setState({ view: { kind: "inbox" }, mobileView: "main" });
+      const activity: TypingEvent = {
+        type: "typing", channel_id: "general", thread_id: 42,
+        agent_id: "claude", agent_name: "Claude M5", active: true,
+      };
+      useLive.getState().onTyping(activity);
+      useLive.getState().onTyping({ ...activity, agent_id: "codex", agent_name: "Codex" });
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const title = await canvas.findByText("Can we validate the responsive component layout?");
+    const row = title.closest(".ago-inbox-row") as HTMLElement;
+    expect(within(row).getByRole("img", { name: "Claude M5, Codex are replying" })).toBeVisible();
+    expect(within(row).getByText("Claude M5, Codex replying")).toBeVisible();
+    expect(row.querySelector(".ago-inbox-time-stack .ts")).toBeVisible();
+    expect(within(row).getByRole("button", { name: "Thread options" })).toBeVisible();
+  },
+};
+
+export const AgentReplyingInOtherThread: Story = {
+  parameters: {
+    setup: () => {
+      useUiState.setState({ view: { kind: "inbox" }, mobileView: "main" });
+      useLive.getState().onTyping({
+        type: "typing", channel_id: "general", thread_id: 43,
+        agent_id: "claude", agent_name: "Claude M5", active: true,
+      });
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const title = await canvas.findByText("Can we validate the responsive component layout?");
+    const row = title.closest(".ago-inbox-row") as HTMLElement;
+    expect(within(row).queryByRole("img", { name: /replying/ })).not.toBeInTheDocument();
+    expect(within(row).queryByText(/replying/)).not.toBeInTheDocument();
   },
 };
 
@@ -265,15 +308,39 @@ export const ReplyTimeStackOnNarrowScreen: Story = {
     const stack = row.querySelector(".ago-inbox-time-stack");
     const relative = stack?.querySelector(".ts");
     const lastReply = stack?.querySelector(".ago-inbox-last-reply");
-    await expect(relative).toHaveTextContent(/^\d+m$/);
+    await expect(relative).not.toBeVisible();
     await expect(lastReply).toHaveTextContent(/^Last reply at /);
-    expect(lastReply!.getBoundingClientRect().top).toBeGreaterThan(relative!.getBoundingClientRect().top);
+    expect(lastReply).toBeVisible();
     expect(lastReply!.scrollWidth).toBeLessThanOrEqual(lastReply!.clientWidth);
     expect(stack!.getBoundingClientRect().width).toBeLessThanOrEqual(150);
     const rows = [...canvasElement.querySelectorAll<HTMLElement>(".ago-inbox-row")];
     expect(rows).toHaveLength(4);
     const heights = rows.map(item => item.getBoundingClientRect().height);
     expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(2);
+  },
+};
+
+export const NarrowScreenWithoutReplies: Story = {
+  globals: { viewport: { value: "smallPhone", isRotated: false } },
+  parameters: {
+    viewport: { defaultViewport: "smallPhone" },
+    apiRoutes: {
+      "GET /api/me": fixtureMe,
+      "GET /api/groups": { groups: fixtureGroups },
+      "GET /api/threads?limit=100": { threads: [{
+        ...fixtureThreads[0], root: { ...root, ts: now - 300 },
+        reply_count: 0, last_reply_ts: 0,
+      }] },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = (await canvas.findByText("Can we validate the responsive component layout?"))
+      .closest(".ago-inbox-row") as HTMLElement;
+    expect(row.querySelector(".ago-inbox-last-reply")).toBeNull();
+    const relative = row.querySelector(".ago-inbox-time-stack .ts");
+    await expect(relative).toBeVisible();
+    expect(relative).toHaveTextContent(/^\d+m$/);
   },
 };
 
