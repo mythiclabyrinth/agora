@@ -19,6 +19,7 @@ import {
   useUnhideThread,
   useRenameThread,
   useThreads,
+  useSyncedDrafts,
 } from "@agora/core";
 import type { ThreadFilter, ThreadRow, ThreadSort } from "@agora/core";
 import { Icon } from "../../src/components/Icon";
@@ -72,6 +73,7 @@ function Row({
   initialSwipe?: "left" | "right";
 }) {
   const { colors } = useAppTheme();
+  const hasDraft = useSyncedDrafts().some(d => d.channel_id === thread.channel_id && d.thread_id === thread.root.id);
   const styles = useStyles();
   const hideThread = useHideThread();
   const unhideThread = useUnhideThread();
@@ -123,6 +125,7 @@ function Row({
       </View>
       <View style={styles.mid}>
         <Text style={styles.snippet} numberOfLines={1}>{snippet(thread)}</Text>
+        {hasDraft && <Icon icon={Pencil} size={14} color={colors.dim} />}
         <Text style={styles.author} numberOfLines={1}>{thread.root.author_name || thread.root.author_id}</Text>
       </View>
       <ThreadInboxFooter

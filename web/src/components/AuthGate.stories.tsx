@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { AuthGate } from "./AuthGate";
 
-type AuthMode = "admin" | "google" | "admin-hidden" | "invalid";
+type AuthMode = "admin" | "google" | "admin-hidden" | "invalid" | "malformed";
 const signedIn = fn();
 
 function AuthSurface({ mode }: { mode: AuthMode }) {
@@ -19,7 +19,7 @@ function AuthSurface({ mode }: { mode: AuthMode }) {
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (path === "/api/me") {
-      return new Response(modeRef.current === "invalid" ? "unauthorized" : "{}", {
+      return new Response(modeRef.current === "invalid" ? "unauthorized" : modeRef.current === "malformed" ? "not json" : JSON.stringify({ username: "ana" }), {
         status: modeRef.current === "invalid" ? 401 : 200,
       });
     }
@@ -56,7 +56,7 @@ export const AdminKey: Story = {
     const input = await canvas.findByLabelText("Admin key");
     await waitFor(() => expect(input).toHaveFocus());
     await userEvent.type(input, "storybook-token{Enter}");
-    await expect(signedIn).toHaveBeenCalled();
+    await expect(signedIn).toHaveBeenCalledWith("ana");
   },
 };
 
@@ -84,6 +84,18 @@ export const InvalidAdminKey: Story = {
     signedIn.mockClear();
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("Admin key"), "wrong{Enter}");
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByText("That token didn't work")).resolves.toBeVisible();
+    await expect(signedIn).not.toHaveBeenCalled();
+  },
+};
+
+export const MalformedMeResponse: Story = {
+  args: { mode: "malformed" },
+  play: async ({ canvasElement }) => {
+    signedIn.mockClear();
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByLabelText("Admin key"), "token{Enter}");
     const page = within(canvasElement.ownerDocument.body);
     await expect(page.findByText("That token didn't work")).resolves.toBeVisible();
     await expect(signedIn).not.toHaveBeenCalled();

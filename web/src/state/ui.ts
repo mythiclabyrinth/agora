@@ -22,7 +22,7 @@ export type MainView =
 
 export type Panel = "people" | "connections" | "settings" | null;
 export type SettingsTab = "appearance" | "keyboard" | "notifications" | "workspace" | "features" | "credentials";
-export type InboxTab = "unreads" | "threads" | "approvals";
+export type InboxTab = "unreads" | "threads" | "approvals" | "drafts";
 
 export interface Selection { g?: string | null; c?: string | null; }
 

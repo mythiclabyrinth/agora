@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { fixtureGroups, fixtureMe, fixtureThreads } from "@agora/core/testing/fixtures";
-import type { UnreadItem } from "@agora/core";
+import { useMessageDrafts, type DraftRow, type UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
 import { useUiState } from "../state/ui";
 import { inboxPathAfterReload } from "../lib/inboxReload";
@@ -20,17 +20,19 @@ const thread: UnreadItem = {
   mentions: 1, first_unread_id: 46, ack_through_id: 46,
   previews: [{ ...fixtureThreads[0].root, id: 46, text: "@tom could you review?", thread_id: 42 }],
 };
+const draft: DraftRow = { channel_id: "general", thread_id: null, body: "Review before sending", meta: { addressed: [], reply_in_thread: false }, rev: 1, client_id: "other", updated_at: now, channel_name: "general", group_id: "product", group_name: "Product", thread_title: null };
 
 const meta = {
   title: "Web/Connected/Inbox",
   component: Inbox,
   parameters: {
     apiRoutes: {
-      "GET /api/me": fixtureMe,
+      "GET /api/me": { ...fixtureMe, drafts_sync: true },
       "GET /api/groups": { groups: fixtureGroups },
       "GET /api/threads?limit=100": { threads: fixtureThreads },
       "GET /api/unreads": { items: [thread, channel], total: 2 },
       "GET /api/approvals": { items: [], total: 0 },
+      "GET /api/drafts": { items: [draft], total: 1 },
       "PUT /api/unreads/read": { ok: true, marked: 1 },
     },
     setup: () => history.replaceState(null, "", "/inbox/unreads"),
@@ -69,6 +71,23 @@ export const Mentions: Story = {
 };
 export const Threads: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/threads") } };
 export const Approvals: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/approvals") } };
+export const Drafts: Story = { parameters: { setup: () => {
+  useMessageDrafts.getState().setRows([draft]);
+  history.replaceState(null, "", "/inbox/drafts");
+} }, play: async ({ canvasElement }) => {
+  await expect(within(canvasElement).findByRole("tab", { name: "Drafts (1)" })).resolves.toBeVisible();
+} };
+export const DraftsOnOlderServer: Story = {
+  parameters: {
+    apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/me": { ...fixtureMe, drafts_sync: false } },
+    setup: () => history.replaceState(null, "", "/inbox/drafts"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole("tab", { name: /Unreads/ })).resolves.toHaveAttribute("aria-selected", "true");
+    expect(canvas.queryByRole("tab", { name: /Drafts/ })).toBeNull();
+  },
+};
 
 export const RememberedTab: Story = {
   play: async () => {

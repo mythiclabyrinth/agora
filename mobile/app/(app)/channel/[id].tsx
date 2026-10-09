@@ -497,8 +497,8 @@ export default function ChannelScreen() {
           maxVideoMb={me?.max_video_mb}
           sending={send.isPending}
           threadToggle
-          onSend={async ({ text, files, replyInThread }) => {
-            await send.mutateAsync({ text, threadId: null, files, replyInThread });
+          onSend={async ({ text, files, replyInThread, draftRev, clientId }) => {
+            return await send.mutateAsync({ text, threadId: null, files, replyInThread, draftRev, clientId });
           }}
           onSendVoice={
             sttOk

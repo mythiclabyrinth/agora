@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { Composer, useAddressing, useDrafts } from "./Composer";
 import { me, message } from "../stories/fixtures/data";
-import { useAttachmentDrafts } from "@agora/core";
+import { useAddressed, useAttachmentDrafts } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
 import { useVoiceRec } from "../state/voiceRec";
 import { appendDraft } from "../state/drafts";
@@ -82,7 +82,7 @@ export const VoiceTranscriptAppend: Story = {
     const canvas = within(canvasElement);
     const input = canvas.getByRole("textbox");
     await userEvent.type(input, "Typed while transcribing");
-    appendDraft("c:general", " voice result ");
+    appendDraft("general", " voice result ");
     await waitFor(() => expect(input).toHaveValue("Typed while transcribing voice result"));
   },
 };
@@ -101,7 +101,7 @@ function InitiallyHiddenComposer(props: React.ComponentProps<typeof Composer>) {
 
 export const RestoresHeightAfterHiddenMount: Story = {
   parameters: {
-    setup: () => useDrafts.getState().set("c:general", "Hidden draft line one\nHidden draft line two\nHidden draft line three"),
+    setup: () => useDrafts.getState().setDraft("general", "Hidden draft line one\nHidden draft line two\nHidden draft line three"),
   },
   render: args => <InitiallyHiddenComposer {...args} />,
   play: async ({ canvasElement }) => {
@@ -183,12 +183,239 @@ export const WithTemplates: Story = {
     await waitFor(() => expect(input).toHaveValue(`Dra${fixtureTemplates[0].text}ft: `));
 
     // Same textarea, new conversation: the stale caret at 3 must not splice.
-    useDrafts.getState().set("c:random", "Second draft");
+    useDrafts.getState().setDraft("random", "Second draft");
     await userEvent.click(canvas.getByTestId("switch-channel"));
     const next = await canvas.findByPlaceholderText("Message #random") as HTMLTextAreaElement;
     await userEvent.click(canvas.getByTitle("Message templates"));
     await userEvent.click(await canvas.findByText("Daily standup"));
     await waitFor(() => expect(next).toHaveValue(`Second draft${fixtureTemplates[0].text}`));
+  },
+};
+
+let releaseGeneralUpload: ((value: unknown) => void) | undefined;
+const pendingGeneralUpload = fn(() => new Promise(resolve => { releaseGeneralUpload = resolve; }));
+const sendRandom = fn((body: unknown) => ({ ...message, text: (body as { text: string }).text }));
+
+export const SendAfterSwitchWhileUploadPending: Story = {
+  parameters: {
+    setup: () => {
+      stage([new File(["attachment"], "note.txt", { type: "text/plain" })]);
+      pendingGeneralUpload.mockClear();
+      sendRandom.mockClear();
+    },
+    apiRoutes: {
+      ...withTemplateRoutes,
+      "UPLOAD /api/channels/general/messages/upload": pendingGeneralUpload,
+      "POST /api/channels/random/messages": sendRandom,
+    },
+  },
+  render: args => <SwitchableComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByPlaceholderText("Message #general"), "first");
+    await userEvent.click(canvas.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(pendingGeneralUpload).toHaveBeenCalledTimes(1));
+    await userEvent.click(canvas.getByTestId("switch-channel"));
+    await userEvent.type(await canvas.findByPlaceholderText("Message #random"), "second");
+    await userEvent.click(canvas.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(sendRandom).toHaveBeenCalledTimes(1));
+    releaseGeneralUpload?.(message);
+  },
+};
+
+let releaseFirstPlainSend: ((value: unknown) => void) | undefined;
+let plainSendCalls = 0;
+const pendingPlainSend = fn((body: unknown) => {
+  plainSendCalls++;
+  const response = { ...message, text: (body as { text: string }).text };
+  return plainSendCalls === 1
+    ? new Promise(resolve => { releaseFirstPlainSend = resolve; })
+    : response;
+});
+
+export const TwoSendsInSameChannel: Story = {
+  parameters: {
+    setup: () => { plainSendCalls = 0; pendingPlainSend.mockClear(); },
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": pendingPlainSend },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    await userEvent.type(input, "ok{Enter}");
+    await waitFor(() => expect(pendingPlainSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(input).toHaveValue(""));
+    await userEvent.keyboard("{Enter}");
+    expect(pendingPlainSend).toHaveBeenCalledTimes(1);
+    await userEvent.type(input, "thanks{Enter}");
+    await waitFor(() => expect(pendingPlainSend).toHaveBeenCalledTimes(2));
+    expect(pendingPlainSend.mock.calls.map(([body]) => (body as { text: string }).text)).toEqual(["ok", "thanks"]);
+    releaseFirstPlainSend?.(message);
+  },
+};
+
+function ReplyToggleComposer(props: React.ComponentProps<typeof Composer>) {
+  const [replyInThread, setReplyInThread] = useState(false);
+  return <Composer {...props} replyInThread={replyInThread} onSetReplyInThread={setReplyInThread} />;
+}
+
+export const ReplyToggleResetsBeforeSecondSend: Story = {
+  parameters: {
+    setup: () => { plainSendCalls = 0; pendingPlainSend.mockClear(); },
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": pendingPlainSend },
+  },
+  render: args => <ReplyToggleComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveClass("active"));
+    await userEvent.type(input, "q1{Enter}");
+    await waitFor(() => expect(pendingPlainSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).not.toHaveClass("active"));
+    await userEvent.type(input, "q2{Enter}");
+    await waitFor(() => expect(pendingPlainSend).toHaveBeenCalledTimes(2));
+    expect(pendingPlainSend.mock.calls[0][0]).toMatchObject({ text: "q1", reply_in_thread: true });
+    expect(pendingPlainSend.mock.calls[1][0]).not.toHaveProperty("reply_in_thread");
+    releaseFirstPlainSend?.(message);
+  },
+};
+
+export const ReplyToggleResetsAfterPendingSend: Story = {
+  parameters: {
+    setup: () => { plainSendCalls = 0; pendingPlainSend.mockClear(); },
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": pendingPlainSend },
+  },
+  render: args => <ReplyToggleComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(input, "q1{Enter}");
+    await waitFor(() => expect(pendingPlainSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).not.toHaveClass("active"));
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveClass("active"));
+    releaseFirstPlainSend?.(message);
+    await waitFor(() => expect(useDrafts.getState().metaByConvo.general.reply_in_thread).toBe(false));
+    expect(toggle).not.toHaveClass("active");
+  },
+};
+
+const failedReplySend = fn(async () => { throw new Error("offline"); });
+
+export const FailedReplySendRestoresToggle: Story = {
+  parameters: {
+    setup: () => failedReplySend.mockClear(),
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": failedReplySend },
+  },
+  render: args => <ReplyToggleComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(input, "hello{Enter}");
+    await waitFor(() => expect(failedReplySend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).toHaveClass("active"));
+    await expect(input).toHaveValue("hello");
+    expect(useDrafts.getState().metaByConvo.general.reply_in_thread).toBe(true);
+  },
+};
+
+let rejectSwitchedSend: ((reason: Error) => void) | undefined;
+const failedAfterSwitch = fn(() => new Promise((_resolve, reject) => { rejectSwitchedSend = reject; }));
+function SwitchableReplyComposer(props: React.ComponentProps<typeof Composer>) {
+  const [channel, setChannel] = useState("general");
+  const [replyInThread, setReplyInThread] = useState(false);
+  return <><button data-testid="switch-channel" onClick={() => setChannel("random")}>switch channel</button>
+    <Composer {...props} channelId={channel} channelName={channel}
+      replyInThread={replyInThread} onSetReplyInThread={setReplyInThread} /></>;
+}
+
+export const FailedReplySendAfterChannelSwitch: Story = {
+  parameters: {
+    setup: () => failedAfterSwitch.mockClear(),
+    apiRoutes: { ...withTemplateRoutes, "POST /api/channels/general/messages": failedAfterSwitch },
+  },
+  render: args => <SwitchableReplyComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(canvas.getByPlaceholderText("Message #general"), "hello{Enter}");
+    await waitFor(() => expect(failedAfterSwitch).toHaveBeenCalledTimes(1));
+    await userEvent.click(canvas.getByTestId("switch-channel"));
+    await waitFor(() => expect(toggle).not.toHaveClass("active"));
+    rejectSwitchedSend?.(new Error("offline"));
+    await waitFor(() => expect(useDrafts.getState().byConvo.general).toBe("hello"));
+    expect(toggle).not.toHaveClass("active");
+  },
+};
+
+export const ReplyToggleStaysOnWhenTypingAfterSwitch: Story = {
+  render: args => <SwitchableReplyComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("switch-channel"));
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveClass("active"));
+    await userEvent.type(canvas.getByPlaceholderText("Message #random"), "keep this setting");
+    expect(toggle).toHaveClass("active");
+  },
+};
+
+let rejectCaptionUpload: ((reason: Error) => void) | undefined;
+const failingCaptionUpload = fn(() => new Promise((_resolve, reject) => { rejectCaptionUpload = reject; }));
+
+export const FailedUploadKeepsCaption: Story = {
+  parameters: {
+    setup: () => {
+      stage([new File(["image"], "photo.png", { type: "image/png" })]);
+      failingCaptionUpload.mockClear();
+    },
+    apiRoutes: { ...withTemplateRoutes, "UPLOAD /api/channels/general/messages/upload": failingCaptionUpload },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    await userEvent.type(input, "look at this");
+    await userEvent.click(canvas.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(failingCaptionUpload).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { value: "final cut" } });
+    rejectCaptionUpload?.(new Error("upload cancelled"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await waitFor(() => expect(input).toHaveValue("final cut"));
+  },
+};
+
+let releaseReplyUpload: ((value: unknown) => void) | undefined;
+const pendingReplyUpload = fn(() => new Promise(resolve => { releaseReplyUpload = resolve; }));
+
+export const ReplyToggleResetsAfterUploadWithTyping: Story = {
+  parameters: {
+    setup: () => {
+      stage([new File(["image"], "photo.png", { type: "image/png" })]);
+      pendingReplyUpload.mockClear();
+    },
+    apiRoutes: { ...withTemplateRoutes, "UPLOAD /api/channels/general/messages/upload": pendingReplyUpload },
+  },
+  render: args => <ReplyToggleComposer {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByPlaceholderText("Message #general");
+    const toggle = canvas.getByTitle("Agents answer this message in a thread under it");
+    await userEvent.click(toggle);
+    await userEvent.type(input, "see attached");
+    await userEvent.click(canvas.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(pendingReplyUpload).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { value: "follow-up" } });
+    releaseReplyUpload?.(message);
+    await waitFor(() => expect(toggle).not.toHaveClass("active"));
+    await waitFor(() => expect(useDrafts.getState().metaByConvo.general.reply_in_thread).toBe(false));
+    expect(input).toHaveValue("follow-up");
   },
 };
 
@@ -422,7 +649,7 @@ export const AddressingWithVoiceRecording: Story = {
       },
     },
     setup: () => {
-      useAddressing.setState({ addr: { "c:general": ["codex", "claude"] } });
+      useAddressed.getState().replace("general", ["codex", "claude"]);
       useVoiceRec.setState({
         recordingKey: "c:general",
         startedAt: Date.now() - 12_000,
@@ -493,7 +720,7 @@ export const ThreadVoiceRecordingAt360: Story = {
   parameters: {
     ...AddressingWithVoiceRecording.parameters,
     setup: () => {
-      useAddressing.setState({ addr: { "t:42": ["codex", "claude"] } });
+      useAddressed.getState().replace("general:t42", ["codex", "claude"]);
       useVoiceRec.setState({
         recordingKey: "t:42",
         startedAt: Date.now() - 12_000,

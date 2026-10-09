@@ -1,13 +1,13 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { ScrollView, StyleSheet } from "react-native";
+import { ScrollView, StyleSheet, Text } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import { useApprovals, useMarkUnreadsRead, useUnreads } from "@agora/core";
+import { useApprovals, useMarkUnreadsRead, useMe, useSyncedDrafts, useUnreads } from "@agora/core";
 import InboxScreen from "../app/(app)/inbox";
 import { useInboxTab } from "../src/state/inboxTab";
 
 jest.mock("@agora/core", () => ({
-  ...jest.requireActual("@agora/core"), useUnreads: jest.fn(), useApprovals: jest.fn(), useMarkUnreadsRead: jest.fn(),
+  ...jest.requireActual("@agora/core"), useUnreads: jest.fn(), useApprovals: jest.fn(), useMarkUnreadsRead: jest.fn(), useMe: jest.fn(), useSyncedDrafts: jest.fn(),
 }));
 jest.mock("expo-router", () => ({ Stack: { Screen: () => null }, router: { push: jest.fn() }, useLocalSearchParams: jest.fn() }));
 jest.mock("../app/(app)/threads", () => ({ ThreadsScreen: () => null }));
@@ -29,6 +29,8 @@ beforeEach(() => {
   (useUnreads as jest.Mock).mockReturnValue(query);
   (useApprovals as jest.Mock).mockReturnValue({ data: [], total: 0, isLoading: false, isError: false, refetch: jest.fn() });
   (useMarkUnreadsRead as jest.Mock).mockReturnValue({ mutate, isPending: false });
+  (useMe as jest.Mock).mockReturnValue({ data: { drafts_sync: true } });
+  (useSyncedDrafts as jest.Mock).mockReturnValue([]);
   (useLocalSearchParams as jest.Mock).mockReturnValue({});
 });
 afterEach(() => act(() => tree?.unmount()));
@@ -87,6 +89,34 @@ test("Approvals is selectable and remembers its tab", () => {
   act(() => tree.unmount());
   render();
   expect(tabs().find((node) => node.props.accessibilityLabel === "Approvals")!.props.accessibilityState.selected).toBe(true);
+});
+
+test("Drafts is the fourth tab and shows its count", () => {
+  (useSyncedDrafts as jest.Mock).mockReturnValue([{ channel_id: "general", thread_id: null, body: "hello" }]);
+  render();
+  expect(tabs()).toHaveLength(4);
+  act(() => tabs().find((node) => node.props.accessibilityLabel === "Drafts, 1")!.props.onPress());
+  expect(useInboxTab.getState().tab).toBe("drafts");
+  const tabStrip = tree.root.findAllByType(ScrollView).find(node => node.props.accessibilityRole === "tablist");
+  expect(tabStrip?.props.horizontal).toBe(true);
+  expect(StyleSheet.flatten(tabStrip?.props.contentContainerStyle)).toMatchObject({ flexGrow: 1 });
+  expect(StyleSheet.flatten(tabs()[0].props.style)).toMatchObject({ flexGrow: 1 });
+  const draftLabel = tree.root.findAllByType(Text).find(node => node.props.children === "Drafts (1)");
+  expect(draftLabel?.props.maxFontSizeMultiplier).toBeUndefined();
+  expect(draftLabel?.props.numberOfLines).toBeUndefined();
+});
+
+test("empty Drafts tab omits a zero from its accessibility label", () => {
+  render();
+  expect(tabs().find((node) => node.props.accessibilityLabel === "Drafts")).toBeDefined();
+});
+
+test("remembered Drafts falls back to Unreads until draft sync is available", () => {
+  useInboxTab.setState({ tab: "drafts" });
+  (useMe as jest.Mock).mockReturnValue({ data: undefined });
+  render();
+  expect(tabs()).toHaveLength(3);
+  expect(tabs()[0].props.accessibilityState.selected).toBe(true);
 });
 
 test("mark read targets the current filter and retains an accessible 44 point action", () => {

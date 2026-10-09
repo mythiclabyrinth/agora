@@ -26,6 +26,7 @@ import {
   MessagesSquare,
   ArrowUpRight,
   Hash,
+  Pencil,
 } from "lucide-react-native";
 import {
   useCreateChannel,
@@ -38,6 +39,7 @@ import {
   useOpenAgentDm,
   useSetGroupHidden,
   useThreads,
+  useSyncedDrafts,
   useUpdateChannel,
 } from "@agora/core";
 import type { Channel, Group } from "@agora/core";
@@ -116,6 +118,7 @@ function InlineCreate({
 }
 
 function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
+  const hasDraft = useSyncedDrafts().some(d => d.channel_id === channel.id && d.thread_id == null);
   const { colors } = useAppTheme();
   const styles = useStyles();
   const [managing, setManaging] = useState(false);
@@ -201,6 +204,7 @@ function ChannelRow({ group, channel }: { group: Group; channel: Channel }) {
           {channel.topic ? <Text style={styles.channelTopic} numberOfLines={1}>{channel.topic}</Text> : null}
         </View>
         <UnreadBadge count={channel.unread ?? 0} mentions={channel.mentions ?? 0} />
+        {hasDraft && <Icon icon={Pencil} size={15} color={colors.dim} />}
       </Pressable>
       {managing && editing ? (
         <InlineCreate
@@ -358,6 +362,7 @@ export function GroupCard({ group, unreadsOnly }: { group: Group; unreadsOnly: b
 }
 
 export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { group: Group; unreadsOnly: boolean; initialChoosing?: boolean }) {
+  const draftChannels = new Set(useSyncedDrafts().filter(d => d.thread_id == null).map(d => d.channel_id));
   const { colors } = useAppTheme();
   const styles = useStyles();
   const [choosing, setChoosing] = useState(initialChoosing);
@@ -427,6 +432,7 @@ export function DmGroupCard({ group, unreadsOnly, initialChoosing = false }: { g
         })}>
           <Text maxFontSizeMultiplier={1.3} style={styles.hash}>↔</Text><Text maxFontSizeMultiplier={1.5} style={[styles.channelName, (channel.unread ?? 0) > 0 && styles.channelUnread]}>{channel.name}</Text>
           <UnreadBadge count={channel.unread ?? 0} mentions={channel.mentions ?? 0} />
+          {draftChannels.has(channel.id) && <Icon icon={Pencil} size={15} color={colors.dim} />}
         </Pressable>
       ))}
     </View>

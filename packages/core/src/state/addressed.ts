@@ -8,12 +8,15 @@ import { create } from "zustand";
 interface AddressedState {
   byConvo: Record<string, string[]>;
   toggle: (key: string, agentId: string) => void;
+  replace: (key: string, ids: string[]) => void;
   clear: (key: string) => void;
   resetAll: () => void;
 }
 
 export const useAddressed = create<AddressedState>((set) => ({
   byConvo: {},
+
+  replace: (key, ids) => set(s => ({ byConvo: { ...s.byConvo, [key]: ids } })),
 
   toggle: (key, agentId) =>
     set((s) => {

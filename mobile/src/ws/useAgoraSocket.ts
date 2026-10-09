@@ -7,6 +7,7 @@ import { AppState } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   applyWsEvent,
+  draftSync,
   createAgoraSocket,
   resetSeenMessageIds,
   wsUrl,
@@ -45,13 +46,15 @@ export function useAgoraSocket(
           // stay put — clear the seen-set so real frames aren't swallowed.
           resetSeenMessageIds(qc);
           void qc.refetchQueries({ type: "active" });
+          draftSync.flushAll();
+          void draftSync.hydrate().catch(() => {});
         },
       },
     );
     sock.connect();
 
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") sock.wake();
+      if (state === "active") { sock.wake(); draftSync.flushAll(); void draftSync.hydrate().catch(() => {}); }
     });
 
     return () => {

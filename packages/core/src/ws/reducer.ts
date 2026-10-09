@@ -25,6 +25,8 @@ import type {
 import { keys } from "../api/keys";
 import { mentionsMe } from "../lib/unread";
 import { useLive } from "../state/live";
+import { draftSync } from "../state/draftSync";
+import { useMessageDrafts } from "../state/drafts";
 
 export type MessagePages = InfiniteData<Message[], unknown>;
 
@@ -476,6 +478,18 @@ export function applyWsEvent(
   ctx: WsContext,
 ): void {
   switch (ev.type) {
+    case "draft": {
+      draftSync.applyRemote(ev);
+      break;
+    }
+    case "drafts_refresh": {
+      draftSync.retryForbidden();
+      if (ev.force || useMessageDrafts.getState().rows.some(row =>
+        (ev.channel_id != null && row.channel_id === ev.channel_id) ||
+        (ev.group_id != null && row.group_id === ev.group_id)))
+        void draftSync.hydrate(!!ev.force).catch(() => {});
+      break;
+    }
     case "agent_usage": {
       const usage = ev as AgentUsageEvent;
       qc.setQueryData<AgentUsageResponse>(keys.agentUsage(usage.agent_id), (old) => ({
@@ -546,6 +560,8 @@ export function applyWsEvent(
       break;
     }
     case "message_delete": {
+      if (useMessageDrafts.getState().rows.some(row => row.channel_id === ev.channel_id))
+        void draftSync.hydrate().catch(() => {});
       refreshApprovals(qc);
       refreshUnreads(qc);
       applyMessageDelete(qc, ev);
@@ -553,6 +569,8 @@ export function applyWsEvent(
       break;
     }
     case "message_clear": {
+      if (useMessageDrafts.getState().rows.some(row => row.channel_id === ev.channel_id))
+        void draftSync.hydrate().catch(() => {});
       refreshApprovals(qc);
       refreshUnreads(qc);
       applyMessageClear(qc, ev);
@@ -580,6 +598,8 @@ export function applyWsEvent(
       break;
     }
     case "thread_renamed": {
+      if (useMessageDrafts.getState().rows.some(row => row.channel_id === ev.channel_id && row.thread_id === ev.thread_id))
+        void draftSync.hydrate().catch(() => {});
       refreshUnreads(qc);
       refreshApprovals(qc);
       qc.setQueryData<ThreadRow[]>(keys.threads, (threads) =>

@@ -10,7 +10,9 @@ import {
   originOf,
   parseError,
   useAddressed,
-  useMessageDrafts,
+  draftSync,
+  draftIdentityChanged,
+  type DraftIdentity,
   type Session,
 } from "@agora/core";
 import type { Me } from "@agora/core";
@@ -47,9 +49,12 @@ interface SessionState {
       should ask for credentials again, not for the server address), cleared
       only by forgetServer. */
   savedUrl: string;
+  draftIdentity: DraftIdentity | null;
+  rememberDraftIdentity: (server: string, username: string) => void;
   load: () => Promise<void>;
   signIn: (serverUrl: string, token: string) => Promise<void>;
   signOut: () => Promise<void>;
+  expireSession: () => Promise<void>;
   /** Sign out AND drop the stored server URL (switching instances). */
   forgetServer: () => Promise<void>;
 }
@@ -66,6 +71,12 @@ export const useSession = create<SessionState>((set) => ({
   transcribeOk: false,
   ttsOk: false,
   savedUrl: "",
+  draftIdentity: null,
+
+  rememberDraftIdentity(server, username) {
+    if (!useSession.getState().draftIdentity && username)
+      set({ draftIdentity: { server, username }, username });
+  },
 
   async load() {
     const started = registrationEpoch();
@@ -105,7 +116,7 @@ export const useSession = create<SessionState>((set) => ({
       .then(async (res) => {
         if (started !== registrationEpoch()) return;
         if (res.status === 401) {
-          void useSession.getState().signOut();
+          void useSession.getState().expireSession();
           return;
         }
         if (!res.ok) return;
@@ -119,6 +130,7 @@ export const useSession = create<SessionState>((set) => ({
         }
         set({
           username: me.username,
+          draftIdentity: { server: canonical, username: me.username },
           displayName: me.display_name || me.username,
           instanceAdmin: !!me.instance_admin,
           instanceAdminKnown: true,
@@ -166,12 +178,17 @@ export const useSession = create<SessionState>((set) => ({
       // signOut/forgetServer on purpose.
       rememberServer(session.baseUrl),
     ]);
-    useMessageDrafts.getState().resetAll();
-    useAddressed.getState().resetAll();
+    const nextIdentity = { server: session.baseUrl, username: me.username };
+    const previousIdentity = useSession.getState().draftIdentity;
+    if (!previousIdentity || draftIdentityChanged(previousIdentity, nextIdentity)) {
+      draftSync.resetAll();
+      useAddressed.getState().resetAll();
+    }
     set({
       status: "signedIn",
       session,
       username: me.username,
+      draftIdentity: nextIdentity,
       displayName: me.display_name || me.username,
       instanceAdmin: !!me.instance_admin,
       instanceAdminKnown: true,
@@ -186,11 +203,36 @@ export const useSession = create<SessionState>((set) => ({
   async signOut() {
     await clearActionRegistration();
     const session = useSession.getState().session;
-    useMessageDrafts.getState().resetAll();
+    draftSync.resetAll();
     useAddressed.getState().resetAll();
     useInboxTab.setState({ tab: "unreads", filter: "all" });
     await unregisterPushToken(session);
     // Keep KEY_URL: the login screen should only ask for credentials again.
+    await Promise.all([
+      deleteCredential(KEY_TOKEN),
+      SecureStore.deleteItemAsync(KEY_INSTANCE_ADMIN),
+    ]);
+    set({
+      status: "signedOut",
+      session: null,
+      username: "",
+      draftIdentity: null,
+      displayName: "",
+      instanceAdmin: false,
+      instanceAdminKnown: false,
+      voiceOk: false,
+      sttOk: false,
+      transcribeOk: false,
+      ttsOk: false,
+    });
+  },
+
+  async expireSession() {
+    if (useSession.getState().status !== "signedIn") return;
+    await clearActionRegistration();
+    useInboxTab.setState({ tab: "unreads", filter: "all" });
+    const current = useSession.getState();
+    await unregisterPushToken(current.session);
     await Promise.all([
       deleteCredential(KEY_TOKEN),
       SecureStore.deleteItemAsync(KEY_INSTANCE_ADMIN),
@@ -212,7 +254,7 @@ export const useSession = create<SessionState>((set) => ({
   async forgetServer() {
     await clearActionRegistration();
     const session = useSession.getState().session;
-    useMessageDrafts.getState().resetAll();
+    draftSync.resetAll();
     useAddressed.getState().resetAll();
     useInboxTab.setState({ tab: "unreads", filter: "all" });
     await unregisterPushToken(session);
@@ -225,6 +267,7 @@ export const useSession = create<SessionState>((set) => ({
       status: "signedOut",
       session: null,
       username: "",
+      draftIdentity: null,
       displayName: "",
       instanceAdmin: false,
       instanceAdminKnown: false,
@@ -241,5 +284,5 @@ export const useSession = create<SessionState>((set) => ({
    mounted in app/(app)/_layout.tsx with a client memoized on the session. */
 
 export function onUnauthorized() {
-  void useSession.getState().signOut();
+  void useSession.getState().expireSession();
 }

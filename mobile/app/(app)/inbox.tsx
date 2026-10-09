@@ -3,12 +3,12 @@ import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
 import React from "react";
 import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { Stack, router, useLocalSearchParams } from "expo-router";
-import { Check, CheckCheck, Hash, MessageSquare } from "lucide-react-native";
-import { filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useUnreads, type ApprovalItem, type UnreadItem } from "@agora/core";
+import { Check, CheckCheck, Hash, MessageSquare, Trash2 } from "lucide-react-native";
+import { draftKey, draftSync, filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useMe, useMessageDrafts, useSyncedDrafts, useUnreads, type ApprovalItem, type DraftRow, type UnreadItem } from "@agora/core";
 import { EmptyState } from "../../src/components/EmptyState";
 import { colors, typography, space, radii, weight, type Palette } from "../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
-import { toastErr } from "../../src/components/Toast";
+import { toast, toastErr } from "../../src/components/Toast";
 import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } from "../../src/components/SwipeRow";
 import { ThreadsScreen } from "./threads";
 import { Icon } from "../../src/components/Icon";
@@ -64,7 +64,36 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
 }
 
 export function inboxTabFromParam(value: string | undefined): InboxTab | null {
-  return value === "threads" || value === "unreads" || value === "approvals" ? value : null;
+  return value === "threads" || value === "unreads" || value === "approvals" || value === "drafts" ? value : null;
+}
+
+export function DraftInboxRow({ item, controller }: { item: DraftRow; controller: SwipeRowController }) {
+  const { colors } = useAppTheme();
+  const styles = useStyles();
+  const open = () => {
+    if (item.thread_id != null) router.push({ pathname: "/(app)/thread/[channelId]/[rootId]", params: {
+      channelId: item.channel_id, rootId: String(item.thread_id), groupId: item.group_id, channelName: item.channel_name,
+    } });
+    else router.push({ pathname: "/(app)/channel/[id]", params: { id: item.channel_id, groupId: item.group_id } });
+  };
+  return <SwipeRow style={styles.card} onPress={open} controller={controller}
+    accessibilityLabel={`Draft in ${item.channel_name}`}
+    swipeLeft={{ name: "discard", label: "Discard", icon: Trash2, color: colors.red,
+      onPress: () => { void draftSync.discard(draftKey(item.channel_id, item.thread_id), item.rev)
+        .then(deleted => {
+          if (!deleted && useMessageDrafts.getState().rows.some(row =>
+            draftKey(row.channel_id, row.thread_id) === draftKey(item.channel_id, item.thread_id)))
+            toast("Draft changed on another device", "warn");
+        })
+        .catch(e => toastErr("Discard failed", e)); } }}>
+    <View style={styles.cardTop}>
+      <View style={styles.sourceIcon}><Icon icon={item.thread_id == null ? Hash : MessageSquare} size={18} color={colors.accentText} /></View>
+      <View style={styles.sourceCopy}><Text style={styles.sourceGroup} numberOfLines={1}>{item.group_name}</Text>
+        <Text style={styles.source} numberOfLines={1}>{item.thread_id != null ? `↳ ${item.thread_title || "Thread"} in ` : ""}{item.channel_name}</Text></View>
+      <Text style={styles.time}>{fmtRelative(item.updated_at)}</Text>
+    </View>
+    <Text style={styles.preview} numberOfLines={2}>{previewText(item.body)}</Text>
+  </SwipeRow>;
 }
 
 export function ApprovalRow({ item }: { item: ApprovalItem }) {
@@ -110,9 +139,14 @@ export default function InboxScreen({ initialSwipe }: {
   const setFilter = useInboxTab(state => state.setFilter);
   const unreads = useUnreads();
   const approvals = useApprovals();
+  const drafts = useSyncedDrafts();
+  const draftsLoading = useMessageDrafts(s => s.loading);
+  const draftsError = useMessageDrafts(s => s.loadError);
+  const draftsEnabled = useMe().data?.drafts_sync === true;
   const markRead = useMarkUnreadsRead();
   const swipeRows = useSwipeRows();
-  const tab = rememberedTab;
+  const tab = rememberedTab === "drafts" && !draftsEnabled ? "unreads" : rememberedTab;
+  React.useEffect(() => { if (tab === "drafts") void draftSync.hydrate().catch(() => {}); }, [tab]);
   React.useEffect(() => {
     const next = inboxTabFromParam(routeTab);
     if (next) setRememberedTab(next);
@@ -125,18 +159,25 @@ export default function InboxScreen({ initialSwipe }: {
   const mark = (items: UnreadItem[]) => markRead.mutate(items, { onError: e => toastErr("Mark read failed", e) });
   return <View style={styles.root}>
     <Stack.Screen options={{ title: "Inbox", headerShown: true }} />
-    <View style={styles.tabs} accessibilityRole="tablist">
-      {(["unreads", "threads", "approvals"] as const).map(option => <Pressable key={option}
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroller} contentContainerStyle={styles.tabs} accessibilityRole="tablist">
+      {(["unreads", "threads", "approvals", ...(draftsEnabled ? ["drafts"] as const : [])] as const).map(option => <Pressable key={option}
         accessibilityRole="tab" accessibilityState={{ selected: tab === option }}
-        accessibilityLabel={option === "threads" ? "Threads" : option === "approvals" ? `Approvals${approvals.total ? `, ${approvals.total} pending` : ""}` : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
+        accessibilityLabel={option === "threads" ? "Threads" : option === "drafts" ? `Drafts${drafts.length ? `, ${drafts.length}` : ""}` : option === "approvals" ? `Approvals${approvals.total ? `, ${approvals.total} pending` : ""}` : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
         style={[styles.tab, tab === option && styles.tabActive]}
         onPress={() => { swipeRows.close(); setRememberedTab(option); }}>
         <Text style={[styles.tabText, tab === option && styles.tabTextActive]}>
-          {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : option === "approvals" ? `Approvals${approvals.total ? ` (${approvals.total})` : ""}` : "Threads"}
+          {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : option === "approvals" ? `Approvals${approvals.total ? ` (${approvals.total})` : ""}` : option === "drafts" ? `Drafts${drafts.length ? ` (${drafts.length})` : ""}` : "Threads"}
         </Text>
       </Pressable>)}
-    </View>
-    {tab === "threads" ? <ThreadsScreen embedded /> : tab === "approvals" ?
+    </ScrollView>
+    {tab === "drafts" && draftsEnabled ? <FlatList style={styles.list} contentContainerStyle={styles.listContent}
+      data={drafts} keyExtractor={item => draftKey(item.channel_id, item.thread_id)}
+      renderItem={({ item }) => <DraftInboxRow item={item} controller={swipeRows} />}
+      ListEmptyComponent={draftsLoading ? <ActivityIndicator color={colors.dim} style={styles.empty} /> : draftsError ?
+        <View style={styles.empty}><Text style={styles.error}>Couldn't load drafts</Text>
+          <Pressable accessibilityRole="button" onPress={() => void draftSync.hydrate().catch(() => {})}><Text style={styles.markAll}>Retry</Text></Pressable>
+        </View> : <EmptyState icon={MessageSquare} title="No drafts" description="Messages you start writing will appear here." />}
+    /> : tab === "threads" ? <ThreadsScreen embedded /> : tab === "approvals" ?
       <FlatList style={styles.list} contentContainerStyle={styles.listContent}
         data={approvals.data ?? []}
         keyExtractor={item => `${item.channel_id}:${item.thread_id ?? "channel"}`}
@@ -185,8 +226,9 @@ export default function InboxScreen({ initialSwipe }: {
 
 const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
-  tabs: { flexDirection: "row", marginHorizontal: layout.gutter, marginTop: space.sm, marginBottom: space.sm, padding: space.xs, borderRadius: radii.lg, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
-  tab: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: space.sm, paddingVertical: space.sm, borderRadius: radii.md },
+  tabScroller: { flexGrow: 0 },
+  tabs: { flexDirection: "row", flexGrow: 1, marginHorizontal: layout.gutter, marginTop: space.sm, marginBottom: space.sm, padding: space.xs, borderRadius: radii.lg, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border },
+  tab: { flexGrow: 1, minWidth: 88, minHeight: 44, justifyContent: "center", alignItems: "center", paddingHorizontal: space.sm, paddingVertical: space.sm, borderRadius: radii.md },
   tabActive: { backgroundColor: colors.accentSoft },
   tabText: { ...typography.bodySm, textAlign: "center", color: colors.dim, fontWeight: weight.semibold },
   tabTextActive: { color: colors.accentText },

@@ -8,6 +8,7 @@ import {
   droppedTooLargeMessage, uploadMaxBytes,
   draftAttachmentPreviewUrl, isRequireAgentOn, materializeDroppedFile, MAX_MESSAGE_CHARS,
   mentionPrefix, threadAddressKey, useAgents, useAttachmentDrafts, useMe, useSendMessage,
+  draftSync, useAddressed, useMessageDrafts, draftKey as canonicalDraftKey,
   type ChannelAgent, type DraftAttachment, type OutgoingFile,
 } from "@agora/core";
 import { create } from "zustand";
@@ -40,32 +41,16 @@ export interface MentionCandidate {
 /* Per-target drafts: keyed "c:<channelId>" or "t:<rootId>". */
 export { useDrafts } from "../state/drafts";
 
-/* "Talk to" selection per composer target (channel / thread), ephemeral. */
+/* Picker visibility stays local to the web shell; selected agents live in core. */
 interface AddrState {
-  addr: Record<string, string[]>;
   pickerKey: string | null;
   setPickerKey: (key: string | null) => void;
-  toggle: (key: string, agentId: string) => void;
-  clear: (key: string) => void;
 }
 const NO_ADDR: string[] = [];
 
 export const useAddressing = create<AddrState>((set) => ({
-  addr: {},
   pickerKey: null,
   setPickerKey: pickerKey => set({ pickerKey }),
-  toggle: (key, agentId) => set(s => {
-    const cur = s.addr[key] || [];
-    const next = cur.includes(agentId) ? cur.filter(id => id !== agentId) : [...cur, agentId];
-    const addr = { ...s.addr };
-    if (next.length) addr[key] = next; else delete addr[key];
-    return { addr };
-  }),
-  clear: (key) => set(s => {
-    const addr = { ...s.addr };
-    delete addr[key];
-    return { addr };
-  }),
 }));
 
 /* Agent avatar for composer rows (addressing chips, "Talk to" picker, mention
@@ -105,8 +90,21 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const send = useSendMessage(channelId);
   const me = useMe().data;
   const draftKey = threadId != null ? `t:${threadId}` : `c:${channelId}`;
-  const text = useDrafts(s => s.drafts[draftKey] ?? "");
-  const setText = useDrafts(s => s.set);
+  const syncKey = canonicalDraftKey(channelId, threadId);
+  const mountedSyncKey = useRef(syncKey);
+  mountedSyncKey.current = syncKey;
+  const text = useDrafts(s => s.byConvo[syncKey] ?? "");
+  const setText = (_key: string, next: string) => draftSync.edit(syncKey, next);
+  const remoteMeta = useMessageDrafts(s => s.metaByConvo[syncKey]);
+  const remoteMetaRev = useMessageDrafts(s => s.metaRevByConvo[syncKey] ?? 0);
+  useEffect(() => {
+    draftSync.setActive(syncKey);
+    return () => { void draftSync.flush(syncKey); };
+  }, [syncKey]);
+  useEffect(() => {
+    if (remoteMeta && onSetReplyInThread && remoteMeta.reply_in_thread !== !!replyInThread)
+      onSetReplyInThread(remoteMeta.reply_in_thread);
+  }, [remoteMetaRev, syncKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const attachments = useAttachmentDrafts(s => s.byDraft[draftKey] ?? NO_ATTACHMENTS);
   const [mention, setMention] = useState<{ items: MentionCandidate[]; active: number; start: number } | null>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -150,9 +148,17 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     if (useAddressing.getState().pickerKey === draftKey) useAddressing.getState().setPickerKey(null);
   }, [draftKey]);
   const [previewId, setPreviewId] = useState<string | null>(null);
-  const addrSel = useAddressing(s => s.addr[draftKey] ?? NO_ADDR);
-  const addrToggle = useAddressing(s => s.toggle);
-  const addrClear = useAddressing(s => s.clear);
+  const addrSel = useAddressed(s => s.byConvo[syncKey] ?? NO_ADDR);
+  const toggleAddressed = useAddressed(s => s.toggle);
+  const clearAddressed = useAddressed(s => s.clear);
+  const addrToggle = (_key: string, id: string) => {
+    toggleAddressed(syncKey, id);
+    draftSync.editMeta(syncKey, { addressed: useAddressed.getState().byConvo[syncKey] ?? [], reply_in_thread: !!replyInThread });
+  };
+  const addrClear = (_key: string) => {
+    clearAddressed(syncKey);
+    draftSync.editMeta(syncKey, { addressed: [], reply_in_thread: !!replyInThread });
+  };
   const taRef = useRef<HTMLTextAreaElement>(null);
   /* Whether the caret in this draft is the user's. One textarea is reused
      across channels/threads, so a stale selection from the previous
@@ -375,6 +381,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     }));
     const sentIds = readyAttachments.map(entry => entry.id);
     const sentText = text;
+    const sentVersion = draftSync.version(syncKey);
     const controller = sentIds.length ? new AbortController() : null;
     if (controller && !useAttachmentDrafts.getState().beginSend(
       draftKey,
@@ -387,6 +394,13 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     const uploadTimer = controller
       ? setTimeout(() => controller.abort(), ATTACHMENT_UPLOAD_TIMEOUT_MS)
       : undefined;
+    if (!sentIds.length) {
+      draftSync.clearForSend(syncKey, sentText, sentVersion);
+      if (replyInThread && onSetReplyInThread) {
+        onSetReplyInThread(false);
+        draftSync.editMeta(syncKey, { addressed: useAddressed.getState().byConvo[syncKey] ?? [], reply_in_thread: false });
+      }
+    }
     void send.mutateAsync({
       text: outText,
       threadId,
@@ -394,14 +408,20 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
       replyInThread,
       requireAgent: showRequireAgent && requireAgentOn,
       signal: controller?.signal,
-    }).then(() => {
-      if (!sentIds.length) return;
-      useAttachmentDrafts.getState().sendSucceeded(draftKey, sentIds);
-      if ((useDrafts.getState().drafts[draftKey] ?? "") === sentText) {
-        setText(draftKey, "");
-      }
-      if (replyInThread && onSetReplyInThread) onSetReplyInThread(false);
+      draftRev: draftSync.prepareSend(syncKey),
+      clientId: draftSync.clientId,
+    }).then((message) => {
+      if (sentIds.length) useAttachmentDrafts.getState().sendSucceeded(draftKey, sentIds);
+      void draftSync.onSent(syncKey, sentText, sentVersion, message.draft);
+      if (mountedSyncKey.current === syncKey) onSetReplyInThread?.(false);
+      draftSync.editMeta(syncKey, { addressed: useAddressed.getState().byConvo[syncKey] ?? [], reply_in_thread: false });
     }).catch((error) => {
+      if (!sentIds.length) draftSync.restoreFailedSend(syncKey, sentText, sentVersion);
+      if (!sentIds.length && replyInThread && onSetReplyInThread) {
+        if (mountedSyncKey.current === syncKey) onSetReplyInThread(true);
+        draftSync.editMeta(syncKey, { addressed: useAddressed.getState().byConvo[syncKey] ?? [], reply_in_thread: true });
+      }
+      void draftSync.flush(syncKey);
       if (sentIds.length) useAttachmentDrafts.getState().sendFailed(draftKey, sentIds);
       const aborted = controller?.signal.aborted;
       toast(
@@ -411,12 +431,6 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     }).finally(() => {
       if (uploadTimer !== undefined) clearTimeout(uploadTimer);
     });
-    // Preserve attachment-bearing drafts until the upload succeeds. Plain text
-    // keeps the existing fast optimistic composer behavior.
-    if (!sentIds.length) {
-      setText(draftKey, "");
-      if (replyInThread && onSetReplyInThread) onSetReplyInThread(false);
-    }
     taRef.current?.focus();
   };
 
@@ -570,7 +584,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
           }}
           onKeyDown={onKeyDown}
           onSelect={() => { hasCaret.current = true; }}
-          onBlur={() => setTimeout(() => setMention(null), 150)}
+          onBlur={() => { setTimeout(() => setMention(null), 150); void draftSync.flush(syncKey); }}
           onPaste={e => {
             const items = Array.from(e.clipboardData?.files || []);
             if (items.length) { e.preventDefault(); addFiles(items); }
@@ -635,7 +649,10 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         {!inThread && onSetReplyInThread && (
           <button className={`btn ago-thread-ask ${replyInThread ? "active" : ""}`} id="ago-thread-ask"
             title="Agents answer this message in a thread under it"
-            onClick={() => onSetReplyInThread(!replyInThread)}>
+            onClick={() => {
+              onSetReplyInThread(!replyInThread);
+              draftSync.editMeta(syncKey, { addressed: addrSel, reply_in_thread: !replyInThread });
+            }}>
             <Icon name="messages-square" />
           </button>
         )}

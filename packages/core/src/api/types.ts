@@ -20,6 +20,7 @@ export interface Me {
   voice_stt?: boolean;
   /** Server exposes the fail-safe transcription-only voice endpoint. */
   voice_transcribe?: boolean;
+  drafts_sync?: boolean;
   /** Text-to-speech Enabled: show speak-aloud. Live voice needs both. */
   voice_tts?: boolean;
   /** Ask AI Enabled (credentials checked when the user asks). */
@@ -343,6 +344,8 @@ export interface ReactionReactor {
 }
 
 export interface Message {
+  /** Present only on responses to sends carrying draft_rev. */
+  draft?: import("../state/drafts").DraftSendOutcome;
   id: number;
   /** Monotonic display order; older servers omit it and clients use id. */
   seq?: number;
@@ -663,7 +666,16 @@ export interface MessageClearEvent {
   thread_id: number | null;
 }
 
+export interface DraftsRefreshEvent {
+  type: "drafts_refresh";
+  channel_id: string | null;
+  group_id: string | null;
+  force?: boolean;
+}
+
 export type WsEvent =
+  | import("../state/drafts").DraftEvent
+  | DraftsRefreshEvent
   | TypingEvent
   | ProgressEvent
   | MessageEvent
