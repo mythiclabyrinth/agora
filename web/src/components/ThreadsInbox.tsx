@@ -5,7 +5,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 import { useQueryClient } from "@tanstack/react-query";
 import {
   filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys, resolveThreadGroupSelection, threadActivityTs,
-  useGroups, useHideThread, useMe, useRenameThread, useThreads, validLastReplyTs,
+  useGroups, useHideThread, useMe, useRenameThread, useThreadReplying, useThreads, validLastReplyTs,
   type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
 import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
@@ -15,11 +15,21 @@ import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { PromptDialog } from "./PromptDialog";
+import { ReplyingIndicator } from "./ReplyingIndicator";
 
 function snippet(m: { alias?: string | null; text?: string }): string {
   const alias = (m.alias || "").trim();
   if (alias) return alias;
   return (m.text || "").split("\n")[0].slice(0, 140);
+}
+
+function ThreadRowReplying({ channelId, threadId }: { channelId: string; threadId: number }) {
+  const names = useThreadReplying(channelId, threadId);
+  if (!names.length) return null;
+  return <span className="ago-inbox-replying">
+    <ReplyingIndicator names={names} />
+    <span className="label" aria-hidden="true" title={`${names.join(", ")} replying`}>{names.join(", ")} replying</span>
+  </span>;
 }
 
 function InboxRow({ t }: { t: ThreadRow }) {
@@ -127,6 +137,7 @@ function InboxRow({ t }: { t: ThreadRow }) {
         <span className="chan" title={`${t.group_name} / #${t.channel_name}`}>#{t.channel_name}</span>
         <span className="author">{root.author_name || root.author_id}</span>
         <span className="replies">{t.reply_count} repl{t.reply_count === 1 ? "y" : "ies"}</span>
+        {root.id != null && <ThreadRowReplying channelId={t.channel_id} threadId={root.id} />}
         {(t.unread || 0) > 0 && <span className="ago-unread-badge">{t.unread > 99 ? "99+" : t.unread}</span>}
       </div>
     </div>

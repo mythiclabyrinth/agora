@@ -19,6 +19,7 @@ import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
 import { AgentDmPanel } from "./AgentDmPanel";
 import { PromptDialog } from "./PromptDialog";
+import { ReplyingIndicator } from "./ReplyingIndicator";
 
 const searchKey = () => formatCombo(bindingFor("search", currentPlatform()), currentPlatform());
 
@@ -34,14 +35,6 @@ function Badge({ n, mentions, totalWithMention = false }: { n: number; mentions:
     );
   }
   return n > 0 ? <span className="ago-unread-badge">{n > 99 ? "99+" : n}</span> : null;
-}
-
-function ReplyingIndicator({ names }: { names: string[] }) {
-  if (!names.length) return null;
-  const label = `${names.join(", ")} ${names.length === 1 ? "is" : "are"} replying`;
-  return <span className="ago-replying" role="img" aria-label={label} title={label}>
-    <span /><span /><span />
-  </span>;
 }
 
 function ChannelReplying({ channelId }: { channelId: string }) {
