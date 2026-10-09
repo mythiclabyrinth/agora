@@ -19,7 +19,7 @@ function AuthSurface({ mode }: { mode: AuthMode }) {
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (path === "/api/me") {
-      return new Response(modeRef.current === "invalid" ? "unauthorized" : "{}", {
+      return new Response(modeRef.current === "invalid" ? "unauthorized" : JSON.stringify({ username: "ana" }), {
         status: modeRef.current === "invalid" ? 401 : 200,
       });
     }
@@ -56,7 +56,7 @@ export const AdminKey: Story = {
     const input = await canvas.findByLabelText("Admin key");
     await waitFor(() => expect(input).toHaveFocus());
     await userEvent.type(input, "storybook-token{Enter}");
-    await expect(signedIn).toHaveBeenCalled();
+    await expect(signedIn).toHaveBeenCalledWith("ana");
   },
 };
 

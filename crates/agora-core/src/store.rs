@@ -4294,6 +4294,25 @@ mod tests {
     }
 
     #[test]
+    fn drafts_respect_channel_scoped_membership_in_private_groups() {
+        let s = store();
+        s.create_user("ana", "Ana", None, "member").unwrap();
+        let group = s.create_group("Private", "", None);
+        let gid = group["id"].as_str().unwrap();
+        s.set_group_public(gid, false);
+        let x = s.create_channel(gid, "x", "");
+        let y = s.create_channel(gid, "y", "");
+        let xid = x["id"].as_str().unwrap();
+        let yid = y["id"].as_str().unwrap();
+        s.add_member(gid, "user", "ana", "member", Some(xid));
+        s.save_draft("ana", xid, None, "visible", &json!({}), "device");
+        s.save_draft("ana", yid, None, "hidden", &json!({}), "device");
+        let rows = s.list_drafts("ana", false);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["channel_id"], xid);
+    }
+
+    #[test]
     fn drafts_clean_up_with_channel_group_and_user() {
         let s = store();
         s.create_user("ana", "Ana", None, "member").unwrap();

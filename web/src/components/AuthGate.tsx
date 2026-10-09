@@ -8,7 +8,7 @@ import {
 } from "../lib/auth";
 import { toast } from "../lib/toast";
 
-export function AuthGate({ onSignedIn }: { onSignedIn: () => void }) {
+export function AuthGate({ onSignedIn }: { onSignedIn: (username: string) => void }) {
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [adminEnabled, setAdminEnabled] = useState(true);
   const [probed, setProbed] = useState(false);
@@ -47,7 +47,7 @@ export function AuthGate({ onSignedIn }: { onSignedIn: () => void }) {
     setSessionToken(t);
     const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${t}` } })
       .catch(() => null);
-    if (res && res.ok) onSignedIn();
+    if (res && res.ok) onSignedIn((await res.json()).username);
     else toast("That token didn't work", { variant: "warn" });
   };
 

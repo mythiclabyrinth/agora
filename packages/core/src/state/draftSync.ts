@@ -38,7 +38,8 @@ class DraftSync {
   }
   private refresh() { void this.hydrate().catch(() => {}); }
   configure(api: ApiClient, enabled: boolean) {
-    if (this.api && this.api !== api) this.resetAll();
+    // Session owners reset when the account or server changes; a renewed token
+    // for the same account must keep unsynced text and its revision history.
     this.api = api;
     this.enabled = enabled;
     if (enabled) { this.refresh(); this.flushAll(); }

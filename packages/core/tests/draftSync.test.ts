@@ -109,6 +109,16 @@ describe("draft sync", () => {
     expect(put).toHaveBeenCalledTimes(2);
   });
 
+  it("flushes the previous conversation when switching", async () => {
+    const put = vi.fn(async () => ({ ...row("first", 1), client_id: draftSync.clientId }));
+    draftSync.configure({ get: vi.fn(async () => ({ items: [] })), put } as unknown as ApiClient, true);
+    draftSync.setActive("general");
+    draftSync.edit("general", "first");
+    draftSync.setActive("other");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(put).toHaveBeenCalledWith("/api/drafts", expect.objectContaining({ channel_id: "general", body: "first" }));
+  });
+
   it("does not arm a save timer on an older server", async () => {
     const put = vi.fn();
     draftSync.configure({ get: vi.fn(), put } as unknown as ApiClient, false);
@@ -125,6 +135,15 @@ describe("draft sync", () => {
     draftSync.configure(api, true);
     await vi.advanceTimersByTimeAsync(0);
     expect(put).toHaveBeenCalledWith("/api/drafts", expect.objectContaining({ body: "early" }));
+  });
+
+  it("keeps unsynced text when the same account renews its API client", () => {
+    const first = { get: vi.fn(async () => ({ items: [] })) } as unknown as ApiClient;
+    const renewed = { get: vi.fn(async () => ({ items: [] })) } as unknown as ApiClient;
+    draftSync.configure(first, true);
+    draftSync.edit("general", "offline text");
+    draftSync.configure(renewed, true);
+    expect(useMessageDrafts.getState().byConvo.general).toBe("offline text");
   });
 
   it("applies remote text when clean and keeps unsent local edits", () => {
@@ -187,6 +206,15 @@ describe("draft sync", () => {
     expect(del).not.toHaveBeenCalled();
     release({ ...row("hello", 1), client_id: draftSync.clientId });
     await saving; await sent;
+    expect(del).toHaveBeenCalledWith("/api/drafts", expect.objectContaining({ if_rev: 1 }));
+    expect(useMessageDrafts.getState().byConvo.general).toBeUndefined();
+  });
+
+  it("keeps a successful send clear when server already deleted its draft", async () => {
+    const del = vi.fn(async () => ({ deleted: false, draft: null }));
+    draftSync.configure({ get: vi.fn(async () => ({ items: [] })), delete: del } as unknown as ApiClient, true);
+    draftSync.applyRemote({ ...row("sent", 1), type: "draft" });
+    await draftSync.onSent("general", "sent", draftSync.version("general"));
     expect(del).toHaveBeenCalledWith("/api/drafts", expect.objectContaining({ if_rev: 1 }));
     expect(useMessageDrafts.getState().byConvo.general).toBeUndefined();
   });

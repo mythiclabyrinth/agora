@@ -5,6 +5,8 @@ import { QueryClient } from "@tanstack/react-query";
 import { appendMessage, applyAliasToPages, applyMessageClear, applyMessageDelete, applyMessageUpdate, applyWsEvent, bumpReplyCount, dropReplyCount, moveMessage, replaceMessage, resetSeenMessageIds, type MessagePages } from "../src/ws/reducer";
 import { approvalPendingAt, approvalServerOffset, flattenMessages, replaceApprovalMessage } from "../src/api/queries";
 import { keys } from "../src/api/keys";
+import { draftSync } from "../src/state/draftSync";
+import { useMessageDrafts, type DraftRow } from "../src/state/drafts";
 import type { AgentUsageResponse, ApprovalItem, Message, PinnedMessage, StarredMessage, ThreadRow } from "../src/api/types";
 
 const msg = (id: number, text = `m${id}`): Message =>
@@ -15,6 +17,29 @@ const msg = (id: number, text = `m${id}`): Message =>
 
 const pages = (...ids: number[][]): MessagePages =>
   ({ pages: ids.map(p => p.map(id => msg(id))), pageParams: ids.map(() => undefined) });
+
+it("refreshes drafts only for relevant delete, clear, and rename events", () => {
+  const hydrate = vi.spyOn(draftSync, "hydrate").mockResolvedValue();
+  const draft = { channel_id: "c1", thread_id: 7, body: "draft", rev: 1,
+    meta: { addressed: [], reply_in_thread: false }, client_id: "device", updated_at: 1,
+    channel_name: "one", group_id: "g1", group_name: "Group", thread_title: "Thread" } satisfies DraftRow;
+  const qc = new QueryClient();
+  try {
+    useMessageDrafts.getState().setRows([draft]);
+    applyWsEvent(qc, { type: "message_delete", channel_id: "other", thread_id: null, message_id: 1 }, { username: "ana" });
+    applyWsEvent(qc, { type: "message_clear", channel_id: "other", thread_id: null }, { username: "ana" });
+    applyWsEvent(qc, { type: "thread_renamed", channel_id: "c1", thread_id: 8, alias: "Other" }, { username: "ana" });
+    expect(hydrate).not.toHaveBeenCalled();
+    applyWsEvent(qc, { type: "message_delete", channel_id: "c1", thread_id: null, message_id: 7 }, { username: "ana" });
+    applyWsEvent(qc, { type: "message_clear", channel_id: "c1", thread_id: null }, { username: "ana" });
+    applyWsEvent(qc, { type: "thread_renamed", channel_id: "c1", thread_id: 7, alias: "New" }, { username: "ana" });
+    expect(hydrate).toHaveBeenCalledTimes(3);
+  } finally {
+    useMessageDrafts.getState().resetAll();
+    hydrate.mockRestore();
+    qc.clear();
+  }
+});
 
 it("uses server time for approval expiry on fast and slow device clocks", () => {
   const item = { message: { ...msg(1), meta: { expires_at: 1.1 } } } as ApprovalItem;

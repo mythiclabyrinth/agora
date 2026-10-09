@@ -15,6 +15,7 @@ export * from "./state/tldr";
 export * from "./state/addressed";
 export * from "./state/drafts";
 export * from "./state/draftSync";
+export * from "./state/draftSession";
 export * from "./state/DraftSyncGate";
 export * from "./state/attachments";
 export * from "./lib/mdlite";

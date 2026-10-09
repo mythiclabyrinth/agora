@@ -80,7 +80,11 @@ export function DraftInboxRow({ item, controller }: { item: DraftRow; controller
     accessibilityLabel={`Draft in ${item.channel_name}`}
     swipeLeft={{ name: "discard", label: "Discard", icon: Trash2, color: colors.red,
       onPress: () => { void draftSync.discard(draftKey(item.channel_id, item.thread_id), item.rev)
-        .then(deleted => { if (!deleted) toast("Draft changed on another device", "warn"); })
+        .then(deleted => {
+          if (!deleted && useMessageDrafts.getState().rows.some(row =>
+            draftKey(row.channel_id, row.thread_id) === draftKey(item.channel_id, item.thread_id)))
+            toast("Draft changed on another device", "warn");
+        })
         .catch(e => toastErr("Discard failed", e)); } }}>
     <View style={styles.cardTop}>
       <View style={styles.sourceIcon}><Icon icon={item.thread_id == null ? Hash : MessageSquare} size={18} color={colors.accentText} /></View>

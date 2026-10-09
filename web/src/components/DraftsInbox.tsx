@@ -43,7 +43,8 @@ export function DraftsInbox() {
           onClick={event => { menuTrigger.current = event.currentTarget; setMenu(menu === key ? null : key); }}>⋯</button>
         {menu === key && <div className="ago-draft-menu" role="menu"><button role="menuitem" onClick={() => {
           void draftSync.discard(key, row.rev).then(deleted => {
-            if (!deleted) toast("Draft changed on another device", { variant: "warn" });
+            if (!deleted && useMessageDrafts.getState().rows.some(item => draftKey(item.channel_id, item.thread_id) === key))
+              toast("Draft changed on another device", { variant: "warn" });
           }).catch(e => toast(`Couldn't discard draft: ${(e as Error).message}`, { variant: "warn" }));
           setMenu(null);
         }}>Discard</button></div>}
