@@ -105,7 +105,6 @@ class DraftSync {
       } catch (e) {
         // Stop retrying this version; a changed draft can try again.
         if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429 && s.editSeq === editSeq) s.blocked = true;
-        else s.firstEdit = 0;
       } finally { s.firstEdit = 0; }
     };
     s.saving = run().finally(() => { s.saving = undefined; });
@@ -209,17 +208,29 @@ class DraftSync {
     } catch { /* The message succeeded; keep the composer clear if cleanup fails. */ }
     this.refresh();
   }
-  async discard(key: string) {
-    if (!this.enabled || !this.api) return;
+  async discard(key: string, ifRev?: number): Promise<boolean> {
+    if (!this.enabled || !this.api) return false;
     const s = this.state(key);
     if (s.timer) { clearTimeout(s.timer); s.timer = undefined; }
     if (s.saving) await s.saving;
     if (s.timer) { clearTimeout(s.timer); s.timer = undefined; }
+    const response = await this.api.delete<{ deleted: boolean; draft: DraftEvent | null }>("/api/drafts", {
+      ...parseKey(key), ...(ifRev === undefined ? {} : { if_rev: ifRev }), client_id: this.clientId,
+    });
+    if (!response.deleted) {
+      await this.hydrate().catch(() => {});
+      if (s.dirty && !s.blocked) this.schedule(key);
+      return false;
+    }
+    if (response.draft && response.draft.rev <= s.seenRev) {
+      await this.hydrate().catch(() => {});
+      return false;
+    }
     s.dirty = false; s.blocked = false;
-    const response = await this.api.delete<{ draft: DraftEvent | null }>("/api/drafts", { ...parseKey(key), client_id: this.clientId });
     if (response.draft) this.apply(response.draft, false);
     useMessageDrafts.getState().clear(key);
     useMessageDrafts.getState().setRows(useMessageDrafts.getState().rows.filter(r => draftKey(r.channel_id, r.thread_id) !== key));
+    return true;
   }
 }
 

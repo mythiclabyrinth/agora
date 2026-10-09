@@ -56,6 +56,7 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
           // stays put — clear the seen-set so real frames aren't swallowed.
           resetSeenMessageIds(qc);
           void qc.refetchQueries({ type: "active" });
+          draftSync.flushAll();
           void draftSync.hydrate().catch(() => {});
         },
       },
@@ -64,14 +65,15 @@ export function useAgoraSocket(username: string, onAgentMessage?: (m: Message) =
 
     const wake = () => sock.wake();
     const onVis = () => {
-      if (document.visibilityState === "visible") { wake(); void draftSync.hydrate().catch(() => {}); }
+      if (document.visibilityState === "visible") { wake(); draftSync.flushAll(); void draftSync.hydrate().catch(() => {}); }
     };
     document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("online", wake);
+    const onOnline = () => { wake(); draftSync.flushAll(); void draftSync.hydrate().catch(() => {}); };
+    window.addEventListener("online", onOnline);
 
     return () => {
       document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("online", wake);
+      window.removeEventListener("online", onOnline);
       disarmChime();
       sock.close();
     };

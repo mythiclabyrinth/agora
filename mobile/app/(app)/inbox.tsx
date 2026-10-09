@@ -8,7 +8,7 @@ import { draftKey, draftSync, filterUnreads, fmtRelative, formatUnreadCount, use
 import { EmptyState } from "../../src/components/EmptyState";
 import { colors, typography, space, radii, weight, type Palette } from "../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
-import { toastErr } from "../../src/components/Toast";
+import { toast, toastErr } from "../../src/components/Toast";
 import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } from "../../src/components/SwipeRow";
 import { ThreadsScreen } from "./threads";
 import { Icon } from "../../src/components/Icon";
@@ -67,7 +67,7 @@ export function inboxTabFromParam(value: string | undefined): InboxTab | null {
   return value === "threads" || value === "unreads" || value === "approvals" || value === "drafts" ? value : null;
 }
 
-export function DraftRow({ item, controller }: { item: DraftRow; controller: SwipeRowController }) {
+export function DraftInboxRow({ item, controller }: { item: DraftRow; controller: SwipeRowController }) {
   const { colors } = useAppTheme();
   const styles = useStyles();
   const open = () => {
@@ -79,7 +79,9 @@ export function DraftRow({ item, controller }: { item: DraftRow; controller: Swi
   return <SwipeRow style={styles.card} onPress={open} controller={controller}
     accessibilityLabel={`Draft in ${item.channel_name}`}
     swipeLeft={{ name: "discard", label: "Discard", icon: Trash2, color: colors.red,
-      onPress: () => { void draftSync.discard(draftKey(item.channel_id, item.thread_id)).catch(e => toastErr("Discard failed", e)); } }}>
+      onPress: () => { void draftSync.discard(draftKey(item.channel_id, item.thread_id), item.rev)
+        .then(deleted => { if (!deleted) toast("Draft changed on another device", "warn"); })
+        .catch(e => toastErr("Discard failed", e)); } }}>
     <View style={styles.cardTop}>
       <View style={styles.sourceIcon}><Icon icon={item.thread_id == null ? Hash : MessageSquare} size={18} color={colors.accentText} /></View>
       <View style={styles.sourceCopy}><Text style={styles.sourceGroup} numberOfLines={1}>{item.group_name}</Text>
@@ -166,7 +168,7 @@ export default function InboxScreen({ initialSwipe }: {
     </View>
     {tab === "drafts" && draftsEnabled ? <FlatList style={styles.list} contentContainerStyle={styles.listContent}
       data={drafts} keyExtractor={item => draftKey(item.channel_id, item.thread_id)}
-      renderItem={({ item }) => <DraftRow item={item} controller={swipeRows} />}
+      renderItem={({ item }) => <DraftInboxRow item={item} controller={swipeRows} />}
       ListEmptyComponent={draftsLoading ? <ActivityIndicator color={colors.dim} style={styles.empty} /> : draftsError ?
         <View style={styles.empty}><Text style={styles.error}>Couldn't load drafts</Text>
           <Pressable accessibilityRole="button" onPress={() => void draftSync.hydrate().catch(() => {})}><Text style={styles.markAll}>Retry</Text></Pressable>

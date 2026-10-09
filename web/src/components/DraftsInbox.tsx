@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { draftKey, draftSync, fmtRelative, useMessageDrafts, useSyncedDrafts, type DraftRow } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
@@ -10,7 +10,20 @@ export function DraftsInbox() {
   const loadError = useMessageDrafts(s => s.loadError);
   const ui = useUiState();
   const [menu, setMenu] = useState<string | null>(null);
+  const menuTrigger = useRef<HTMLButtonElement | null>(null);
   useEffect(() => { void draftSync.hydrate().catch(() => {}); }, []);
+  useEffect(() => {
+    if (!menu) return;
+    const outside = (event: PointerEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".ago-draft-more, .ago-draft-menu")) setMenu(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); setMenu(null); menuTrigger.current?.focus(); }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+  }, [menu]);
   const open = (row: DraftRow) => {
     ui.selectChannel(row.group_id, row.channel_id);
     if (row.thread_id != null) ui.openThread(row.thread_id);
@@ -25,8 +38,15 @@ export function DraftsInbox() {
           {row.thread_id != null ? `↳ ${row.thread_title || "Thread"} in ` : ""}#{row.channel_name} · {row.group_name}
         </button>
         <span className="ago-unread-meta"><time>{fmtRelative(row.updated_at)}</time></span>
-        <button className="ago-draft-more" aria-label={`Options for draft in ${row.channel_name}`} onClick={() => setMenu(menu === key ? null : key)}>⋯</button>
-        {menu === key && <div className="ago-draft-menu"><button onClick={() => { void draftSync.discard(key).catch(e => toast(`Couldn't discard draft: ${(e as Error).message}`, { variant: "warn" })); setMenu(null); }}>Discard</button></div>}
+        <button className="ago-draft-more" aria-label={`Options for draft in ${row.channel_name}`}
+          aria-haspopup="menu" aria-expanded={menu === key}
+          onClick={event => { menuTrigger.current = event.currentTarget; setMenu(menu === key ? null : key); }}>⋯</button>
+        {menu === key && <div className="ago-draft-menu" role="menu"><button role="menuitem" onClick={() => {
+          void draftSync.discard(key, row.rev).then(deleted => {
+            if (!deleted) toast("Draft changed on another device", { variant: "warn" });
+          }).catch(e => toast(`Couldn't discard draft: ${(e as Error).message}`, { variant: "warn" }));
+          setMenu(null);
+        }}>Discard</button></div>}
         <button className="ago-unread-preview" onClick={() => open(row)}>{row.body.replace(/\s+/g, " ").trim().slice(0, 240)}</button>
       </div>;
     })}

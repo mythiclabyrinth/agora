@@ -21,3 +21,15 @@ export const ChannelAndThread: Story = { play: async ({ canvasElement }) => {
 } };
 export const Single: Story = { parameters: { setup: () => useMessageDrafts.getState().setRows(draftRows.slice(0, 1)) } };
 export const Empty: Story = { parameters: { setup: () => useMessageDrafts.getState().setRows([]) } };
+export const MenuDismissal: Story = { parameters: { setup: () => useMessageDrafts.getState().setRows(draftRows.slice(0, 1)) },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button", { name: "Options for draft in general" });
+    await userEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await userEvent.keyboard("{Escape}");
+    expect(canvas.queryByRole("menu")).toBeNull();
+    await userEvent.click(trigger);
+    await userEvent.click(document.body);
+    expect(canvas.queryByRole("menu")).toBeNull();
+  } };

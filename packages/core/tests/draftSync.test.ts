@@ -96,6 +96,19 @@ describe("draft sync", () => {
     expect(put).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a dirty draft on reconnect without another edit", async () => {
+    const put = vi.fn().mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValueOnce({ ...row("unsent", 1), client_id: draftSync.clientId });
+    const api = { get: vi.fn(async () => ({ items: [] })), put } as unknown as ApiClient;
+    draftSync.configure(api, true);
+    draftSync.edit("general", "unsent");
+    await draftSync.flush("general");
+    expect(put).toHaveBeenCalledTimes(1);
+    draftSync.flushAll();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
   it("does not arm a save timer on an older server", async () => {
     const put = vi.fn();
     draftSync.configure({ get: vi.fn(), put } as unknown as ApiClient, false);
@@ -213,13 +226,26 @@ describe("draft sync", () => {
   });
 
   it("discards the server row and local composer text", async () => {
-    const del = vi.fn(async () => ({ draft: { ...row("", 2), type: "draft", body: null } }));
+    const del = vi.fn(async () => ({ deleted: true, draft: { ...row("", 2), type: "draft", body: null } }));
     const api = { get: vi.fn(async () => ({ items: [] })), delete: del } as unknown as ApiClient;
     draftSync.configure(api, true);
     draftSync.applyRemote({ ...row("saved", 1), type: "draft" });
-    await draftSync.discard("general");
-    expect(del).toHaveBeenCalledWith("/api/drafts", expect.objectContaining({ channel_id: "general" }));
+    expect(await draftSync.discard("general", 1)).toBe(true);
+    expect(del).toHaveBeenCalledWith("/api/drafts", expect.objectContaining({ channel_id: "general", if_rev: 1 }));
     expect(useMessageDrafts.getState().byConvo.general).toBeUndefined();
+  });
+
+  it("keeps local text and refreshes when discard loses a revision race", async () => {
+    let items = [row("original", 1)];
+    const get = vi.fn(async () => ({ items }));
+    const del = vi.fn(async () => ({ deleted: false, draft: null }));
+    draftSync.configure({ get, delete: del } as unknown as ApiClient, true);
+    await draftSync.hydrate();
+    items = [row("newer device edit", 2)];
+    expect(await draftSync.discard("general", 1)).toBe(false);
+    expect(del).toHaveBeenCalledWith("/api/drafts", expect.objectContaining({ if_rev: 1 }));
+    expect(useMessageDrafts.getState().byConvo.general).toBe("newer device edit");
+    expect(useMessageDrafts.getState().rows[0].rev).toBe(2);
   });
 
   it("removes a clean composer draft missing from hydration", async () => {

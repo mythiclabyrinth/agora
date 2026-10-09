@@ -46,6 +46,7 @@ export function useAgoraSocket(
           // stay put — clear the seen-set so real frames aren't swallowed.
           resetSeenMessageIds(qc);
           void qc.refetchQueries({ type: "active" });
+          draftSync.flushAll();
           void draftSync.hydrate().catch(() => {});
         },
       },
@@ -53,7 +54,7 @@ export function useAgoraSocket(
     sock.connect();
 
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") { sock.wake(); void draftSync.hydrate().catch(() => {}); }
+      if (state === "active") { sock.wake(); draftSync.flushAll(); void draftSync.hydrate().catch(() => {}); }
     });
 
     return () => {
