@@ -2309,25 +2309,19 @@ class Bridge:
             self.set_reaction(frame, "✅", remember=False)
             return True
         if key in self.busy:
-            if from_peer and frame.get("scheduled") is not True:
-                # Don't burn a turn of the agent-to-agent relay budget on a
-                # notice post; the peer's ask still lands as context next turn.
-                self._buffer_context(key, frame)
-                self.clear_reaction(frame)
-                return False
             if from_peer and sum(
                 1 for entry in self.pending_turns.get(key, [])
                 if entry.get("from_peer")
             ) >= MAX_QUEUED_PEER_TURNS:
                 self._buffer_context(key, frame)
                 self.clear_reaction(frame)
-                log(f"scheduled peer turn for {key} saved as context (peer cap)")
+                log(f"peer turn for {key} saved as context (peer cap)")
                 return False
             if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
                 if from_peer:
                     self._buffer_context(key, frame)
                     self.clear_reaction(frame)
-                    log(f"scheduled peer turn for {key} saved as context (queue full)")
+                    log(f"peer turn for {key} saved as context (queue full)")
                     return False
                 self.set_reaction(frame, "🚫", remember=False)
                 if key not in self.queue_full_notified:
@@ -2340,8 +2334,8 @@ class Bridge:
             self.pending_turns.setdefault(key, []).append(entry)
             entry["queued"] = True
             self.set_reaction(frame, "⏳")
-            if from_peer and frame.get("scheduled") is True:
-                log(f"queued scheduled peer turn for {key}")
+            if from_peer:
+                log(f"queued peer turn for {key}")
             return False
         entry = self._pending_entry(frame, text, from_peer=from_peer)
         if entry is None:

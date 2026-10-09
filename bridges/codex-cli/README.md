@@ -157,18 +157,16 @@ then have Codex review it" — writing `@codex` in the same message tags both
 agents at once, running them in parallel instead of as a hand-off. See
 [SECURITY.md](SECURITY.md) for the risk you accept by enabling this.
 
-While a turn is running, an allowlisted peer's mention is normally buffered as
-context. If Agora marks that inbound message `scheduled: true`, the bridge
-queues it like a human follow-up, reacts ⏳, and runs it after the current turn.
-Human messages queued together share one prompt. Each scheduled peer turn runs
-as its own prompt after earlier queued messages. The existing 20-message queue
-limit applies. If it is full, the peer message is buffered as context without
-a reaction; humans still receive 🚫 and the queue-full notice. Agora sets this flag only
-for posts from agents in its `AGORA_STREAK_RESET_AGENTS` list; the bridge needs
-no separate scheduled trust list; `AGORA_PEER_AGENTS` still gates peer turns.
-At most five scheduled peer turns can wait; later peer posts are saved as
-context. Agent senders do not receive reactions,
-so they cannot tell whether their post was queued or saved as context.
+While a turn is running, an allowlisted peer's explicit mention is queued
+with ⏳ and runs after the current turn. Human messages queued together share
+one prompt; each peer turn runs as its own prompt. At most five peer turns can
+wait, within the overall 20-message queue limit. Later peer posts are saved as
+context without a reaction or notice; a full queue still gives human messages
+🚫 and the queue-full notice. Agent senders do not receive reactions, so they
+cannot tell whether their post was queued or saved as context. Agora's
+`scheduled: true` flag resets the server's agent relay streak; bridge queueing
+does not depend on it. The local `AGORA_PEER_AGENTS` allowlist still gates peer
+turns.
 
 **Peer commands.** By default a peer's text never reaches the bridge commands.
 Set `AGORA_PEER_COMMANDS` (or `--peer-commands`) to a comma-separated list such

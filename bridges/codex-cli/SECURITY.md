@@ -52,12 +52,11 @@ ordered by decreasing severity.
      that is itself prompt-injected can
      drive this CLI within those bounds. Leave it unset to keep the
      humans-only posture.
-   - *Scheduled peer turns:* a server-marked `scheduled` post can queue a
-     turn while this bridge is busy, up to `MAX_QUEUED_PEER_TURNS` (5);
-     later posts become context. The server controls
-     `AGORA_STREAK_RESET_AGENTS`, which the bridge operator may not control.
-     The author must also be in this bridge's local `AGORA_PEER_AGENTS`
-     allowlist and explicitly @mention this agent.
+   - *Busy peer turns:* a peer in this bridge's local `AGORA_PEER_AGENTS`
+     allowlist that explicitly @mentions this agent can queue a turn while
+     the bridge is busy, up to `MAX_QUEUED_PEER_TURNS` (5); later posts become
+     context. The server's `scheduled` flag resets the agent relay streak but
+     is not required for queueing.
    - *Second opt-in:* `AGORA_PEER_COMMANDS` (`--peer-commands`, empty by
      default) names bridge commands — typically just `/new` — that an
      allowlisted peer may run through the regular command table. It applies
