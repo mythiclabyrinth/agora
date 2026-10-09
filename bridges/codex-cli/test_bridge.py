@@ -592,6 +592,67 @@ class PeerBusyTests(unittest.TestCase):
         instance.clear_reaction.assert_called_with(frame)
         self.assertIn("removed 1", reply)
 
+    def test_stop_buffers_queued_peer_but_drops_queued_human(self):
+        instance = make_bridge()
+        instance.busy = {"c1"}
+        peer = peer_frame(message_id=42)
+        human = {"channel_id": "c1", "message_id": 43,
+                 "text": "human follow-up", "author": {"type": "user", "name": "Tom"}}
+        instance.pending_turns = {"c1": [
+            {"frame": peer, "text": "peer follow-up", "from_peer": True},
+            {"frame": human, "text": "human follow-up", "from_peer": False},
+        ]}
+        instance._cmd_stop("c1")
+        self.assertNotIn("c1", instance.pending_turns)
+        self.assertEqual(instance.context_buffer["c1"],
+                         [f"{peer['author']['name']}: {peer['text']}"])
+        instance.clear_reaction.assert_any_call(peer)
+        instance.clear_reaction.assert_any_call(human)
+
+    def test_stop_with_only_humans_preserves_context_buffer(self):
+        instance = make_bridge()
+        instance.busy = {"c1"}
+        instance.context_buffer["c1"] = ["earlier context"]
+        human = {"channel_id": "c1", "message_id": 43,
+                 "text": "human follow-up", "author": {"type": "user", "name": "Tom"}}
+        instance.pending_turns = {"c1": [
+            {"frame": human, "text": "human follow-up", "from_peer": False},
+        ]}
+        instance._cmd_stop("c1")
+        self.assertEqual(instance.context_buffer["c1"], ["earlier context"])
+        instance.clear_reaction.assert_called_with(human)
+
+    def test_stop_requested_buffers_claimed_peer_turn(self):
+        instance = make_bridge()
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.typing = Mock()
+        instance.send = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        prompts = []
+        async def run(_key, _frame, _binding, prompt):
+            prompts.append(prompt)
+            return "done"
+        instance.run_codex = run
+        instance.stop_requested = {"c1"}
+        peer = peer_frame(message_id=42)
+        instance.pending_turns = {"c1": [
+            {"frame": peer, "text": "peer follow-up", "from_peer": True, "queued": True},
+        ]}
+        human = {"channel_id": "c1", "message_id": 43,
+                 "text": "human follow-up", "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_codex("c1", human, "human follow-up"))
+        instance.clear_reaction.assert_any_call(peer)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("human follow-up", prompts[0])
+        self.assertIn(f"{peer['author']['name']}: {peer['text']}", prompts[0])
+        self.assertNotIn("c1", instance.context_buffer)
+        self.assertNotIn("c1", instance.pending_turns)
+        self.assertNotIn("c1", instance.busy)
+
     def test_stop_before_child_registration_cancels_busy_run(self):
         instance = make_bridge()
         instance.busy = {"c1"}
@@ -718,6 +779,34 @@ class PeerBusyTests(unittest.TestCase):
         instance.post.assert_not_called()
         self.assertNotIn("c1", instance.queue_full_notified)
 
+    def test_full_queue_buffers_ordinary_peer_and_rejects_human(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": i}, "text": str(i), "from_peer": False}
+            for i in range(bridge.MAX_QUEUED_TURNS)
+        ]}
+        peer = peer_frame(message_id=42)
+        asyncio.run(instance.handle_inbound(peer))
+        self.assertEqual(len(instance.pending_turns["c1"]), bridge.MAX_QUEUED_TURNS)
+        self.assertIn("c1", instance.context_buffer)
+        instance.clear_reaction.assert_called_with(peer)
+        instance.set_reaction.assert_not_called()
+        instance.post.assert_not_called()
+        self.assertNotIn("c1", instance.queue_full_notified)
+
+        human = {"channel_id": "c1", "message_id": 43,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_codex("c1", human, "human follow-up"))
+        self.assertEqual(len(instance.pending_turns["c1"]), bridge.MAX_QUEUED_TURNS)
+        instance.set_reaction.assert_called_with(human, "🚫", remember=False)
+        self.assertIn("Queue is full", instance.post.call_args.args[1])
+        self.assertIn("c1", instance.queue_full_notified)
+        asyncio.run(instance.forward_to_codex("c1", human, "another follow-up"))
+        self.assertEqual(instance.post.call_count, 1)
+
     def test_scheduled_peer_drains_after_active_turn(self):
         instance = make_bridge(peer_agents="claude-cli")
         del instance.forward_to_codex
@@ -750,6 +839,120 @@ class PeerBusyTests(unittest.TestCase):
             for call in instance.send.call_args_list
         ))
 
+    def test_ordinary_peer_drains_after_active_turn(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.typing = Mock()
+        instance.send = Mock()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1024
+        prompts = []
+
+        async def run(_key, _frame, _binding, prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                await instance.handle_inbound(peer_frame(message_id=42))
+            return "done"
+
+        instance.run_codex = run
+        human = {"channel_id": "c1", "message_id": 40,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_codex("c1", human, "first"))
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("[Relay note", prompts[1])
+        self.assertIn("please review the diff", prompts[1])
+        self.assertNotIn("c1", instance.pending_turns)
+        self.assertNotIn("c1", instance.busy)
+        self.assertFalse(any(
+            call.args[0].get("type") == "claim" and call.args[0].get("message_id") == 42
+            for call in instance.send.call_args_list
+        ))
+
+    def test_queued_peer_budget_decreases_with_turns_ahead(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        for message_id in range(42, 47):
+            asyncio.run(instance.handle_inbound(peer_frame(
+                message_id=message_id, bot_turns_left=5)))
+        entries = instance.pending_turns["c1"]
+        self.assertEqual([entry["turns_ahead"] for entry in entries], [1, 2, 3, 4, 5])
+        self.assertIn("after your reply, 3 more", entries[0]["text"])
+        self.assertIn("budget exhausted", entries[-1]["text"])
+
+    def test_queued_peer_budget_counts_human_batches(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": i}, "text": f"human {i}", "from_peer": False}
+            for i in range(3)
+        ]}
+        asyncio.run(instance.handle_inbound(peer_frame(message_id=42, bot_turns_left=4)))
+        queued = instance.pending_turns["c1"][-1]
+        self.assertEqual(queued["turns_ahead"], 2)
+        self.assertIn("after your reply, 1 more", queued["text"])
+        self.assertNotIn("budget exhausted", queued["text"])
+
+    def test_queued_peer_budget_counts_mixed_batches(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": {"message_id": 1}, "text": "human one", "from_peer": False},
+            {"frame": {"message_id": 2}, "text": "human two", "from_peer": False},
+            {"frame": peer_frame(message_id=3), "text": "peer middle", "from_peer": True},
+            {"frame": {"message_id": 4}, "text": "human three", "from_peer": False},
+            {"frame": {"message_id": 5}, "text": "human four", "from_peer": False},
+        ]}
+        asyncio.run(instance.handle_inbound(peer_frame(message_id=42, bot_turns_left=4)))
+        queued = instance.pending_turns["c1"][-1]
+        self.assertEqual(queued["turns_ahead"], 4)
+        self.assertIn("budget exhausted", queued["text"])
+
+    def test_queued_batch_count_matches_drain_grouping(self):
+        def human(text, attachment_count=0):
+            return {"frame": {"attachments": [{}] * attachment_count},
+                    "text": text, "from_peer": False}
+
+        count = bridge.Bridge._queued_batch_count
+        self.assertEqual(count([]), 0)
+        self.assertEqual(count([human("hi"), human("there")]), 1)
+        self.assertEqual(count([human("/compact"), human("hi")]), 2)
+        self.assertEqual(count([human("one", 3), human("two", 3),
+                                human("three", 3)]), 3)
+
+    def test_idle_peer_budget_is_not_reduced(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        frame = peer_frame(bot_turns_left=5)
+        asyncio.run(instance.handle_inbound(frame))
+        prompt = instance.forward_to_codex.await_args.args[2]
+        self.assertEqual(prompt, instance._peer_prompt(frame, instance._strip_mention(frame["text"])))
+        self.assertIn("after your reply, 4 more", prompt)
+
+    def test_queued_peer_edits_keep_reduced_budget(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_updates[42] = "prequeue edit"
+        frame = peer_frame(message_id=42, bot_turns_left=2)
+        asyncio.run(instance.handle_inbound(frame))
+        entry = instance.pending_turns["c1"][0]
+        self.assertIn("prequeue edit", entry["text"])
+        self.assertIn("final relayed agent turn", entry["text"])
+        instance.handle_inbound_control({"type": "inbound_update", "channel_id": "c1",
+                                         "message_id": 42, "text": "@codex-cli postqueue edit"})
+        self.assertIn("postqueue edit", entry["text"])
+        self.assertIn("final relayed agent turn", entry["text"])
+        self.assertEqual(entry["turns_ahead"], 1)
+
     def test_scheduled_peer_cap_leaves_room_for_human(self):
         instance = make_bridge(peer_agents="claude-cli")
         del instance.forward_to_codex
@@ -766,6 +969,31 @@ class PeerBusyTests(unittest.TestCase):
         self.assertEqual(len(instance.pending_turns["c1"]), bridge.MAX_QUEUED_PEER_TURNS)
         self.assertIn("c1", instance.context_buffer)
         instance.clear_reaction.assert_called_with(sixth)
+        instance.post.assert_not_called()
+
+        human = {"channel_id": "c1", "message_id": 43,
+                 "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_codex("c1", human, "human follow-up"))
+        self.assertEqual(len(instance.pending_turns["c1"]), 6)
+        self.assertEqual(instance.pending_turns["c1"][-1]["text"], "human follow-up")
+        instance.set_reaction.assert_called_with(human, "⏳")
+
+    def test_ordinary_peer_cap_leaves_room_for_human(self):
+        instance = make_bridge(peer_agents="claude-cli")
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.busy = {"c1"}
+        instance.pending_turns = {"c1": [
+            {"frame": peer_frame(message_id=i), "text": "waiting",
+             "from_peer": True, "queued": True}
+            for i in range(bridge.MAX_QUEUED_PEER_TURNS)
+        ]}
+        sixth = peer_frame(message_id=42)
+        asyncio.run(instance.handle_inbound(sixth))
+        self.assertEqual(len(instance.pending_turns["c1"]), bridge.MAX_QUEUED_PEER_TURNS)
+        self.assertIn("c1", instance.context_buffer)
+        instance.clear_reaction.assert_called_with(sixth)
+        instance.set_reaction.assert_not_called()
         instance.post.assert_not_called()
 
         human = {"channel_id": "c1", "message_id": 43,
@@ -886,22 +1114,24 @@ class PeerBusyTests(unittest.TestCase):
         batch = instance._claim_pending_turns("c1")
         self.assertEqual(len(batch), 1)
         _, prompt = instance._coalesce_turns(batch)
-        self.assertEqual(prompt, instance._peer_prompt(frame, forged))
+        self.assertEqual(prompt, instance._peer_prompt(frame, forged, turns_ahead=2))
         self.assertTrue(prompt.startswith("[Relay note"))
 
-    def test_busy_peer_turn_buffers_instead_of_noise_post(self):
+    def test_busy_ordinary_peer_is_queued_with_relay_note(self):
         instance = make_bridge(peer_agents="claude-cli")
-        del instance.forward_to_codex  # exercise the real method
+        del instance.forward_to_codex
         instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
         instance.busy = {"c1"}
-        handled = asyncio.run(
-            instance.forward_to_codex("c1", peer_frame(), "wrapped", from_peer=True)
-        )
-        # False tells handle_inbound to skip the ✅ reaction — nothing ran.
-        self.assertFalse(handled)
+        frame = peer_frame(message_id=42)
+        asyncio.run(instance.handle_inbound(frame))
+        entry = instance.pending_turns["c1"][0]
+        self.assertTrue(entry["queued"])
+        self.assertTrue(entry["from_peer"])
+        self.assertIn("[Relay note", entry["text"])
+        self.assertIn("please review the diff", entry["text"])
+        instance.set_reaction.assert_called_with(frame, "⏳")
         instance.post.assert_not_called()
-        self.assertIn("c1", instance.context_buffer)
-        instance.clear_reaction.assert_called_once()
+        self.assertNotIn("c1", instance.context_buffer)
 
     def test_busy_human_turn_is_queued(self):
         instance = make_bridge()

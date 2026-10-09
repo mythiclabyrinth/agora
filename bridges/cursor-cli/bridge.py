@@ -902,7 +902,7 @@ class Bridge:
                                     if entry.get("from_peer") else entry["text"])
                         edited = self._edited_text(original, frame.get("text"))
                         # Defensive: agent edits are rejected today; retain the peer relay note.
-                        entry["text"] = (self._peer_prompt(entry["frame"], edited)
+                        entry["text"] = (self._peer_prompt(entry["frame"], edited, entry.get("turns_ahead", 0))
                                          if entry.get("from_peer") else edited)
                         found = True
             elif kind == "inbound_delete":
@@ -929,6 +929,26 @@ class Bridge:
                 self.pending_deletes.pop(next(iter(self.pending_deletes)))
             while len(self.deleted_thread_roots) > 100:
                 self.deleted_thread_roots.pop(next(iter(self.deleted_thread_roots)))
+
+    @staticmethod
+    def _queued_batch_count(entries: list[dict]) -> int:
+        """Count the turns the drain loop will claim from a waiting queue."""
+        batches = 0
+        human_batch = False
+        attachment_count = 0
+        for entry in entries:
+            if entry.get("from_peer") or entry["text"].lstrip().startswith("/"):
+                batches += 1
+                human_batch = False
+                attachment_count = 0
+                continue
+            attachments = len(entry["frame"].get("attachments") or [])
+            if not human_batch or attachment_count + attachments > MAX_ATTACHMENTS:
+                batches += 1
+                human_batch = True
+                attachment_count = 0
+            attachment_count += attachments
+        return batches
 
     def _claim_pending_turns(self, key: str) -> list[dict]:
         queue = self.pending_turns.pop(key, [])
@@ -960,19 +980,24 @@ class Bridge:
             return original.split("\n", 1)[0] + "\n" + text
         return text
 
-    def _pending_entry(self, frame: dict, text: str, from_peer: bool = False) -> dict | None:
+    def _pending_entry(self, frame: dict, text: str, from_peer: bool = False, turns_ahead: int = 0) -> dict | None:
         message_id, thread_id = frame.get("message_id"), frame.get("thread_id")
         if message_id in self.pending_deletes or thread_id in self.deleted_thread_roots:
             self.clear_reaction(frame)
             return None
+        if from_peer and turns_ahead:
+            text = self._peer_prompt(frame, self._strip_mention(frame.get("text") or ""), turns_ahead)
         if isinstance(message_id, int):
             edited = self.pending_updates.pop(message_id, None)
             if edited is not None:
                 original = self._strip_mention(frame.get("text") or "") if from_peer else text
                 new_text = self._edited_text(original, edited)
                 # Defensive: agent edits are rejected today; retain the peer relay note.
-                text = self._peer_prompt(frame, new_text) if from_peer else new_text
-        return {"frame": frame, "text": text, "from_peer": from_peer}
+                text = self._peer_prompt(frame, new_text, turns_ahead) if from_peer else new_text
+        entry = {"frame": frame, "text": text, "from_peer": from_peer}
+        if from_peer and turns_ahead:
+            entry["turns_ahead"] = turns_ahead
+        return entry
 
     @staticmethod
     def _coalesce_turns(entries: list[dict]) -> tuple[dict, str]:
@@ -1000,7 +1025,7 @@ class Bridge:
             prompt += f"\n\n[Attachment limit: omitted {len(dropped)} file(s): {names}]"
         return frame, prompt
 
-    def _peer_prompt(self, frame: dict, text: str) -> str:
+    def _peer_prompt(self, frame: dict, text: str, turns_ahead: int = 0) -> str:
         """Wrap an allowlisted peer agent's message in a relay note.
 
         The note tells the model who is really speaking (another AI, not a
@@ -1014,6 +1039,8 @@ class Bridge:
         name = author.get("name") or author.get("id") or "another agent"
         handle = re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
         turns = frame.get("bot_turns_left")
+        if isinstance(turns, int):
+            turns = max(0, turns - turns_ahead)
         if isinstance(turns, int) and turns >= 2:
             budget = (
                 f"Agent-to-agent turn budget: after your reply, {turns - 1} more "
@@ -1515,6 +1542,8 @@ class Bridge:
         queued = self.pending_turns.pop(key, [])
         self.queue_full_notified.discard(key)
         for entry in queued:
+            if entry.get("from_peer"):
+                self._buffer_context(key, entry["frame"])
             self.clear_reaction(entry["frame"])
         proc = self.procs.get(key)
         if key not in self.busy:
@@ -1706,39 +1735,35 @@ class Bridge:
             self.set_reaction(frame, "✅", remember=False)
             return True
         if key in self.busy:
-            if from_peer and frame.get("scheduled") is not True:
-                # Don't burn a turn of the agent-to-agent relay budget on a
-                # notice post; the peer's ask still lands as context next turn.
-                self._buffer_context(key, frame)
-                self.clear_reaction(frame)
-                return False
             if from_peer and sum(
                 1 for entry in self.pending_turns.get(key, [])
                 if entry.get("from_peer")
             ) >= MAX_QUEUED_PEER_TURNS:
                 self._buffer_context(key, frame)
                 self.clear_reaction(frame)
-                log(f"scheduled peer turn for {key} saved as context (peer cap)")
+                log(f"peer turn for {key} saved as context (peer cap)")
                 return False
             if len(self.pending_turns.get(key, [])) >= MAX_QUEUED_TURNS:
                 if from_peer:
                     self._buffer_context(key, frame)
                     self.clear_reaction(frame)
-                    log(f"scheduled peer turn for {key} saved as context (queue full)")
+                    log(f"peer turn for {key} saved as context (queue full)")
                     return False
                 self.set_reaction(frame, "🚫", remember=False)
                 if key not in self.queue_full_notified:
                     self.queue_full_notified.add(key)
                     self.post(frame, f"Queue is full ({MAX_QUEUED_TURNS} messages). This message was not accepted; resend it after queued work starts.")
                 return False
-            entry = self._pending_entry(frame, text, from_peer=from_peer)
+            turns_ahead = 1 + self._queued_batch_count(self.pending_turns.get(key, [])) if from_peer else 0
+            entry = self._pending_entry(frame, text, from_peer=from_peer,
+                                        turns_ahead=turns_ahead)
             if entry is None:
                 return False
             self.pending_turns.setdefault(key, []).append(entry)
             entry["queued"] = True
             self.set_reaction(frame, "⏳")
-            if from_peer and frame.get("scheduled") is True:
-                log(f"queued scheduled peer turn for {key}")
+            if from_peer:
+                log(f"queued peer turn for {key}")
             return False
         entry = self._pending_entry(frame, text, from_peer=from_peer)
         if entry is None:
@@ -1753,8 +1778,11 @@ class Bridge:
                 if key in self.stop_requested:
                     self.stop_requested.discard(key)
                     for queued in entries:
+                        if queued.get("from_peer"):
+                            self._buffer_context(key, queued["frame"])
                         self.clear_reaction(queued["frame"])
-                    break
+                    entries = self._claim_pending_turns(key)
+                    continue
                 active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}
                 self.active_message_ids.update(active_ids)
                 binding = self.bindings.get(key)
