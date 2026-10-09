@@ -1515,6 +1515,8 @@ class Bridge:
         queued = self.pending_turns.pop(key, [])
         self.queue_full_notified.discard(key)
         for entry in queued:
+            if entry.get("from_peer"):
+                self._buffer_context(key, entry["frame"])
             self.clear_reaction(entry["frame"])
         proc = self.procs.get(key)
         if key not in self.busy:
@@ -1746,7 +1748,10 @@ class Bridge:
             while entries:
                 if key in self.stop_requested:
                     self.stop_requested.discard(key)
+                    entries += self.pending_turns.pop(key, [])
                     for queued in entries:
+                        if queued.get("from_peer"):
+                            self._buffer_context(key, queued["frame"])
                         self.clear_reaction(queued["frame"])
                     break
                 active_ids = {e["frame"].get("message_id") for e in entries if isinstance(e["frame"].get("message_id"), int)}

@@ -592,6 +592,56 @@ class PeerBusyTests(unittest.TestCase):
         instance.clear_reaction.assert_called_with(frame)
         self.assertIn("removed 1", reply)
 
+    def test_stop_buffers_queued_peer_but_drops_queued_human(self):
+        instance = make_bridge()
+        instance.busy = {"c1"}
+        peer = peer_frame(message_id=42)
+        human = {"channel_id": "c1", "message_id": 43,
+                 "text": "human follow-up", "author": {"type": "user", "name": "Tom"}}
+        instance.pending_turns = {"c1": [
+            {"frame": peer, "text": "peer follow-up", "from_peer": True},
+            {"frame": human, "text": "human follow-up", "from_peer": False},
+        ]}
+        instance._cmd_stop("c1")
+        self.assertNotIn("c1", instance.pending_turns)
+        self.assertEqual(instance.context_buffer["c1"],
+                         [f"{peer['author']['name']}: {peer['text']}"])
+        instance.clear_reaction.assert_any_call(peer)
+        instance.clear_reaction.assert_any_call(human)
+
+    def test_stop_with_only_humans_preserves_context_buffer(self):
+        instance = make_bridge()
+        instance.busy = {"c1"}
+        instance.context_buffer["c1"] = ["earlier context"]
+        human = {"channel_id": "c1", "message_id": 43,
+                 "text": "human follow-up", "author": {"type": "user", "name": "Tom"}}
+        instance.pending_turns = {"c1": [
+            {"frame": human, "text": "human follow-up", "from_peer": False},
+        ]}
+        instance._cmd_stop("c1")
+        self.assertEqual(instance.context_buffer["c1"], ["earlier context"])
+        instance.clear_reaction.assert_called_with(human)
+
+    def test_stop_requested_buffers_claimed_peer_turn(self):
+        instance = make_bridge()
+        del instance.forward_to_codex
+        instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
+        instance.typing = Mock()
+        instance.stop_requested = {"c1"}
+        peer = peer_frame(message_id=42)
+        instance.pending_turns = {"c1": [
+            {"frame": peer, "text": "peer follow-up", "from_peer": True, "queued": True},
+        ]}
+        human = {"channel_id": "c1", "message_id": 43,
+                 "text": "human follow-up", "author": {"type": "user", "name": "Tom"}}
+        asyncio.run(instance.forward_to_codex("c1", human, "human follow-up"))
+        self.assertEqual(instance.context_buffer["c1"],
+                         [f"{peer['author']['name']}: {peer['text']}"])
+        instance.clear_reaction.assert_any_call(peer)
+        instance.clear_reaction.assert_any_call(human)
+        self.assertNotIn("c1", instance.pending_turns)
+        self.assertNotIn("c1", instance.busy)
+
     def test_stop_before_child_registration_cancels_busy_run(self):
         instance = make_bridge()
         instance.busy = {"c1"}
@@ -724,7 +774,7 @@ class PeerBusyTests(unittest.TestCase):
         instance.bindings = {"c1": {"cwd": "/tmp", "session_id": "s1"}}
         instance.busy = {"c1"}
         instance.pending_turns = {"c1": [
-            {"frame": {"message_id": i}, "text": str(i)}
+            {"frame": {"message_id": i}, "text": str(i), "from_peer": False}
             for i in range(bridge.MAX_QUEUED_TURNS)
         ]}
         peer = peer_frame(message_id=42)

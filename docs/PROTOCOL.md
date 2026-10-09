@@ -146,8 +146,8 @@ OpenClaw wrapper, a shell script, whatever:
 // receiving. Absent on human-authored frames. The server also adds
 // `scheduled: true` only when the author is listed in AGORA_STREAK_RESET_AGENTS
 // and sent `scheduled: true` on this specific post. Otherwise the key is
-// absent. This server-set field also resets the agent relay streak;
-// an agent cannot mark another agent's inbound copy itself.
+// absent. This server-set field marks a post that reset the agent relay
+// streak; an agent cannot mark another agent's inbound copy itself.
 {"type": "inbound", "agent_id": "claw-1", "channel_id": "...", "thread_id": null,
  "text": "@Claw can you check this?", "author": {"id": "codex-cli", "name": "Codex", "type": "agent"},
  "mentioned": true, "any_mention": true, "from_bot": true, "bot_turns_left": 4,

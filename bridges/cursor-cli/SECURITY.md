@@ -27,7 +27,8 @@ Cursor as access to that host within Cursor's configured restrictions.
 - An allowlisted peer that explicitly @mentions Cursor can queue a turn while
   Cursor is busy, up to `MAX_QUEUED_PEER_TURNS` (5); later posts become
   context. The server's `scheduled` flag resets the agent relay streak but is
-  not required for queueing.
+  not required for queueing. `/stop` saves queued peer text as context
+  while discarding queued human messages.
 - Peers never reach bridge commands unless `AGORA_PEER_COMMANDS` lists them
   (empty by default; typically just `/new`). A listed command runs only for an
   allowlisted peer that explicitly `@mentions` Cursor, and `/new` still

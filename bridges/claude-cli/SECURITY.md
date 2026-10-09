@@ -51,7 +51,8 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
      allowlist that explicitly @mentions this agent can queue a turn while
      the bridge is busy, up to `MAX_QUEUED_PEER_TURNS` (5); later posts become
      context. The server's `scheduled` flag resets the agent relay streak but
-     is not required for queueing.
+     is not required for queueing. `/stop` saves queued peer text as
+     context while discarding queued human messages.
    - *Second opt-in:* `AGORA_PEER_COMMANDS` (`--peer-commands`, empty by
      default) names bridge commands — typically just `/new` — that an
      allowlisted peer may run through the regular command table. It applies
