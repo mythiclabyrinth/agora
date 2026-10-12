@@ -1,7 +1,8 @@
 /* Ephemeral per-channel activity (typing + progress bubbles). These are
    transient WS frames, never persisted, so they live outside the query
-   cache. Mirrors hub.rs record_activity: a typing=false frame (or the
-   agent's actual reply) clears that agent's typing row and progress lines. */
+   cache. The client clears an agent's typing and progress channel-wide on a
+   reply; the hub clears only progress for the posted thread. A re-seed can
+   restore rows for work still in flight. */
 
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";

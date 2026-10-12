@@ -1587,6 +1587,9 @@ impl Hub {
         }
         let streak = {
             let mut st = self.state.lock().unwrap();
+            // A reply finishes progress for its thread. Typing may continue
+            // through a mid-turn post, and another thread may still be active.
+            drop_agent_thread_progress(&mut st, channel_id, agent_id, thread_id);
             let key = (channel_id.to_string(), thread_id.unwrap_or(0));
             if trusted_scheduled {
                 st.bot_streak.insert(key.clone(), 0);
@@ -3017,6 +3020,23 @@ fn drop_agent_activity(st: &mut HubState, channel_id: &str, agent_id: &str) {
     if let Some(chan) = st.activity.get_mut(channel_id) {
         chan.typing.remove(agent_id);
         chan.progress.retain(|_, e| e["agent_id"].as_str() != Some(agent_id));
+        if chan.typing.is_empty() && chan.progress.is_empty() {
+            st.activity.remove(channel_id);
+        }
+    }
+}
+
+fn drop_agent_thread_progress(
+    st: &mut HubState,
+    channel_id: &str,
+    agent_id: &str,
+    thread_id: Option<i64>,
+) {
+    if let Some(chan) = st.activity.get_mut(channel_id) {
+        chan.progress.retain(|_, event| {
+            event["agent_id"].as_str() != Some(agent_id)
+                || event["thread_id"].as_i64() != thread_id
+        });
         if chan.typing.is_empty() && chan.progress.is_empty() {
             st.activity.remove(channel_id);
         }
@@ -5234,6 +5254,60 @@ mod tests {
         assert_eq!(ev["type"], "message");
         assert_eq!(ev["message"]["author_id"], "bot-a");
         assert_eq!(h.store.messages(&cid, None, None, 10).len(), 1);
+        assert!(h.channel_activity(&cid)["progress"].as_array().unwrap().is_empty());
+        assert!(!h.activity_snapshot().contains_key(&cid));
+    }
+
+    #[test]
+    fn agent_post_clears_only_its_activity_in_that_channel() {
+        let h = hub();
+        let cid = setup_channel(&h, &["bot-a", "bot-b"]);
+        let other_cid = setup_channel(&h, &["bot-a"]);
+        let thread_a = h.store.add_message(&cid, "first", "user", "tom", None, None, &[])["id"]
+            .as_i64().unwrap();
+        let thread_b = h.store.add_message(&cid, "second", "user", "tom", None, None, &[])["id"]
+            .as_i64().unwrap();
+        for (channel_id, agent_id, handle, thread_id) in [
+            (&cid, "bot-a", "a-1", thread_a),
+            (&cid, "bot-a", "a-2", thread_b),
+            (&cid, "bot-b", "b-1", thread_a),
+            (&other_cid, "bot-a", "a-other", thread_a),
+        ] {
+            h.post_transient(channel_id, json!({
+                "type": "progress", "channel_id": channel_id,
+                "agent_id": agent_id, "handle": handle, "text": "working",
+                "thread_id": thread_id,
+            }));
+            h.post_transient(channel_id, json!({
+                "type": "typing", "channel_id": channel_id,
+                "agent_id": agent_id, "active": true,
+            }));
+        }
+
+        h.post_agent_message("bot-a", "Bot A", &cid, "done", Some(thread_a));
+
+        let activity = h.channel_activity(&cid);
+        let typing = activity["typing"].as_array().unwrap();
+        assert_eq!(typing.len(), 2);
+        assert!(typing.iter().any(|event| event["agent_id"] == "bot-a"));
+        assert!(typing.iter().any(|event| event["agent_id"] == "bot-b"));
+        let handles: HashSet<_> = activity["progress"].as_array().unwrap().iter()
+            .filter_map(|event| event["handle"].as_str()).collect();
+        assert_eq!(handles, HashSet::from(["a-2", "b-1"]));
+        let other_activity = h.channel_activity(&other_cid);
+        assert_eq!(other_activity["typing"].as_array().unwrap().len(), 1);
+        assert_eq!(other_activity["progress"].as_array().unwrap().len(), 1);
+
+        h.post_transient(&cid, json!({
+            "type": "progress", "channel_id": cid,
+            "agent_id": "bot-a", "handle": "a-root", "text": "working",
+            "thread_id": null,
+        }));
+        h.post_agent_message("bot-a", "Bot A", &cid, "top-level done", None);
+        let activity = h.channel_activity(&cid);
+        let handles: HashSet<_> = activity["progress"].as_array().unwrap().iter()
+            .filter_map(|event| event["handle"].as_str()).collect();
+        assert_eq!(handles, HashSet::from(["a-2", "b-1"]));
     }
 
     #[test]

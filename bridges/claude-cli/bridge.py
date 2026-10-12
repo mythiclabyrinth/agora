@@ -1043,6 +1043,7 @@ class Bridge:
         self.account_auth_problems: dict[str, str] = {}
         self._shutting_down = False
         self.busy: set[str] = set()
+        self._stranded_progress: dict[str, dict] = {}
         self.thread_fork_locks: dict[str, dict] = {}
         self.pending_turns: dict[str, list[dict]] = {}
         # Results emitted after the foreground result are posted only after
@@ -1458,9 +1459,9 @@ class Bridge:
         self.send(self.last_usage_frame)
 
     def post(self, key_frame: dict, text: str, tldr: str | None = None,
-             attachments: list[dict] | None = None) -> None:
+             attachments: list[dict] | None = None) -> bool:
         if key_frame.get("_auto_compact"):
-            return
+            return False
         base = {
             "type": "post",
             "agent_id": self.agent_id,
@@ -1480,6 +1481,7 @@ class Bridge:
                 frame["attachments"] = attachments
             self.send(frame)
             first = False
+        return not first
 
     def typing(self, frame: dict, active: bool) -> None:
         if frame.get("_auto_compact"):
@@ -1491,10 +1493,25 @@ class Bridge:
             "thread_id": frame.get("thread_id"),
             "active": active,
         })
+        if not active:
+            self._stranded_progress.pop(frame["channel_id"], None)
 
-    def progress(self, frame: dict, text: str) -> None:
-        if frame.get("_auto_compact"):
+    def _flush_stranded_progress(self, channel_id: str) -> None:
+        frame = self._stranded_progress.get(channel_id)
+        if frame is None:
             return
+        if any(key == channel_id or key.startswith(f"{channel_id}:")
+               for key in self.busy):
+            return
+        if any(run.alive and run.frame["channel_id"] == channel_id
+               for run in self.live.values()):
+            return
+        self._stranded_progress.pop(channel_id, None)
+        self.typing(frame, False)
+
+    def progress(self, frame: dict, text: str) -> bool:
+        if frame.get("_auto_compact"):
+            return False
         self.send({
             "type": "progress",
             "agent_id": self.agent_id,
@@ -1503,6 +1520,7 @@ class Bridge:
             "handle": f"claude:{frame['channel_id']}:{frame.get('thread_id') or 0}",
             "text": text,
         })
+        return True
 
     def reaction(self, frame: dict, emoji: str, action: str = "add") -> None:
         """React to the inbound message as this agent."""
@@ -3048,6 +3066,7 @@ class Bridge:
             self._post_deferred_followups(key)
             self.busy.discard(key)
             self.typing(typing_frame, False)
+            self._flush_stranded_progress(typing_frame["channel_id"])
         return True
 
     # -------------------------------------------------------- history asks
@@ -3874,6 +3893,7 @@ class Bridge:
         assert proc.stdout is not None
         started = last_event = time.monotonic()
         last_progress = 0.0
+        progress_pending = False
         # Same ambiguity the main loop handles: a result carries nothing that
         # says which prompt it answers, so a blank one is held rather than
         # handed to a waiter that is probably owed real text.
@@ -3899,6 +3919,8 @@ class Bridge:
                         waiter = live.waiters.popleft()
                         if not waiter["fut"].done():
                             waiter["fut"].set_result(blank_held)
+                            if not waiter["frame"].get("_auto_compact"):
+                                progress_pending = False
                         blank_held, blank_deadline = None, None
                         last_event = time.monotonic()
                         continue
@@ -3915,8 +3937,10 @@ class Bridge:
                             f"owed={sorted(live.owed_reports)} "
                             f"ahead={[w['ahead'] for w in live.waiters]}")
                         if live.owed_reports and not live.user_stopped:
-                            self._post_timeout_notice(live, time.monotonic() - live.started)
-                            live.notice_posted = True
+                            live.notice_posted = self._post_timeout_notice(
+                                live, time.monotonic() - live.started)
+                            if live.notice_posted:
+                                progress_pending = False
                         if live.owed_reports:
                             live.owed_reports.clear()
                     waited = time.monotonic() - started
@@ -3993,7 +4017,8 @@ class Bridge:
                     snippet = self._progress_snippet(event)
                     if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
                         last_progress = time.monotonic()
-                        self.progress(target, snippet)
+                        if self.progress(target, snippet):
+                            progress_pending = True
                 elif kind == "control_request":
                     perm_tasks.append(asyncio.create_task(
                         self._handle_control_request(key, target, proc, event, live.perm_ids)
@@ -4059,11 +4084,14 @@ class Bridge:
                             waiter = live.waiters.popleft()
                             if not waiter["fut"].done():
                                 waiter["fut"].set_result(text)
+                                if not waiter["frame"].get("_auto_compact"):
+                                    progress_pending = False
                             else:
                                 # Its turn was cancelled between appending and
                                 # now; post rather than discard the answer.
                                 live.reported = True
-                                self._post_reply(live.frame, live.binding, text)
+                                if self._post_reply(live.frame, live.binding, text):
+                                    progress_pending = False
                         else:
                             # Backgrounded work reporting in, so it becomes its
                             # own message. Formatted against the binding the
@@ -4076,7 +4104,8 @@ class Bridge:
                                 f"owed={sorted(live.owed_reports)} "
                                 f"ahead={[w['ahead'] for w in live.waiters]}")
                             live.reported = True
-                            self._post_reply(live.frame, live.binding, text)
+                            if self._post_reply(live.frame, live.binding, text):
+                                progress_pending = False
                 if (kind == "result" and not live.waiters and not live.tasks
                         and not live.owed_reports and blank_held is None):
                     log(f"live run for {key} has no background work left — releasing")
@@ -4088,6 +4117,14 @@ class Bridge:
         finally:
             live.closing = True
             await self._retire_live_run(live, perm_tasks)
+            # A follow-up can emit progress and then exit without posting.
+            # Keep the clear until the last turn or live run in the channel ends.
+            channel_id = live.frame["channel_id"]
+            if progress_pending and not live.notice_posted:
+                self._stranded_progress[channel_id] = {
+                    "channel_id": channel_id, "thread_id": live.frame.get("thread_id"),
+                }
+            self._flush_stranded_progress(channel_id)
 
     async def _retire_live_run(self, live: LiveRun, perm_tasks: list[asyncio.Task]) -> None:
         key, proc = live.key, live.proc
@@ -4105,7 +4142,8 @@ class Bridge:
         # reader's EOF path, which used to drop its outstanding work silently.
         if ((live.tasks or live.owed_reports or not live.reported)
                 and not live.user_stopped and not live.notice_posted):
-            self._post_timeout_notice(live, time.monotonic() - live.started)
+            live.notice_posted = self._post_timeout_notice(
+                live, time.monotonic() - live.started)
         while live.waiters:
             fut = live.waiters.popleft()["fut"]
             if not fut.done():
@@ -4214,7 +4252,7 @@ class Bridge:
         return (f"Stopped — {live.ended_reason}, so this session was replaced. "
                 "Send that message again to run it on the new one.")
 
-    def _post_timeout_notice(self, live: LiveRun, waited: float) -> None:
+    def _post_timeout_notice(self, live: LiveRun, waited: float) -> bool:
         """State what happened, without claiming a promise that may never have
         been made: plenty of backgrounded work (a dev server, a watcher) has no
         completion to report, and telling its owner a follow-up "isn't coming"
@@ -4223,14 +4261,14 @@ class Bridge:
                           for t in live.tasks)
         minutes = max(1, round(waited / 60))
         what = f" for: {names}" if names else ""
-        self.post(live.frame, (
+        return self.post(live.frame, (
             f"Stopped watching background work after {minutes} min, so nothing "
             f"further will be reported here{what}. Message me if you want me to "
             "pick it back up."
         ))
 
     def _post_reply(self, frame: dict, binding: dict, reply: str,
-                    notice: str | None = None) -> None:
+                    notice: str | None = None) -> bool:
         """Format a model reply the channel's way and post it."""
         # Last line of defence: a turn asking for history is served by
         # _serve_history_asks and never reaches here, but a backgrounded
@@ -4251,7 +4289,7 @@ class Bridge:
             body = "(no reply — the run ended without any text)"
         if notice:
             body = (body + "\n\n" if body else "") + notice
-        self.post(frame, body, tldr if has_reply_body else None, attachments)
+        return self.post(frame, body, tldr if has_reply_body else None, attachments)
 
     def _mark_deferred_followups_ready(self, key: str) -> None:
         """Mark tail results safe to post after their foreground reply."""

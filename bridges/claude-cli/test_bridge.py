@@ -279,6 +279,7 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.context_buffer = {}
     instance.context_buffer_limit = 50
     instance.busy = set()
+    instance._stranded_progress = {}
     instance.pending_turns = {}
     instance.deferred_followups = {}
     instance.auto_compact_tokens = 0
@@ -2137,7 +2138,9 @@ async def hand_off(b, lines, feed_delay=0.0):
 
 def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
                               pre_inject=None, first_frame=None, inject_frame=None,
-                              compact_before_inject=False):
+                              compact_before_inject=False, busy_keys=(),
+                              sibling_live_channel=None, wait_for_idle=False,
+                              post_reply_result=None):
     """Drive run_claude() and then let the follow-up loop drain the stream.
 
     Returns ``(first_reply, bridge, injected_reply)``. Unlike run_bridge this
@@ -2159,6 +2162,12 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
     b.tldr_min_chars = 0
     b.bindings = {"k": {"cwd": "/tmp"}}
     b.progress = Mock()
+    b.typing = Mock()
+    if post_reply_result is not None:
+        b._post_reply = Mock(return_value=post_reply_result)
+    b.busy.update(busy_keys)
+    if sibling_live_channel is not None:
+        b.live["sibling"] = Mock(frame={"channel_id": sibling_live_channel}, alive=True)
     b._append_system_args = Mock(return_value=[])
     b._stage_attachments = Mock(return_value=("hi", [], None))
     b._save_state = Mock()
@@ -2208,7 +2217,8 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
             injected = await b.run_claude("k", inject_frame or {"channel_id": "c1"},
                                           b.bindings["k"], "follow up")
         if live is not None and live.reader is not None:
-            proc.stdout.feed_eof()
+            if not wait_for_idle:
+                proc.stdout.feed_eof()
             await asyncio.wait_for(live.reader, 10)
         return first, injected
 
@@ -2217,6 +2227,58 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
 
 
 class AsyncFollowupTests(unittest.TestCase):
+    def test_activity_frame_returns_reflect_what_was_sent(self):
+        b = make_bridge()
+        del b.post
+        b.send = Mock()
+        frame = {"channel_id": "c1"}
+        hidden = {"channel_id": "c1", "_auto_compact": True}
+        self.assertFalse(b.progress(hidden, "working"))
+        self.assertFalse(b.post(hidden, "answer"))
+        self.assertFalse(b.post(frame, ""))
+        b.send.assert_not_called()
+        self.assertTrue(b.progress(frame, "working"))
+        self.assertTrue(b.post(frame, "answer"))
+        self.assertEqual(b.send.call_count, 2)
+
+    def test_typing_clear_removes_stranded_marker_without_second_flush(self):
+        b = make_bridge()
+        b.send = Mock()
+        b._stranded_progress["c1"] = {"channel_id": "c1"}
+        b.typing({"channel_id": "c1"}, False)
+        b._flush_stranded_progress("c1")
+        self.assertNotIn("c1", b._stranded_progress)
+        b.send.assert_called_once()
+
+    def test_hidden_typing_clear_needs_real_flush(self):
+        b = make_bridge()
+        b.send = Mock()
+        b._stranded_progress["c1"] = {"channel_id": "c1"}
+        b.typing({"channel_id": "c1", "_auto_compact": True}, False)
+        self.assertIn("c1", b._stranded_progress)
+        b.send.assert_not_called()
+        b._flush_stranded_progress("c1")
+        self.assertNotIn("c1", b._stranded_progress)
+        self.assertEqual(b.send.call_args.args[0]["active"], False)
+        b.send.assert_called_once()
+
+    def test_stranded_flush_respects_busy_and_live_channel(self):
+        b = make_bridge()
+        b.send = Mock()
+        b._stranded_progress["c1"] = {"channel_id": "c1"}
+        b.busy.add("c1:42")
+        b._flush_stranded_progress("c1")
+        b.send.assert_not_called()
+        b.busy.remove("c1:42")
+        b.busy.add("c10")
+        b.live["other"] = Mock(alive=True, frame={"channel_id": "c1"})
+        b._flush_stranded_progress("c1")
+        b.send.assert_not_called()
+        b.live["other"].alive = False
+        b._flush_stranded_progress("c1")
+        b.send.assert_called_once()
+        self.assertNotIn("c1", b._stranded_progress)
+
     def test_queued_background_result_after_empty_inventory_is_posted(self):
         """A result queued behind ours survives the empty-task inventory race."""
         b = run_forward_with_tail([
@@ -2488,6 +2550,175 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in b.post.call_args_list],
                          ["merge and CI complete"])
         self.assertEqual(b.live, {})
+
+    def test_followup_progress_without_post_clears_on_release(self):
+        first, b, _ = run_bridge_with_followups(
+            [_tasks("research"), _result("started"),
+             _tool("Bash", "x"), _tasks(), _result("")])
+        self.assertEqual(first, "started")
+        self.assertEqual(b.progress.call_count, 1)
+        b.post.assert_not_called()
+        b.typing.assert_called_once_with({"channel_id": "c1", "thread_id": None}, False)
+
+    def test_followup_release_preserves_active_turn_in_same_channel(self):
+        for busy_key in ("c1", "c1:42"):
+            with self.subTest(busy_key=busy_key):
+                _, b, _ = run_bridge_with_followups(
+                    [_tasks("research"), _result("started"),
+                     _tool("Bash", "x"), _tasks(), _result("")],
+                    busy_keys=(busy_key,))
+                self.assertEqual(b.progress.call_count, 1)
+                b.typing.assert_not_called()
+
+    def test_followup_release_preserves_sibling_live_run(self):
+        _, b, _ = run_bridge_with_followups(
+            [_tasks("research"), _result("started"),
+             _tool("Bash", "x"), _tasks(), _result("")],
+            sibling_live_channel="c1")
+        self.assertEqual(b.progress.call_count, 1)
+        b.typing.assert_not_called()
+        self.assertIn("c1", b._stranded_progress)
+
+        async def release_sibling():
+            proc = _fake_proc([], returncode=None, eof_after_feed=True)
+            live = bridge.LiveRun(
+                proc, "sibling", {"channel_id": "c1"}, b.bindings["k"],
+                (None, "acceptEdits", b.account), [])
+            live.reported = True
+            b.live["sibling"] = live
+            await b._followup_loop(live, [])
+
+        asyncio.run(release_sibling())
+        b.typing.assert_called_once_with({"channel_id": "c1", "thread_id": None}, False)
+        self.assertNotIn("c1", b._stranded_progress)
+
+    def test_auto_compact_turn_flushes_stranded_progress(self):
+        b = make_bridge()
+        del b.forward_to_claude
+        b.bindings["c1"] = {"cwd": "/tmp", "session_id": "sess-old"}
+        b._stranded_progress["c1"] = {"channel_id": "c1", "thread_id": None}
+        b.send = Mock()
+        b.run_claude = AsyncMock(return_value="done")
+        b._post_reply = Mock()
+
+        asyncio.run(b.forward_to_claude(
+            "c1", {"channel_id": "c1", "_auto_compact": True}, "/compact focus"))
+
+        typing_frames = [call.args[0] for call in b.send.call_args_list
+                         if call.args[0].get("type") == "typing"]
+        self.assertEqual(typing_frames, [{
+            "type": "typing", "agent_id": "claude-cli", "channel_id": "c1",
+            "thread_id": None, "active": False,
+        }])
+        self.assertNotIn("c1", b._stranded_progress)
+
+    def test_blank_held_waiter_claim_resets_progress(self):
+        async def run():
+            b = followup_bridge(idle=0.2)
+            b.typing = Mock()
+            proc = _fake_proc([_tool("Bash", "x"), _result("")], returncode=None)
+            live = bridge.LiveRun(
+                proc, "k", {"channel_id": "c1"}, b.bindings["k"],
+                (None, "acceptEdits", b.account), [])
+            live.reported = True
+            b.live["k"] = live
+            waiter = asyncio.get_running_loop().create_future()
+            live.waiters.append({"fut": waiter, "frame": live.frame, "ahead": 0})
+            with patch.object(bridge, "BLANK_RESULT_IDLE_GRACE", 0.01):
+                reader = asyncio.create_task(b._followup_loop(live, []))
+                self.assertEqual(await asyncio.wait_for(waiter, 1), "")
+                proc.stdout.feed_eof()
+                await asyncio.wait_for(reader, 1)
+            self.assertEqual(b.progress.call_count, 1)
+            b.typing.assert_not_called()
+
+        asyncio.run(run())
+
+    def test_followup_post_resets_progress_before_release(self):
+        _, b, _ = run_bridge_with_followups(
+            [_tasks("research"), _result("started"),
+             _tool("Bash", "x"), _tasks(), _result("report")])
+        self.assertEqual(b.progress.call_count, 1)
+        b.post.assert_called_once()
+        b.typing.assert_not_called()
+
+    def test_followup_waiter_claim_resets_progress_before_release(self):
+        _, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            inject=[_tool("Bash", "x"), _result("answer"),
+                    _tasks(), _result("")])
+        self.assertEqual(injected, "answer")
+        self.assertEqual(b.progress.call_count, 1)
+        b.typing.assert_not_called()
+
+    def test_auto_compact_waiter_keeps_prior_progress_pending(self):
+        _, b, injected = run_bridge_with_followups(
+            [_tasks("research"), _result("started")],
+            pre_inject=[_tool("Bash", "x")],
+            inject=[_result("answer"), _tasks(), _result("")],
+            inject_frame={"channel_id": "c1", "_auto_compact": True})
+        self.assertEqual(injected, "answer")
+        self.assertEqual(b.progress.call_count, 1)
+        b.typing.assert_called_once_with({"channel_id": "c1", "thread_id": None}, False)
+
+    def test_unsent_followup_reply_keeps_progress_pending(self):
+        _, b, _ = run_bridge_with_followups(
+            [_tasks("research"), _result("started"),
+             _tool("Bash", "x"), _tasks(), _result("report")],
+            post_reply_result=False)
+        self.assertEqual(b.progress.call_count, 1)
+        b._post_reply.assert_called_once()
+        b.typing.assert_called_once_with({"channel_id": "c1", "thread_id": None}, False)
+
+    def test_eof_retire_notice_marks_posted_and_does_not_clear_again(self):
+        async def run():
+            b = followup_bridge()
+            b.typing = Mock()
+            reply, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            self.assertEqual(reply, "started")
+            live = b.live["k"]
+            proc.stdout.feed_data((_tool("Bash", "x") + "\n").encode())
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(live.reader, 1)
+            self.assertTrue(live.notice_posted)
+            self.assertEqual(b.progress.call_count, 1)
+            b.post.assert_called_once()
+            b.typing.assert_not_called()
+
+        asyncio.run(run())
+
+    def test_unsent_auto_compact_notice_still_clears_progress(self):
+        async def run():
+            b = followup_bridge()
+            del b.post
+            del b.progress
+            b.send = Mock()
+            b.typing = Mock()
+            proc = _fake_proc([_tool("Bash", "x")], returncode=None,
+                              eof_after_feed=True)
+            live = bridge.LiveRun(
+                proc, "k", {"channel_id": "c1", "_auto_compact": True},
+                b.bindings["k"], (None, "acceptEdits", b.account), [])
+            b.live["k"] = live
+            waiter = asyncio.get_running_loop().create_future()
+            live.waiters.append({"fut": waiter, "frame": {"channel_id": "c1"}})
+            await b._followup_loop(live, [])
+            self.assertFalse(live.notice_posted)
+            self.assertEqual([call.args[0]["type"] for call in b.send.call_args_list],
+                             ["progress"])
+            b.typing.assert_called_once_with({"channel_id": "c1", "thread_id": None}, False)
+            self.assertIsInstance(waiter.exception(), RuntimeError)
+
+        asyncio.run(run())
+
+    def test_followup_timeout_notice_resets_progress_before_release(self):
+        _, b, _ = run_bridge_with_followups(
+            [_tasks("research"), _result("started"),
+             _tool("Bash", "x"), _tasks()],
+            idle=0.05, wait_for_idle=True)
+        self.assertEqual(b.progress.call_count, 1)
+        b.post.assert_called_once()
+        b.typing.assert_not_called()
 
     def test_stopped_mid_turn_task_does_not_steal_next_comment(self):
         first, b, injected = run_bridge_with_followups(

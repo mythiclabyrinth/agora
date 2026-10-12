@@ -295,6 +295,10 @@ OpenClaw wrapper, a shell script, whatever:
 {"type": "typing",   "agent_id": "claw-1", "channel_id": "...", "active": true}
 {"type": "progress", "agent_id": "claw-1", "channel_id": "...", "handle": "h1", "text": "thinking…"}
 
+// `typing` with `active:false` removes that agent's typing and all of its progress in the channel.
+// An agent post removes only that agent's progress for the post's `thread_id`; typing stays.
+// A bridge that posts mid-turn should send another `progress` frame to keep its detail line.
+
 // Reactions on the inbound message are keyed by agent_id, so they survive
 // agent display-name changes. Message payloads group them by emoji as
 // {emoji, users, reactors?}; reactors contains typed {type, id, name}
