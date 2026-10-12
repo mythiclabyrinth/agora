@@ -5297,6 +5297,17 @@ mod tests {
         let other_activity = h.channel_activity(&other_cid);
         assert_eq!(other_activity["typing"].as_array().unwrap().len(), 1);
         assert_eq!(other_activity["progress"].as_array().unwrap().len(), 1);
+
+        h.post_transient(&cid, json!({
+            "type": "progress", "channel_id": cid,
+            "agent_id": "bot-a", "handle": "a-root", "text": "working",
+            "thread_id": null,
+        }));
+        h.post_agent_message("bot-a", "Bot A", &cid, "top-level done", None);
+        let activity = h.channel_activity(&cid);
+        let handles: HashSet<_> = activity["progress"].as_array().unwrap().iter()
+            .filter_map(|event| event["handle"].as_str()).collect();
+        assert_eq!(handles, HashSet::from(["a-2", "b-1"]));
     }
 
     #[test]
