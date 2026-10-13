@@ -6,17 +6,20 @@ type Zoom = { scale: number; x: number; y: number };
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 
-function clampPan(scale: number, x: number, y: number, image: HTMLImageElement, stage: HTMLElement) {
+function clampAxis(size: number, viewport: number, stageCenter: number, value: number) {
+  if (size <= viewport) {
+    return Math.max(size / 2, Math.min(viewport - size / 2, stageCenter)) - stageCenter;
+  }
+  return Math.max(viewport - size / 2, Math.min(size / 2, stageCenter + value)) - stageCenter;
+}
+
+function clampPan(scale: number, x: number, y: number, image: HTMLImageElement, stage: HTMLElement, overlay: HTMLElement) {
   const iw = image.clientWidth * scale;
   const ih = image.clientHeight * scale;
-  const maxX = Math.max(0, (iw - window.innerWidth) / 2);
-  const maxY = Math.max(0, (ih - window.innerHeight) / 2);
   const rect = stage.getBoundingClientRect();
-  const centerOffsetX = rect.left + rect.width / 2 - window.innerWidth / 2;
-  const centerOffsetY = rect.top + rect.height / 2 - window.innerHeight / 2;
   return {
-    x: iw > window.innerWidth ? Math.max(-maxX, Math.min(maxX, x + centerOffsetX)) - centerOffsetX : 0,
-    y: ih > window.innerHeight ? Math.max(-maxY, Math.min(maxY, y + centerOffsetY)) - centerOffsetY : 0,
+    x: clampAxis(iw, overlay.clientWidth, rect.left + rect.width / 2, x),
+    y: clampAxis(ih, overlay.clientHeight, rect.top + rect.height / 2, y),
   };
 }
 
@@ -58,8 +61,8 @@ export function ImageLightbox({
   onNextRef.current = gallery && index < total - 1 ? onNext : undefined;
 
   const commit = useCallback((next: Zoom) => {
-    const value = imageRef.current && stageRef.current
-      ? { ...next, ...clampPan(next.scale, next.x, next.y, imageRef.current, stageRef.current) }
+    const value = imageRef.current && stageRef.current && lightboxRef.current
+      ? { ...next, ...clampPan(next.scale, next.x, next.y, imageRef.current, stageRef.current, lightboxRef.current) }
       : next;
     zoomRef.current = value;
     setZoom(value);
@@ -114,11 +117,18 @@ export function ImageLightbox({
           };
           const stage = stageRef.current;
           const image = imageRef.current;
-          const bounded = stage && image ? clampPan(next.scale, next.x, next.y, image, stage) : next;
-          const canPan = bounded.x !== current.x || bounded.y !== current.y;
-          if (canPan || event.key === "ArrowUp" || event.key === "ArrowDown") {
+          const overlay = lightboxRef.current;
+          const bounded = stage && image && overlay ? clampPan(next.scale, next.x, next.y, image, stage, overlay) : next;
+          const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
+          const axisOverflows = image && overlay && (horizontal
+            ? image.clientWidth * current.scale > overlay.clientWidth
+            : image.clientHeight * current.scale > overlay.clientHeight);
+          const canPan = axisOverflows && (horizontal ? bounded.x !== current.x : bounded.y !== current.y);
+          if (canPan) {
             event.preventDefault();
             commit({ ...next, ...bounded });
+          } else if (!horizontal) {
+            event.preventDefault();
           } else if (event.repeat) {
             event.preventDefault();
           } else if (event.key === "ArrowLeft" && onPreviousRef.current) { event.preventDefault(); onPreviousRef.current(); }
@@ -145,7 +155,9 @@ export function ImageLightbox({
     const onWheel = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      setAt(Math.max(1, Math.min(MAX_ZOOM, zoomRef.current.scale * Math.exp(-event.deltaY * 0.006))), event.clientX, event.clientY);
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (lightbox.clientHeight || window.innerHeight) : 1;
+      const exponent = Math.max(-0.5, Math.min(0.5, -event.deltaY * unit * 0.006));
+      setAt(Math.max(1, Math.min(MAX_ZOOM, zoomRef.current.scale * Math.exp(exponent))), event.clientX, event.clientY);
     };
     lightbox.addEventListener("wheel", onWheel, { passive: false });
     return () => lightbox.removeEventListener("wheel", onWheel);

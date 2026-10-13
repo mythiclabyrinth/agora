@@ -176,17 +176,85 @@ export const ShortViewportLightbox: Story = {
     const stage = image.parentElement as HTMLDivElement;
     const stageRect = stage.getBoundingClientRect();
     const toolbar = within(dialog).getByRole("group", { name: "Image zoom controls" });
-    const pinchWheel = new WheelEvent("wheel", {
-      bubbles: true, cancelable: true, ctrlKey: true, deltaY: -231,
-      clientX: stageRect.left + stageRect.width / 2, clientY: stageRect.top + stageRect.height / 2,
-    });
-    stage.dispatchEvent(pinchWheel);
-    expect(pinchWheel.defaultPrevented).toBe(true);
+    for (let step = 0; step < 3; step += 1) {
+      const pinchWheel = new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, ctrlKey: true, deltaY: -77,
+        clientX: stageRect.left + stageRect.width / 2, clientY: stageRect.top + stageRect.height / 2,
+      });
+      stage.dispatchEvent(pinchWheel);
+      expect(pinchWheel.defaultPrevented).toBe(true);
+    }
     await within(dialog).findByRole("button", { name: "Zoom level 400%; reset zoom" });
     expect(image.getBoundingClientRect().width).toBeGreaterThan(stage.getBoundingClientRect().width);
     expect(toolbar).toBeVisible();
     await userEvent.click(within(toolbar).getByRole("button", { name: "Zoom in" }));
     await within(dialog).findByRole("button", { name: "Zoom level 500%; reset zoom" });
+  },
+};
+
+export const ShortViewportZoomBounds: Story = {
+  args: ImageLightbox.args,
+  globals: { viewport: { value: "shortDesktop600", isRotated: false } },
+  render: () => <ImageLightboxComponent
+    url="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='1200'%3E%3Crect width='800' height='1200' fill='%23456789'/%3E%3C/svg%3E"
+    filename="short-portrait.svg" onClose={() => {}}
+  />,
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "Image preview: short-portrait.svg" });
+    const image = within(dialog).getByAltText("short-portrait.svg") as HTMLImageElement;
+    await waitFor(() => expect(image.naturalWidth).toBe(800));
+    const stage = image.parentElement as HTMLDivElement;
+    const stageRect = stage.getBoundingClientRect();
+    const centerX = stageRect.left + stageRect.width / 2;
+    const centerY = stageRect.top + stageRect.height / 2;
+    let previousTop = image.getBoundingClientRect().top;
+    for (let step = 1; step <= 8; step += 1) {
+      stage.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, ctrlKey: true, deltaY: -10,
+        clientX: centerX, clientY: centerY,
+      }));
+      const percent = Math.round(Math.exp(step * 0.06) * 100);
+      await within(dialog).findByRole("button", { name: `Zoom level ${percent}%; reset zoom` });
+      const rect = image.getBoundingClientRect();
+      expect(Math.abs(rect.top - previousTop)).toBeLessThan(20);
+      const viewportHeight = window.innerHeight;
+      if (rect.height <= viewportHeight) {
+        expect(rect.top).toBeGreaterThanOrEqual(-0.5);
+        expect(rect.bottom).toBeLessThanOrEqual(viewportHeight + 0.5);
+      } else {
+        expect(rect.top).toBeLessThanOrEqual(0.5);
+        expect(rect.bottom).toBeGreaterThanOrEqual(viewportHeight - 0.5);
+      }
+      previousTop = rect.top;
+    }
+  },
+};
+
+export const ShortViewportPerAxisPan: Story = {
+  args: ImageLightbox.args,
+  globals: { viewport: { value: "shortDesktop600", isRotated: false } },
+  render: () => <ImageLightboxComponent
+    url="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1600' height='500'%3E%3Crect width='1600' height='500' fill='%23456789'/%3E%3C/svg%3E"
+    filename="wide-only.svg" onClose={() => {}}
+  />,
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "Image preview: wide-only.svg" });
+    const image = within(dialog).getByAltText("wide-only.svg") as HTMLImageElement;
+    await waitFor(() => expect(image.naturalWidth).toBe(1600));
+    const toolbar = within(dialog).getByRole("group", { name: "Image zoom controls" });
+    await userEvent.click(within(toolbar).getByRole("button", { name: "Zoom in" }));
+    await within(toolbar).findByRole("button", { name: "Zoom level 125%; reset zoom" });
+    const rect = image.getBoundingClientRect();
+    expect(rect.width).toBeGreaterThan(window.innerWidth);
+    expect(rect.height).toBeLessThan(window.innerHeight);
+
+    const beforeVertical = image.style.transform;
+    fireEvent.keyDown(document, { key: "ArrowDown" });
+    expect(image.style.transform).toBe(beforeVertical);
+    fireEvent.keyDown(document, { key: "ArrowRight" });
+    expect(image.style.transform).not.toBe(beforeVertical);
   },
 };
 
@@ -216,15 +284,29 @@ export const ImageZoomPanning: Story = {
     }
     await within(dialog).findByRole("button", { name: /Zoom level 1\d\d%; reset zoom/ });
     await userEvent.keyboard("0");
+    const lineWheel = new WheelEvent("wheel", {
+      bubbles: true, cancelable: true, ctrlKey: true, deltaMode: 1, deltaY: -3, clientX: centerX, clientY: centerY,
+    });
+    stage.dispatchEvent(lineWheel);
+    expect(lineWheel.defaultPrevented).toBe(true);
+    await within(dialog).findByRole("button", { name: "Zoom level 133%; reset zoom" });
+    await userEvent.keyboard("0");
+    const pageWheel = new WheelEvent("wheel", {
+      bubbles: true, cancelable: true, ctrlKey: true, deltaMode: 2, deltaY: -1, clientX: centerX, clientY: centerY,
+    });
+    stage.dispatchEvent(pageWheel);
+    expect(pageWheel.defaultPrevented).toBe(true);
+    await within(dialog).findByRole("button", { name: "Zoom level 165%; reset zoom" });
+    await userEvent.keyboard("0");
     const pinchWheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100, clientX: centerX, clientY: centerY });
     stage.dispatchEvent(pinchWheel);
     expect(pinchWheel.defaultPrevented).toBe(true);
-    await within(dialog).findByRole("button", { name: "Zoom level 182%; reset zoom" });
+    await within(dialog).findByRole("button", { name: "Zoom level 165%; reset zoom" });
     await userEvent.keyboard("0");
     const backdropWheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100, clientX: 4, clientY: 4 });
     dialog.dispatchEvent(backdropWheel);
     expect(backdropWheel.defaultPrevented).toBe(true);
-    await within(dialog).findByRole("button", { name: "Zoom level 182%; reset zoom" });
+    await within(dialog).findByRole("button", { name: "Zoom level 165%; reset zoom" });
     await userEvent.keyboard("0");
     await userEvent.dblClick(image);
     expect(within(dialog).getByRole("button", { name: "Zoom level 200%; reset zoom" })).toBeVisible();
