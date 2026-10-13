@@ -19,7 +19,7 @@ jest.mock("expo-store-review", () => ({
   requestReview: (...args: unknown[]) => mockRequestReview(...args),
 }));
 
-import { Platform } from "react-native";
+import { Linking, Platform } from "react-native";
 import type { Message } from "@agora/core";
 import {
   agentReplyFollowsUser,
@@ -28,6 +28,7 @@ import {
   getStoreReviewRuntimeForTests,
   hasStoreListing,
   localDayKey,
+  openWriteReviewUrl,
   recordPositiveEvent,
   resetStoreReviewRuntimeForTests,
   setReviewVoiceActive,
@@ -297,6 +298,10 @@ describe("review persistence and deferred flush", () => {
       expect(await flushDeferredReviewPrompt()).toBe(false);
       expect(mockRequestReview).not.toHaveBeenCalled();
       expect(useReview.getState().promptCount).toBe(0);
+      const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+      await openWriteReviewUrl();
+      expect(open).not.toHaveBeenCalled();
+      open.mockRestore();
     } finally {
       restore.restore();
     }

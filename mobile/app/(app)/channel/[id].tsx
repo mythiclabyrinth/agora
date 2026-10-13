@@ -56,7 +56,7 @@ import { onAgentMessage } from "../../../src/lib/agentBus";
 import { fmtTs } from "@agora/core";
 import { headerActions } from "../../../src/lib/headerItems";
 import { useHeaderKeyboardAvoiding } from "../../../src/lib/keyboard";
-import { useReadAck } from "../../../src/lib/readAck";
+import { trackBottom, useReadAck } from "../../../src/lib/readAck";
 import { enqueueSpeech, prepareSpeechAudio, stopSpeech } from "../../../src/lib/speech";
 import { typography, weight } from "../../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
@@ -192,7 +192,7 @@ export default function ChannelScreen() {
   const onReachedBottom = useReadAck(
     latestId,
     () => channelMeta?.channel.last_read_id,
-    (id) => markRead.mutate(id),
+    (id, onError) => markRead.mutate(id, { onError }),
     atBottom,
   );
 
@@ -429,11 +429,7 @@ export default function ChannelScreen() {
           onStartReachedThreshold={0.4}
           onScrollBeginDrag={cancelSectionJump}
           onScroll={(e) => {
-            const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
-            const near = contentOffset.y + layoutMeasurement.height >= contentSize.height - 60;
-            if (near && !atBottom.current) onReachedBottom();
-            atBottom.current = near;
-            setShowJump(!near);
+            setShowJump(!trackBottom(e.nativeEvent, atBottom, onReachedBottom));
           }}
           scrollEventThrottle={64}
           onViewableItemsChanged={onViewableItemsChanged}

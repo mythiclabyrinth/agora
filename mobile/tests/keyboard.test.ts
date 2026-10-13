@@ -49,10 +49,30 @@ describe("useHeaderKeyboardAvoiding", () => {
       expect(out.current?.keyboardVerticalOffset).toBe(80);
     });
 
+    it("falls back to status bar + app bar when the view can't be measured", () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const out = render();
+      act(() => out.current?.onLayout?.({
+        nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } },
+        target: {},
+      } as unknown as LayoutChangeEvent));
+      expect(out.current?.keyboardVerticalOffset).toBe(47 + 56);
+      warn.mockRestore();
+    });
+
     it("doesn't count the view's own parent-relative frame twice", () => {
       const out = render();
       act(() => out.current?.onLayout?.(layoutEvent(40, 120)));
       expect(out.current?.keyboardVerticalOffset).toBe(80);
     });
+  });
+
+  it("leaves other platforms (web) alone", () => {
+    const restore = jest.replaceProperty(Platform, "OS", "web");
+    try {
+      expect(render().current).toEqual({});
+    } finally {
+      restore.restore();
+    }
   });
 });

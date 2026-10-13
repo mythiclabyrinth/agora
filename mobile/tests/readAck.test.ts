@@ -1,6 +1,6 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { needsReadAck, useReadAck } from "../src/lib/readAck";
+import { needsReadAck, trackBottom, useReadAck } from "../src/lib/readAck";
 
 describe("needsReadAck", () => {
   it("acks a message newer than the read marker", () => {
@@ -36,7 +36,11 @@ describe("useReadAck", () => {
     });
     return {
       update: (p: Props) => act(() => renderer.update(React.createElement(Probe, p))),
-      reachBottom: () => act(() => onReachedBottom()),
+      // As trackBottom does: the ref flips before the callback runs.
+      reachBottom: () => act(() => {
+        initial.atBottom.current = true;
+        onReachedBottom();
+      }),
       unmount: () => act(() => renderer.unmount()),
     };
   }
@@ -52,7 +56,7 @@ describe("useReadAck", () => {
     h.update({ latestId: 6, lastReadId: 3, atBottom });
     act(() => jest.advanceTimersByTime(600));
     expect(ack).toHaveBeenCalledTimes(1);
-    expect(ack).toHaveBeenCalledWith(6);
+    expect(ack).toHaveBeenCalledWith(6, expect.any(Function));
   });
 
   it("waits for the viewer to scroll down when they are above the bottom", () => {
@@ -63,7 +67,7 @@ describe("useReadAck", () => {
     expect(ack).not.toHaveBeenCalled();
     h.reachBottom();
     act(() => jest.advanceTimersByTime(600));
-    expect(ack).toHaveBeenCalledWith(5);
+    expect(ack).toHaveBeenCalledWith(5, expect.any(Function));
   });
 
   it("doesn't re-ack the same id while the cached marker lags the server", () => {
@@ -75,6 +79,32 @@ describe("useReadAck", () => {
     h.reachBottom();
     act(() => jest.advanceTimersByTime(600));
     expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries on a later scroll-to-bottom if the ack request failed", () => {
+    const ack = jest.fn();
+    const atBottom = { current: false };
+    const h = mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+    h.reachBottom();
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledTimes(1);
+    const onError = ack.mock.calls[0][1] as () => void;
+    onError();
+    h.reachBottom();
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledTimes(2);
+    expect(ack).toHaveBeenLastCalledWith(5, expect.any(Function));
+  });
+
+  it("still acks a live message when its arrival briefly shifts the list off the bottom", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    const h = mount({ latestId: 5, lastReadId: 5, atBottom }, ack);
+    h.update({ latestId: 6, lastReadId: 5, atBottom });
+    // The new row pushes the viewport up before the list re-pins.
+    atBottom.current = false;
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledWith(6, expect.any(Function));
   });
 
   it("drops a pending ack when the latest id changes to one that's already read", () => {
@@ -100,5 +130,34 @@ describe("useReadAck", () => {
     h.unmount();
     act(() => jest.advanceTimersByTime(600));
     expect(ack).not.toHaveBeenCalled();
+  });
+});
+
+describe("trackBottom", () => {
+  const at = (y: number) => ({
+    contentOffset: { y },
+    layoutMeasurement: { height: 500 },
+    contentSize: { height: 2000 },
+  });
+
+  it("fires once when the list crosses into the bottom, then tracks it", () => {
+    const atBottom = { current: false };
+    const reached = jest.fn();
+    expect(trackBottom(at(100), atBottom, reached)).toBe(false);
+    expect(reached).not.toHaveBeenCalled();
+    expect(trackBottom(at(1450), atBottom, reached)).toBe(true);
+    expect(atBottom.current).toBe(true);
+    expect(reached).toHaveBeenCalledTimes(1);
+    trackBottom(at(1500), atBottom, reached);
+    expect(reached).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-fires after leaving the bottom and coming back", () => {
+    const atBottom = { current: true };
+    const reached = jest.fn();
+    trackBottom(at(100), atBottom, reached);
+    expect(atBottom.current).toBe(false);
+    trackBottom(at(1500), atBottom, reached);
+    expect(reached).toHaveBeenCalledTimes(1);
   });
 });

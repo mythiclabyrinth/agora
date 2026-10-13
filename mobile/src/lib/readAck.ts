@@ -14,13 +14,39 @@ export function needsReadAck(latestId: number, lastReadId: number | undefined): 
   return lastReadId === undefined || latestId > lastReadId;
 }
 
+/** How close (px) to the end of the list still counts as "at the bottom". */
+export const BOTTOM_SLOP = 60;
+
+type ScrollMetrics = {
+  contentOffset: { y: number };
+  layoutMeasurement: { height: number };
+  contentSize: { height: number };
+};
+
+/** onScroll glue: updates `atBottom` and fires `onReachedBottom` when the
+    list crosses into the bottom. Returns whether it's at the bottom now. The
+    order matters — the transition is read before the ref is overwritten. */
+export function trackBottom(
+  e: ScrollMetrics,
+  atBottom: { current: boolean },
+  onReachedBottom: () => void,
+): boolean {
+  const near =
+    e.contentOffset.y + e.layoutMeasurement.height >= e.contentSize.height - BOTTOM_SLOP;
+  const crossed = near && !atBottom.current;
+  atBottom.current = near;
+  if (crossed) onReachedBottom();
+  return near;
+}
+
 /** Wires both ack triggers. `lastReadId` is read at schedule time so callers
-    can pull it from the query cache; returns the callback to run when the
+    can pull it from the query cache; `ack` must call `onError` if the request
+    fails so a later scroll can retry. Returns the callback to run when the
     list scrolls back to the bottom. */
 export function useReadAck(
   latestId: number,
   lastReadId: () => number | undefined,
-  ack: (id: number) => void,
+  ack: (id: number, onError: () => void) => void,
   atBottom: { current: boolean },
 ): () => void {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -38,18 +64,23 @@ export function useReadAck(
   }, []);
   const schedule = useCallback(() => {
     cancel();
-    const { latestId: id, lastReadId: readId, ack: send } = latest.current;
+    const { latestId: id, lastReadId: readId } = latest.current;
     if (id === sent.current || !needsReadAck(id, readId())) return;
-    // `send` is bound now: a screen reused for another conversation must not
-    // ack this id against the new one's marker.
+    // Decided now, not when the timer fires: a message landing shifts the
+    // list and briefly reads as "not at the bottom", which would drop live
+    // acks.
     timer.current = setTimeout(() => {
       timer.current = null;
       sent.current = id;
-      send(id);
+      latest.current.ack(id, () => {
+        if (sent.current === id) sent.current = 0;
+      });
     }, ACK_DELAY_MS);
   }, [cancel]);
 
-  // A new latest id supersedes any pending ack, as does unmounting.
+  // A new latest id supersedes any pending ack, as does unmounting — that's
+  // also what keeps an id from being acked against a conversation the screen
+  // was reused for.
   useEffect(() => {
     if (atBottom.current) schedule();
     return cancel;

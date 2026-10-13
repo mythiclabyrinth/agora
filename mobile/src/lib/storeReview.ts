@@ -131,8 +131,8 @@ export async function initStoreReview(): Promise<void> {
     At most one credit per local day; the deferred-prompt flag still sets
     even when today's credit was already banked. */
 export async function recordPositiveEvent(now: number = Date.now()): Promise<void> {
-  // Nothing to prompt for without a listing; don't bank credit either, or a
-  // future listing would prompt on day one.
+  // Nothing to prompt for without a listing, so don't bank positive-event
+  // credit toward one either.
   if (!hasStoreListing()) return;
   await ensureLoaded();
   useReview.getState().incrementPositive(localDayKey(now));
@@ -186,6 +186,8 @@ export async function flushDeferredReviewPrompt(): Promise<boolean> {
 /** Open the public write-review URL (settings row). Never call requestReview
     from a user-initiated control — Apple rejects / silently no-ops that. */
 export function openWriteReviewUrl(): Promise<void> {
+  // The URL is the iOS App Store's; never send other platforms there.
+  if (!hasStoreListing()) return Promise.resolve();
   return Linking.openURL(APP_STORE_WRITE_REVIEW_URL).then(() => undefined);
 }
 

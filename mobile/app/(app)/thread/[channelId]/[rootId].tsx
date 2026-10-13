@@ -49,7 +49,7 @@ import { useReactWith } from "../../../../src/components/Reactions";
 import { onAgentMessage } from "../../../../src/lib/agentBus";
 import { headerActions } from "../../../../src/lib/headerItems";
 import { useHeaderKeyboardAvoiding } from "../../../../src/lib/keyboard";
-import { useReadAck } from "../../../../src/lib/readAck";
+import { trackBottom, useReadAck } from "../../../../src/lib/readAck";
 import {
   enqueueSpeech,
   prepareSpeechAudio,
@@ -159,7 +159,7 @@ export default function ThreadScreen() {
   const onReachedBottom = useReadAck(
     latestId,
     () => qc.getQueryData<ThreadRow[]>(keys.threads)?.find((t) => t.root.id === rootId)?.last_read_id,
-    (id) => markThreadRead.mutate(id),
+    (id, onError) => markThreadRead.mutate(id, { onError }),
     atBottom,
   );
 
@@ -382,11 +382,7 @@ export default function ThreadScreen() {
           onStartReachedThreshold={0.4}
           onScrollBeginDrag={cancelSectionJump}
           onScroll={(e) => {
-            const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
-            const nowAtBottom =
-              contentOffset.y + layoutMeasurement.height >= contentSize.height - 60;
-            if (nowAtBottom && !atBottom.current) onReachedBottom();
-            atBottom.current = nowAtBottom;
+            trackBottom(e.nativeEvent, atBottom, onReachedBottom);
           }}
           scrollEventThrottle={64}
           onViewableItemsChanged={onViewableItemsChanged}

@@ -24,11 +24,13 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const IOS_NAV_BAR_HEIGHT = 44;
+/** Phone-portrait `actionBarSize`; only a fallback if measuring is impossible. */
+const ANDROID_APP_BAR_HEIGHT = 56;
 
-type HeaderKeyboardAvoiding = Required<
-  Pick<KeyboardAvoidingViewProps, "behavior" | "keyboardVerticalOffset">
-> &
-  Pick<KeyboardAvoidingViewProps, "onLayout">;
+type HeaderKeyboardAvoiding = Pick<
+  KeyboardAvoidingViewProps,
+  "behavior" | "keyboardVerticalOffset" | "onLayout"
+>;
 
 /** Props for a KeyboardAvoidingView filling a screen under a native-stack
     header — spread them onto the KAV. `iosOffset` overrides the derived iOS
@@ -40,15 +42,25 @@ export function useHeaderKeyboardAvoiding(iosOffset?: number): HeaderKeyboardAvo
     // KAV adds its own frame.y (parent-relative) to the keyboard overlap, so
     // the offset is the *parent's* window y — subtract it or it counts twice.
     const frameY = e.nativeEvent.layout.y;
-    e.target?.measureInWindow?.((_x, y) => setWindowY(y - frameY));
-  }, []);
+    const target = e.target as { measureInWindow?: (cb: (x: number, y: number) => void) => void } | null;
+    if (typeof target?.measureInWindow !== "function") {
+      // An offset of 0 would silently re-hide the composer; estimate instead.
+      if (__DEV__) console.warn("useHeaderKeyboardAvoiding: measureInWindow unavailable");
+      setWindowY(insets.top + ANDROID_APP_BAR_HEIGHT);
+      return;
+    }
+    target.measureInWindow((_x, y) => setWindowY(y - frameY));
+  }, [insets.top]);
   if (Platform.OS === "ios") {
     return {
       behavior: "padding",
       keyboardVerticalOffset: iosOffset ?? insets.top + IOS_NAV_BAR_HEIGHT,
     };
   }
-  return { behavior: "padding", keyboardVerticalOffset: windowY, onLayout };
+  if (Platform.OS === "android") {
+    return { behavior: "padding", keyboardVerticalOffset: windowY, onLayout };
+  }
+  return {};
 }
 
 /** Whether the software keyboard is (about to be) on screen. */
