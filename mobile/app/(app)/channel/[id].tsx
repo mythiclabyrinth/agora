@@ -10,7 +10,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -56,7 +55,8 @@ import { useReactWith } from "../../../src/components/Reactions";
 import { onAgentMessage } from "../../../src/lib/agentBus";
 import { fmtTs } from "@agora/core";
 import { headerActions } from "../../../src/lib/headerItems";
-import { useHeaderKeyboardOffset } from "../../../src/lib/keyboard";
+import { useHeaderKeyboardAvoiding } from "../../../src/lib/keyboard";
+import { useReadAck } from "../../../src/lib/readAck";
 import { enqueueSpeech, prepareSpeechAudio, stopSpeech } from "../../../src/lib/speech";
 import { typography, weight } from "../../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
@@ -130,7 +130,7 @@ export default function ChannelScreen() {
   const me = useMe().data;
   const targetMessageId = params.messageId ? Number(params.messageId) : null;
   const session = useSession((s) => s.session)!;
-  const keyboardOffset = useHeaderKeyboardOffset();
+  const keyboardAvoiding = useHeaderKeyboardAvoiding();
 
   const groups = useGroups();
   const channelMeta = useMemo(() => {
@@ -184,22 +184,17 @@ export default function ChannelScreen() {
     return out;
   }, [chronological]);
 
-  /* Read marker: while the viewer sits at the bottom, every newly-landed
-     message is read. Debounced like the desktop's PUT /read. */
+  /* Read marker: the newest message is read when it lands while the viewer
+     sits at the bottom, or when the viewer scrolls down to it later. */
   const atBottom = useRef(true);
-  const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestId = chronological.length ? chronological[chronological.length - 1].id : 0;
   const unread = channelMeta?.channel.unread ?? 0;
-  useEffect(() => {
-    if (!atBottom.current || latestId === 0) return;
-    if (latestId <= (channelMeta?.channel.last_read_id ?? 0)) return;
-    if (readTimer.current) clearTimeout(readTimer.current);
-    readTimer.current = setTimeout(() => markRead.mutate(latestId), 600);
-    return () => {
-      if (readTimer.current) clearTimeout(readTimer.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId]);
+  const onReachedBottom = useReadAck(
+    latestId,
+    () => channelMeta?.channel.last_read_id,
+    (id) => markRead.mutate(id),
+    atBottom,
+  );
 
   const listRef = useRef<FlashListRef<Row>>(null);
   const onViewportLayout = useBottomViewport(listRef, atBottom);
@@ -404,8 +399,7 @@ export default function ChannelScreen() {
       />
       <KeyboardAvoidingView
         style={styles.root}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={keyboardOffset}
+        {...keyboardAvoiding}
       >
         {noAgents && groupId && groupId !== "__dms" ? (
           <Pressable style={styles.noAgents} onPress={openMembers}>
@@ -437,6 +431,7 @@ export default function ChannelScreen() {
           onScroll={(e) => {
             const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
             const near = contentOffset.y + layoutMeasurement.height >= contentSize.height - 60;
+            if (near && !atBottom.current) onReachedBottom();
             atBottom.current = near;
             setShowJump(!near);
           }}

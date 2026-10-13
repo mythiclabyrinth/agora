@@ -13,7 +13,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -49,7 +48,8 @@ import { ProfileSheet } from "../../../../src/components/ProfileSheet";
 import { useReactWith } from "../../../../src/components/Reactions";
 import { onAgentMessage } from "../../../../src/lib/agentBus";
 import { headerActions } from "../../../../src/lib/headerItems";
-import { useHeaderKeyboardOffset } from "../../../../src/lib/keyboard";
+import { useHeaderKeyboardAvoiding } from "../../../../src/lib/keyboard";
+import { useReadAck } from "../../../../src/lib/readAck";
 import {
   enqueueSpeech,
   prepareSpeechAudio,
@@ -80,7 +80,7 @@ export default function ThreadScreen() {
   const rootId = Number(params.rootId);
   const targetMessageId = params.messageId ? Number(params.messageId) : null;
   const session = useSession((s) => s.session)!;
-  const keyboardOffset = useHeaderKeyboardOffset();
+  const keyboardAvoiding = useHeaderKeyboardAvoiding();
   const qc = useQueryClient();
 
   const replies = useMessages(channelId, rootId);
@@ -151,24 +151,17 @@ export default function ThreadScreen() {
   }, [root, thread]);
   const sectionMessages = useMemo(() => root ? [root, ...thread] : thread, [root, thread]);
 
-  /* Read acking: while the viewer sits at the bottom, new replies are read.
+  /* Read acking: the latest reply is read when it lands while the viewer
+     sits at the bottom, or when the viewer scrolls down to it later.
      Mirrors the channel screen's channel-marker debounce. */
   const atBottom = useRef(true);
-  const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestId = thread.length ? thread[thread.length - 1].id : 0;
-  useEffect(() => {
-    if (!atBottom.current || latestId === 0) return;
-    const row = qc
-      .getQueryData<ThreadRow[]>(keys.threads)
-      ?.find((t) => t.root.id === rootId);
-    if (row && latestId <= row.last_read_id) return;
-    if (readTimer.current) clearTimeout(readTimer.current);
-    readTimer.current = setTimeout(() => markThreadRead.mutate(latestId), 600);
-    return () => {
-      if (readTimer.current) clearTimeout(readTimer.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestId]);
+  const onReachedBottom = useReadAck(
+    latestId,
+    () => qc.getQueryData<ThreadRow[]>(keys.threads)?.find((t) => t.root.id === rootId)?.last_read_id,
+    (id) => markThreadRead.mutate(id),
+    atBottom,
+  );
 
   const agentCandidates = useMemo<MentionCandidate[]>(
     () => (channelAgents.data ?? []).map((a) => ({ id: a.id, name: a.name })),
@@ -366,8 +359,7 @@ export default function ThreadScreen() {
       />
       <KeyboardAvoidingView
         style={styles.root}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={keyboardOffset}
+        {...keyboardAvoiding}
       >
         <View style={styles.listWrap} onLayout={onViewportLayout}>
           <FlashList
@@ -391,8 +383,10 @@ export default function ThreadScreen() {
           onScrollBeginDrag={cancelSectionJump}
           onScroll={(e) => {
             const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
-            atBottom.current =
+            const nowAtBottom =
               contentOffset.y + layoutMeasurement.height >= contentSize.height - 60;
+            if (nowAtBottom && !atBottom.current) onReachedBottom();
+            atBottom.current = nowAtBottom;
           }}
           scrollEventThrottle={64}
           onViewableItemsChanged={onViewableItemsChanged}

@@ -5,12 +5,22 @@ import * as WebBrowser from "expo-web-browser";
 import * as Clipboard from "expo-clipboard";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiClient, ApiProvider, keys } from "@agora/core";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import {
   AddAgentFlow,
   AgentConnectionsList,
 } from "../src/components/AgentConnections";
 import { useSession } from "../src/state/session";
 import AddAgentScreen from "../app/(app)/add-agent";
+
+// The screen reads safe-area insets for its keyboard offset, as in the app.
+const addAgentScreen = () =>
+  React.createElement(SafeAreaProvider, {
+    initialMetrics: {
+      frame: { x: 0, y: 0, width: 390, height: 844 },
+      insets: { top: 0, right: 0, bottom: 0, left: 0 },
+    },
+  }, React.createElement(AddAgentScreen));
 
 jest.mock(
   "lucide-react-native",
@@ -472,7 +482,7 @@ test("non-admins see the route denial instead of the management flow", () => {
   act(() => useSession.setState({ instanceAdmin: false }));
   let tree!: TestRenderer.ReactTestRenderer;
   act(() => {
-    tree = TestRenderer.create(React.createElement(AddAgentScreen));
+    tree = TestRenderer.create(addAgentScreen());
   });
   expect(JSON.stringify(tree.toJSON())).toContain("Admin access required");
   expect(JSON.stringify(tree.toJSON())).not.toContain("Add agent");
@@ -490,7 +500,7 @@ test("unknown admin role renders a loading state instead of a denial", () => {
   );
   let tree!: TestRenderer.ReactTestRenderer;
   act(() => {
-    tree = TestRenderer.create(React.createElement(AddAgentScreen));
+    tree = TestRenderer.create(addAgentScreen());
   });
   const rendered = JSON.stringify(tree.toJSON());
   expect(rendered).toContain("Checking admin access…");

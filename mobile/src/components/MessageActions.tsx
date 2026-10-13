@@ -136,8 +136,9 @@ export function MessageActions({
   if (editing) {
     return (
       <Modal transparent animationType="fade" onRequestClose={() => { setText(message.text); setEditing(false); }}>
-        <KeyboardAvoidingView style={styles.keyboard}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        {/* "padding" on Android too: the edge-to-edge modal window isn't
+            resized for the IME. It fills the screen, so no offset. */}
+        <KeyboardAvoidingView style={styles.keyboard} behavior="padding">
           <View style={styles.editor}>
             <Text style={styles.title}>Edit message</Text>
             <TextInput

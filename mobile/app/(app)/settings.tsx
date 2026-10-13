@@ -16,7 +16,7 @@ import { AppearancePicker } from "../../src/components/AppearancePicker";
 import { toast, toastErr } from "../../src/components/Toast";
 import { compareVersions, lookupStoreVersion } from "../../src/lib/appVersion";
 import { openLink } from "../../src/lib/openLink";
-import { openWriteReviewUrl } from "../../src/lib/storeReview";
+import { hasStoreListing, openWriteReviewUrl } from "../../src/lib/storeReview";
 import { typography, weight } from "../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { usePrefs } from "../../src/state/prefs";
@@ -305,17 +305,19 @@ export default function SettingsScreen() {
                 Agora {appVersion} (build {appBuild})
               </Text>
             </View>
-            <Pressable
-              style={styles.linkBtn}
-              onPress={checkForUpdates}
-              disabled={checkingUpdate}
-            >
-              <Text
-                style={[styles.linkBtnText, checkingUpdate && { opacity: 0.4 }]}
+            {hasStoreListing() && (
+              <Pressable
+                style={styles.linkBtn}
+                onPress={checkForUpdates}
+                disabled={checkingUpdate}
               >
-                {checkingUpdate ? "Checking…" : "Check for updates"}
-              </Text>
-            </Pressable>
+                <Text
+                  style={[styles.linkBtnText, checkingUpdate && { opacity: 0.4 }]}
+                >
+                  {checkingUpdate ? "Checking…" : "Check for updates"}
+                </Text>
+              </Pressable>
+            )}
           </View>
           {/* App Review expects the policy/support pages to be reachable in-app. */}
           <View style={styles.row}>
@@ -348,22 +350,24 @@ export default function SettingsScreen() {
           </View>
           {/* Direct App Store write-review URL — never requestReview() from a
               tap; Apple's guidelines forbid that and it silently no-ops. */}
-          <View style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>Enjoying Agora?</Text>
-              <Text style={styles.meta}>
-                Ratings help invited teammates find the right app in the store.
-              </Text>
+          {hasStoreListing() && (
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.name}>Enjoying Agora?</Text>
+                <Text style={styles.meta}>
+                  Ratings help invited teammates find the right app in the store.
+                </Text>
+              </View>
+              <Pressable
+                style={styles.linkBtn}
+                accessibilityRole="link"
+                accessibilityLabel="Rate Agora on the App Store"
+                onPress={() => void openWriteReviewUrl()}
+              >
+                <Text style={styles.linkBtnText}>Rate Agora</Text>
+              </Pressable>
             </View>
-            <Pressable
-              style={styles.linkBtn}
-              accessibilityRole="link"
-              accessibilityLabel="Rate Agora on the App Store"
-              onPress={() => void openWriteReviewUrl()}
-            >
-              <Text style={styles.linkBtnText}>Rate Agora</Text>
-            </Pressable>
-          </View>
+          )}
         </Section>
         <Section title="Delete account">
           <View style={styles.dangerCard}>

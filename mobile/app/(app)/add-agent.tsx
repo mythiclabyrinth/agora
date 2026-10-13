@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { KeyboardAvoidingView, Pressable, ScrollView, Text, View } from "react-native";
 import { Stack } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -7,6 +7,7 @@ import {
   AgentConnectionsList,
 } from "../../src/components/AgentConnections";
 
+import { useHeaderKeyboardAvoiding } from "../../src/lib/keyboard";
 import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { useSession } from "../../src/state/session";
 
@@ -18,6 +19,7 @@ export default function AddAgentScreen() {
   const adminKnown = useSession((s) => s.instanceAdminKnown);
   const loadSession = useSession((s) => s.load);
   const [tab, setTab] = useState<Tab>("add");
+  const keyboardAvoiding = useHeaderKeyboardAvoiding(92);
   return (
     <>
       <Stack.Screen
@@ -45,11 +47,7 @@ export default function AddAgentScreen() {
             </Text>
           </View>
         ) : (
-          <KeyboardAvoidingView
-            style={styles.root}
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            keyboardVerticalOffset={92}
-          >
+          <KeyboardAvoidingView style={styles.root} {...keyboardAvoiding}>
             <View accessibilityRole="tablist" style={styles.tabs}>
               {(["connections", "add"] as const).map((value) => (
                 <Pressable

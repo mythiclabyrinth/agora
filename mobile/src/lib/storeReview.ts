@@ -5,7 +5,7 @@
 
 import * as Application from "expo-application";
 import * as StoreReview from "expo-store-review";
-import { Linking } from "react-native";
+import { Linking, Platform } from "react-native";
 import type { QueryClient } from "@tanstack/react-query";
 import {
   flattenMessages,
@@ -21,6 +21,12 @@ import {
 export const APP_STORE_ID = "6791784699";
 export const APP_STORE_WRITE_REVIEW_URL =
   `https://apps.apple.com/app/id${APP_STORE_ID}?action=write-review`;
+
+/** Only the iOS build is published (App Store). Android has no Play listing,
+    so store-facing UI — update checks, rating — must not point it at Apple. */
+export function hasStoreListing(): boolean {
+  return Platform.OS === "ios";
+}
 
 export const POSITIVE_REACTION_EMOJIS = new Set(["👍", "❤️", "🎉"]);
 
@@ -125,6 +131,9 @@ export async function initStoreReview(): Promise<void> {
     At most one credit per local day; the deferred-prompt flag still sets
     even when today's credit was already banked. */
 export async function recordPositiveEvent(now: number = Date.now()): Promise<void> {
+  // Nothing to prompt for without a listing; don't bank credit either, or a
+  // future listing would prompt on day one.
+  if (!hasStoreListing()) return;
   await ensureLoaded();
   useReview.getState().incrementPositive(localDayKey(now));
   pendingPrompt = true;
@@ -152,6 +161,7 @@ function installedVersion(): string {
  */
 export async function flushDeferredReviewPrompt(): Promise<boolean> {
   if (!pendingPrompt) return false;
+  if (!hasStoreListing()) return false;
   if (voiceCallActive || sheetDepth > 0) return false;
 
   await ensureLoaded();

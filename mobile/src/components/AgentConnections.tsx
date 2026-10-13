@@ -811,8 +811,9 @@ export function AgentConnectionsList() {
                   }
                 >
                   <Text numberOfLines={1} style={styles.token}>
-                    {token.token.slice(0, 10)}…{token.token.slice(-4)} · copy
+                    {token.token.slice(0, 4)}…{token.token.slice(-4)}
                   </Text>
+                  <Copy size={13} color={colors.a1} />
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
@@ -827,16 +828,20 @@ export function AgentConnectionsList() {
                   <Share2 size={15} color={colors.a1} />
                 </Pressable>
               </View>
-              <ArmedButton
-                label="Revoke"
-                accessibilityLabel={`Revoke access for ${token.name}`}
-                onConfirm={() =>
-                  pairingMutations.revoke.mutate(token.token, {
-                    onError: (e) => toastErr("Revoke failed", e),
-                  })
-                }
-              />
-              <Pressable accessibilityRole="button" accessibilityLabel={`Manage DM access for ${token.name}`} style={styles.manageButton} onPress={()=>manageSource("pairing",token.id)}><Text style={styles.manageText}>Manage access</Text></Pressable>
+              {/* Kept together so a narrow phone wraps them onto their own
+                  line instead of squeezing the token preview. */}
+              <View style={styles.footerActions}>
+                <ArmedButton
+                  label="Revoke"
+                  accessibilityLabel={`Revoke access for ${token.name}`}
+                  onConfirm={() =>
+                    pairingMutations.revoke.mutate(token.token, {
+                      onError: (e) => toastErr("Revoke failed", e),
+                    })
+                  }
+                />
+                <Pressable accessibilityRole="button" accessibilityLabel={`Manage DM access for ${token.name}`} style={styles.manageButton} onPress={()=>manageSource("pairing",token.id)}><Text style={styles.manageText}>Manage access</Text></Pressable>
+              </View>
             </View>
           </View>
         );
@@ -1038,9 +1043,11 @@ const useStyles = createThemedStyles(({ colors }) => ({
   rowFooter: {
     minHeight: 44,
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
+    rowGap: 0,
     paddingLeft: 54,
   },
   rowFooterEnd: {
@@ -1078,14 +1085,18 @@ const useStyles = createThemedStyles(({ colors }) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
-    flex: 1,
-    minWidth: 0,
   },
   tokenButton: {
     minHeight: 44,
-    justifyContent: "center",
-    flexShrink: 1,
-    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  footerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginLeft: "auto",
   },
   token: { ...mono, color: colors.a1, fontSize: 10.5 },
   empty: { color: colors.dim, textAlign: "center", paddingVertical: 18 },

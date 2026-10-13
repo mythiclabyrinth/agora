@@ -4,7 +4,7 @@ import { ThemedInput as TextInput } from "../src/components/ThemedInput";
    then sign in using the methods the server offers. */
 
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Image, KeyboardAvoidingView, Pressable, ScrollView, Text, View } from "react-native";
 import { Redirect, type Href, useLocalSearchParams } from "expo-router";
 import { Image as ExpoImage } from "expo-image";
 import * as AppleAuthentication from "expo-apple-authentication";
@@ -168,10 +168,9 @@ export default function Connect() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
+    // "padding" on Android too: the edge-to-edge window isn't resized for
+    // the IME. This screen has no header, so no offset.
+    <KeyboardAvoidingView style={styles.root} behavior="padding">
       <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled"
         contentContainerStyle={[styles.content, { paddingTop: insets.top + space.xxl, paddingBottom: insets.bottom + space.xxl }]}>
       <View style={styles.card}>
