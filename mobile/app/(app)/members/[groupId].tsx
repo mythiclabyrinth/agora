@@ -1,7 +1,7 @@
 /* Group and channel rosters share the same access rules; details and mutations
    live in sheets so the roster stays readable as membership grows. */
 import React, { useRef, useState } from "react";
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { Alert, KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { Link, Stack, useLocalSearchParams } from "expo-router";
 import { Bot, Check, ChevronLeft, ChevronRight, Search, Users } from "lucide-react-native";
 import {
@@ -22,7 +22,9 @@ import { accessDraft, applyAccess, planAccess, type AccessDraft, type AccessPerm
 function MemberSheet({ title, onClose, children }: React.PropsWithChildren<{ title: string; onClose: () => void }>) {
   const styles = useStyles();
   return <Modal transparent animationType="slide" onRequestClose={onClose}>
-    <KeyboardAvoidingView style={styles.backdrop} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    {/* "padding" on Android too: the edge-to-edge modal window isn't resized
+        for the IME. It fills the screen, so no offset. */}
+    <KeyboardAvoidingView style={styles.backdrop} behavior="padding">
       <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={onClose} />
       <View accessibilityViewIsModal style={styles.sheet}>
         <SheetHeader title={title} onClose={onClose} />

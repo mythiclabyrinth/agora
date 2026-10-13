@@ -9,7 +9,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -91,10 +90,9 @@ export function TemplateSheet({ groupId, visible, draft, onChoose, onClose }: {
 
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={dismiss}>
-      <KeyboardAvoidingView
-        style={s.keyboard}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      {/* "padding" on Android too: the edge-to-edge modal window isn't
+          resized for the IME. It fills the screen, so no offset. */}
+      <KeyboardAvoidingView style={s.keyboard} behavior="padding">
         {/* Backdrop taps close the list, but not a half-written template. */}
         <Pressable style={s.backdrop} onPress={editing ? undefined : onClose}>
           <Pressable testID="template-sheet" style={s.sheet} onPress={() => {}}>

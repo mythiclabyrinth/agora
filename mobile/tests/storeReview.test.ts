@@ -19,13 +19,16 @@ jest.mock("expo-store-review", () => ({
   requestReview: (...args: unknown[]) => mockRequestReview(...args),
 }));
 
+import { Linking, Platform } from "react-native";
 import type { Message } from "@agora/core";
 import {
   agentReplyFollowsUser,
   canRequestReview,
   flushDeferredReviewPrompt,
   getStoreReviewRuntimeForTests,
+  hasStoreListing,
   localDayKey,
+  openWriteReviewUrl,
   recordPositiveEvent,
   resetStoreReviewRuntimeForTests,
   setReviewVoiceActive,
@@ -272,6 +275,37 @@ describe("review persistence and deferred flush", () => {
     // Same version must not prompt again even with a fresh pending flag.
     await recordPositiveEvent(now + DAY);
     expect(await flushDeferredReviewPrompt()).toBe(false);
+  });
+
+  it("never prompts on Android, which has no store listing", async () => {
+    const now = Date.now();
+    useReview.setState({
+      loaded: true,
+      firstLaunchAt: now - 4 * DAY,
+      sessionCount: 3,
+      positiveEvents: 1,
+      lastPositiveEventDay: "2000-01-01",
+      lastPromptedVersion: null,
+      lastPromptedAt: null,
+      promptCount: 0,
+    });
+    const restore = jest.replaceProperty(Platform, "OS", "android");
+    try {
+      expect(hasStoreListing()).toBe(false);
+      await recordPositiveEvent(now);
+      expect(useReview.getState().positiveEvents).toBe(1);
+      expect(getStoreReviewRuntimeForTests().pendingPrompt).toBe(false);
+      expect(await flushDeferredReviewPrompt()).toBe(false);
+      expect(mockRequestReview).not.toHaveBeenCalled();
+      expect(useReview.getState().promptCount).toBe(0);
+      const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+      await openWriteReviewUrl();
+      expect(open).not.toHaveBeenCalled();
+      open.mockRestore();
+    } finally {
+      restore.restore();
+    }
+    expect(hasStoreListing()).toBe(true);
   });
 
   it("ignores mutations until load finishes (load-before-read race)", async () => {
