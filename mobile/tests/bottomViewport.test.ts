@@ -25,3 +25,25 @@ it("keeps the latest message visible on viewport shrink without moving older his
     act(() => tree.unmount());
   } finally { raf.mockRestore(); cancel.mockRestore(); }
 });
+
+it("leaves the viewport to a landing or jump in progress", () => {
+  const list = { current: { scrollToEnd: jest.fn() } };
+  const atBottom = { current: true };
+  let busy = true;
+  let handler!: (event: LayoutChangeEvent) => void;
+  const raf = jest.spyOn(global, "requestAnimationFrame").mockImplementation(callback => { callback(0); return 1; });
+  const cancel = jest.spyOn(global, "cancelAnimationFrame").mockImplementation(() => {});
+  function Harness() { handler = useBottomViewport(list, atBottom, () => busy); return null; }
+  let tree!: TestRenderer.ReactTestRenderer;
+  const resize = (height: number) => act(() => handler({ nativeEvent: { layout: { height } } } as LayoutChangeEvent));
+  try {
+    act(() => { tree = TestRenderer.create(React.createElement(Harness)); });
+    resize(600);
+    resize(450);
+    expect(list.current.scrollToEnd).not.toHaveBeenCalled();
+    busy = false;
+    resize(400);
+    expect(list.current.scrollToEnd).toHaveBeenCalledTimes(1);
+    act(() => tree.unmount());
+  } finally { raf.mockRestore(); cancel.mockRestore(); }
+});

@@ -181,8 +181,8 @@ function rowKey(r: Row): string {
 }
 
 /** Same push shapes as threads.tsx / index.tsx: thread replies open the
-    thread screen, everything else the channel. */
-function openHit(m: SearchMessageHit) {
+    thread screen, everything else the channel — landing on the hit itself. */
+export function openHit(m: SearchMessageHit) {
   if (m.thread_id != null) {
     router.push({
       pathname: "/(app)/thread/[channelId]/[rootId]",
@@ -190,12 +190,13 @@ function openHit(m: SearchMessageHit) {
         channelId: m.channel_id,
         rootId: String(m.thread_id),
         channelName: m.channel_name,
+        messageId: String(m.id),
       },
     });
   } else {
     router.push({
       pathname: "/(app)/channel/[id]",
-      params: { id: m.channel_id, name: m.channel_name, groupId: m.group_id },
+      params: { id: m.channel_id, name: m.channel_name, groupId: m.group_id, messageId: String(m.id) },
     });
   }
 }

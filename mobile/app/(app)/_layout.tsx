@@ -2,7 +2,7 @@
    whole session, registers Expo push (with unread-poll fallback), and wires
    notification-tap routing plus the unread app badge. */
 
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { AppState } from "react-native";
 import { Redirect, Stack, router, type Href, usePathname } from "expo-router";
 import * as Notifications from "expo-notifications";
@@ -22,11 +22,21 @@ import {
   saveUnreadSnapshot,
   unregisterBackgroundPolling,
 } from "../../src/lib/background";
-import { notificationTarget, notificationContext, totalThreadUnread, totalUnread } from "@agora/core";
+import {
+  notificationContext,
+  notificationMessageId,
+  notificationTarget,
+  totalThreadUnread,
+  totalUnread,
+} from "@agora/core";
 import { currentStoredSession, readActionRegistration } from "../../src/lib/notificationRegistration";
 import { useGroups, useThreads } from "@agora/core";
 import { headerBack } from "../../src/lib/headerItems";
-import { notificationNavigationAction } from "../../src/lib/notificationRouting";
+import {
+  notificationHref,
+  notificationLandParams,
+  notificationNavigationAction,
+} from "../../src/lib/notificationRouting";
 
 import { useAppTheme } from "../../src/lib/useTheme";
 import { StoreReviewHost } from "../../src/components/StoreReviewHost";
@@ -69,28 +79,67 @@ function UnreadSync() {
   return null;
 }
 
-/** Tapping a banner lands in its channel (or thread). Covers warm taps and
-    cold starts alike via the last-response hook. */
+/** The latest notification response: the launching one, then every tap.
+    Expo's useLastNotificationResponse drops a response whose identifier
+    matches the previous one, and cards for one conversation share an
+    identifier, so every tap after the first would be swallowed. */
+function useNotificationResponse() {
+  const [response, setResponse] = useState<Notifications.NotificationResponse | null>(null);
+  useLayoutEffect(() => {
+    setResponse(Notifications.getLastNotificationResponse());
+    const subscription = Notifications.addNotificationResponseReceivedListener(setResponse);
+    // A cleared response is no longer one to act on, as with Expo's hook.
+    const cleared = Notifications.addNotificationResponseClearedListener(() => setResponse(null));
+    return () => {
+      subscription.remove();
+      cleared.remove();
+    };
+  }, []);
+  return response;
+}
+
+/* The tap last routed. Module-level, not a ref: signing out and back in
+   remounts the router, and the last response it reads again on mount is a
+   tap already handled, which must not navigate a second time. */
+let handledTap: string | null = null;
+
+/** Forgets the tap last routed; for tests, which share this module. */
+export function resetHandledNotificationTap() {
+  handledTap = null;
+}
+
+/** Tapping a banner lands on its message in the channel (or thread). Covers
+    warm taps and cold starts alike via the last-response hook. */
 export function NotificationTapRouter() {
-  const response = Notifications.useLastNotificationResponse();
+  const response = useNotificationResponse();
   const pathname = usePathname();
-  const handled = useRef<string | null>(null);
   useEffect(() => {
     if (!response || response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
     const id = response.notification.request.identifier;
-    if (handled.current === id) return;
-    const target = notificationTarget(response.notification.request.content.data);
+    // Cards for one conversation reuse its identifier, so a later card's tap
+    // is a different response with the same id; its delivery date tells them
+    // apart.
+    const tap = `${id}@${response.notification.date}`;
+    if (handledTap === tap) return;
+    const data = response.notification.request.content.data;
+    const target = notificationTarget(data);
     if (!target) return;
     // The tapped card normally auto-dismisses; make that deterministic. Other
     // cards wait for the read marker so a newer racing message is preserved.
     const navigate = () => {
-      if (handled.current === id) return;
-      handled.current = id;
+      if (handledTap === tap) return;
+      handledTap = tap;
       void Notifications.dismissNotificationAsync(id);
-      const action = notificationNavigationAction({ pathname, target });
-      if (action !== "none") router.push(target as Href);
+      const messageId = notificationMessageId(data);
+      const action = notificationNavigationAction({ pathname, target, messageId });
+      if (action === "push") router.push(notificationHref(target, messageId) as Href);
+      // Already in that conversation: re-target the screen on top in place.
+      // The tap key rides along so a repeat tap for the same message re-lands.
+      else if (action === "land" && messageId != null) {
+        router.setParams(notificationLandParams(messageId, tap));
+      }
     };
-    const context = notificationContext(response.notification.request.content.data);
+    const context = notificationContext(data);
     if (!context) { navigate(); return; }
     let cancelled = false;
     void Promise.all([readActionRegistration(), currentStoredSession()]).then(([registration, session]) => {

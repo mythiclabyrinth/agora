@@ -107,7 +107,22 @@ export const SECTION_JUMP_PASSES_MS = [350, 700] as const;
 export const SECTION_JUMP_SETTLE_MS = 1100;
 
 export interface SectionJumpList {
-  scrollToIndex(params: { index: number; animated: boolean; viewPosition: number }): void;
+  /** FlashList resolves once the scroll (and its offset re-enable) settles. */
+  scrollToIndex(params: {
+    index: number;
+    animated: boolean;
+    viewPosition: number;
+  }): void | Promise<void>;
+}
+
+/** Dots land a section's first message near the top; a message landing
+    (deep link, search hit, divider) picks its own position and skips the
+    animation, since it can travel hundreds of rows. */
+export interface SectionJumpOptions {
+  viewPosition?: number;
+  animated?: boolean;
+  /** The jump landed and settled (not called when cancelled). */
+  onSettled?: () => void;
 }
 
 export function createSectionJumpController({
@@ -124,40 +139,68 @@ export function createSectionJumpController({
 }) {
   let timers: ReturnType<typeof setTimeout>[] = [];
   let jumping = false;
+  let generation = 0;
 
   const clearTimers = () => {
     for (const t of timers) clearTimeout(t);
     timers = [];
   };
 
-  const scrollTo = (messageId: number, animated: boolean) => {
+  const scrollTo = (messageId: number, animated: boolean, viewPosition: number) => {
     const index = messageRowIndex(getRows(), messageId);
-    if (index >= 0) {
-      getList()?.scrollToIndex({ index, animated, viewPosition: 0.08 });
-    }
+    return index >= 0
+      ? getList()?.scrollToIndex({ index, animated, viewPosition })
+      : undefined;
   };
 
   return {
     isJumping: () => jumping,
-    jumpTo(messageId: number) {
+    jumpTo(
+      messageId: number,
+      { viewPosition = 0.08, animated = true, onSettled }: SectionJumpOptions = {},
+    ) {
       clearTimers();
+      const jump = ++generation;
       jumping = true;
       onJumpStart(messageId);
-      scrollTo(messageId, true);
-      SECTION_JUMP_PASSES_MS.forEach((delay, i) => {
-        const finalPass = i === SECTION_JUMP_PASSES_MS.length - 1;
-        timers.push(setTimeout(() => scrollTo(messageId, !finalPass), delay));
-      });
-      timers.push(setTimeout(() => {
-        jumping = false;
-      }, settleMs));
+      // Each pass waits for the previous scroll to settle: when the JS thread
+      // is busy rendering a far target, timer-driven passes would otherwise
+      // pile up and overlap, and FlashList's interleaved offset pauses leave
+      // the native position and the rendered window out of sync (a blank
+      // viewport).
+      const pass = (i: number, previousAt: number) => {
+        if (jump !== generation) return;
+        if (i === SECTION_JUMP_PASSES_MS.length) {
+          timers.push(setTimeout(() => {
+            if (jump !== generation) return;
+            jumping = false;
+            onSettled?.();
+          }, settleMs - previousAt));
+          return;
+        }
+        const at = SECTION_JUMP_PASSES_MS[i];
+        timers.push(setTimeout(() => {
+          if (jump !== generation) return;
+          const finalPass = i === SECTION_JUMP_PASSES_MS.length - 1;
+          afterScroll(scrollTo(messageId, animated && !finalPass, viewPosition), () => pass(i + 1, at));
+        }, at - previousAt));
+      };
+      afterScroll(scrollTo(messageId, animated, viewPosition), () => pass(0, 0));
     },
     /** A user drag takes over: stop correcting and resume live tracking. */
     cancel() {
       clearTimers();
+      generation += 1;
       jumping = false;
     },
   };
+}
+
+/** Continue synchronously for a fire-and-forget list, after the promise for
+    one that reports completion. */
+function afterScroll(result: void | Promise<void> | undefined, next: () => void) {
+  if (result && typeof result.then === "function") void result.then(next, next);
+  else next();
 }
 
 /** Everything a screen needs to wire a SectionRail to its FlashList. */
@@ -184,7 +227,7 @@ export function useSectionJump({
       getRows: () => rowsRef.current,
       getList: () => listRef.current,
       onJumpStart: (messageId) => {
-        // Stop the bottom-anchoring path (read acking, autoscroll-to-latest)
+        // Stop the bottom-anchoring path (read acking, follow-latest pinning)
         // from treating the viewer as "at the bottom" mid-jump.
         atBottom.current = false;
         setActiveMessageId(messageId);
@@ -211,8 +254,8 @@ export function useSectionJump({
   ).current;
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 15 }).current;
 
-  const jumpToSection = useCallback((messageId: number) => {
-    controller.jumpTo(messageId);
+  const jumpToSection = useCallback((messageId: number, options?: SectionJumpOptions) => {
+    controller.jumpTo(messageId, options);
   }, [controller]);
   const cancelSectionJump = useCallback(() => {
     controller.cancel();
@@ -224,6 +267,7 @@ export function useSectionJump({
     viewabilityConfig,
     jumpToSection,
     cancelSectionJump,
+    isSectionJumping: controller.isJumping,
   };
 }
 

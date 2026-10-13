@@ -190,6 +190,57 @@ describe("createSectionJumpController", () => {
   });
 });
 
+describe("createSectionJumpController with a list that reports completion", () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it("waits for each scroll to settle before the next pass, then reports settled", async () => {
+    const resolvers: (() => void)[] = [];
+    const scrollToIndex = jest.fn(() => new Promise<void>((resolve) => { resolvers.push(resolve); }));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1), row(2)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(2, { animated: false, viewPosition: 0.5, onSettled });
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    // A busy JS thread: the first scroll hasn't finished when its timer would fire.
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(true);
+    await act(async () => { resolvers[0](); });
+    jest.advanceTimersByTime(SECTION_JUMP_PASSES_MS[0]);
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    await act(async () => { resolvers[1](); });
+    jest.advanceTimersByTime(SECTION_JUMP_PASSES_MS[1] - SECTION_JUMP_PASSES_MS[0]);
+    expect(scrollToIndex).toHaveBeenCalledTimes(3);
+    expect(scrollToIndex).toHaveBeenLastCalledWith({ index: 1, animated: false, viewPosition: 0.5 });
+    await act(async () => { resolvers[2](); });
+    expect(onSettled).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS - SECTION_JUMP_PASSES_MS[1]);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+  });
+
+  it("never reports a cancelled jump as settled", async () => {
+    let finish!: () => void;
+    const scrollToIndex = jest.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    controller.cancel();
+    await act(async () => { finish(); });
+    jest.runAllTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+});
+
 describe("useSectionJump", () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());

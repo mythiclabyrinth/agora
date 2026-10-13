@@ -1,4 +1,3 @@
-import { useBottomViewport } from "../../../../src/lib/useBottomViewport";
 /* Thread view: the root message pinned at the top, replies below, and a
    composer that posts with thread_id (the server folds reply-to-reply back
    to the root, same as resolve_thread in server.rs).
@@ -9,7 +8,7 @@ import { useBottomViewport } from "../../../../src/lib/useBottomViewport";
    per-thread read acking while the viewer sits at the bottom, long-press
    star, and user mentions in the composer. */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -43,13 +42,14 @@ import { Icon } from "../../../../src/components/Icon";
 import { ProgressBubbles, TypingRow } from "../../../../src/components/LiveRows";
 import { MessageItem } from "../../../../src/components/MessageItem";
 import { MessageActions } from "../../../../src/components/MessageActions";
-import { SectionRail, useSectionJump } from "../../../../src/components/SectionRail";
+import { SectionRail } from "../../../../src/components/SectionRail";
 import { ProfileSheet } from "../../../../src/components/ProfileSheet";
 import { useReactWith } from "../../../../src/components/Reactions";
 import { onAgentMessage } from "../../../../src/lib/agentBus";
 import { headerActions } from "../../../../src/lib/headerItems";
 import { useHeaderKeyboardAvoiding } from "../../../../src/lib/keyboard";
-import { trackBottom, useReadAck } from "../../../../src/lib/readAck";
+import { useConversationList } from "../../../../src/lib/useConversationList";
+import { parseMessageId } from "../../../../src/lib/useMessageLanding";
 import {
   enqueueSpeech,
   prepareSpeechAudio,
@@ -63,7 +63,6 @@ import { usePrefs } from "../../../../src/state/prefs";
 import { useSession } from "../../../../src/state/session";
 
 type Row = { kind: "root"; m: Message } | { kind: "msg"; m: Message };
-const MAX_DEEP_LINK_PAGES = 10;
 
 export default function ThreadScreen() {
   const { colors } = useAppTheme();
@@ -73,12 +72,14 @@ export default function ThreadScreen() {
     rootId: string;
     channelName?: string;
     messageId?: string;
+    /** Set with messageId by an in-place notification tap (see LAND_NONCE_PARAM). */
+    landAt?: string;
     groupId?: string;
   }>();
   const channelId = params.channelId;
   const me = useMe().data;
   const rootId = Number(params.rootId);
-  const targetMessageId = params.messageId ? Number(params.messageId) : null;
+  const targetMessageId = parseMessageId(params.messageId);
   const session = useSession((s) => s.session)!;
   const keyboardAvoiding = useHeaderKeyboardAvoiding();
   const qc = useQueryClient();
@@ -153,15 +154,9 @@ export default function ThreadScreen() {
 
   /* Read acking: the latest reply is read when it lands while the viewer
      sits at the bottom, or when the viewer scrolls down to it later.
-     Mirrors the channel screen's channel-marker debounce. */
-  const atBottom = useRef(true);
+     Mirrors the channel screen's channel-marker debounce, including waiting
+     for the landing to decide where the thread opens. */
   const latestId = thread.length ? thread[thread.length - 1].id : 0;
-  const onReachedBottom = useReadAck(
-    latestId,
-    () => qc.getQueryData<ThreadRow[]>(keys.threads)?.find((t) => t.root.id === rootId)?.last_read_id,
-    (id, onError) => markThreadRead.mutate(id, { onError }),
-    atBottom,
-  );
 
   const agentCandidates = useMemo<MentionCandidate[]>(
     () => (channelAgents.data ?? []).map((a) => ({ id: a.id, name: a.name })),
@@ -223,50 +218,31 @@ export default function ThreadScreen() {
   }, [channelId, params.channelName, rootId, root?.text]);
 
   const listRef = useRef<FlashListRef<Row>>(null);
-  const onViewportLayout = useBottomViewport(listRef, atBottom);
-  const {
-    activeMessageId: activeSectionMessageId,
-    onViewableItemsChanged,
-    viewabilityConfig,
-    jumpToSection,
-    cancelSectionJump,
-  } = useSectionJump({ listRef, rows, atBottom, latestId });
-  const [highlightedId, setHighlightedId] = useState<number | null>(null);
-  const landedOnMessage = useRef<number | null>(null);
-  const deepLinkBaseRef = useRef(0);
-  useEffect(() => {
-    deepLinkBaseRef.current = replies.data?.pages.length || 0;
-  }, [targetMessageId]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!targetMessageId || landedOnMessage.current === targetMessageId) return;
-    const idx = rows.findIndex((row) => row.m.id === targetMessageId);
-    if (idx >= 0) {
-      landedOnMessage.current = targetMessageId;
-      cancelSectionJump();
-      atBottom.current = false;
-      setHighlightedId(targetMessageId);
-      setTimeout(() => setHighlightedId(null), 1800);
-      setTimeout(() => {
-        listRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.5 });
-      }, 80);
-      setTimeout(() => {
-        listRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.5 });
-      }, 300);
-    } else if (thread.length && thread[0].id <= targetMessageId) {
-      landedOnMessage.current = targetMessageId;
-    } else if (
-      (replies.data?.pages.length || 0) - deepLinkBaseRef.current >= MAX_DEEP_LINK_PAGES
-    ) {
-      landedOnMessage.current = targetMessageId;
-    } else if (replies.hasNextPage && !replies.isFetchingNextPage) {
-      void replies.fetchNextPage();
-    } else if (!replies.hasNextPage) {
-      landedOnMessage.current = targetMessageId;
-    }
-  }, [
-    targetMessageId, rows, thread, replies.hasNextPage, replies.isFetchingNextPage,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // Threads have no "New" divider: a target, else the newest reply.
+  const conversation = useConversationList({
+    listRef,
+    rows,
+    latestId,
+    target: targetMessageId,
+    landingNonce: params.landAt,
+    oldestId: thread.length ? thread[0].id : null,
+    // The root loads on its own (cachedRoot/fetchedRoot), never by paging
+    // replies: targeted, it's awaited until its row is there.
+    separateTarget: targetMessageId === rootId,
+    history: {
+      loaded: replies.data !== undefined,
+      pageCount: replies.data?.pages.length ?? 0,
+      hasNextPage: replies.hasNextPage,
+      isFetchingNextPage: replies.isFetchingNextPage,
+      failed: replies.isFetchNextPageError,
+      refreshing: replies.isRefetching,
+      fetchNextPage: () => void replies.fetchNextPage(),
+    },
+    lastReadId: () =>
+      qc.getQueryData<ThreadRow[]>(keys.threads)?.find((t) => t.root.id === rootId)?.last_read_id,
+    ack: (id, onError) => markThreadRead.mutate(id, { onError }),
+  });
+  const highlightedId = conversation.highlightedId;
   const renderRow = useCallback(
     ({ item }: { item: Row }) => (
       <View style={[
@@ -361,7 +337,7 @@ export default function ThreadScreen() {
         style={styles.root}
         {...keyboardAvoiding}
       >
-        <View style={styles.listWrap} onLayout={onViewportLayout}>
+        <View style={styles.listWrap} onLayout={conversation.onViewportLayout}>
           <FlashList
           ref={listRef}
           data={rows}
@@ -369,24 +345,7 @@ export default function ThreadScreen() {
           keyExtractor={(item) =>
             item.kind === "root" ? `root-${item.m.id}` : String(item.m.id)
           }
-          // Tight threshold for the same reason as the channel screen: a
-          // wider band lets an incoming reply yank an upward-scrolling
-          // viewer back to the bottom.
-          maintainVisibleContentPosition={{
-            startRenderingFromBottom: true,
-            autoscrollToBottomThreshold: 0.05,
-          }}
-          onStartReached={() => {
-            if (replies.hasNextPage && !replies.isFetchingNextPage) void replies.fetchNextPage();
-          }}
-          onStartReachedThreshold={0.4}
-          onScrollBeginDrag={cancelSectionJump}
-          onScroll={(e) => {
-            trackBottom(e.nativeEvent, atBottom, onReachedBottom);
-          }}
-          scrollEventThrottle={64}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
+          {...conversation.listProps}
           // Mounted whenever older history exists (see the channel screen).
           ListHeaderComponent={
             replies.hasNextPage ? (
@@ -403,8 +362,8 @@ export default function ThreadScreen() {
           />
           <SectionRail
             messages={sectionMessages}
-            activeMessageId={activeSectionMessageId}
-            onJump={jumpToSection}
+            activeMessageId={conversation.activeSectionMessageId}
+            onJump={conversation.onRailJump}
           />
         </View>
         <TypingRow typing={typing} />
