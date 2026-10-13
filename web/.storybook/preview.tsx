@@ -94,6 +94,7 @@ const preview: Preview = {
         phone: { name: "Phone", styles: { width: "390px", height: "844px" } },
         recordingPhone: { name: "Recording phone", styles: { width: "360px", height: "800px" } },
         smallPhone: { name: "Small phone", styles: { width: "320px", height: "568px" } },
+        shortDesktop600: { name: "Short desktop (600px)", styles: { width: "1024px", height: "600px" } },
       },
     },
   },
