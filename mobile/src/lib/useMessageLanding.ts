@@ -370,6 +370,24 @@ export function useMessageLanding({
   }, [atBottom, decide, settle]);
 
   useEffect(() => {
+    // FlashList doesn't finish a first layout (so no onLoad) while it has no
+    // rows: an empty conversation would never decide, leaving acks and
+    // pinning off until a first message arrived. Open it at the bottom; a
+    // target can't be in an empty history, and whatever arrives later is
+    // landed on in place.
+    if (
+      !listReady && history.loaded && rows.length === 0 &&
+      !initialDone.current && dividerReady
+    ) {
+      // That target is handled: a first live message mounting the list later
+      // mustn't start an in-place landing (and pause acks) for it. A thread
+      // root loads apart from the history, so it's still landed on.
+      if (target != null && !separateTarget) {
+        Object.assign(run.current, { target, nonce, paging: false });
+      }
+      landWithoutTarget(false);
+      return;
+    }
     if (!listReady || !history.loaded) return;
     const r = run.current;
     if (target != null && (r.target !== target || r.nonce !== nonce)) {

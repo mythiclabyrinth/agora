@@ -185,7 +185,10 @@ export function createSectionJumpController({
     // that's not a broken list, and the pass waits another period.
     const arm = () => {
       timeout = setTimeout(() => {
-        if (AppState.currentState !== "active") arm();
+        // A backgrounded or inactive app (switcher, Control Center, a call)
+        // defers it; an unknown state (null early in startup) doesn't.
+        const state = AppState.currentState;
+        if (state === "background" || state === "inactive") arm();
         else once(stuck)();
       }, passTimeoutMs);
       passTimeout = timeout;
@@ -199,7 +202,15 @@ export function createSectionJumpController({
     // Unmounted: nothing will ever settle, so there's nothing to wait for.
     if (!list) return undefined;
     const index = messageRowIndex(getRows(), messageId);
-    return index >= 0 ? list.scrollToIndex({ index, animated, viewPosition }) : undefined;
+    if (index < 0) return undefined;
+    try {
+      return list.scrollToIndex({ index, animated, viewPosition });
+    } catch (e) {
+      // FlashList throws before its layout manager exists; a landing calls
+      // this from an effect, where a throw would take the screen down.
+      console.warn("section jump: scrollToIndex failed", e);
+      return undefined;
+    }
   };
 
   return {

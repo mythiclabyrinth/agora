@@ -454,6 +454,28 @@ describe("useMessageLanding", () => {
     h.unmount();
   });
 
+  it("opens an empty conversation at the bottom without waiting for a first layout", () => {
+    // FlashList never lays out (so never calls onLoad) with no rows.
+    const h = mount({ target: null, rows: [], pageCount: 1 });
+    expect(h.landing.decided).toBe(true);
+    expect(h.atBottom.current).toBe(true);
+    h.unmount();
+  });
+
+  it("opens an empty conversation with a target without waiting for a first layout", () => {
+    const h = mount({ target: 160, rows: [], pageCount: 1 });
+    expect(h.landing.decided).toBe(true);
+    expect(h.atBottom.current).toBe(true);
+    // A first live message mounts the list: no landing starts for the old
+    // target, so acks and pinning stay on.
+    h.update({ rows: rowsFor(170, 170) });
+    h.listLoaded();
+    expect(h.landing.decided).toBe(true);
+    expect(h.refetch).not.toHaveBeenCalled();
+    expect(h.atBottom.current).toBe(true);
+    h.unmount();
+  });
+
   it("fills a hole in the cache: an in-range target the newest page brings lands", async () => {
     const hole = rowsFor(101, 150).filter((r) => (r as { m?: Message }).m?.id !== 120);
     const h = mount({ target: 120, rows: hole, pageCount: 1 });

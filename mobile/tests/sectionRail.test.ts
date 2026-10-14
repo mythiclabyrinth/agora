@@ -269,6 +269,53 @@ describe("createSectionJumpController with a list that reports completion", () =
     expect(onSettled).toHaveBeenCalledTimes(1);
   });
 
+  it("treats a throwing scrollToIndex as nothing to wait for", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const scrollToIndex = jest.fn(() => { throw new Error("no layout manager"); });
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    expect(() => controller.jumpTo(1, { onSettled })).not.toThrow();
+    jest.runAllTimers();
+    expect(controller.isJumping()).toBe(false);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("waits another period while the app is inactive (switcher, Control Center)", () => {
+    const scrollToIndex = jest.fn(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    AppState.currentState = "inactive";
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS);
+    expect(onSettled).not.toHaveBeenCalled();
+    AppState.currentState = "active";
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't wait another period when the app state isn't known yet", () => {
+    const scrollToIndex = jest.fn(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    (AppState as { currentState: unknown }).currentState = null;
+    controller.jumpTo(1, { onSettled });
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
   it("finishes at the pass timeout when a correction pass's scroll never settles", async () => {
     let finishFirst!: () => void;
     const scrollToIndex = jest.fn()
