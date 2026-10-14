@@ -3,7 +3,7 @@
    width; long timelines use a fixed window instead of a nested scroller. */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { AppState, Pressable, View } from "react-native";
 import {
   conversationSections,
   agentRailColors,
@@ -105,6 +105,12 @@ export function pickActiveMessageId({
 
 export const SECTION_JUMP_PASSES_MS = [350, 700] as const;
 export const SECTION_JUMP_SETTLE_MS = 1100;
+/** A safety net only: how long one pass waits for its scroll to report
+    settled. A scroll that takes longer means the list is broken, so the jump
+    finishes there (settled once) rather than holding everything paused
+    behind it through more passes. Generous on purpose: a healthy far landing
+    still rendering on a slow device must not be cut off. */
+export const SECTION_JUMP_PASS_TIMEOUT_MS = 8000;
 
 export interface SectionJumpList {
   /** FlashList resolves once the scroll (and its offset re-enable) settles. */
@@ -130,27 +136,70 @@ export function createSectionJumpController({
   getList,
   onJumpStart,
   settleMs = SECTION_JUMP_SETTLE_MS,
+  passTimeoutMs = SECTION_JUMP_PASS_TIMEOUT_MS,
 }: {
   getRows: () => readonly unknown[];
   getList: () => SectionJumpList | null;
   /** Fired once per jump with the target mid (optimistic active selection). */
   onJumpStart: (messageId: number) => void;
   settleMs?: number;
+  passTimeoutMs?: number;
 }) {
   let timers: ReturnType<typeof setTimeout>[] = [];
+  // The pass awaiting its scroll's promise, if any (one at a time).
+  let passTimeout: ReturnType<typeof setTimeout> | null = null;
   let jumping = false;
   let generation = 0;
 
   const clearTimers = () => {
     for (const t of timers) clearTimeout(t);
     timers = [];
+    if (passTimeout) clearTimeout(passTimeout);
+    passTimeout = null;
+  };
+
+  /** Continue right away when there's nothing to wait for (no list mounted,
+      the row isn't loaded, or a fire-and-forget list); for a list that
+      reports completion, once its promise settles, or `stuck` if the safety
+      timeout fires first. Whichever comes second is ignored. */
+  const afterScroll = (
+    result: void | Promise<void> | undefined,
+    next: () => void,
+    stuck: () => void,
+  ) => {
+    if (!result || typeof result.then !== "function") {
+      next();
+      return;
+    }
+    let done = false;
+    let timeout: ReturnType<typeof setTimeout>;
+    const once = (then: () => void) => () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      // A later jump may own the slot by now.
+      if (passTimeout === timeout) passTimeout = null;
+      then();
+    };
+    // In the background nothing renders, so a scroll can't settle there:
+    // that's not a broken list, and the pass waits another period.
+    const arm = () => {
+      timeout = setTimeout(() => {
+        if (AppState.currentState !== "active") arm();
+        else once(stuck)();
+      }, passTimeoutMs);
+      passTimeout = timeout;
+    };
+    arm();
+    void result.then(once(next), once(next));
   };
 
   const scrollTo = (messageId: number, animated: boolean, viewPosition: number) => {
+    const list = getList();
+    // Unmounted: nothing will ever settle, so there's nothing to wait for.
+    if (!list) return undefined;
     const index = messageRowIndex(getRows(), messageId);
-    return index >= 0
-      ? getList()?.scrollToIndex({ index, animated, viewPosition })
-      : undefined;
+    return index >= 0 ? list.scrollToIndex({ index, animated, viewPosition }) : undefined;
   };
 
   return {
@@ -163,6 +212,11 @@ export function createSectionJumpController({
       const jump = ++generation;
       jumping = true;
       onJumpStart(messageId);
+      const finish = () => {
+        if (jump !== generation) return;
+        jumping = false;
+        onSettled?.();
+      };
       // Each pass waits for the previous scroll to settle: when the JS thread
       // is busy rendering a far target, timer-driven passes would otherwise
       // pile up and overlap, and FlashList's interleaved offset pauses leave
@@ -171,21 +225,17 @@ export function createSectionJumpController({
       const pass = (i: number, previousAt: number) => {
         if (jump !== generation) return;
         if (i === SECTION_JUMP_PASSES_MS.length) {
-          timers.push(setTimeout(() => {
-            if (jump !== generation) return;
-            jumping = false;
-            onSettled?.();
-          }, settleMs - previousAt));
+          timers.push(setTimeout(finish, settleMs - previousAt));
           return;
         }
         const at = SECTION_JUMP_PASSES_MS[i];
         timers.push(setTimeout(() => {
           if (jump !== generation) return;
           const finalPass = i === SECTION_JUMP_PASSES_MS.length - 1;
-          afterScroll(scrollTo(messageId, animated && !finalPass, viewPosition), () => pass(i + 1, at));
+          afterScroll(scrollTo(messageId, animated && !finalPass, viewPosition), () => pass(i + 1, at), finish);
         }, at - previousAt));
       };
-      afterScroll(scrollTo(messageId, animated, viewPosition), () => pass(0, 0));
+      afterScroll(scrollTo(messageId, animated, viewPosition), () => pass(0, 0), finish);
     },
     /** A user drag takes over: stop correcting and resume live tracking. */
     cancel() {
@@ -194,13 +244,6 @@ export function createSectionJumpController({
       jumping = false;
     },
   };
-}
-
-/** Continue synchronously for a fire-and-forget list, after the promise for
-    one that reports completion. */
-function afterScroll(result: void | Promise<void> | undefined, next: () => void) {
-  if (result && typeof result.then === "function") void result.then(next, next);
-  else next();
 }
 
 /** Everything a screen needs to wire a SectionRail to its FlashList. */

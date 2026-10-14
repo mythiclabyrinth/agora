@@ -49,7 +49,12 @@ import { onAgentMessage } from "../../../../src/lib/agentBus";
 import { headerActions } from "../../../../src/lib/headerItems";
 import { useHeaderKeyboardAvoiding } from "../../../../src/lib/keyboard";
 import { useConversationList } from "../../../../src/lib/useConversationList";
-import { parseMessageId } from "../../../../src/lib/useMessageLanding";
+import {
+  newestLoadedId,
+  parseMessageId,
+  threadRootLoading,
+  useMergeNewestPage,
+} from "../../../../src/lib/useMessageLanding";
 import {
   enqueueSpeech,
   prepareSpeechAudio,
@@ -85,6 +90,7 @@ export default function ThreadScreen() {
   const qc = useQueryClient();
 
   const replies = useMessages(channelId, rootId);
+  const mergeNewestPage = useMergeNewestPage(channelId, rootId);
   const topLevel = useMessages(channelId, null);
   const send = useSendMessage(channelId);
   const sendVoice = useSendVoice(channelId);
@@ -144,6 +150,7 @@ export default function ThreadScreen() {
       (candidateRoot.channel_id !== channelId || candidateRoot.thread_id != null));
 
   const thread = useMemo(() => flattenMessages(replies.data), [replies.data]);
+  const newestId = useMemo(() => newestLoadedId(thread), [thread]);
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = [];
     if (root) out.push({ kind: "root", m: root });
@@ -226,17 +233,23 @@ export default function ThreadScreen() {
     target: targetMessageId,
     landingNonce: params.landAt,
     oldestId: thread.length ? thread[0].id : null,
+    newestId,
     // The root loads on its own (cachedRoot/fetchedRoot), never by paging
-    // replies: targeted, it's awaited until its row is there.
+    // replies: targeted, it's waited for while it could still arrive.
     separateTarget: targetMessageId === rootId,
+    separateTargetLoading: threadRootLoading(fetchedRoot, topLevel),
     history: {
       loaded: replies.data !== undefined,
       pageCount: replies.data?.pages.length ?? 0,
       hasNextPage: replies.hasNextPage,
       isFetchingNextPage: replies.isFetchingNextPage,
       failed: replies.isFetchNextPageError,
+      // The infinite-query observer's isRefetching already excludes
+      // next/previous-page fetches.
       refreshing: replies.isRefetching,
+      paused: replies.isPaused,
       fetchNextPage: () => void replies.fetchNextPage(),
+      refetch: mergeNewestPage,
     },
     lastReadId: () =>
       qc.getQueryData<ThreadRow[]>(keys.threads)?.find((t) => t.root.id === rootId)?.last_read_id,

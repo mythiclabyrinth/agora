@@ -134,6 +134,29 @@ describe("useReadAck", () => {
     expect(ack).toHaveBeenCalledTimes(2);
   });
 
+  it("retries the same id again once another id was acked in between", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    const h = mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+    act(() => jest.advanceTimersByTime(600));
+    act(() => (ack.mock.calls[0][1] as () => void)());
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS + 600));
+    act(() => (ack.mock.calls[1][1] as () => void)());
+    expect(ack).toHaveBeenCalledTimes(2);
+    // The screen moves on to another conversation, and its ack goes through.
+    h.update({ latestId: 9, lastReadId: 3, atBottom });
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenLastCalledWith(9, expect.any(Function));
+    // Back on the first one, still unread: a failure gets its retry again.
+    h.update({ latestId: 5, lastReadId: 3, atBottom });
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledTimes(4);
+    act(() => (ack.mock.calls[3][1] as () => void)());
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS + 600));
+    expect(ack).toHaveBeenCalledTimes(5);
+    expect(ack).toHaveBeenLastCalledWith(5, expect.any(Function));
+  });
+
   it("never retries after the screen unmounts, even if the ack fails later", () => {
     const ack = jest.fn();
     const atBottom = { current: true };

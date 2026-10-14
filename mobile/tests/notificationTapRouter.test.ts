@@ -196,7 +196,7 @@ test.each([
   mockResponse = response("n1", "c1", threadId, undefined, 95);
   renderRouter();
   expect(mockPush).not.toHaveBeenCalled();
-  expect(mockSetParams).toHaveBeenCalledWith({ messageId: "95", landAt: "n1@1" });
+  expect(mockSetParams).toHaveBeenCalledWith({ messageId: "95", landAt: "n1~95@1" });
   expect(mockDismiss).toHaveBeenCalledWith("n1");
 });
 
@@ -204,9 +204,18 @@ test("a later card reusing the conversation's identifier still navigates", () =>
   mockPathname = "/channel/c1";
   mockResponse = response("channel:c1", "c1", undefined, undefined, 95, 1);
   renderRouter();
-  expect(mockSetParams).toHaveBeenLastCalledWith({ messageId: "95", landAt: "channel:c1@1" });
+  expect(mockSetParams).toHaveBeenLastCalledWith({ messageId: "95", landAt: "channel:c1~95@1" });
   act(() => emit(response("channel:c1", "c1", undefined, undefined, 97, 2)));
-  expect(mockSetParams).toHaveBeenLastCalledWith({ messageId: "97", landAt: "channel:c1@2" });
+  expect(mockSetParams).toHaveBeenLastCalledWith({ messageId: "97", landAt: "channel:c1~97@2" });
+  expect(mockSetParams).toHaveBeenCalledTimes(2);
+});
+
+test("a later card with the same delivery date still navigates (coarse dates)", () => {
+  mockPathname = "/channel/c1";
+  mockResponse = response("channel:c1", "c1", undefined, undefined, 95, 1);
+  renderRouter();
+  act(() => emit(response("channel:c1", "c1", undefined, undefined, 97, 1)));
+  expect(mockSetParams).toHaveBeenLastCalledWith({ messageId: "97", landAt: "channel:c1~97@1" });
   expect(mockSetParams).toHaveBeenCalledTimes(2);
 });
 

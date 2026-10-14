@@ -50,7 +50,75 @@ describe("useConversationList", () => {
     target?: number | null;
     pageCount?: number;
     hasNextPage?: boolean;
+    refetch?: () => Promise<unknown>;
+    failed?: boolean;
+    paused?: boolean;
   };
+
+  it("holds off older-page paging while the landing merges the newest page", () => {
+    const rows = [{ kind: "msg", m: { id: 101 } }, { kind: "msg", m: { id: 150 } }];
+    // A target newer than the cache: the landing's merge is left in flight.
+    const h = mount({ rows, target: 160, hasNextPage: true, refetch: () => new Promise(() => {}) });
+    h.listLoaded();
+    act(() => h.hook.listProps.onStartReached());
+    expect(h.fetchNextPage).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it("loads the older page when a landing settles at the start of the loaded history", () => {
+    // A thread root target: row 0, landed with no scroll FlashList would
+    // turn into onStartReached.
+    const rows = [{ kind: "msg", m: { id: 101 } }, { kind: "msg", m: { id: 150 } }];
+    const h = mount({ rows, target: 101, hasNextPage: true }, 0);
+    h.listLoaded();
+    act(() => jest.advanceTimersByTime(5000));
+    expect(h.fetchNextPage).toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it.each([["failed", { failed: true }], ["paused", { paused: true }]])(
+    "doesn't retry the older page at the start when it %s",
+    (_, extra) => {
+      const rows = [{ kind: "msg", m: { id: 101 } }, { kind: "msg", m: { id: 150 } }];
+      const h = mount({ rows, target: 101, hasNextPage: true, ...extra }, 0);
+      h.listLoaded();
+      act(() => jest.advanceTimersByTime(5000));
+      expect(h.fetchNextPage).not.toHaveBeenCalled();
+      h.unmount();
+    },
+  );
+
+  it("keeps loading older pages while the viewer stays at the start as each one lands", () => {
+    const rows = [{ kind: "msg", m: { id: 101 } }, { kind: "msg", m: { id: 150 } }];
+    const h = mount({ rows, hasNextPage: true }, 0);
+    h.listLoaded();
+    act(() => jest.advanceTimersByTime(5000));
+    h.fetchNextPage.mockClear();
+    // A page lands below the anchored first row: no scroll, still at the start.
+    act(() => h.hook.listProps.onContentSizeChange());
+    expect(h.fetchNextPage).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
+  it("doesn't load older pages on growth away from the start", () => {
+    const rows = [{ kind: "msg", m: { id: 101 } }, { kind: "msg", m: { id: 150 } }];
+    const h = mount({ rows, hasNextPage: true }, 1500);
+    h.listLoaded();
+    act(() => jest.advanceTimersByTime(5000));
+    h.fetchNextPage.mockClear();
+    act(() => h.hook.listProps.onContentSizeChange());
+    expect(h.fetchNextPage).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it("doesn't load older pages when a landing settles away from the start", () => {
+    const rows = [{ kind: "msg", m: { id: 101 } }, { kind: "msg", m: { id: 150 } }];
+    const h = mount({ rows, target: 150, hasNextPage: true }, 1500);
+    h.listLoaded();
+    act(() => jest.advanceTimersByTime(5000));
+    expect(h.fetchNextPage).not.toHaveBeenCalled();
+    h.unmount();
+  });
 
   function mount(initial: Props = {}, offset = 0) {
     const list = {
@@ -76,9 +144,11 @@ describe("useConversationList", () => {
         latestId: rows.length ? 150 : 0,
         target: p.target ?? null,
         oldestId: rows.length ? (rows[0] as { m: { id: number } }).m.id : null,
+        newestId: rows.length ? 150 : null,
         history: {
           loaded: true, pageCount: p.pageCount ?? 1, hasNextPage: p.hasNextPage ?? false,
-          isFetchingNextPage: false, failed: false, fetchNextPage,
+          isFetchingNextPage: false, failed: p.failed ?? false, paused: p.paused ?? false, fetchNextPage,
+          refetch: p.refetch ?? (() => Promise.resolve()),
         },
         lastReadId: () => 100,
         ack,
@@ -179,6 +249,41 @@ describe("useConversationList", () => {
       expect(h.ack).not.toHaveBeenCalled();
       h.resize(400);
       expect(h.list.scrollToEnd).not.toHaveBeenCalled();
+      h.unmount();
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  it("stale scroll events mid-landing leave the jump pill alone until the settle re-read", () => {
+    const h = mount({ rows: rowsFor(101, 150), target: 120 }, 600);
+    h.listLoaded();
+    // The JS thread was busy: these still report the pre-jump bottom.
+    h.scroll(true);
+    h.scroll(false);
+    expect(h.onNearBottom).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS));
+    expect(h.onNearBottom).toHaveBeenCalledTimes(1);
+    expect(h.onNearBottom).toHaveBeenLastCalledWith(false);
+    h.unmount();
+  });
+
+  it.each([
+    ["the jump pill", (hook: ReturnType<typeof useConversationList>) => hook.cancelJumps()],
+    ["a rail tap", (hook: ReturnType<typeof useConversationList>) => hook.onRailJump(150)],
+  ])("%s ends a fling it interrupts, so new messages pin again", (_, interrupt) => {
+    const raf = jest.spyOn(global, "requestAnimationFrame").mockImplementation((cb) => { cb(0); return 1; });
+    try {
+      const h = mount({ rows: rowsFor(101, 150) }, 1500);
+      h.listLoaded();
+      act(() => h.hook.listProps.onMomentumScrollBegin());
+      // No momentum end: the programmatic scroll swallowed it.
+      act(() => interrupt(h.hook));
+      act(() => jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS));
+      h.scroll(true);
+      h.list.scrollToEnd.mockClear();
+      act(() => h.hook.listProps.onContentSizeChange());
+      expect(h.list.scrollToEnd).toHaveBeenCalledWith({ animated: false });
       h.unmount();
     } finally {
       raf.mockRestore();

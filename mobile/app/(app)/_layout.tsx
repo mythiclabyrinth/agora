@@ -116,12 +116,13 @@ export function NotificationTapRouter() {
   useEffect(() => {
     if (!response || response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
     const id = response.notification.request.identifier;
-    // Cards for one conversation reuse its identifier, so a later card's tap
-    // is a different response with the same id; its delivery date tells them
-    // apart.
-    const tap = `${id}@${response.notification.date}`;
-    if (handledTap === tap) return;
     const data = response.notification.request.content.data;
+    // Cards for one conversation reuse its identifier, so a later card's tap
+    // is a different response with the same id; its message and delivery
+    // date tell them apart (dates can be coarse on some platforms).
+    // URL-safe: it doubles as the landAt route param (no '#').
+    const tap = `${id}~${notificationMessageId(data) ?? ""}@${response.notification.date}`;
+    if (handledTap === tap) return;
     const target = notificationTarget(data);
     if (!target) return;
     // The tapped card normally auto-dismisses; make that deterministic. Other

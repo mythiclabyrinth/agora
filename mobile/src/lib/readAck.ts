@@ -84,6 +84,9 @@ export function useReadAck(
     if (!mounted.current || !enabledRef.current) return;
     const { latestId: id, lastReadId: readId } = latest.current;
     if (id === sent.current || !needsReadAck(id, readId())) return;
+    // The once-per-id retry guard is per id: another id being acked starts
+    // over, so this one failing again later still gets its retry.
+    if (retried.current !== id) retried.current = 0;
     // Decided now, not when the timer fires: a message landing shifts the
     // list and briefly reads as "not at the bottom", which would drop live
     // acks.

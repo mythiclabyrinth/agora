@@ -48,7 +48,12 @@ export function useFollowLatest(
   isBusy: () => boolean,
 ) {
   const following = useRef(false);
-  const interacting = useRef(false);
+  // A finger on the list, and the fling it started: tracked apart because a
+  // programmatic scroll interrupting a fling (a landing, a rail tap, the jump
+  // pill) can swallow its momentum-end event, which would leave pinning off
+  // until the next drag. A finger still down is never overridden.
+  const dragging = useRef(false);
+  const flinging = useRef(false);
   // The last scroll position seen at the end: the baseline for movedAwayFromEnd.
   const atEnd = useRef<ScrollMetrics | null>(null);
   const frame = useRef<number | null>(null);
@@ -72,24 +77,44 @@ export function useFollowLatest(
     // nothing in the layout explains, with or without a gesture: iOS's
     // status-bar tap scrolls to the top without drag or momentum events.
     if (
-      interacting.current || busy.current() ||
+      dragging.current || flinging.current || busy.current() ||
       (atEnd.current != null && movedAwayFromEnd(atEnd.current, e))
     ) following.current = false;
   }, [atBottom]);
-  const onInteractionStart = useCallback(() => {
-    interacting.current = true;
+  const onScrollBeginDrag = useCallback(() => {
+    // Catching a fling ends it, whether or not its momentum end arrives.
+    flinging.current = false;
+    dragging.current = true;
   }, []);
-  const onInteractionEnd = useCallback(() => {
-    interacting.current = false;
+  const onScrollEndDrag = useCallback(() => {
+    dragging.current = false;
     following.current = atBottom.current;
   }, [atBottom]);
+  const onMomentumScrollBegin = useCallback(() => {
+    flinging.current = true;
+  }, []);
+  const onMomentumScrollEnd = useCallback(() => {
+    flinging.current = false;
+    following.current = atBottom.current;
+  }, [atBottom]);
+  /** A programmatic scroll starts or settles: any fling it interrupted is over. */
+  const onProgrammaticScroll = useCallback(() => {
+    flinging.current = false;
+  }, []);
+  /** A jump to a message moves the viewer off the latest: stop following
+      until the settle re-read (or a scroll) finds them at the bottom again,
+      so a list that can't be measured then never yanks them back down. */
+  const onJumpAway = useCallback(() => {
+    flinging.current = false;
+    following.current = false;
+  }, []);
   const onContentSizeChange = useCallback(() => {
     // A landing that settles on the newest message marks the viewer at the
     // bottom without any scroll event: that starts following too.
     if (atBottom.current) following.current = true;
     if (!shouldPinToEnd({
       following: following.current,
-      interacting: interacting.current,
+      interacting: dragging.current || flinging.current,
       busy: busy.current(),
     })) return;
     if (frame.current != null) cancelAnimationFrame(frame.current);
@@ -99,7 +124,7 @@ export function useFollowLatest(
       // scroll from then on.
       if (!shouldPinToEnd({
         following: following.current,
-        interacting: interacting.current,
+        interacting: dragging.current || flinging.current,
         busy: busy.current(),
       })) return;
       list.current?.scrollToEnd({ animated: false });
@@ -108,10 +133,12 @@ export function useFollowLatest(
 
   return {
     onScroll,
-    onScrollBeginDrag: onInteractionStart,
-    onScrollEndDrag: onInteractionEnd,
-    onMomentumScrollBegin: onInteractionStart,
-    onMomentumScrollEnd: onInteractionEnd,
+    onScrollBeginDrag,
+    onScrollEndDrag,
+    onMomentumScrollBegin,
+    onMomentumScrollEnd,
+    onProgrammaticScroll,
+    onJumpAway,
     onContentSizeChange,
   };
 }

@@ -96,6 +96,22 @@ describe("useFollowLatest", () => {
     h.unmount();
   });
 
+  it("a jump to a message stops following until the viewer is found at the bottom again", () => {
+    const h = setup();
+    h.scroll(1500);
+    // A landing marks the viewer away from the bottom as it jumps.
+    h.atBottom.current = false;
+    act(() => h.hook.onJumpAway());
+    // The settle re-read couldn't measure the list: nothing re-established
+    // following, so an arrival doesn't yank the viewer off the target.
+    h.grow();
+    expect(h.list.current.scrollToEnd).not.toHaveBeenCalled();
+    h.scroll(1500);
+    h.grow();
+    expect(h.list.current.scrollToEnd).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
   it("starts following when a landing marks the viewer at the bottom", () => {
     const h = setup();
     h.grow();
@@ -119,6 +135,42 @@ describe("useFollowLatest", () => {
     h.grow();
     expect(h.list.current.scrollToEnd).not.toHaveBeenCalled();
     h.scroll(1500);
+    h.grow();
+    expect(h.list.current.scrollToEnd).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
+  it("pins again after a programmatic scroll swallows a fling's momentum end", () => {
+    const h = setup();
+    h.hook.onScrollBeginDrag();
+    h.scroll(1400);
+    h.hook.onScrollEndDrag();
+    h.hook.onMomentumScrollBegin();
+    // The jump pill's scrollToEnd interrupts the fling: no momentum end.
+    h.hook.onProgrammaticScroll();
+    h.scroll(1500);
+    h.grow();
+    expect(h.list.current.scrollToEnd).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
+  it("a programmatic scroll doesn't override a finger still on the list", () => {
+    const h = setup();
+    h.scroll(1500);
+    h.hook.onScrollBeginDrag();
+    h.hook.onProgrammaticScroll();
+    h.scroll(1500);
+    h.grow();
+    expect(h.list.current.scrollToEnd).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it("catching a fling ends it even if its momentum end never arrives", () => {
+    const h = setup();
+    h.hook.onMomentumScrollBegin();
+    h.hook.onScrollBeginDrag();
+    h.scroll(1500);
+    h.hook.onScrollEndDrag();
     h.grow();
     expect(h.list.current.scrollToEnd).toHaveBeenCalledTimes(1);
     h.unmount();

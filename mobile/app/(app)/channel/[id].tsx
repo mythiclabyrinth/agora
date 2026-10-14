@@ -56,17 +56,19 @@ import { fmtTs } from "@agora/core";
 import { headerActions } from "../../../src/lib/headerItems";
 import { useHeaderKeyboardAvoiding } from "../../../src/lib/keyboard";
 import { useConversationList } from "../../../src/lib/useConversationList";
-import { parseMessageId } from "../../../src/lib/useMessageLanding";
+import { useDividerSnapshot } from "../../../src/lib/useDividerSnapshot";
+import { newestLoadedId, parseMessageId, useMergeNewestPage } from "../../../src/lib/useMessageLanding";
 import { enqueueSpeech, prepareSpeechAudio, stopSpeech } from "../../../src/lib/speech";
 import { typography, weight } from "../../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
 import { useChannelLive } from "@agora/core";
+import { channelRows, type ChannelRow } from "../../../src/lib/channelRows";
 import { usePrefs } from "../../../src/state/prefs";
 import { useSession } from "../../../src/state/session";
 import { ConversationTools } from "../../../src/components/ConversationTools";
 import { IconButton } from "../../../src/components/IconButton";
 
-type Row = { kind: "msg"; m: Message } | { kind: "divider" };
+type Row = ChannelRow;
 
 function openThread(channelId: string, root: Message, channelName: string) {
   router.push({
@@ -150,6 +152,7 @@ export default function ChannelScreen() {
     !!params.groupId && !!channelMeta && params.groupId !== channelMeta.group.id;
 
   const messages = useMessages(channelId, null);
+  const mergeNewestPage = useMergeNewestPage(channelId, null);
   const send = useSendMessage(channelId);
   const sendVoice = useSendVoice(channelId);
   const transcribeVoice = useTranscribeVoice(channelId);
@@ -162,33 +165,17 @@ export default function ChannelScreen() {
   const { typing, progress } = useChannelLive(channelId, null);
 
   /* "New" divider: snapshot the marker once, when the channel opens. The
-     groups payload can land after the first page; until it does (or fails)
-     the opening position isn't decided. */
-  const dividerAfter = useRef<number | null>(null);
-  if (dividerAfter.current === null && channelMeta) {
-    const { unread, last_read_id } = channelMeta.channel;
-    dividerAfter.current = (unread ?? 0) > 0 ? (last_read_id ?? 0) : 0;
-  }
-  const dividerReady = dividerAfter.current !== null || groups.isSuccess || groups.isError;
-  const marker = dividerAfter.current ?? 0;
+     groups payload can land after the first page; while its first fetch is
+     in flight (not a retry after it failed) the opening position isn't decided. */
+  const { marker, dividerReady, onOpeningDecided } = useDividerSnapshot(
+    channelMeta?.channel,
+    groups,
+  );
 
   const chronological = useMemo(() => flattenMessages(messages.data), [messages.data]);
+  const newestId = useMemo(() => newestLoadedId(chronological), [chronological]);
 
-  const { rows, firstUnread } = useMemo(() => {
-    const out: Row[] = [];
-    let unreadFrom: Message | undefined;
-    for (const m of chronological) {
-      if (marker > 0 && out.length > 0) {
-        const prev = out[out.length - 1];
-        if (prev.kind === "msg" && prev.m.id <= marker && m.id > marker) {
-          out.push({ kind: "divider" });
-          unreadFrom = m;
-        }
-      }
-      out.push({ kind: "msg", m });
-    }
-    return { rows: out, firstUnread: unreadFrom };
-  }, [chronological, marker]);
+  const { rows, firstUnread } = useMemo(() => channelRows(chronological, marker), [chronological, marker]);
 
   /* Read marker: the newest message is read when it lands while the viewer
      sits at the bottom, or when the viewer scrolls down to it later. */
@@ -204,17 +191,23 @@ export default function ChannelScreen() {
     target: targetMessageId,
     landingNonce: params.landAt,
     oldestId: chronological.length ? chronological[0].id : null,
+    newestId,
     history: {
       loaded: messages.data !== undefined,
       pageCount: messages.data?.pages.length ?? 0,
       hasNextPage: messages.hasNextPage,
       isFetchingNextPage: messages.isFetchingNextPage,
       failed: messages.isFetchNextPageError,
+      // The infinite-query observer's isRefetching already excludes
+      // next/previous-page fetches.
       refreshing: messages.isRefetching,
+      paused: messages.isPaused,
       fetchNextPage: () => void messages.fetchNextPage(),
+      refetch: mergeNewestPage,
     },
     dividerReady,
     dividerMessageId: firstUnread?.id ?? null,
+    onOpeningDecided,
     lastReadId: () => channelMeta?.channel.last_read_id,
     ack: (id, onError) => markRead.mutate(id, { onError }),
     onNearBottom: (near) => setShowJump(!near),

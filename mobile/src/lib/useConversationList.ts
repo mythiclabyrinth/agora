@@ -8,7 +8,7 @@ import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 
 import { type SectionJumpList, useSectionJump } from "../components/SectionRail";
 import { useFollowLatest } from "./followLatest";
-import { isNearBottom, type ScrollMetrics, trackBottom, useReadAck } from "./readAck";
+import { type ScrollMetrics, trackBottom, useReadAck } from "./readAck";
 import { useBottomViewport } from "./useBottomViewport";
 import { type LandingHistory, useMessageLanding } from "./useMessageLanding";
 
@@ -23,6 +23,9 @@ import { type LandingHistory, useMessageLanding } from "./useMessageLanding";
 const MAINTAIN_VISIBLE_CONTENT_POSITION = { startRenderingFromBottom: true } as const;
 
 type ScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
+
+/** How close to the start (in viewport heights) loads the older page. */
+const START_REACHED_THRESHOLD = 0.4;
 
 /** The FlashList ref methods a position re-read needs (all on FlashListRef). */
 export interface MeasurableList {
@@ -66,11 +69,13 @@ export function useConversationList({
   target,
   landingNonce,
   oldestId,
-  newestId = latestId > 0 ? latestId : null,
+  newestId,
   separateTarget,
+  separateTargetLoading,
   history,
   dividerReady,
   dividerMessageId,
+  onOpeningDecided,
   lastReadId,
   ack,
   onNearBottom,
@@ -89,13 +94,16 @@ export function useConversationList({
   /** Per-request token to land on the same target again (see useMessageLanding). */
   landingNonce?: string | null;
   oldestId: number | null;
-  /** Newest message of the paged history; defaults to `latestId`. */
-  newestId?: number | null;
+  /** Highest loaded id of the paged history (see newestLoadedId). */
+  newestId: number | null;
   /** See useMessageLanding (a thread's root as the target). */
   separateTarget?: boolean;
+  separateTargetLoading?: boolean;
   history: LandingHistory;
   dividerReady?: boolean;
   dividerMessageId?: number | null;
+  /** See useMessageLanding. */
+  onOpeningDecided?: () => void;
   lastReadId: () => number | undefined;
   ack: (id: number, onError: () => void) => void;
   /** Every scroll's "near the bottom" verdict (the channel's jump pill). */
@@ -114,9 +122,27 @@ export function useConversationList({
 
   /* Called only after this render (a landing settling), when everything it
      closes over below is initialized. */
+  /* FlashList fires onStartReached on entering the start threshold, not
+     while the viewer stays inside it. A jump that ends there (a thread's
+     root, the oldest loaded message) emits no scroll at all, and a page that
+     lands while they stay there (rows inserted below an anchored first row,
+     as under a thread's root) doesn't re-fire it either: the spinner above
+     would stay until they scroll away and back. So both re-check here. */
+  const loadOlderIfAtStart = (metrics: ScrollMetrics) => {
+    if (
+      metrics.contentOffset.y <= metrics.layoutMeasurement.height * START_REACHED_THRESHOLD &&
+      history.hasNextPage && !history.isFetchingNextPage && !landing.isMerging() &&
+      !history.failed && !history.paused
+    ) history.fetchNextPage();
+  };
+
   const rereadPosition = () => {
+    follow.onProgrammaticScroll();
     const metrics = listScrollMetrics(listRef.current);
-    if (metrics) onScrollMetrics(metrics);
+    if (metrics) {
+      onScrollMetrics(metrics);
+      loadOlderIfAtStart(metrics);
+    }
     return metrics != null;
   };
   const reread = useRef(rereadPosition);
@@ -129,13 +155,22 @@ export function useConversationList({
     oldestId,
     newestId,
     separateTarget,
+    separateTargetLoading,
     history,
     dividerReady,
     dividerMessageId,
+    onOpeningDecided,
     atBottom,
-    jumpTo: jumpToSection,
+    // Called only after this render, like rereadPosition.
+    jumpTo: (messageId, options) => {
+      follow.onJumpAway();
+      jumpToSection(messageId, options);
+    },
     cancelJump: cancelSectionJump,
-    scrollToEnd: () => listRef.current?.scrollToEnd({ animated: false }),
+    scrollToEnd: () => {
+      follow.onProgrammaticScroll();
+      listRef.current?.scrollToEnd({ animated: false });
+    },
     rereadPosition,
   });
   const onReachedBottom = useReadAck(latestId, lastReadId, ack, atBottom, landing.decided);
@@ -146,36 +181,47 @@ export function useConversationList({
   const onScrollMetrics = (metrics: ScrollMetrics) => {
     // While a landing or section jump owns the position, scroll events can
     // be stale (the JS thread is busy rendering the destination): they must
-    // not mark the viewer at the bottom, which acks, pins and snaps. Each
-    // settled jump re-reads the real position.
-    const near = isBusy() ? isNearBottom(metrics) : trackBottom(metrics, atBottom, onReachedBottom);
+    // not mark the viewer at the bottom, which acks, pins and snaps, nor
+    // flip the jump pill. Each settled jump re-reads the real position.
+    const near = isBusy() ? null : trackBottom(metrics, atBottom, onReachedBottom);
     follow.onScroll(metrics);
-    onNearBottom?.(near);
+    if (near != null) onNearBottom?.(near);
   };
   const onScrollPosition = (e: ScrollEvent) => onScrollMetrics(e.nativeEvent);
+
+  /** The jump pill's scroll follows: a fling it interrupts is over. */
+  const cancelJumps = useCallback(() => {
+    landing.cancelLanding();
+    follow.onProgrammaticScroll();
+  }, [landing.cancelLanding, follow.onProgrammaticScroll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** A dot tap supersedes an in-flight landing. */
   const onRailJump = useCallback((messageId: number) => {
     landing.cancelLanding();
+    follow.onJumpAway();
     // Its scroll events were ignored while it moved; read where it ended.
     jumpToSection(messageId, { onSettled: () => reread.current() });
-  }, [landing.cancelLanding, jumpToSection]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [landing.cancelLanding, jumpToSection, follow.onJumpAway]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     highlightedId: landing.highlightedId,
     activeSectionMessageId,
     /** Everything programmatic stops: the landing (and its paging) and any
         section jump. For user actions that take the scroll position over. */
-    cancelJumps: landing.cancelLanding,
+    cancelJumps,
     onRailJump,
     onViewportLayout,
     listProps: {
       maintainVisibleContentPosition: MAINTAIN_VISIBLE_CONTENT_POSITION,
       onLoad: landing.onListLoad,
       onStartReached: () => {
-        if (history.hasNextPage && !history.isFetchingNextPage) history.fetchNextPage();
+        // Not while the landing merges the newest page: the older page's
+        // result would be built from the pages before the merge.
+        if (history.hasNextPage && !history.isFetchingNextPage && !landing.isMerging()) {
+          history.fetchNextPage();
+        }
       },
-      onStartReachedThreshold: 0.4,
+      onStartReachedThreshold: START_REACHED_THRESHOLD,
       onScrollBeginDrag: () => {
         landing.cancelLanding();
         follow.onScrollBeginDrag();
@@ -191,7 +237,13 @@ export function useConversationList({
         onScrollPosition(e);
         follow.onMomentumScrollEnd();
       },
-      onContentSizeChange: follow.onContentSizeChange,
+      onContentSizeChange: () => {
+        follow.onContentSizeChange();
+        // A landing pages on its own; only a settled list loads on here.
+        if (isBusy()) return;
+        const metrics = listScrollMetrics(listRef.current);
+        if (metrics) loadOlderIfAtStart(metrics);
+      },
       onScroll: onScrollPosition,
       scrollEventThrottle: 64,
       onViewableItemsChanged,
