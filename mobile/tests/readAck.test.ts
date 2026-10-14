@@ -1,6 +1,7 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { needsReadAck, trackBottom, useReadAck } from "../src/lib/readAck";
+import { AppState, type AppStateStatus } from "react-native";
+import { ACK_RETRY_MS, needsReadAck, trackBottom, useReadAck } from "../src/lib/readAck";
 
 describe("needsReadAck", () => {
   it("acks a message newer than the read marker", () => {
@@ -116,6 +117,124 @@ describe("useReadAck", () => {
     h.update({ latestId: 4, lastReadId: 4, atBottom });
     act(() => jest.advanceTimersByTime(600));
     expect(ackA).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed ack once after a delay while the viewer stays at the bottom", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledTimes(1);
+    act(() => (ack.mock.calls[0][1] as () => void)());
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS + 600));
+    expect(ack).toHaveBeenCalledTimes(2);
+    // A second failure for the same id doesn't keep hammering the server.
+    act(() => (ack.mock.calls[1][1] as () => void)());
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS * 3));
+    expect(ack).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries the same id again once another id was acked in between", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    const h = mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+    act(() => jest.advanceTimersByTime(600));
+    act(() => (ack.mock.calls[0][1] as () => void)());
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS + 600));
+    act(() => (ack.mock.calls[1][1] as () => void)());
+    expect(ack).toHaveBeenCalledTimes(2);
+    // The screen moves on to another conversation, and its ack goes through.
+    h.update({ latestId: 9, lastReadId: 3, atBottom });
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenLastCalledWith(9, expect.any(Function));
+    // Back on the first one, still unread: a failure gets its retry again.
+    h.update({ latestId: 5, lastReadId: 3, atBottom });
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledTimes(4);
+    act(() => (ack.mock.calls[3][1] as () => void)());
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS + 600));
+    expect(ack).toHaveBeenCalledTimes(5);
+    expect(ack).toHaveBeenLastCalledWith(5, expect.any(Function));
+  });
+
+  it("never retries after the screen unmounts, even if the ack fails later", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    const h = mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledTimes(1);
+    h.unmount();
+    // The request fails only after the screen is gone.
+    act(() => (ack.mock.calls[0][1] as () => void)());
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS * 3));
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears a pending retry on unmount", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    const h = mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+    act(() => jest.advanceTimersByTime(600));
+    act(() => (ack.mock.calls[0][1] as () => void)());
+    h.unmount();
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS * 3));
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the delayed retry once the viewer has scrolled away", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+    act(() => jest.advanceTimersByTime(600));
+    act(() => (ack.mock.calls[0][1] as () => void)());
+    atBottom.current = false;
+    act(() => jest.advanceTimersByTime(ACK_RETRY_MS + 600));
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-acks on returning to the foreground at the bottom", () => {
+    const listeners: ((state: AppStateStatus) => void)[] = [];
+    const original = AppState.addEventListener;
+    AppState.addEventListener = ((_type: string, listener: (state: AppStateStatus) => void) => {
+      listeners.push(listener);
+      return { remove: () => {} };
+    }) as typeof AppState.addEventListener;
+    try {
+      const ack = jest.fn();
+      const atBottom = { current: true };
+      const h = mount({ latestId: 5, lastReadId: 3, atBottom }, ack);
+      act(() => jest.advanceTimersByTime(600));
+      act(() => (ack.mock.calls[0][1] as () => void)());
+      act(() => listeners.forEach((l) => l("active")));
+      act(() => jest.advanceTimersByTime(600));
+      expect(ack).toHaveBeenCalledTimes(2);
+      // Already sent and not failed: foregrounding again is a no-op.
+      act(() => listeners.forEach((l) => l("active")));
+      act(() => jest.advanceTimersByTime(ACK_RETRY_MS + 600));
+      expect(ack).toHaveBeenCalledTimes(2);
+      h.unmount();
+    } finally {
+      AppState.addEventListener = original;
+    }
+  });
+
+  it("holds every ack until enabled, then acks what the viewer is at", () => {
+    const ack = jest.fn();
+    const atBottom = { current: true };
+    let onReachedBottom: () => void = () => {};
+    function Probe({ enabled }: { enabled: boolean }) {
+      onReachedBottom = useReadAck(5, () => 3, ack, atBottom, enabled);
+      return null;
+    }
+    let renderer!: TestRenderer.ReactTestRenderer;
+    act(() => { renderer = TestRenderer.create(React.createElement(Probe, { enabled: false })); });
+    act(() => onReachedBottom());
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).not.toHaveBeenCalled();
+    act(() => renderer.update(React.createElement(Probe, { enabled: true })));
+    act(() => jest.advanceTimersByTime(600));
+    expect(ack).toHaveBeenCalledTimes(1);
+    act(() => renderer.unmount());
   });
 
   it("skips already-read messages and cancels on unmount", () => {

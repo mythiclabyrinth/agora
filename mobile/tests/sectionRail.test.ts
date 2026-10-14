@@ -1,12 +1,13 @@
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { StyleSheet } from "react-native";
+import { AppState, StyleSheet } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { agentRailColors, ApiClient, ApiProvider, keys, type AgentInfo, type Message } from "@agora/core";
 import {
   createSectionJumpController,
   MAX_VISIBLE_SECTION_DOTS,
   SECTION_JUMP_PASSES_MS,
+  SECTION_JUMP_PASS_TIMEOUT_MS,
   SECTION_JUMP_SETTLE_MS,
   SectionRail,
   useSectionJump,
@@ -187,6 +188,330 @@ describe("createSectionJumpController", () => {
     state.rows = [row(1), row(2), row(3)];
     jest.advanceTimersByTime(SECTION_JUMP_PASSES_MS[0]);
     expect(scrollToIndex).toHaveBeenCalledWith({ index: 0, animated: true, viewPosition: 0.08 });
+  });
+});
+
+describe("createSectionJumpController with a list that reports completion", () => {
+  const originalAppState = AppState.currentState;
+  beforeEach(() => {
+    jest.useFakeTimers();
+    AppState.currentState = "active";
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    AppState.currentState = originalAppState;
+  });
+
+  it("waits for each scroll to settle before the next pass, then reports settled", async () => {
+    const resolvers: (() => void)[] = [];
+    const scrollToIndex = jest.fn(() => new Promise<void>((resolve) => { resolvers.push(resolve); }));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1), row(2)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(2, { animated: false, viewPosition: 0.5, onSettled });
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    // A busy JS thread: the first scroll hasn't finished when its timer would fire.
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(true);
+    await act(async () => { resolvers[0](); });
+    jest.advanceTimersByTime(SECTION_JUMP_PASSES_MS[0]);
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    await act(async () => { resolvers[1](); });
+    jest.advanceTimersByTime(SECTION_JUMP_PASSES_MS[1] - SECTION_JUMP_PASSES_MS[0]);
+    expect(scrollToIndex).toHaveBeenCalledTimes(3);
+    expect(scrollToIndex).toHaveBeenLastCalledWith({ index: 1, animated: false, viewPosition: 0.5 });
+    await act(async () => { resolvers[2](); });
+    expect(onSettled).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS - SECTION_JUMP_PASSES_MS[1]);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+  });
+
+  it("never reports a cancelled jump as settled", async () => {
+    let finish!: () => void;
+    const scrollToIndex = jest.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    controller.cancel();
+    await act(async () => { finish(); });
+    jest.runAllTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+
+  it("finishes the jump at the pass timeout when a scroll never settles", () => {
+    const scrollToIndex = jest.fn(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS - 1);
+    expect(controller.isJumping()).toBe(true);
+    expect(onSettled).not.toHaveBeenCalled();
+    // The list is broken: no further passes, the jump is over (~8s worst case).
+    jest.advanceTimersByTime(1);
+    expect(controller.isJumping()).toBe(false);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    jest.runAllTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a throwing scrollToIndex as nothing to wait for", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const scrollToIndex = jest.fn(() => { throw new Error("no layout manager"); });
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    expect(() => controller.jumpTo(1, { onSettled })).not.toThrow();
+    jest.runAllTimers();
+    expect(controller.isJumping()).toBe(false);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("waits another period while the app is inactive (switcher, Control Center)", () => {
+    const scrollToIndex = jest.fn(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    AppState.currentState = "inactive";
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS);
+    expect(onSettled).not.toHaveBeenCalled();
+    AppState.currentState = "active";
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't wait another period when the app state isn't known yet", () => {
+    const scrollToIndex = jest.fn(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    (AppState as { currentState: unknown }).currentState = null;
+    controller.jumpTo(1, { onSettled });
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishes at the pass timeout when a correction pass's scroll never settles", async () => {
+    let finishFirst!: () => void;
+    const scrollToIndex = jest.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }))
+      .mockImplementation(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    await act(async () => { finishFirst(); });
+    const [first] = SECTION_JUMP_PASSES_MS;
+    jest.advanceTimersByTime(first);
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS - 1);
+    expect(onSettled).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+    jest.runAllTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+  });
+
+  it("doesn't cut off a slow jump whose scrolls each settle within the pass timeout", async () => {
+    const resolvers: (() => void)[] = [];
+    const scrollToIndex = jest.fn(() => new Promise<void>((resolve) => { resolvers.push(resolve); }));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1), row(2)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(2, { onSettled });
+    // A far landing still rendering on a low-end device: seconds per scroll.
+    const slow = 5000;
+    expect(slow).toBeLessThan(SECTION_JUMP_PASS_TIMEOUT_MS);
+    const [first, second] = SECTION_JUMP_PASSES_MS;
+    jest.advanceTimersByTime(slow);
+    // Still waiting on the first scroll: no overlapping correction pass.
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    await act(async () => { resolvers[0](); });
+    jest.advanceTimersByTime(first + slow);
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    await act(async () => { resolvers[1](); });
+    jest.advanceTimersByTime(second - first);
+    // Well past any single wall-clock cap on the whole jump: the final,
+    // pinning pass still runs.
+    expect(scrollToIndex).toHaveBeenCalledTimes(3);
+    expect(scrollToIndex).toHaveBeenLastCalledWith({ index: 1, animated: false, viewPosition: 0.08 });
+    expect(controller.isJumping()).toBe(true);
+    jest.advanceTimersByTime(slow);
+    await act(async () => { resolvers[2](); });
+    expect(onSettled).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS - second);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+  });
+
+  it("doesn't finish a jump at the pass timeout while the app is backgrounded", () => {
+    const scrollToIndex = jest.fn(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    AppState.currentState = "background";
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS * 3);
+    expect(controller.isJumping()).toBe(true);
+    expect(onSettled).not.toHaveBeenCalled();
+    // Back: the re-armed period runs out, and only then does it finish.
+    AppState.currentState = "active";
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS - 1);
+    expect(onSettled).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+    jest.runAllTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("still takes a scroll that settles while its pass timeout is re-armed", async () => {
+    let finish!: () => void;
+    const scrollToIndex = jest.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }))
+      .mockImplementation(() => undefined);
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    AppState.currentState = "background";
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS * 2);
+    AppState.currentState = "active";
+    await act(async () => { finish(); });
+    // The correction passes run as usual; the stale timeout never fires.
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS);
+    expect(scrollToIndex).toHaveBeenCalledTimes(3);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    jest.runAllTimers();
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a scroll that settles after its pass timed out", async () => {
+    const resolvers: (() => void)[] = [];
+    const scrollToIndex = jest.fn(() => new Promise<void>((resolve) => { resolvers.push(resolve); }));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    // The scroll reports in late: no passes restart, nothing settles again.
+    await act(async () => { resolvers[0](); });
+    jest.runAllTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+  });
+
+  it("doesn't wait out the pass timeout when there's no list to scroll", () => {
+    // Unmounted mid-jump: nothing would ever settle.
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => null,
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+  });
+
+  it("doesn't wait out the pass timeout for a scroll that returns no promise", () => {
+    const scrollToIndex = jest.fn(() => undefined);
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    jest.advanceTimersByTime(SECTION_JUMP_SETTLE_MS);
+    expect(scrollToIndex).toHaveBeenCalledTimes(3);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("a new jump's pass timeout survives the previous jump's late scroll", async () => {
+    let finishFirst!: () => void;
+    const scrollToIndex = jest.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirst = resolve; }))
+      .mockImplementation(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1), row(2)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1);
+    controller.jumpTo(2, { onSettled });
+    // The first jump's scroll settles late; the second still hangs.
+    await act(async () => { finishFirst(); });
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS - 1);
+    expect(onSettled).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+    jest.runAllTimers();
+    expect(scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("never reports a cancelled jump as settled, even past the pass timeouts", () => {
+    const scrollToIndex = jest.fn(() => new Promise<void>(() => {}));
+    const onSettled = jest.fn();
+    const controller = createSectionJumpController({
+      getRows: () => [row(1)],
+      getList: () => ({ scrollToIndex }),
+      onJumpStart: jest.fn(),
+    });
+    controller.jumpTo(1, { onSettled });
+    controller.cancel();
+    jest.advanceTimersByTime(SECTION_JUMP_PASS_TIMEOUT_MS * 10);
+    expect(scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(controller.isJumping()).toBe(false);
+    expect(onSettled).not.toHaveBeenCalled();
   });
 });
 

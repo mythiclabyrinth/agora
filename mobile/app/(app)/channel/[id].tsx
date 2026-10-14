@@ -1,11 +1,10 @@
-import { useBottomViewport } from "../../../src/lib/useBottomViewport";
 import { SheetHeader } from "../../../src/components/SheetHeader";
 import { previewText } from "../../../src/lib/previewText";
 /* Channel view: inverted infinite list, "New" divider from the read marker,
    live typing/progress, mention-aware composer, pins/stars sheets, and
    long-press message actions (thread / star / pin). */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -48,7 +47,7 @@ import { EmojiPicker } from "../../../src/components/EmojiPicker";
 import { ProgressBubbles, TypingRow } from "../../../src/components/LiveRows";
 import { MessageItem } from "../../../src/components/MessageItem";
 import { MessageActions } from "../../../src/components/MessageActions";
-import { SectionRail, useSectionJump } from "../../../src/components/SectionRail";
+import { SectionRail } from "../../../src/components/SectionRail";
 import { ProfileSheet } from "../../../src/components/ProfileSheet";
 import { useReactWith } from "../../../src/components/Reactions";
 
@@ -56,18 +55,20 @@ import { onAgentMessage } from "../../../src/lib/agentBus";
 import { fmtTs } from "@agora/core";
 import { headerActions } from "../../../src/lib/headerItems";
 import { useHeaderKeyboardAvoiding } from "../../../src/lib/keyboard";
-import { trackBottom, useReadAck } from "../../../src/lib/readAck";
+import { useConversationList } from "../../../src/lib/useConversationList";
+import { useDividerSnapshot } from "../../../src/lib/useDividerSnapshot";
+import { newestLoadedId, parseMessageId, useMergeNewestPage } from "../../../src/lib/useMessageLanding";
 import { enqueueSpeech, prepareSpeechAudio, stopSpeech } from "../../../src/lib/speech";
 import { typography, weight } from "../../../src/lib/theme";
 import { createThemedStyles, useAppTheme } from "../../../src/lib/useTheme";
 import { useChannelLive } from "@agora/core";
+import { channelRows, type ChannelRow } from "../../../src/lib/channelRows";
 import { usePrefs } from "../../../src/state/prefs";
 import { useSession } from "../../../src/state/session";
 import { ConversationTools } from "../../../src/components/ConversationTools";
 import { IconButton } from "../../../src/components/IconButton";
 
-type Row = { kind: "msg"; m: Message } | { kind: "divider" };
-const MAX_DEEP_LINK_PAGES = 10;
+type Row = ChannelRow;
 
 function openThread(channelId: string, root: Message, channelName: string) {
   router.push({
@@ -125,10 +126,12 @@ export default function ChannelScreen() {
     name?: string;
     groupId?: string;
     messageId?: string;
+    /** Set with messageId by an in-place notification tap (see LAND_NONCE_PARAM). */
+    landAt?: string;
   }>();
   const channelId = params.id;
   const me = useMe().data;
-  const targetMessageId = params.messageId ? Number(params.messageId) : null;
+  const targetMessageId = parseMessageId(params.messageId);
   const session = useSession((s) => s.session)!;
   const keyboardAvoiding = useHeaderKeyboardAvoiding();
 
@@ -149,6 +152,7 @@ export default function ChannelScreen() {
     !!params.groupId && !!channelMeta && params.groupId !== channelMeta.group.id;
 
   const messages = useMessages(channelId, null);
+  const mergeNewestPage = useMergeNewestPage(channelId, null);
   const send = useSendMessage(channelId);
   const sendVoice = useSendVoice(channelId);
   const transcribeVoice = useTranscribeVoice(channelId);
@@ -160,109 +164,55 @@ export default function ChannelScreen() {
   useSeedActivity(channelId);
   const { typing, progress } = useChannelLive(channelId, null);
 
-  /* "New" divider: snapshot the marker once, when the channel opens. */
-  const dividerAfter = useRef<number | null>(null);
-  if (dividerAfter.current === null && channelMeta) {
-    const { unread, last_read_id } = channelMeta.channel;
-    dividerAfter.current = (unread ?? 0) > 0 ? (last_read_id ?? 0) : 0;
-  }
+  /* "New" divider: snapshot the marker once, when the channel opens. The
+     groups payload can land after the first page; while its first fetch is
+     in flight (not a retry after it failed) the opening position isn't decided. */
+  const { marker, dividerReady, onOpeningDecided } = useDividerSnapshot(
+    channelMeta?.channel,
+    groups,
+  );
 
   const chronological = useMemo(() => flattenMessages(messages.data), [messages.data]);
+  const newestId = useMemo(() => newestLoadedId(chronological), [chronological]);
 
-  const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    const marker = dividerAfter.current ?? 0;
-    for (const m of chronological) {
-      if (marker > 0 && out.length > 0) {
-        const prev = out[out.length - 1];
-        if (prev.kind === "msg" && prev.m.id <= marker && m.id > marker) {
-          out.push({ kind: "divider" });
-        }
-      }
-      out.push({ kind: "msg", m });
-    }
-    return out;
-  }, [chronological]);
+  const { rows, firstUnread } = useMemo(() => channelRows(chronological, marker), [chronological, marker]);
 
   /* Read marker: the newest message is read when it lands while the viewer
      sits at the bottom, or when the viewer scrolls down to it later. */
-  const atBottom = useRef(true);
   const latestId = chronological.length ? chronological[chronological.length - 1].id : 0;
   const unread = channelMeta?.channel.unread ?? 0;
-  const onReachedBottom = useReadAck(
-    latestId,
-    () => channelMeta?.channel.last_read_id,
-    (id, onError) => markRead.mutate(id, { onError }),
-    atBottom,
-  );
 
   const listRef = useRef<FlashListRef<Row>>(null);
-  const onViewportLayout = useBottomViewport(listRef, atBottom);
   const [showJump, setShowJump] = useState(false);
-  const [highlightedId, setHighlightedId] = useState<number | null>(null);
-  const landedOnMessage = useRef<number | null>(null);
-  const {
-    activeMessageId: activeSectionMessageId,
-    onViewableItemsChanged,
-    viewabilityConfig,
-    jumpToSection,
-    cancelSectionJump,
-  } = useSectionJump({ listRef, rows, atBottom, latestId });
-
-  /* A shared deep link may point well beyond the newest page. Page older
-     history until the row exists, then center it. */
-  const deepLinkBaseRef = useRef(0);
-  useEffect(() => {
-    deepLinkBaseRef.current = messages.data?.pages.length || 0;
-  }, [targetMessageId]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!targetMessageId || landedOnMessage.current === targetMessageId) return;
-    const idx = rows.findIndex((r) => r.kind === "msg" && r.m.id === targetMessageId);
-    if (idx >= 0) {
-      landedOnMessage.current = targetMessageId;
-      cancelSectionJump();
-      atBottom.current = false;
-      setHighlightedId(targetMessageId);
-      setTimeout(() => setHighlightedId(null), 1800);
-      setTimeout(() => {
-        listRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.5 });
-      }, 80);
-      // FlashList v2 has no onScrollToIndexFailed callback. Repeat after its
-      // measurement pass so heterogeneous message heights still land exactly.
-      setTimeout(() => {
-        listRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.5 });
-      }, 300);
-    } else if (
-      chronological.length &&
-      chronological[0].id <= targetMessageId
-    ) {
-      landedOnMessage.current = targetMessageId;
-    } else if (
-      (messages.data?.pages.length || 0) - deepLinkBaseRef.current >= MAX_DEEP_LINK_PAGES
-    ) {
-      landedOnMessage.current = targetMessageId;
-    } else if (messages.hasNextPage && !messages.isFetchingNextPage) {
-      void messages.fetchNextPage();
-    } else if (!messages.hasNextPage) {
-      landedOnMessage.current = targetMessageId;
-    }
-  }, [
-    targetMessageId, rows, chronological, messages.hasNextPage, messages.isFetchingNextPage,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /* Land on the "New" divider instead of the bottom when there's a backlog
-     (Slack behavior) — once, on the first page load. */
-  const landedOnDivider = useRef(false);
-  useEffect(() => {
-    if (targetMessageId || landedOnDivider.current || !rows.length) return;
-    landedOnDivider.current = true;
-    const idx = rows.findIndex((r) => r.kind === "divider");
-    if (idx <= 0) return; // no divider (or it's at the very top already)
-    // Give FlashList a frame to settle its bottom-anchored initial render.
-    setTimeout(() => {
-      listRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.2 });
-    }, 80);
-  }, [rows, targetMessageId]);
+  const conversation = useConversationList({
+    listRef,
+    rows,
+    latestId,
+    target: targetMessageId,
+    landingNonce: params.landAt,
+    oldestId: chronological.length ? chronological[0].id : null,
+    newestId,
+    history: {
+      loaded: messages.data !== undefined,
+      pageCount: messages.data?.pages.length ?? 0,
+      hasNextPage: messages.hasNextPage,
+      isFetchingNextPage: messages.isFetchingNextPage,
+      failed: messages.isFetchNextPageError,
+      // The infinite-query observer's isRefetching already excludes
+      // next/previous-page fetches.
+      refreshing: messages.isRefetching,
+      paused: messages.isPaused,
+      fetchNextPage: () => void messages.fetchNextPage(),
+      refetch: mergeNewestPage,
+    },
+    dividerReady,
+    dividerMessageId: firstUnread?.id ?? null,
+    onOpeningDecided,
+    lastReadId: () => channelMeta?.channel.last_read_id,
+    ack: (id, onError) => markRead.mutate(id, { onError }),
+    onNearBottom: (near) => setShowJump(!near),
+  });
+  const highlightedId = conversation.highlightedId;
 
   const agentCandidates = useMemo<MentionCandidate[]>(
     () => (channelAgents.data ?? []).map((a) => ({ id: a.id, name: a.name })),
@@ -408,32 +358,13 @@ export default function ChannelScreen() {
             </Text>
           </Pressable>
         ) : null}
-        <View style={styles.listWrap} onLayout={onViewportLayout}>
+        <View style={styles.listWrap} onLayout={conversation.onViewportLayout}>
           <FlashList
           ref={listRef}
           data={rows}
           renderItem={renderRow}
           keyExtractor={(item) => (item.kind === "msg" ? String(item.m.id) : "divider")}
-          // Chat layout: render anchored to the bottom, stick to it while
-          // the viewer is at it, and keep the viewport stable when older
-          // pages prepend at the top. The threshold is deliberately tight:
-          // anything bigger lets an incoming message drag a viewer who has
-          // just started scrolling up back down to the bottom.
-          maintainVisibleContentPosition={{
-            startRenderingFromBottom: true,
-            autoscrollToBottomThreshold: 0.05,
-          }}
-          onStartReached={() => {
-            if (messages.hasNextPage && !messages.isFetchingNextPage) void messages.fetchNextPage();
-          }}
-          onStartReachedThreshold={0.4}
-          onScrollBeginDrag={cancelSectionJump}
-          onScroll={(e) => {
-            setShowJump(!trackBottom(e.nativeEvent, atBottom, onReachedBottom));
-          }}
-          scrollEventThrottle={64}
-          onViewableItemsChanged={onViewableItemsChanged}
-          viewabilityConfig={viewabilityConfig}
+          {...conversation.listProps}
           // Mounted whenever older history exists, not just mid-fetch:
           // toggling it per fetch changes the content height at the top
           // right as the user scrolls up, which reads as a jump.
@@ -452,8 +383,8 @@ export default function ChannelScreen() {
           />
           <SectionRail
             messages={chronological}
-            activeMessageId={activeSectionMessageId}
-            onJump={jumpToSection}
+            activeMessageId={conversation.activeSectionMessageId}
+            onJump={conversation.onRailJump}
             // Leaves the lower-right region free for the absolutely positioned
             // unread pill; typing/progress rows sit outside this list wrapper.
             // Their conditional height changes the clearance, and the rail and
@@ -465,7 +396,7 @@ export default function ChannelScreen() {
           <Pressable
             style={styles.jump}
             onPress={() => {
-              cancelSectionJump();
+              conversation.cancelJumps();
               listRef.current?.scrollToEnd({ animated: true });
               markRead.mutate(null);
             }}

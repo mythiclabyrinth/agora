@@ -60,7 +60,9 @@ import type {
   UserInfo,
 } from "./types";
 
-const PAGE_SIZE = 50;
+/** Messages per history page; exported for callers that fetch a page
+    themselves and must match what useMessages requests. */
+export const MESSAGE_PAGE_SIZE = 50;
 
 export function useSyncedDrafts(): DraftRow[] {
   return useMessageDrafts(s => s.rows);
@@ -386,7 +388,7 @@ export function useMessages(channelId: string, threadId: number | null) {
   return useInfiniteQuery({
     queryKey: keys.messages(channelId, threadId),
     queryFn: async ({ pageParam }) => {
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      const params = new URLSearchParams({ limit: String(MESSAGE_PAGE_SIZE) });
       if (threadId != null) params.set("thread_id", String(threadId));
       if (pageParam) params.set("before_id", String(pageParam));
       const r = await api.get<{ messages: Message[] }>(
@@ -401,7 +403,7 @@ export function useMessages(channelId: string, threadId: number | null) {
     getNextPageParam: (lastPage, _pages, lastPageParam) => {
       const key = pageKey(lastPageParam);
       const fetchedLength = fetchedMessagePageLength(fetchedLengths, key, lastPage.length);
-      return fetchedLength < PAGE_SIZE ? undefined : lastPage.reduce((oldest, message) =>
+      return fetchedLength < MESSAGE_PAGE_SIZE ? undefined : lastPage.reduce((oldest, message) =>
         (message.seq ?? message.id) < (oldest?.seq ?? oldest?.id ?? Infinity) ? message : oldest,
       undefined as Message | undefined)?.id;
     },
