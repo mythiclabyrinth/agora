@@ -7,12 +7,16 @@
 /* Same stub as messageitem.test.ts: lucide ships untransformed ESM (MdText
    pulls it in via the mermaid block card). */
 jest.mock("lucide-react-native", () => new Proxy({}, { get: () => () => null }));
+jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(() => Promise.resolve(true)), StringFormat: { PLAIN_TEXT: "plainText", HTML: "html" } }));
+jest.mock("../src/components/Toast", () => ({ toast: jest.fn(), toastErr: jest.fn() }));
 
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { ScrollView, StyleSheet } from "react-native";
+import { ScrollView, StyleSheet, Text } from "react-native";
 import { columnWidths, MdText } from "../src/components/MdText";
 import { parseInline, type Span } from "@agora/core";
+import * as Clipboard from "expo-clipboard";
+import { toast } from "../src/components/Toast";
 
 const TABLE = "| Category | Transactions | USD |\n|---|---|---|\n| PAI ATM | 3 | $159.00 |";
 
@@ -176,5 +180,99 @@ test("chart modal closes when the message text changes", () => {
   expect(labelled(tree.root, "Close chart")).toBeDefined();
   act(() => tree.update(React.createElement(MdText, { text: chart("After") })));
   expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Close chart")).toHaveLength(0);
+  act(() => tree.unmount());
+});
+
+/* -------------------------------------------------------- quotes, lists, copy */
+
+const QUOTE = "Paste this:\n\n> **Use codex** & <go>.\n>\n> Not the default.\n\n- one\n- two\n  - nested";
+
+async function press(node: TestRenderer.ReactTestInstance) {
+  await act(async () => { await node.props.onPress({ stopPropagation: () => {} }); });
+}
+
+test("a `>` run renders as one quote box with one copy button that copies it as rich text", async () => {
+  (Clipboard.setStringAsync as jest.Mock).mockClear();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text: QUOTE })); });
+  const copies = tree.root.findAll((n) => typeof n.type === "string" && n.props.accessibilityLabel === "Copy quote");
+  expect(copies).toHaveLength(1);
+  const texts = tree.root.findAllByType(Text).map((n) => [n.props.children].flat().join(""));
+  expect(texts.some((t) => /(^|\n)>( |$)/.test(t))).toBe(false);
+  expect(texts).toContain("Not the default.");
+  await press(labelled(tree.root, "Copy quote"));
+  expect(Clipboard.setStringAsync).toHaveBeenCalledWith(
+    "<b>Use codex</b> &amp; &lt;go&gt;.<br><br>Not the default.", { inputFormat: "html" });
+  expect(toast).toHaveBeenCalledWith("Copied.");
+  act(() => tree.unmount());
+});
+
+test("lists render a marker per item, nested items included", () => {
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text: QUOTE })); });
+  const markers = tree.root.findAllByType(Text).map((n) => n.props.children).filter((c) => c === "•" || c === "◦");
+  expect(markers).toEqual(["•", "•", "◦"]);
+  act(() => tree.unmount());
+});
+
+test("code blocks copy plain text and leave end padding clear of the copy button", async () => {
+  (Clipboard.setStringAsync as jest.Mock).mockClear();
+  const code = "curl -X POST https://example.test/a/very/long/path?with=query&and=more # END";
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text: "```bash\n" + code + "\n```" })); });
+  const scroll = tree.root.findAllByType(ScrollView)[0];
+  const button = labelled(tree.root, "Copy code");
+  const pad = (StyleSheet.flatten(scroll.props.contentContainerStyle) as { paddingRight: number }).paddingRight;
+  const { width, right } = StyleSheet.flatten(button.props.style({ pressed: false })) as { width: number; right: number };
+  expect(pad).toBeGreaterThanOrEqual(width + right);
+  await press(button);
+  expect(Clipboard.setStringAsync).toHaveBeenCalledWith(code);
+  act(() => tree.unmount());
+});
+
+test("code inside a quote gets a narrower definite width than the bubble", () => {
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text: "> ```\n> long code line\n> ```" })); });
+  const layoutHost = tree.root.findAll((n: TestRenderer.ReactTestInstance) => typeof n.props.onLayout === "function")[0];
+  fireLayout(layoutHost, 300);
+  const max = maxWidthOf(tree.root.findAllByType(ScrollView)[0].props.style);
+  expect(max).toBeGreaterThan(0);
+  expect(max).toBeLessThan(300);
+  act(() => tree.unmount());
+});
+
+test("a chart fenced under a list item still draws and joins the chart modal", () => {
+  const chart = JSON.stringify({ title: { text: "Nested" }, xAxis: { data: ["A"] }, yAxis: {}, series: [{ type: "bar", data: [1] }] });
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text: "1. Revenue:\n   ```echarts\n   " + chart + "\n   ```\n2. Next" })); });
+  expect(labelled(tree.root, "Expand chart: Nested")).toBeDefined();
+  act(() => tree.unmount());
+});
+
+test("ordinal markers widen for two-digit numbers and quote children get the full quote inset", () => {
+  let tree!: TestRenderer.ReactTestRenderer;
+  const text = "9. nine\n10. ten\n\n> - quoted\n>\n> ```\n> code\n> ```";
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text })); });
+  const layoutHost = tree.root.findAll((n: TestRenderer.ReactTestInstance) => typeof n.props.onLayout === "function")[0];
+  fireLayout(layoutHost, 300);
+  const marker = tree.root.findAllByType(Text).find((n) => n.props.children === "10.")!;
+  expect((StyleSheet.flatten(marker.props.style) as { minWidth: number }).minWidth).toBeGreaterThanOrEqual(30);
+  // A list directly inside a quote is top-level: solid bullet.
+  expect(tree.root.findAllByType(Text).some((n) => n.props.children === "•")).toBe(true);
+  expect(tree.root.findAllByType(Text).some((n) => n.props.children === "◦")).toBe(false);
+  // 3px border + 10px left padding + 34px right padding.
+  expect(maxWidthOf(tree.root.findAllByType(ScrollView)[0].props.style)).toBe(300 - 47);
+  act(() => tree.unmount());
+});
+
+test("quote and list containers let touches on their padding fall through to the bubble", () => {
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(React.createElement(MdText, { text: "> quoted\n\n- one\n- two" })); });
+  const containers = tree.root.findAll((n) => typeof n.type === "string" && (n.type as string) === "View" && n.props.pointerEvents !== undefined);
+  // root + quote + list + 2 items + 2 item bodies
+  expect(containers.length).toBeGreaterThanOrEqual(7);
+  for (const node of containers) expect(node.props.pointerEvents).toBe("box-none");
+  const root = tree.root.findAll((n: TestRenderer.ReactTestInstance) => typeof n.props.onLayout === "function")[0];
+  expect(root.props.pointerEvents).toBe("box-none");
   act(() => tree.unmount());
 });

@@ -1,65 +1,91 @@
-/* Message prose: mdliteHtml + @mention decoration. Mermaid marker divs render
-   lazily after paint; ECharts fences become stable direct React children. */
+/* Message prose: mdliteDoc + @mention decoration. Mermaid marker divs render
+   lazily after paint; ECharts fences leave slots in the HTML that charts are
+   portaled into, so a chart inside a list item stays in its item. Quotes and
+   code blocks carry copy buttons, handled by one delegated click. */
 
-import { useEffect, useMemo, useState } from "react";
-import { mdliteHtml, normalizeEChart, type NormalizedEChart } from "@agora/core";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
+import { mdliteDoc, normalizeEChart, type NormalizedEChart } from "@agora/core";
+import { copyMdBlock } from "../lib/copyMdBlock";
 import { decorateMentions, type MentionIndex } from "../lib/mentions";
 import { renderMermaid } from "../lib/mermaid";
 import { ChartModal, EChartBlock } from "./EChartBlock";
 import { useAppearance } from "../state/appearance";
 
-type MdPart = { kind: "html"; text: string } | { kind: "echarts"; source: string };
-
-function splitECharts(text: string): MdPart[] {
-  const parts: MdPart[] = [];
-  // Keep this fence grammar aligned with mdliteHtml. Non-ECharts fences remain
-  // inside their prose segment so the shared renderer handles them normally.
-  const fences = /```(\w*)\n?([\s\S]*?)```/g;
-  let cursor = 0;
-  for (const match of text.matchAll(fences)) {
-    if (match[1].toLowerCase() !== "echarts") continue;
-    if (match.index > cursor) parts.push({ kind: "html", text: text.slice(cursor, match.index) });
-    parts.push({ kind: "echarts", source: match[2].replace(/\n$/, "") });
-    cursor = match.index + match[0].length;
-  }
-  if (cursor < text.length) parts.push({ kind: "html", text: text.slice(cursor) });
-  return parts.length ? parts : [{ kind: "html", text }];
-}
+type ChartPart = { source: string; chart: NormalizedEChart | null; error: string; validIndex: number };
 
 export function MdText({ text, mentions }: { text: string; mentions?: MentionIndex }) {
   const theme = useAppearance(state => state.resolved);
-  const parts = useMemo(() => {
+  // Charts depend on the text alone, so a mentions map arriving later
+  // re-decorates the prose without handing EChartBlock new chart objects.
+  const doc = useMemo(() => mdliteDoc(text, { copy: true, charts: true }), [text]);
+  const charts = useMemo(() => {
     let validIndex = 0;
-    return splitECharts(text).map((part, partIndex) => {
-      if (part.kind === "html") return {
-        ...part,
-        key: `html-${partIndex}-${part.text.slice(0, 24)}`,
-        html: mentions ? decorateMentions(mdliteHtml(part.text), mentions) : mdliteHtml(part.text),
-      };
+    return doc.charts.map((source): ChartPart => {
       try {
-        const chart = normalizeEChart(part.source);
-        return { ...part, key: `chart-${partIndex}-${chart.title}`, chart, error: "", validIndex: validIndex++ };
+        const chart = normalizeEChart(source);
+        return { source, chart, error: "", validIndex: validIndex++ };
       } catch (error) {
-        return { ...part, key: `chart-${partIndex}-invalid`, chart: null as NormalizedEChart | null, error: (error as Error).message, validIndex: -1 };
+        return { source, chart: null, error: (error as Error).message, validIndex: -1 };
       }
     });
-  }, [text, mentions]);
-  const validCharts = parts.filter((part): part is Extract<typeof part, { kind: "echarts" }> & { chart: NormalizedEChart } => part.kind === "echarts" && part.chart !== null);
+  }, [doc]);
+  const html = useMemo(() => mentions ? decorateMentions(doc.html, mentions) : doc.html, [doc, mentions]);
+  const copies = doc.copies;
+  const validCharts = charts.filter((part): part is ChartPart & { chart: NormalizedEChart } => part.chart !== null);
   const [activeChart, setActiveChart] = useState<number | null>(null);
   useEffect(() => setActiveChart(null), [text]);
   useEffect(() => {
     if (activeChart !== null && activeChart >= validCharts.length) setActiveChart(null);
   }, [activeChart, validCharts.length]);
-  const mermaidHtml = parts.flatMap(part => part.kind === "html" ? [part.html] : []).join("");
   useEffect(() => {
-    if (mermaidHtml.includes("md-mermaid")) void renderMermaid();
-  }, [mermaidHtml, theme]);
+    if (html.includes("md-mermaid")) void renderMermaid();
+  }, [html, theme]);
+  // The HTML is written here rather than via dangerouslySetInnerHTML: React
+  // may rewrite that on any re-render, which would swap out the slots. Each
+  // chart renders into a persistent host node that is moved into its slot
+  // whenever the HTML is rewritten (mentions arriving, an edit), so charts
+  // aren't torn down and re-initialised with the prose around them.
+  const htmlRef = useRef<HTMLDivElement>(null);
+  // One host per chart index, from a pool that only grows, so an edit that
+  // adds or drops a chart keeps the hosts (and canvases) of the rest. Hosts
+  // exist during render so the charts mount in the same commit as the prose:
+  // a parent's layout effect (MessageLog's scroll anchoring) then measures
+  // them at full height. The layout effect below only moves each host into
+  // its slot; echarts initialises in a passive effect, after that move.
+  const hostPool = useRef<HTMLDivElement[]>([]);
+  const hosts = useMemo(() => {
+    const pool = hostPool.current;
+    while (pool.length < charts.length) {
+      const host = document.createElement("div");
+      host.className = "md-echarts-host";
+      pool.push(host);
+    }
+    return pool.slice(0, charts.length);
+  }, [charts.length]);
+  useLayoutEffect(() => {
+    const el = htmlRef.current;
+    if (!el) return;
+    el.innerHTML = html;
+    el.querySelectorAll<HTMLElement>(".md-echarts-slot").forEach(slot => {
+      const host = hosts[Number(slot.dataset.chartIndex)];
+      if (host) slot.appendChild(host);
+    });
+  }, [html, hosts]);
   return (
     <div>
-      {parts.map(part => part.kind === "echarts"
-        ? <EChartBlock key={part.key} source={part.source} chart={part.chart} error={part.error}
-            onExpand={part.chart ? () => setActiveChart(part.validIndex) : undefined} />
-        : <div key={part.key} className="md-text-segment" dangerouslySetInnerHTML={{ __html: part.html }} />)}
+      <div ref={htmlRef} className="md-text-segment"
+        onClick={(event: MouseEvent<HTMLDivElement>) => {
+          const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button.md-copy");
+          const copyText = button ? copies[Number(button.dataset.copyIndex)] : undefined;
+          if (!button || copyText === undefined) return;
+          event.stopPropagation();
+          void copyMdBlock(button, copyText);
+        }} />
+      {charts.map((part, index) => createPortal(
+        <EChartBlock source={part.source} chart={part.chart} error={part.error}
+          onExpand={part.chart ? () => setActiveChart(part.validIndex) : undefined} />,
+        hosts[index], `${index}`))}
       {activeChart !== null && validCharts[activeChart] ? (
         <ChartModal
           chart={validCharts[activeChart].chart}

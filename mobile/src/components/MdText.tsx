@@ -1,12 +1,16 @@
 import React from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { normalizeEChart, parseMd, type NormalizedEChart, type Span } from "@agora/core";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import * as Clipboard from "expo-clipboard";
+import { Copy } from "lucide-react-native";
+import { mdliteClipboardHtml, normalizeEChart, parseMd, type Block, type NormalizedEChart, type Span } from "@agora/core";
 import { openLink } from "../lib/openLink";
 import { mono, typography, weight } from "../lib/theme";
-import { createThemedStyles } from "../lib/useTheme";
+import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { columnWidths } from "../lib/tableLayout";
 import { MermaidBlock } from "./Mermaid";
 import { ChartModal, EChartBlock } from "./EChart";
+import { Icon } from "./Icon";
+import { toast, toastErr } from "./Toast";
 
 function SpanText({ span }: { span: Span }) {
   const styles = useStyles();
@@ -52,19 +56,31 @@ export function MdText({ text, onLongPress, onPress, onPressIn }: {
   onPressIn?: () => void;
 }) {
   const styles = useStyles();
-  const blocks = React.useMemo(() => {
+  // Charts can sit inside list items too, so number them in document order
+  // across the whole tree; the modal pages through them in that order.
+  // Quoted fences stay source, matching web.
+  const { blocks, charts } = React.useMemo(() => {
+    const parsed = parseMd(text);
+    const found = new Map<Block, ChartEntry>();
     let validIndex = 0;
-    return parseMd(text).map((block, blockIndex) => {
-      if (block.kind !== "codeblock" || block.lang !== "echarts") return { block, key: `${block.kind}-${blockIndex}` };
-      try {
-        const chart = normalizeEChart(block.text);
-        return { block, key: `chart-${blockIndex}-${chart.title}`, chart, error: "", validIndex: validIndex++ };
-      } catch (error) {
-        return { block, key: `chart-${blockIndex}-invalid`, chart: null as NormalizedEChart | null, error: (error as Error).message, validIndex: -1 };
+    const walk = (list: Block[], inQuote: boolean) => {
+      for (const block of list) {
+        if (block.kind === "quote") walk(block.blocks, true);
+        else if (block.kind === "list") block.items.forEach(item => walk(item, inQuote));
+        else if (block.kind === "codeblock" && block.lang === "echarts" && !inQuote) {
+          try {
+            const chart = normalizeEChart(block.text);
+            found.set(block, { key: `chart-${found.size}-${chart.title}`, chart, error: "", validIndex: validIndex++ });
+          } catch (error) {
+            found.set(block, { key: `chart-${found.size}-invalid`, chart: null, error: (error as Error).message, validIndex: -1 });
+          }
+        }
       }
-    });
+    };
+    walk(parsed, false);
+    return { blocks: parsed, charts: found };
   }, [text]);
-  const validCharts = blocks.filter((entry): entry is typeof entry & { chart: NormalizedEChart; validIndex: number } => "chart" in entry && entry.chart !== null);
+  const validCharts = [...charts.values()].filter((entry): entry is ChartEntry & { chart: NormalizedEChart } => entry.chart !== null);
   const [activeChart, setActiveChart] = React.useState<number | null>(null);
   React.useEffect(() => setActiveChart(null), [text]);
   React.useEffect(() => {
@@ -77,86 +93,108 @@ export function MdText({ text, onLongPress, onPress, onPressIn }: {
   // it the bubble's inner width) and cap the table to that — then a wide table
   // overflows the frame and scrolls. Undefined until first layout.
   const [width, setWidth] = React.useState<number>();
+  const para = (spans: Span[], key: React.Key, bold = false) => (
+    <Text key={key} style={bold ? [styles.para, styles.bold] : styles.para} selectable={!bold}
+      onPress={onPress} onPressIn={onPressIn} onLongPress={onLongPress}>
+      <Spans spans={spans} />
+    </Text>
+  );
+  // Quotes and list items re-render their children at a narrower cap, so a
+  // nested code block or table still gets a definite width to scroll in.
+  const renderBlock = (b: Block, key: React.Key, maxWidth: number | undefined, listDepth: number): React.ReactNode => {
+    switch (b.kind) {
+      case "codeblock": {
+        if (b.lang === "mermaid") return <MermaidBlock key={key} code={b.text} maxWidth={maxWidth} />;
+        const entry = charts.get(b);
+        if (entry) {
+          return <EChartBlock key={entry.key} code={b.text} chart={entry.chart} error={entry.error} maxWidth={maxWidth}
+            onExpand={entry.validIndex >= 0 ? () => setActiveChart(entry.validIndex) : undefined} />;
+        }
+        // Quoted chart source shows as code without its own copy button, as on web.
+        return <CodeBlock key={key} code={b.text} maxWidth={maxWidth} copyable={b.lang !== "echarts"} />;
+      }
+      case "heading":
+        return para(b.spans, key, true);
+      case "quote":
+        return (
+          // Not a Pressable (a responder here would fight the horizontal scroll
+          // of quoted code and tables); box-none lets touches on the padding
+          // fall through to the bubble's press backdrop instead.
+          <View key={key} style={styles.quote} pointerEvents="box-none">
+            {b.blocks.map((child, i) => renderBlock(child, i, inset(maxWidth, QUOTE_INSET), listDepth))}
+            <CopyButton label="Copy quote" style={styles.copyCorner}
+              copy={() => Clipboard.setStringAsync(mdliteClipboardHtml(b.source), { inputFormat: Clipboard.StringFormat.HTML })} />
+          </View>
+        );
+      case "list": {
+        const markerWidth = listMarkerWidth(b);
+        return (
+          <View key={key} style={styles.list} pointerEvents="box-none">
+            {b.items.map((item, i) => (
+              <View key={i} style={styles.li} pointerEvents="box-none">
+                <Text style={[styles.marker, { minWidth: markerWidth }]}
+                  onPress={onPress} onPressIn={onPressIn} onLongPress={onLongPress}>
+                  {b.ordered ? `${b.start + i}.` : listDepth % 2 ? "◦" : "•"}
+                </Text>
+                <View style={styles.liBody} pointerEvents="box-none">
+                  {item.map((child, j) => renderBlock(child, j, inset(maxWidth, markerWidth), listDepth + 1))}
+                </View>
+              </View>
+            ))}
+          </View>
+        );
+      }
+      case "table": {
+        const cols = columnWidths(b.head, b.rows);
+        return (
+          <ScrollView
+            key={key}
+            horizontal
+            nestedScrollEnabled
+            showsHorizontalScrollIndicator
+            style={[styles.tableWrap, maxWidth ? { maxWidth } : null]}
+          >
+            <View>
+              <View style={[styles.tr, styles.thead]}>
+                {b.head.map((cell, c) => (
+                  <Text
+                    key={c}
+                    style={[styles.cell, styles.bold, { width: cols[c] }, alignStyle(b.aligns[c])]}
+                  >
+                    <Spans spans={cell} />
+                  </Text>
+                ))}
+              </View>
+              {b.rows.map((row, r) => (
+                <View key={r} style={styles.tr}>
+                  {row.map((cell, c) => (
+                    <Text
+                      key={c}
+                      style={[styles.cell, { width: cols[c] }, alignStyle(b.aligns[c])]}
+                    >
+                      <Spans spans={cell} />
+                    </Text>
+                  ))}
+                </View>
+              ))}
+            </View>
+          </ScrollView>
+        );
+      }
+      default:
+        return para(b.spans, key);
+    }
+  };
   return (
     <View
       style={styles.root}
+      // box-none down the whole container chain (root, quote, list, item):
+      // a touch on padding or a gap falls through to the bubble's press
+      // backdrop, a sibling of this root, instead of dying here.
+      pointerEvents="box-none"
       onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
     >
-      {blocks.map((entry, i) => {
-        const b = entry.block;
-        switch (b.kind) {
-          case "codeblock":
-            if (b.lang === "mermaid") {
-              return <MermaidBlock key={i} code={b.text} maxWidth={width} />;
-            }
-            if (b.lang === "echarts") {
-              return <EChartBlock key={entry.key} code={b.text} chart={"chart" in entry ? entry.chart ?? null : null}
-                error={"error" in entry ? entry.error : ""} maxWidth={width}
-                onExpand={typeof entry.validIndex === "number" && entry.validIndex >= 0 ? () => setActiveChart(entry.validIndex!) : undefined} />;
-            }
-            return (
-              <ScrollView
-                key={i}
-                horizontal
-                showsHorizontalScrollIndicator
-                style={[styles.pre, width ? { maxWidth: width } : null]}
-              >
-                <Text style={styles.preText}>{b.text}</Text>
-              </ScrollView>
-            );
-          case "heading":
-            return (
-              <Text key={i} style={[styles.para, styles.bold]} onPress={onPress} onPressIn={onPressIn}
-                onLongPress={onLongPress}>
-                <Spans spans={b.spans} />
-              </Text>
-            );
-          case "table": {
-            const cols = columnWidths(b.head, b.rows);
-            return (
-              <ScrollView
-                key={i}
-                horizontal
-                nestedScrollEnabled
-                showsHorizontalScrollIndicator
-                style={[styles.tableWrap, width ? { maxWidth: width } : null]}
-              >
-                <View>
-                  <View style={[styles.tr, styles.thead]}>
-                    {b.head.map((cell, c) => (
-                      <Text
-                        key={c}
-                        style={[styles.cell, styles.bold, { width: cols[c] }, alignStyle(b.aligns[c])]}
-                      >
-                        <Spans spans={cell} />
-                      </Text>
-                    ))}
-                  </View>
-                  {b.rows.map((row, r) => (
-                    <View key={r} style={styles.tr}>
-                      {row.map((cell, c) => (
-                        <Text
-                          key={c}
-                          style={[styles.cell, { width: cols[c] }, alignStyle(b.aligns[c])]}
-                        >
-                          <Spans spans={cell} />
-                        </Text>
-                      ))}
-                    </View>
-                  ))}
-                </View>
-              </ScrollView>
-            );
-          }
-          default:
-            return (
-              <Text key={i} style={styles.para} selectable onPress={onPress} onPressIn={onPressIn}
-                onLongPress={onLongPress}>
-                <Spans spans={b.spans} />
-              </Text>
-            );
-        }
-      })}
+      {blocks.map((block, i) => renderBlock(block, i, width, 0))}
       {activeChart !== null && validCharts[activeChart] ? (
         <ChartModal chart={validCharts[activeChart].chart}
           index={activeChart} total={validCharts.length}
@@ -164,6 +202,65 @@ export function MdText({ text, onLongPress, onPress, onPressIn }: {
           onNext={() => setActiveChart(current => current === null ? null : Math.min(validCharts.length - 1, current + 1))}
           onClose={() => setActiveChart(null)} />
       ) : null}
+    </View>
+  );
+}
+
+type ChartEntry = { key: string; chart: NormalizedEChart | null; error: string; validIndex: number };
+
+// Horizontal space a quote takes from its children: border + left padding +
+// the right padding that keeps text clear of its copy button.
+const QUOTE_INSET = 3 + 10 + 34;
+
+/** Marker column for a list: wide enough for its longest ordinal ("10.", "100."). */
+function listMarkerWidth(list: Extract<Block, { kind: "list" }>): number {
+  if (!list.ordered) return 20;
+  const digits = String(list.start + list.items.length - 1).length;
+  return 14 + digits * 9;
+}
+
+function inset(width: number | undefined, by: number) {
+  // Floor above 0: callers treat 0 as "no cap", which would let a deeply
+  // nested block overflow the bubble instead of scrolling.
+  return width === undefined ? undefined : Math.max(40, width - by);
+}
+
+function CopyButton({ label, copy, style }: { label: string; copy: () => Promise<unknown>; style?: object }) {
+  const styles = useStyles();
+  const { colors } = useAppTheme();
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} hitSlop={10}
+      style={({ pressed }) => [styles.copy, style, pressed ? styles.copyPressed : null]}
+      onPress={async (event) => {
+        event.stopPropagation();
+        try {
+          if ((await copy()) === false) throw new Error("The clipboard didn't accept the text");
+          toast("Copied.");
+        }
+        catch (error) { toastErr("Copy failed", error); }
+      }}>
+      <Icon icon={Copy} size={13} color={colors.dim} />
+    </Pressable>
+  );
+}
+
+/** A horizontally scrolling code block with a small copy button pinned over
+    its top-right corner. The scroll content ends with enough padding that
+    the last characters of the longest line can scroll clear of the button. */
+function CodeBlock({ code, maxWidth, copyable = true }: { code: string; maxWidth?: number; copyable?: boolean }) {
+  const styles = useStyles();
+  return (
+    <View style={[styles.codeWrap, maxWidth ? { maxWidth } : null]}>
+      <ScrollView
+        horizontal
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator
+        style={[styles.pre, maxWidth ? { maxWidth } : null]}
+        contentContainerStyle={copyable ? styles.preContent : null}
+      >
+        <Text style={styles.preText}>{code}</Text>
+      </ScrollView>
+      {copyable ? <CopyButton label="Copy code" style={styles.copyCorner} copy={() => Clipboard.setStringAsync(code)} /> : null}
     </View>
   );
 }
@@ -196,6 +293,33 @@ const useStyles = createThemedStyles(({ colors }) => ({
     borderColor: colors.border,
   },
   preText: { ...mono, fontSize: typography.meta.fontSize, color: colors.text, padding: 10 },
+  // 24px button + 4px inset + a little air.
+  preContent: { paddingRight: 30 },
+  codeWrap: { position: "relative" },
+  copy: {
+    width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center",
+    backgroundColor: colors.panel, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
+    opacity: 0.9,
+  },
+  copyPressed: { opacity: 0.5 },
+  copyCorner: { position: "absolute", top: 4, right: 4 },
+  quote: {
+    gap: 6,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.accent,
+    backgroundColor: colors.panelStrong,
+    borderTopRightRadius: 8,
+    borderBottomRightRadius: 8,
+    paddingVertical: 8,
+    paddingLeft: 10,
+    // Keeps the first line of text clear of the copy button.
+    paddingRight: QUOTE_INSET - 3 - 10,
+  },
+  list: { gap: 4 },
+  li: { flexDirection: "row" },
+  // minWidth, not width: at large OS font scales the ordinal grows the column.
+  marker: { color: colors.dim, paddingRight: 4, ...typography.message },
+  liBody: { flex: 1, gap: 4 },
   tableWrap: {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,

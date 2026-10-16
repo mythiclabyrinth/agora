@@ -261,6 +261,41 @@ select {
   background: var(--border-strong); border-radius: 4px;
 }
 .bubble .md-table tbody tr:nth-child(even) td { background: rgba(var(--ink-rgb),.02); }
+/* Blockquotes, lists, and the copy buttons on quotes and code blocks. */
+.md-quote {
+  position: relative; margin: 6px 0; padding: 7px 12px;
+  border-left: 3px solid rgba(var(--accent-rgb),.55); border-radius: 0 8px 8px 0;
+  background: rgba(var(--shade-rgb),.18);
+}
+/* Room for the copy button, only where there is one (search answers have none). */
+.md-quote.md-quote-copy { padding-right: 38px; }
+.md-list { margin: 4px 0; padding-left: 1.5em; }
+.md-list .md-list { margin: 2px 0; }
+.md-list > li { margin: 2px 0; }
+.md-list > li::marker { color: var(--dim); }
+.md-code { position: relative; }
+/* Room at the end of the scroll so the last characters of a long line can
+   always come out from under the copy button. */
+.md-code-text { display: inline-block; padding-right: 30px; }
+.md-copy {
+  position: absolute; top: 5px; right: 5px; z-index: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-strong); color: var(--dim);
+  opacity: 0; transition: opacity .12s, color .12s;
+}
+.md-copy svg { width: 14px; height: 14px; }
+.md-copy .md-copied-ico, .md-copy.copied .md-copy-ico { display: none; }
+.md-copy.copied .md-copied-ico { display: block; }
+.md-copy.copied { color: var(--green); opacity: 1; }
+.md-quote:hover > .md-copy, .md-code:hover > .md-copy, .md-copy:focus-visible { opacity: 1; }
+/* Own rule: a browser without :has() drops only this, not the ones above.
+   A nested quote then shows only its own button, not every enclosing one. */
+.md-quote:hover:has(.md-quote:hover) > .md-copy:not(:focus-visible):not(.copied) { opacity: 0; }
+.md-copy:hover { color: var(--text); }
+.md-copy:focus-visible { outline: 2px solid rgba(var(--accent-rgb),.7); outline-offset: 1px; }
+@media (hover: none) { .md-copy { opacity: .85; } }
 .bubble a { color: var(--a2); text-decoration: underline; text-underline-offset: 2px; }
 .bubble .who { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
 .bubble .who .who-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 75%; }
@@ -1500,7 +1535,6 @@ select {
 
 /* ---------- ECharts charts ---------- */
 .md-text-segment { display: contents; }
-.md-echarts:has(.ago-chart-block, .ago-chart-error) > .md-pre { display: none; }
 .ago-chart-block {
   margin: 6px 0; max-width: 100%; overflow: hidden; border: 1px solid var(--border);
   border-radius: 10px; background: rgba(var(--shade-rgb),.25);
