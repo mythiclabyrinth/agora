@@ -13,7 +13,10 @@ it("preserves meaningful punctuation and table content", () => {
   expect(previewText("| Name | Status |\n| --- | --- |\n| **Build** | Ready |"))
     .toBe("Name · Status Build · Ready");
 });
-it("flattens quotes and lists without their markers", () => {
+it("flattens quotes and lists, dropping bullets but keeping ordinals", () => {
   expect(previewText("Paste this:\n\n> **Use codex** now.\n>\n> Not default.\n\n- one\n- two\n  1. nested"))
-    .toBe("Paste this: Use codex now. Not default. one · two nested");
+    .toBe("Paste this: Use codex now. Not default. one · two 1. nested");
+});
+it("keeps the numbering of ordered lists", () => {
+  expect(previewText("1. Ship it\n2. Then deploy")).toBe("1. Ship it · 2. Then deploy");
 });

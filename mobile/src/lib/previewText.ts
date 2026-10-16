@@ -5,7 +5,8 @@ function blockText(block: Block): string {
   if (block.kind === "table") return [block.head, ...block.rows]
     .map(row => row.map(cell => cell.map(span => span.text).join("")).join(" · ")).join(" ");
   if (block.kind === "quote") return block.blocks.map(blockText).join(" ");
-  if (block.kind === "list") return block.items.map(item => item.map(blockText).join(" ")).join(" · ");
+  if (block.kind === "list") return block.items.map((item, i) =>
+    (block.ordered ? `${block.start + i}. ` : "") + item.map(blockText).join(" ")).join(" · ");
   return block.spans.map(span => span.text).join("");
 }
 

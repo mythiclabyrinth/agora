@@ -4,6 +4,17 @@ import { mdliteClipboardHtml } from "@agora/core";
 import { toast } from "./toast";
 
 const copiedTimers = new WeakMap<HTMLButtonElement, number>();
+// Set when a rich write is refused and its plain-text fallback is refused
+// too — WebKit's signature: the fallback runs after an await, outside the
+// gesture. Later clicks then go straight to the in-gesture plain write, so
+// the failure happens once. A transient refusal where the fallback still
+// works leaves rich copy on.
+let richCopyFailed = false;
+
+/** Test-only: forget a previous rich-copy refusal. */
+export function resetRichCopyFallback() {
+  richCopyFailed = false;
+}
 
 /** Copy a quote as rich text with its markdown as the plain-text fallback,
     or a code block as plain text. */
@@ -17,7 +28,7 @@ export async function copyMdBlock(button: HTMLButtonElement, text: string) {
   };
   const supports = typeof ClipboardItem === "undefined" ? undefined
     : (ClipboardItem as unknown as { supports?: (type: string) => boolean }).supports;
-  const rich = button.dataset.copyKind === "quote" && typeof ClipboardItem !== "undefined"
+  const rich = !richCopyFailed && button.dataset.copyKind === "quote" && typeof ClipboardItem !== "undefined"
     && !!navigator.clipboard?.write && !(supports && !supports("text/html"));
   try {
     if (rich) {
@@ -29,7 +40,14 @@ export async function copyMdBlock(button: HTMLButtonElement, text: string) {
       } catch {
         // Some webviews expose ClipboardItem but refuse text/html; plain text
         // still beats failing outright (where the gesture still allows it).
-        await plain();
+        try {
+          await plain();
+        } catch (error) {
+          // An unfocused document (DevTools, another frame) refuses both
+          // writes too; only a refusal while focused marks text/html as out.
+          if (document.hasFocus()) richCopyFailed = true;
+          throw error;
+        }
       }
     } else {
       await plain();

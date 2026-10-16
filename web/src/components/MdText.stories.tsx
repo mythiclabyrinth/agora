@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { fixtureMarkdown } from "@agora/core/testing/fixtures";
 import { MdText } from "./MdText";
+import { resetRichCopyFallback } from "../lib/copyMdBlock";
 
 const meta = {
   title: "Web/Atoms/Markdown",
@@ -149,6 +150,7 @@ export const QuoteAndLists: Story = {
     expect(canvasElement.querySelectorAll("ul.md-list > li")).toHaveLength(4);
     expect(canvasElement.querySelectorAll("ol.md-list > li")).toHaveLength(2);
     expect(canvasElement.querySelector(".md-quote .ago-mention")).toHaveTextContent("Tom");
+    resetRichCopyFallback();
     const write = fn().mockResolvedValue(undefined);
     await withClipboard({ write, writeText: fn() }, async () => {
       await userEvent.click(within(canvasElement).getByRole("button", { name: "Copy quote" }));
@@ -299,5 +301,58 @@ export const EditRemovesAChart: Story = {
     expect(canvas.queryByRole("button", { name: "Expand chart: First" })).not.toBeInTheDocument();
     expect(canvasElement.querySelectorAll(".md-echarts-slot")).toHaveLength(1);
     expect(canvasElement.querySelectorAll(".ago-chart-block")).toHaveLength(1);
+  },
+};
+
+// Records the height a parent's layout effect sees, as MessageLog's scroll
+// anchoring does, on the first commit.
+function MeasuredOnFirstCommit({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [measured, setMeasured] = useState<number | null>(null);
+  useLayoutEffect(() => { setMeasured(ref.current?.offsetHeight ?? 0); }, []);
+  return <div ref={ref} data-measured={measured ?? ""}><MdText text={text} mentions={{}} /></div>;
+}
+
+export const ChartHeightOnFirstCommit: Story = {
+  args: { text: "" },
+  render: () => <MeasuredOnFirstCommit text={["Weekly:", titledChart("Measured")].join("\n")} />,
+  parameters: { docs: { description: { story: "A parent's layout effect already sees the chart's full height on the first commit, so scroll anchoring above a chart doesn't jump." } } },
+  play: async ({ canvasElement }) => {
+    const box = canvasElement.querySelector<HTMLElement>("[data-measured]")!;
+    await waitFor(() => expect(box.dataset.measured).not.toBe(""));
+    // The default chart is 360px tall; prose alone is a line or two.
+    expect(Number(box.dataset.measured)).toBeGreaterThan(300);
+  },
+};
+
+export const RichCopyFailsOnce: Story = {
+  args: { text: "> Quote one\n\nBetween\n\n> Quote two" },
+  parameters: { docs: { description: { story: "A webview that refuses rich copy and then the late plain fallback (WebKit) fails once; later quote copies go straight to plain text inside the click. A refusal whose fallback works leaves rich copy on." } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // Transient refusal, fallback works: rich copy stays enabled.
+    resetRichCopyFallback();
+    const transient = fn().mockRejectedValueOnce(new Error("blip")).mockResolvedValue(undefined);
+    const okText = fn().mockResolvedValue(undefined);
+    await withClipboard({ write: transient, writeText: okText }, async () => {
+      const [first, second] = canvas.getAllByRole("button", { name: /Copy quote|Copied/ });
+      await userEvent.click(first);
+      await waitFor(() => expect(okText).toHaveBeenCalledWith("Quote one"));
+      await userEvent.click(second);
+      await waitFor(() => expect(transient).toHaveBeenCalledTimes(2));
+    });
+    // WebKit: rich refused and the late fallback refused too, then plain in-gesture.
+    resetRichCopyFallback();
+    const refuse = fn().mockRejectedValue(new Error("text/html refused"));
+    const lateText = fn().mockRejectedValueOnce(new Error("gesture expired")).mockResolvedValue(undefined);
+    await withClipboard({ write: refuse, writeText: lateText }, async () => {
+      const [first, second] = canvas.getAllByRole("button", { name: /Copy quote|Copied/ });
+      await userEvent.click(first);
+      await expect(within(canvasElement.ownerDocument.body).findAllByText(/Couldn't copy/)).resolves.not.toHaveLength(0);
+      await userEvent.click(second);
+      await waitFor(() => expect(lateText).toHaveBeenLastCalledWith("Quote two"));
+      expect(refuse).toHaveBeenCalledTimes(1);
+    });
+    resetRichCopyFallback();
   },
 };

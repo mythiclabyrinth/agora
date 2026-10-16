@@ -145,8 +145,9 @@ export function splitMdBlocks(text: string, opts: { inItem?: boolean } = {}): Md
       continue;
     }
     const item = itemOf(line);
-    // Only a `1.` list may interrupt a paragraph: "dropped by\n15. That is…"
-    // is a wrapped sentence, not a list starting at 15.
+    // An ordered list numbered other than 1 may not interrupt a paragraph:
+    // "dropped by\n15. That is…" is a wrapped sentence. Bullets and `1.` lists
+    // do interrupt (agents write "Steps:\n- a" with no blank line).
     const prevPlain = plain.length ? plain[plain.length - 1] : "";
     // A label line ("Steps:", "**Phase 2**") introduces a list at any number.
     const isLabel = /:\s*$/.test(prevPlain) || /^\s*\*\*[^*]+\*\*:?\s*$/.test(prevPlain);

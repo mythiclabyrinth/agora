@@ -49,30 +49,29 @@ export function MdText({ text, mentions }: { text: string; mentions?: MentionInd
   const htmlRef = useRef<HTMLDivElement>(null);
   // One host per chart index, from a pool that only grows, so an edit that
   // adds or drops a chart keeps the hosts (and canvases) of the rest. Hosts
-  // are created and attached to their slots here, and only then handed to
-  // render, so a chart never mounts into a detached, unmeasurable node.
+  // exist during render so the charts mount in the same commit as the prose:
+  // a parent's layout effect (MessageLog's scroll anchoring) then measures
+  // them at full height. The layout effect below only moves each host into
+  // its slot; echarts initialises in a passive effect, after that move.
   const hostPool = useRef<HTMLDivElement[]>([]);
-  const [hosts, setHosts] = useState<(HTMLDivElement | undefined)[]>([]);
-  useLayoutEffect(() => {
-    const el = htmlRef.current;
-    if (!el) return;
-    el.innerHTML = html;
+  const hosts = useMemo(() => {
     const pool = hostPool.current;
     while (pool.length < charts.length) {
       const host = document.createElement("div");
       host.className = "md-echarts-host";
       pool.push(host);
     }
-    // Only hosts that actually landed in a slot are handed to render.
-    const attached: (HTMLDivElement | undefined)[] = Array.from({ length: charts.length }, () => undefined);
+    return pool.slice(0, charts.length);
+  }, [charts.length]);
+  useLayoutEffect(() => {
+    const el = htmlRef.current;
+    if (!el) return;
+    el.innerHTML = html;
     el.querySelectorAll<HTMLElement>(".md-echarts-slot").forEach(slot => {
-      const index = Number(slot.dataset.chartIndex);
-      const host = pool[index];
-      if (host && index < charts.length) { slot.appendChild(host); attached[index] = host; }
+      const host = hosts[Number(slot.dataset.chartIndex)];
+      if (host) slot.appendChild(host);
     });
-    setHosts(current => current.length === attached.length && current.every((h, i) => h === attached[i])
-      ? current : attached);
-  }, [html, charts.length]);
+  }, [html, hosts]);
   return (
     <div>
       <div ref={htmlRef} className="md-text-segment"
@@ -83,10 +82,10 @@ export function MdText({ text, mentions }: { text: string; mentions?: MentionInd
           event.stopPropagation();
           void copyMdBlock(button, copyText);
         }} />
-      {charts.map((part, index) => hosts[index] ? createPortal(
+      {charts.map((part, index) => createPortal(
         <EChartBlock source={part.source} chart={part.chart} error={part.error}
           onExpand={part.chart ? () => setActiveChart(part.validIndex) : undefined} />,
-        hosts[index]!, `${index}`) : null)}
+        hosts[index], `${index}`))}
       {activeChart !== null && validCharts[activeChart] ? (
         <ChartModal
           chart={validCharts[activeChart].chart}
