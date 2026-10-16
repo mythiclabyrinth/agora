@@ -1,5 +1,6 @@
+import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { fixtureMarkdown } from "@agora/core/testing/fixtures";
 import { MdText } from "./MdText";
 
@@ -108,5 +109,195 @@ export const MultiChartMessageNavigation: Story = {
     await userEvent.click(page.getByRole("button", { name: "Close chart" }));
     expect(canvas.getByRole("button", { name: "Expand chart: Revenue" })).toHaveFocus();
     await userEvent.click(canvas.getByRole("button", { name: "Expand chart: Revenue" }));
+  },
+};
+
+// Swap navigator.clipboard for the duration of a play function.
+async function withClipboard(value: object, run: () => Promise<void>) {
+  const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value });
+  try { await run(); } finally {
+    if (original) Object.defineProperty(navigator, "clipboard", original);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  }
+}
+
+const slackQuote = [
+  "Here's a tightened version you can paste into Slack:",
+  "",
+  "> Skyler's coding agent can now run on our ChatGPT (Codex) subscription. Just tell Skyler to **\"use codex\"** and it'll run the task on GPT-6 Sol.",
+  ">",
+  "> It's **not the default**. DeepSeek still is. Next week I'll look at a dedicated subscription for the coding agent.",
+  ">",
+  "> If you notice anything new or odd with Opus or DeepSeek, ask @tom & <check> here.",
+  "",
+  "What changed and why:",
+  "- **\"use codex\" instead of \"provider Codex … model Sol\".** \"Use codex\" is the exact phrase Skyler maps to `--model codex`, so people are more likely to trigger it correctly.",
+  "- **Added the OpenCode upgrade.** It's the real reason DeepSeek and Opus users might see differences.",
+  "  - Nested detail one",
+  "  - Nested detail two",
+  "1. Ordered steps stay numbered",
+  "2. Even right after a bullet list",
+].join("\n");
+
+export const QuoteAndLists: Story = {
+  args: { text: slackQuote, mentions: { tom: "Tom" } },
+  parameters: { docs: { description: { story: "A Slack-ready blockquote (one box, one copy button) followed by bullet, nested, and numbered lists." } } },
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.querySelectorAll("blockquote.md-quote")).toHaveLength(1);
+    expect(canvasElement.querySelector(".md-quote")!.textContent).not.toMatch(/^>|\n>/);
+    expect(canvasElement.querySelectorAll("ul.md-list > li")).toHaveLength(4);
+    expect(canvasElement.querySelectorAll("ol.md-list > li")).toHaveLength(2);
+    expect(canvasElement.querySelector(".md-quote .ago-mention")).toHaveTextContent("Tom");
+    const write = fn().mockResolvedValue(undefined);
+    await withClipboard({ write, writeText: fn() }, async () => {
+      await userEvent.click(within(canvasElement).getByRole("button", { name: "Copy quote" }));
+      await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+      const item = write.mock.calls[0][0][0] as ClipboardItem;
+      const plain = await (await item.getType("text/plain")).text();
+      const html = await (await item.getType("text/html")).text();
+      expect(plain).toBe([
+        "Skyler's coding agent can now run on our ChatGPT (Codex) subscription. Just tell Skyler to **\"use codex\"** and it'll run the task on GPT-6 Sol.",
+        "",
+        "It's **not the default**. DeepSeek still is. Next week I'll look at a dedicated subscription for the coding agent.",
+        "",
+        "If you notice anything new or odd with Opus or DeepSeek, ask @tom & <check> here.",
+      ].join("\n"));
+      expect(html).toContain("<b>not the default</b>");
+      expect(html).toContain("&lt;check&gt;");
+      expect(html).toContain("GPT-6 Sol.<br><br>It&#39;s");
+      expect(html).not.toContain("md-copy");
+      await waitFor(() => expect(within(canvasElement).getByRole("button", { name: "Copied" })).toBeVisible());
+    });
+    // A webview that has ClipboardItem but rejects rich writes still copies plain text.
+    const rejecting = fn().mockRejectedValue(new Error("NotAllowedError"));
+    const plain = fn().mockResolvedValue(undefined);
+    await withClipboard({ write: rejecting, writeText: plain }, async () => {
+      await userEvent.click(within(canvasElement).getByRole("button", { name: /Copy quote|Copied/ }));
+      await waitFor(() => expect(plain).toHaveBeenCalledWith(expect.stringContaining("**not the default**")));
+    });
+  },
+};
+
+const longLine = "curl -sS -X POST https://agora.example.test/api/messages -H 'Authorization: Bearer $AGORA_TOKEN' "
+  + "-d '{\"channel\":\"kite\",\"text\":\"a deliberately long single line that has to scroll sideways to reach its end\"}' # END";
+
+export const CodeBlockCopy: Story = {
+  args: {
+    text: ["Run this to post a message:", "", "```bash", longLine, "echo done", "```", "", "- In a list:", "  ```json", "  {", "    \"ok\": true", "  }", "  ```"].join("\n"),
+  },
+  parameters: { docs: { description: { story: "A horizontally scrolling code block keeps its copy button fixed in the corner, with end padding so the last characters clear it." } } },
+  play: async ({ canvasElement }) => {
+    const pre = canvasElement.querySelector<HTMLElement>(".md-code > .md-pre")!;
+    expect(pre.scrollWidth).toBeGreaterThan(pre.clientWidth);
+    pre.scrollLeft = pre.scrollWidth;
+    // The end of the longest line sits left of the button once fully scrolled.
+    const button = canvasElement.querySelector<HTMLElement>(".md-code > .md-copy")!;
+    const range = document.createRange();
+    const textNode = pre.querySelector(".md-code-text")!.firstChild!;
+    const end = textNode.textContent!.indexOf("# END") + 5;
+    range.setStart(textNode, end - 1);
+    range.setEnd(textNode, end);
+    await waitFor(() => expect(range.getBoundingClientRect().right).toBeLessThanOrEqual(button.getBoundingClientRect().left));
+    // Indented fence under a list item loses its indentation.
+    expect(canvasElement.querySelectorAll(".md-pre")[1].textContent).toBe("{\n  \"ok\": true\n}");
+    const writeText = fn().mockResolvedValue(undefined);
+    await withClipboard({ writeText }, async () => {
+      await userEvent.click(within(canvasElement).getAllByRole("button", { name: "Copy code" })[0]);
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${longLine}\necho done`));
+    });
+    // A rejected write warns and never shows the copied check.
+    const failing = fn().mockRejectedValue(new Error("denied"));
+    await withClipboard({ writeText: failing }, async () => {
+      const button = within(canvasElement).getAllByRole("button", { name: /Copy code|Copied/ })[1];
+      await userEvent.click(button);
+      await waitFor(() => expect(failing).toHaveBeenCalled());
+      await expect(within(canvasElement.ownerDocument.body).findByText(/Couldn't copy/)).resolves.toBeVisible();
+      expect(button).not.toHaveClass("copied");
+    });
+  },
+};
+
+export const QuotedChartFence: Story = {
+  args: {
+    text: ["> The chart source, quoted:", "> ```echarts", "> {\"series\":[{\"type\":\"bar\",\"data\":[1,2]}]}", "> ```", "> End of quote."].join("\n"),
+  },
+  parameters: { docs: { description: { story: "A chart fenced inside a quote stays inside the one quote box as its source." } } },
+  play: async ({ canvasElement }) => {
+    expect(canvasElement.querySelectorAll("blockquote.md-quote")).toHaveLength(1);
+    expect(canvasElement.querySelector(".md-quote")).toHaveTextContent("End of quote.");
+    expect(canvasElement.querySelector(".md-quote .md-echarts .md-pre")).toBeInTheDocument();
+    expect(canvasElement.querySelector(".ago-chart-block")).not.toBeInTheDocument();
+  },
+};
+
+export const ChartInListItem: Story = {
+  args: {
+    text: ["- Revenue:", "  ```echarts", "  " + JSON.stringify({ title: { text: "Listed" }, xAxis: { type: "category", data: ["A"] }, yAxis: { type: "value" }, series: [{ type: "bar", data: [1] }] }), "  ```", "  Note: Q3 only", "- Next"].join("\n"),
+  },
+  parameters: { docs: { description: { story: "A chart fenced under a list item renders inside that item, and the list stays one list." } } },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector("ul.md-list > li .ago-chart-block canvas")).toBeInTheDocument());
+    expect(canvasElement.querySelectorAll("ul.md-list")).toHaveLength(1);
+    expect(canvasElement.querySelectorAll("ul.md-list > li")).toHaveLength(2);
+    expect(canvasElement.querySelector("ul.md-list > li")).toHaveTextContent("Note: Q3 only");
+  },
+};
+
+export const ArrowBeforeChartFence: Story = {
+  args: {
+    text: ["Revenue -> ```echarts", JSON.stringify({ title: { text: "Arrow" }, xAxis: { type: "category", data: ["A"] }, yAxis: { type: "value" }, series: [{ type: "bar", data: [1] }] }), "```"].join("\n"),
+  },
+  parameters: { docs: { description: { story: "A `>` that isn't a quote marker (an arrow) still lets the chart fence draw." } } },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector(".ago-chart-block canvas")).toBeInTheDocument());
+  },
+};
+
+function MentionsArriveLater({ text }: { text: string }) {
+  const [mentions, setMentions] = useState<Record<string, string>>({});
+  return <>
+    <MdText text={text} mentions={mentions} />
+    <button type="button" onClick={() => setMentions({ tom: "Tom" })}>Load mentions</button>
+  </>;
+}
+
+export const ChartSurvivesMentionsLoading: Story = {
+  args: {
+    text: ["Ask @tom about this:", "```echarts", JSON.stringify({ title: { text: "Stable" }, xAxis: { type: "category", data: ["A"] }, yAxis: { type: "value" }, series: [{ type: "bar", data: [1] }] }), "```"].join("\n"),
+  },
+  render: (args) => <MentionsArriveLater text={args.text} />,
+  parameters: { docs: { description: { story: "When the mentions map arrives after first paint, the prose re-decorates but the chart keeps its canvas." } } },
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.querySelector(".ago-chart-block canvas")).toBeInTheDocument());
+    const before = canvasElement.querySelector(".ago-chart-block canvas");
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "Load mentions" }));
+    await waitFor(() => expect(canvasElement.querySelector(".ago-mention")).toHaveTextContent("Tom"));
+    expect(canvasElement.querySelector(".ago-chart-block canvas")).toBe(before);
+  },
+};
+
+function EditRemovesFirstChart({ first, second }: { first: string; second: string }) {
+  const [text, setText] = useState(`${first}\n\n${second}`);
+  return <>
+    <MdText text={text} mentions={{}} />
+    <button type="button" onClick={() => setText(second)}>Remove first chart</button>
+  </>;
+}
+
+const titledChart = (title: string) => ["```echarts", JSON.stringify({ title: { text: title }, xAxis: { type: "category", data: ["A"] }, yAxis: { type: "value" }, series: [{ type: "bar", data: [1] }] }), "```"].join("\n");
+
+export const EditRemovesAChart: Story = {
+  args: { text: "" },
+  render: () => <EditRemovesFirstChart first={titledChart("First")} second={titledChart("Second")} />,
+  parameters: { docs: { description: { story: "An edit that drops the first of two charts leaves exactly the remaining chart, in its slot." } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelectorAll(".md-echarts-slot .ago-chart-block canvas")).toHaveLength(2));
+    await userEvent.click(canvas.getByRole("button", { name: "Remove first chart" }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Expand chart: Second" })).toBeInTheDocument());
+    expect(canvas.queryByRole("button", { name: "Expand chart: First" })).not.toBeInTheDocument();
+    expect(canvasElement.querySelectorAll(".md-echarts-slot")).toHaveLength(1);
+    expect(canvasElement.querySelectorAll(".ago-chart-block")).toHaveLength(1);
   },
 };

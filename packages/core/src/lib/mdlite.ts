@@ -1,8 +1,10 @@
 /* Markdown-lite parser emitting a
    structured tree instead of HTML so React Native can render it natively.
    Supported, same as desktop: fenced code, inline code, [label](url) and
-   bare links, **bold**, *italic*, #-headings (rendered bold), and
-   GitHub-style pipe tables. */
+   bare links, **bold**, *italic*, #-headings (rendered bold),
+   GitHub-style pipe tables, `>` blockquotes and `-`/`1.` lists. */
+
+import { MAX_BLOCK_DEPTH, splitMdBlocks } from "./mdblocks";
 
 export type Span =
   | { kind: "text"; text: string }
@@ -16,7 +18,10 @@ export type Block =
   | { kind: "para"; spans: Span[] }
   | { kind: "heading"; spans: Span[] }
   | { kind: "codeblock"; text: string; lang?: string }
-  | { kind: "table"; aligns: ("" | "left" | "center" | "right")[]; head: Span[][]; rows: Span[][][] };
+  | { kind: "table"; aligns: ("" | "left" | "center" | "right")[]; head: Span[][]; rows: Span[][][] }
+  /** `source` is the quote's raw markdown without its `>` markers (what Copy copies). */
+  | { kind: "quote"; blocks: Block[]; source: string }
+  | { kind: "list"; ordered: boolean; start: number; items: Block[][] };
 
 const INLINE = new RegExp(
   [
@@ -58,10 +63,32 @@ function splitRow(line: string): string[] {
 }
 
 export function parseMd(text: string): Block[] {
+  return parseBlocks(String(text ?? ""), 0);
+}
+
+function parseBlocks(text: string, depth: number, inItem = false): Block[] {
+  if (depth > MAX_BLOCK_DEPTH) return parsePlain(text);
+  const blocks: Block[] = [];
+  for (const seg of splitMdBlocks(text, { inItem })) {
+    if (seg.kind === "text") blocks.push(...parsePlain(seg.text));
+    else if (seg.kind === "quote") {
+      blocks.push({ kind: "quote", blocks: parseBlocks(seg.text, depth + 1), source: seg.text });
+    } else {
+      blocks.push({
+        kind: "list", ordered: seg.ordered, start: seg.start,
+        items: seg.items.map(item => parseBlocks(item.text, depth + 1, true)),
+      });
+    }
+  }
+  return blocks;
+}
+
+/** Fences, headings, tables and paragraphs over one plain-text run. */
+function parsePlain(text: string): Block[] {
   const blocks: Block[] = [];
   // Fenced code blocks first; everything between them is line-parsed. The
   // fence's language tag is kept (a ```mermaid fence renders as a diagram).
-  const parts = String(text ?? "").split(/```(\w*)\n?([\s\S]*?)```/);
+  const parts = text.split(/```(\w*)\n?([\s\S]*?)```/);
   for (let i = 0; i < parts.length; i++) {
     if (i % 3 === 1) {
       blocks.push({

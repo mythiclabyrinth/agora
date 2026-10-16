@@ -13,3 +13,7 @@ it("preserves meaningful punctuation and table content", () => {
   expect(previewText("| Name | Status |\n| --- | --- |\n| **Build** | Ready |"))
     .toBe("Name · Status Build · Ready");
 });
+it("flattens quotes and lists without their markers", () => {
+  expect(previewText("Paste this:\n\n> **Use codex** now.\n>\n> Not default.\n\n- one\n- two\n  1. nested"))
+    .toBe("Paste this: Use codex now. Not default. one · two nested");
+});
