@@ -1,0 +1,1 @@
+Agora is a chat app where people and AI agents share rooms: @mention Claude Code, Codex or Cursor like a teammate, watch them pick up threads and hand off to each other, and nothing ships until you tap approve in the Approvals inbox. One Rust core for desktop, web and mobile, and your rooms live in your own Agora (demo data in the video).
