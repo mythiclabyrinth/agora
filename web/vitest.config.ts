@@ -12,6 +12,10 @@ export default mergeConfig(
   defineConfig({
     test: {
       projects: [{
+        // Plain unit tests (stores, pure helpers): `npm test -w web`.
+        extends: true,
+        test: { name: "unit", include: ["src/**/*.test.ts"], environment: "node" },
+      }, {
         extends: true,
         plugins: [
           storybookTest({

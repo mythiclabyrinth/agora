@@ -310,6 +310,258 @@ pub fn answer(
     Ok(text.trim().to_string())
 }
 
+// ------------------------------------------------------------ tool calling
+//
+// Jarvis mode drives the same `/responses` endpoint with function tools,
+// mirroring what the Codex CLI sends (`codex-rs` ResponsesApiRequest):
+//
+// - `tools`: `[{"type":"function","name","description","strict":false,"parameters"}]`
+// - `tool_choice: "auto"`, `parallel_tool_calls: false` (one call per step
+//   keeps the status orb honest and the transcript linear)
+// - `store: false`, so nothing persists server-side and every request replays
+//   the whole transcript as `input` items. Replayed `function_call` items must
+//   omit the server `id` ("Items are not persisted when `store` is false"),
+//   and their results go back as `{"type":"function_call_output","call_id","output"}`.
+//
+// Reasoning items are not replayed: that needs `include:
+// ["reasoning.encrypted_content"]`, which some models reject, and dropping
+// them only costs the model its private scratchpad between steps.
+
+/// One function call the model asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionCall {
+    pub call_id: String,
+    pub name: String,
+    /// Raw JSON arguments string, exactly as the model produced it.
+    pub arguments: String,
+}
+
+/// What one streamed `/responses` round produced.
+#[derive(Clone, Debug, Default)]
+pub struct ToolTurn {
+    pub text: String,
+    pub calls: Vec<FunctionCall>,
+}
+
+/// Request body for a tool-enabled streamed round. Same two backend
+/// constraints as [`answer_request_body`]: `stream: true`, no `max_output_tokens`.
+pub fn tool_request_body(model: &str, instructions: &str, input: &[Value], tools: &[Value]) -> Value {
+    let mut body = json!({
+        "model": model,
+        "store": false,
+        "stream": true,
+        "instructions": instructions,
+        "input": input,
+    });
+    if !tools.is_empty() {
+        body["tools"] = json!(tools);
+        body["tool_choice"] = json!("auto");
+        body["parallel_tool_calls"] = json!(false);
+    }
+    body
+}
+
+/// Incremental parser state for a Responses SSE stream with tool calls.
+#[derive(Default)]
+pub struct ToolStreamAccumulator {
+    pub text: String,
+    pub calls: Vec<FunctionCall>,
+    /// function_call items keyed by item id while their arguments stream in —
+    /// the fallback when a stream ends without `output_item.done`.
+    pending: Vec<(String, FunctionCall)>,
+    pub completed: bool,
+    pub error: Option<String>,
+}
+
+impl ToolStreamAccumulator {
+    fn push_call(&mut self, call: FunctionCall) {
+        if call.name.is_empty() || self.calls.iter().any(|c| c.call_id == call.call_id) {
+            return;
+        }
+        self.calls.push(call);
+    }
+
+    fn call_from_item(item: &Value) -> Option<FunctionCall> {
+        (item["type"] == "function_call").then(|| FunctionCall {
+            call_id: item["call_id"]
+                .as_str()
+                .or_else(|| item["id"].as_str())
+                .unwrap_or_default()
+                .to_string(),
+            name: item["name"].as_str().unwrap_or_default().to_string(),
+            arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
+        })
+    }
+
+    /// Feed one SSE `data:` payload. Returns a text delta to surface live.
+    pub fn feed(&mut self, payload: &str) -> Option<String> {
+        if payload == "[DONE]" {
+            self.completed = true;
+            return None;
+        }
+        let v: Value = serde_json::from_str(payload).ok()?;
+        let ty = v["type"].as_str().unwrap_or("");
+        match ty {
+            "response.output_text.delta" => {
+                let d = v["delta"].as_str()?.to_string();
+                self.text.push_str(&d);
+                Some(d)
+            }
+            "response.output_item.added" => {
+                if let Some(call) = Self::call_from_item(&v["item"]) {
+                    let id = v["item"]["id"].as_str().unwrap_or(&call.call_id).to_string();
+                    self.pending.push((id, call));
+                }
+                None
+            }
+            "response.function_call_arguments.delta" => {
+                let id = v["item_id"].as_str().unwrap_or_default();
+                if let Some((_, call)) = self.pending.iter_mut().find(|(k, _)| k == id) {
+                    call.arguments.push_str(v["delta"].as_str().unwrap_or_default());
+                }
+                None
+            }
+            "response.function_call_arguments.done" => {
+                let id = v["item_id"].as_str().unwrap_or_default();
+                if let (Some((_, call)), Some(args)) = (
+                    self.pending.iter_mut().find(|(k, _)| k == id),
+                    v["arguments"].as_str(),
+                ) {
+                    call.arguments = args.to_string();
+                }
+                None
+            }
+            "response.output_item.done" => {
+                let item = &v["item"];
+                if let Some(call) = Self::call_from_item(item) {
+                    self.push_call(call);
+                } else if item["type"] == "message" && self.text.is_empty() {
+                    self.text = extract_responses_text(&json!({"output": [item]}));
+                }
+                None
+            }
+            "response.completed" | "response.done" => {
+                self.completed = true;
+                let resp = v.get("response").unwrap_or(&v);
+                if let Some(items) = resp["output"].as_array() {
+                    for item in items {
+                        if let Some(call) = Self::call_from_item(item) {
+                            self.push_call(call);
+                        }
+                    }
+                }
+                if self.text.is_empty() {
+                    self.text = extract_responses_text(resp);
+                }
+                None
+            }
+            "response.failed" | "response.incomplete" | "error" => {
+                let msg = v
+                    .pointer("/response/error/message")
+                    .or_else(|| v.pointer("/error/message"))
+                    .or_else(|| v.pointer("/response/incomplete_details/reason"))
+                    .and_then(|x| x.as_str())
+                    .or_else(|| v["message"].as_str())
+                    .unwrap_or(ty);
+                self.error = Some(msg.to_string());
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Close the stream: promote half-finished calls, surface errors.
+    pub fn finish(mut self) -> anyhow::Result<ToolTurn> {
+        if let Some(err) = self.error.take() {
+            anyhow::bail!("Codex stream error: {err}");
+        }
+        for (_, call) in std::mem::take(&mut self.pending) {
+            self.push_call(call);
+        }
+        anyhow::ensure!(
+            !self.text.trim().is_empty() || !self.calls.is_empty(),
+            "empty response from Codex stream"
+        );
+        Ok(ToolTurn { text: self.text, calls: self.calls })
+    }
+}
+
+/// Split a byte stream of SSE into `data:` payloads as lines arrive.
+#[derive(Default)]
+pub struct SseLineBuffer {
+    data: Vec<String>,
+}
+
+impl SseLineBuffer {
+    /// Feed one line (without its newline). Returns a complete payload when a
+    /// blank line closes an event.
+    pub fn line(&mut self, raw: &str) -> Option<String> {
+        let line = raw.trim_end_matches('\r');
+        if line.is_empty() {
+            if self.data.is_empty() {
+                return None;
+            }
+            let out = self.data.join("\n");
+            self.data.clear();
+            return Some(out);
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            self.data.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
+        }
+        None
+    }
+
+    pub fn flush(&mut self) -> Option<String> {
+        self.line("")
+    }
+}
+
+/// Run one tool-enabled round against Codex, calling `on_delta` for each
+/// streamed text chunk as it arrives. Blocking — call from `spawn_blocking`.
+pub fn stream_tool_turn(
+    access_token: &str,
+    account_id: &str,
+    body: &Value,
+    on_delta: &mut dyn FnMut(&str),
+) -> anyhow::Result<ToolTurn> {
+    use std::io::BufRead;
+    let mut req = ureq::post(CODEX_RESPONSES_URL)
+        // Generous: a streamed tool round can think for a while before the
+        // first byte; the read itself is bounded below.
+        .timeout(Duration::from_secs(180))
+        .set("Authorization", &format!("Bearer {access_token}"))
+        .set("Content-Type", "application/json")
+        .set("Accept", "text/event-stream")
+        .set("OpenAI-Beta", "responses=experimental");
+    if !account_id.trim().is_empty() {
+        req = req.set("ChatGPT-Account-Id", account_id.trim());
+    }
+    let response = req.send_json(body.clone()).map_err(flatten_http_error)?;
+    let reader = std::io::BufReader::new(response.into_reader().take(16 * 1024 * 1024));
+    let mut lines = SseLineBuffer::default();
+    let mut acc = ToolStreamAccumulator::default();
+    for line in reader.lines() {
+        let line = line?;
+        if let Some(payload) = lines.line(&line) {
+            if let Some(d) = acc.feed(&payload) {
+                on_delta(&d);
+            }
+        }
+    }
+    if let Some(payload) = lines.flush() {
+        if let Some(d) = acc.feed(&payload) {
+            on_delta(&d);
+        }
+    }
+    acc.finish()
+}
+
+/// True for errors that a token refresh can fix.
+pub fn is_auth_error(e: &anyhow::Error) -> bool {
+    let s = e.to_string();
+    s.starts_with("HTTP 401") || s.starts_with("HTTP 403")
+}
+
 /// Cheap auth probe with a tiny synthetic excerpt.
 pub fn test_connection(access_token: &str, account_id: &str, model: &str) -> anyhow::Result<()> {
     let ctx = vec![json!({
@@ -668,6 +920,153 @@ data: {\"type\":\"error\",\"error\":{\"message\":\"Stream must be set to true\"}
 \n";
         let err = extract_sse_text(body).unwrap_err().to_string();
         assert!(err.contains("Stream must be set to true"));
+    }
+
+    fn feed_all(body: &str) -> (ToolStreamAccumulator, String) {
+        let mut lines = SseLineBuffer::default();
+        let mut acc = ToolStreamAccumulator::default();
+        let mut live = String::new();
+        for line in body.split('\n') {
+            if let Some(p) = lines.line(line) {
+                if let Some(d) = acc.feed(&p) {
+                    live.push_str(&d);
+                }
+            }
+        }
+        if let Some(p) = lines.flush() {
+            acc.feed(&p);
+        }
+        (acc, live)
+    }
+
+    #[test]
+    fn tool_request_body_matches_codex_cli_shape() {
+        let tools = vec![json!({"type":"function","name":"get_unreads","description":"d","strict":false,
+            "parameters":{"type":"object","properties":{}}})];
+        let input = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}),
+            json!({"type":"function_call","call_id":"call_1","name":"get_unreads","arguments":"{}"}),
+            json!({"type":"function_call_output","call_id":"call_1","output":"{\"items\":[]}"}),
+        ];
+        let body = tool_request_body("gpt-5.6-sol", "be brief", &input, &tools);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["store"], false);
+        assert!(body.get("max_output_tokens").is_none());
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["input"][1]["type"], "function_call");
+        // store=false: replayed items must not reference server item ids.
+        assert!(body["input"][1].get("id").is_none());
+        assert_eq!(body["input"][2]["call_id"], "call_1");
+        let bare = tool_request_body("m", "i", &input, &[]);
+        assert!(bare.get("tools").is_none() && bare.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn tool_stream_collects_function_call_from_item_events() {
+        // Fixture in the event order the Responses API streams a tool call.
+        let body = "\
+event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\
+\n\
+event: response.output_item.added\n\
+data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_abc\",\"name\":\"read_channel\",\"arguments\":\"\"}}\n\
+\n\
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"channel\\\":\"}\n\
+\n\
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"\\\"general\\\"}\"}\n\
+\n\
+data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_1\",\"arguments\":\"{\\\"channel\\\":\\\"general\\\"}\"}\n\
+\n\
+data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_abc\",\"name\":\"read_channel\",\"arguments\":\"{\\\"channel\\\":\\\"general\\\"}\",\"status\":\"completed\"}}\n\
+\n\
+data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_abc\",\"name\":\"read_channel\",\"arguments\":\"{\\\"channel\\\":\\\"general\\\"}\"}]}}\n\
+\n";
+        let (acc, live) = feed_all(body);
+        assert!(live.is_empty());
+        let turn = acc.finish().unwrap();
+        assert_eq!(turn.calls.len(), 1, "completed must not duplicate the done item");
+        assert_eq!(turn.calls[0].call_id, "call_abc");
+        assert_eq!(turn.calls[0].name, "read_channel");
+        assert_eq!(turn.calls[0].arguments, "{\"channel\":\"general\"}");
+    }
+
+    #[test]
+    fn tool_stream_streams_text_deltas_live() {
+        let body = "\
+data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"Two \"}\n\
+\n\
+data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"threads need you.\"}\n\
+\n\
+data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Two threads need you.\"}]}}\n\
+\n\
+data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n";
+        let (acc, live) = feed_all(body);
+        assert_eq!(live, "Two threads need you.");
+        let turn = acc.finish().unwrap();
+        assert_eq!(turn.text, "Two threads need you.");
+        assert!(turn.calls.is_empty());
+    }
+
+    #[test]
+    fn tool_stream_promotes_pending_call_when_done_event_missing() {
+        let body = "\
+data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_9\",\"call_id\":\"call_9\",\"name\":\"get_unreads\",\"arguments\":\"\"}}\n\
+\n\
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_9\",\"delta\":\"{}\"}\n\
+\n";
+        let turn = feed_all(body).0.finish().unwrap();
+        assert_eq!(turn.calls, vec![FunctionCall { call_id: "call_9".into(), name: "get_unreads".into(), arguments: "{}".into() }]);
+    }
+
+    #[test]
+    fn tool_stream_surfaces_failures() {
+        let body = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"Unsupported parameter: tools\"}}}\n\n";
+        let err = feed_all(body).0.finish().unwrap_err().to_string();
+        assert!(err.contains("Unsupported parameter: tools"), "{err}");
+        let empty = feed_all("data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n").0.finish();
+        assert!(empty.is_err());
+    }
+
+    /// Opt-in live compatibility spike against the real ChatGPT/Codex backend.
+    /// Never runs in CI (`#[ignore]`, and it needs a local auth file):
+    ///
+    /// `AGORA_CODEX_AUTH_JSON=~/.codex/auth.json cargo test -p agora-core live_codex_tool_spike -- --ignored --nocapture`
+    ///
+    /// Uses the file's access token as-is and never refreshes it — a refresh
+    /// rotates the refresh token and would sign the Codex CLI out. Prints only
+    /// event types and call names, never tokens.
+    #[test]
+    #[ignore]
+    fn live_codex_tool_spike() {
+        let Ok(path) = std::env::var("AGORA_CODEX_AUTH_JSON") else {
+            eprintln!("spike skipped: AGORA_CODEX_AUTH_JSON not set");
+            return;
+        };
+        let auth: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let tokens = tokens_from_auth_json(&auth).unwrap();
+        let model = std::env::var("AGORA_CODEX_MODEL").unwrap_or_else(|_| DEFAULT_CODEX_MODEL.into());
+        let tools = vec![json!({"type":"function","name":"get_weather","strict":false,
+            "description":"Current weather for a city.",
+            "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}})];
+        let mut input = vec![json!({"type":"message","role":"user","content":[
+            {"type":"input_text","text":"What's the weather in Paris? Use the tool."}]})];
+        let body = tool_request_body(&model, "You are terse. Always use tools when relevant.", &input, &tools);
+        let mut deltas = 0usize;
+        let first = stream_tool_turn(&tokens.access_token, &tokens.account_id, &body, &mut |_| deltas += 1)
+            .expect("first round failed");
+        eprintln!("round1: model={model} calls={:?} text_chars={} deltas={deltas}",
+            first.calls.iter().map(|c| (&c.name, &c.arguments)).collect::<Vec<_>>(), first.text.len());
+        let call = first.calls.first().expect("endpoint did not stream a function_call").clone();
+        input.push(json!({"type":"function_call","call_id":call.call_id,"name":call.name,"arguments":call.arguments}));
+        input.push(json!({"type":"function_call_output","call_id":call.call_id,"output":"{\"temp_c\":18,\"sky\":\"clear\"}"}));
+        let body = tool_request_body(&model, "You are terse. Always use tools when relevant.", &input, &tools);
+        let mut deltas2 = 0usize;
+        let second = stream_tool_turn(&tokens.access_token, &tokens.account_id, &body, &mut |_| deltas2 += 1)
+            .expect("function_call_output follow-up rejected");
+        eprintln!("round2: calls={} deltas={deltas2} text={:?}", second.calls.len(), second.text);
+        assert!(!second.text.trim().is_empty());
     }
 
     #[test]

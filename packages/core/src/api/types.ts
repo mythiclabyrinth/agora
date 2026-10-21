@@ -25,6 +25,15 @@ export interface Me {
   voice_tts?: boolean;
   /** Ask AI Enabled (credentials checked when the user asks). */
   search_ai?: boolean;
+  /** Jarvis mode (the Agora assistant panel) is usable by this caller:
+      ChatGPT is connected and the access policy allows them. */
+  jarvis?: boolean;
+  /** Why Jarvis is unavailable (admins get the fix); null when available. */
+  jarvis_hint?: string | null;
+  /** The assistant panel can transcribe speech (/api/jarvis/transcribe). */
+  jarvis_stt?: boolean;
+  /** The assistant panel can speak replies (/api/jarvis/speech). */
+  jarvis_tts?: boolean;
   /** Operator-configured MapLibre style URL for map artifacts; empty/absent
       means clients fall back to the coordinate-only SVG map. */
   map_style_url?: string;

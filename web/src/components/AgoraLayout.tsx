@@ -28,6 +28,8 @@ import { speakEnqueue, useSpeak } from "../state/speak";
 import { useJump } from "../state/jump";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { JarvisPanel } from "../jarvis/panel/JarvisPanel";
+import { JarvisWakeHost } from "../jarvis/wake/JarvisWakeHost";
 
 function ShortcutsHost() {
   useShortcuts();
@@ -177,6 +179,8 @@ export function AgoraLayout() {
       <EmojiPickerHost onPick={(mid, emoji) => toggleReaction(mid, emoji)} />
       <SearchPane />
       <ShortcutsDialog />
+      <JarvisPanel />
+      <JarvisWakeHost />
       <PeoplePane />
       <AiSettingsPane />
       <ConnectionsPane />

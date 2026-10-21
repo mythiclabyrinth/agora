@@ -13,6 +13,7 @@ pub mod codex_oauth;
 pub mod config;
 pub mod connections;
 pub mod hub;
+pub mod jarvis;
 pub mod migrate;
 pub mod notify_actions;
 pub mod push;
@@ -116,6 +117,7 @@ pub async fn run(data_dir: PathBuf, ui_dir: Option<PathBuf>) -> anyhow::Result<A
         codex_models_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         auth_limiter,
         upload_limiter,
+        jarvis: Arc::default(),
     };
     let app = server::router(state.clone());
     let addr: SocketAddr = format!("{}:{}", snapshot.bind, snapshot.port).parse()?;

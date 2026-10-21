@@ -8,7 +8,7 @@
   "scripts": {
     "build": "npm run build -w web",
     "check:agent-docs": "node scripts/check-agent-docs.mjs",
-    "test": "npm run test -w packages/core",
+    "test": "npm run test -w packages/core && npm run test -w web",
     "test:worktree": "bash scripts/worktree.test.sh",
     "typecheck": "npm run typecheck -w packages/core && npm run typecheck -w web"
   },

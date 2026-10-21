@@ -9,6 +9,7 @@ import { useUiState } from "../state/ui";
 import { PromptDialog } from "./PromptDialog";
 import { Icon } from "../lib/icons";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
+import { JarvisChip } from "../jarvis/panel/JarvisChip";
 
 function ServerBadge() {
   const host = location.hostname;
@@ -80,6 +81,7 @@ export function Topbar() {
       <button className="workspace-search" aria-label="Search conversations" aria-keyshortcuts={ariaCombo(bindingFor("search", currentPlatform()), currentPlatform())} onClick={() => setSearchOpen(true)}>
         <Icon name="search" /><span>Search conversations</span><kbd>{searchKey || "Off"}</kbd>
       </button>
+      <JarvisChip />
       <button className="topbar-me" id="topbar-me" title="Change how your name appears"
         onClick={() => setRenaming(true)}>
         <span className="topbar-avatar" aria-hidden="true">{(me?.display_name || me?.username || "?").split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase()}</span>
