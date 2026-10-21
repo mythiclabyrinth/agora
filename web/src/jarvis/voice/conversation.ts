@@ -29,7 +29,7 @@ import { useUiState } from "../../state/ui";
 import { cancelDraftEntry, sendDraftEntry, type JarvisDraftCard } from "../panel/JarvisCards";
 import { jarvisLevel } from "../panel/level";
 import { createEndpointer, frameRms } from "./endpointer";
-import { draftIntent } from "./intent";
+import { asksToSend, draftIntent } from "./intent";
 import { createSentenceChunker, type Sentence } from "./sentences";
 
 const TICK_MS = 50;
@@ -275,7 +275,8 @@ function pendingDraft(): { entry: JarvisCardEntry; card: JarvisDraftCard } | nul
     the assistant. */
 async function handleUtterance(text: string): Promise<void> {
   const draft = pendingDraft();
-  const intent = draft && caps.api ? draftIntent(text) : null;
+  const lastSaid = useJarvis.getState().log.filter(e => e.role === "assistant").at(-1)?.text;
+  const intent = draft && caps.api ? draftIntent(text, { answersSendIt: asksToSend(lastSaid) }) : null;
   if (!draft || !intent || !caps.api) {
     await runTurn(text);
     return;

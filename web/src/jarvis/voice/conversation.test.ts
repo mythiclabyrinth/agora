@@ -214,6 +214,24 @@ describe("spoken draft confirmation", () => {
     expect(useJarvis.getState().log.at(-1)?.text).toBe("Cancelled. Nothing was sent.");
   });
 
+  it("a bare 'yes' sends the draft only when it answers the read-back's \"Send it?\"", async () => {
+    const one = draft("a");
+    useJarvis.setState({ cards: [one] });
+    useJarvis.getState().say("I’ve drafted this in #release: “@claude rerun it.” Send it?");
+    await speak("Yes.");
+    expect(cards.sendDraftEntry).toHaveBeenCalledTimes(1);
+    expect(core.jarvisTurn).not.toHaveBeenCalled();
+  });
+
+  it("a bare 'yes' to some other question is an ordinary turn, even with a draft pending", async () => {
+    useJarvis.setState({ cards: [draft("a")] });
+    useJarvis.getState().say("Did you mean #release or #releases?");
+    answer("Got it.");
+    await speak("yes");
+    expect(cards.sendDraftEntry).not.toHaveBeenCalled();
+    expect(core.jarvisTurn).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["no pending draft", [] as ReturnType<typeof draft>[]],
     ["two pending drafts", [draft("a"), draft("b")]],

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createEndpointer, frameRms, type EndpointEvent } from "./endpointer";
-import { draftIntent } from "./intent";
+import { asksToSend, draftIntent } from "./intent";
 import { createSentenceChunker, MAX_SPOKEN_CHARS } from "./sentences";
 
 /** Feed `ms` of a constant level at 50 ms ticks; returns the non-null events. */
@@ -138,8 +138,27 @@ describe("draft intent", () => {
     "cancels %j", (t) => expect(draftIntent(t)).toBe("cancel"),
   );
 
+  it.each(["yes", "Yeah.", "yep", "Sure.", "OK", "do it", "please do", "Yes please"])(
+    "confirms a bare %j when it answers \"Send it?\"", (t) => {
+      expect(draftIntent(t, { answersSendIt: true })).toBe("confirm");
+      expect(draftIntent(t)).toBeNull(); // otherwise it may answer another question
+    },
+  );
+
+  it.each(["no", "Nope.", "no thanks"])("cancels a bare %j when it answers \"Send it?\"", (t) => {
+    expect(draftIntent(t, { answersSendIt: true })).toBe("cancel");
+    expect(draftIntent(t)).toBeNull();
+  });
+
   it.each([
-    "", "yes", "send it to Claude in #release instead", "tell Claude to send the report",
+    "", "yes, but change the time to 5pm", "send it to Claude in #release instead", "tell Claude to send the report",
     "what did you send", "send a message to Ana", "can you cancel my meeting tomorrow",
-  ])("leaves %j to the assistant", (t) => expect(draftIntent(t)).toBeNull());
+  ])("leaves %j to the assistant", (t) => expect(draftIntent(t, { answersSendIt: true })).toBeNull());
+
+  it("recognises the read-back's closing question", () => {
+    expect(asksToSend('I’ve drafted this in #release: “@claude rerun it.” Send it?')).toBe(true);
+    expect(asksToSend("Drafted it for #release. Send this?")).toBe(true);
+    expect(asksToSend("Which channel did you mean, #release or #releases?")).toBe(false);
+    expect(asksToSend(undefined)).toBe(false);
+  });
 });

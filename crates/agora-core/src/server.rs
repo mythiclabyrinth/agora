@@ -2056,8 +2056,8 @@ async fn jarvis_transcribe(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     require_jarvis(&state, &user)?;
-    if !state.jarvis.allow(&user.username) {
-        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many assistant requests — slow down"));
+    if !state.jarvis.allow(&user.username) || !state.jarvis.allow_transcribe(&user.username) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many voice requests — slow down"));
     }
     let voice = resolved_voice(&state);
     let source = jarvis_stt_source(&voice, crate::jarvis::mock_enabled())

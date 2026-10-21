@@ -151,15 +151,13 @@ impl Draft {
     }
 }
 
-/// `@handle` appears as a whole token: "@helper" is not satisfied by
-/// "@helperbot", which would leave the meant agent unaddressed.
+/// `@handle` is addressed exactly as the hub will read it: through the
+/// hub's own mention tokenizer, so "@helperbot" or "jim@claude.ai" never
+/// count as "@helper" / "@claude" (the meant agent would not be woken),
+/// while "@claude." at the end of a sentence does.
 fn mentions_handle(lower_body: &str, lower_handle: &str) -> bool {
-    lower_body.match_indices(lower_handle).any(|(at, m)| {
-        lower_body[at + m.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-'))
-    })
+    let want = lower_handle.trim_start_matches('@');
+    crate::hub::mention_token_groups(lower_body).iter().any(|group| group.iter().any(|t| t == want))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -174,6 +172,10 @@ pub enum DraftError {
 /// request per sentence, so this sits well above the upload limit, which it
 /// deliberately does not share: talking must not use up file uploads.
 const REQUESTS_PER_MINUTE: u32 = 240;
+/// Transcriptions per user per minute, on top of the shared budget: each
+/// can carry up to 15 MB of audio to the (paid) STT provider, and a real
+/// conversation needs a handful a minute, not hundreds.
+const TRANSCRIBES_PER_MINUTE: u32 = 30;
 /// Turns one user may have running at once. Two, not one: after a barge-in
 /// the abandoned turn only notices at its next model round.
 const MAX_TURNS_PER_USER: usize = 2;
@@ -205,6 +207,7 @@ pub struct JarvisState {
     conversations: Mutex<HashMap<String, Conversation>>,
     drafts: Mutex<HashMap<String, Draft>>,
     limiter: crate::server::RateLimiter,
+    transcribe_limiter: crate::server::RateLimiter,
     /// Turns in flight per user.
     running: Mutex<HashMap<String, usize>>,
 }
@@ -215,6 +218,7 @@ impl Default for JarvisState {
             conversations: Mutex::default(),
             drafts: Mutex::default(),
             limiter: crate::server::RateLimiter::new(crate::server::RATE_WINDOW, REQUESTS_PER_MINUTE),
+            transcribe_limiter: crate::server::RateLimiter::new(crate::server::RATE_WINDOW, TRANSCRIBES_PER_MINUTE),
             running: Mutex::default(),
         }
     }
@@ -225,6 +229,11 @@ impl JarvisState {
     /// desktop app every local user shares one address.
     pub fn allow(&self, username: &str) -> bool {
         self.limiter.allow(username)
+    }
+
+    /// Within this user's transcription budget (checked after `allow`).
+    pub fn allow_transcribe(&self, username: &str) -> bool {
+        self.transcribe_limiter.allow(username)
     }
 
     /// A slot for one turn, or None when this user (or the instance) already
@@ -1480,6 +1489,9 @@ mod tests {
         // A longer handle that merely starts with it does not count.
         assert_eq!(d.final_text(Some("ask @claudebot to ship")), "@claude ask @claudebot to ship");
         assert_eq!(d.final_text(Some("@claude, ship it")), "@claude, ship it");
+        assert_eq!(d.final_text(Some("Ship it, @claude.")), "Ship it, @claude.");
+        // An address that merely contains the handle is not a mention of it.
+        assert_eq!(d.final_text(Some("email jim@claude.ai the logs")), "@claude email jim@claude.ai the logs");
     }
 
     #[test]
@@ -1525,6 +1537,11 @@ mod tests {
         }
         assert!(!s.allow("ana"));
         assert!(s.allow("bob"), "another user's budget is separate");
+        for _ in 0..TRANSCRIBES_PER_MINUTE {
+            assert!(s.allow_transcribe("bob"));
+        }
+        assert!(!s.allow_transcribe("bob"), "transcriptions have their own, smaller budget");
+        assert!(s.allow_transcribe("cy"));
     }
 
     #[test]
