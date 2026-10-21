@@ -214,6 +214,22 @@ describe("spoken draft confirmation", () => {
     expect(useJarvis.getState().log.at(-1)?.text).toBe("Cancelled. Nothing was sent.");
   });
 
+  it("a typed 'yes' to \"Send it?\" sends the draft too (no mic involved)", async () => {
+    const one = draft("a");
+    useJarvis.setState({ cards: [one] });
+    useJarvis.getState().say("I’ve drafted this in #release: “Deploy at 5.” Send it?");
+    await voice.handleUtterance("yes");
+    expect(cards.sendDraftEntry).toHaveBeenCalledTimes(1);
+    expect(core.jarvisTurn).not.toHaveBeenCalled();
+  });
+
+  it("a typed message with no pending draft is an ordinary turn", async () => {
+    answer("What should the message to #release say?");
+    await voice.handleUtterance("send a message to #release");
+    expect(cards.sendDraftEntry).not.toHaveBeenCalled();
+    expect(core.jarvisTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("a bare 'yes' sends the draft only when it answers the read-back's \"Send it?\"", async () => {
     const one = draft("a");
     useJarvis.setState({ cards: [one] });

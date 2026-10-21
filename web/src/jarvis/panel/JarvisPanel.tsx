@@ -15,7 +15,7 @@ import { useAppearance } from "../../state/appearance";
 import { useJarvis, type JarvisLogEntry } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
 import {
-  closeVoice, configureVoice, listen, newConversation, runTurn, silenceSpeech, stopListening,
+  closeVoice, configureVoice, handleUtterance, listen, newConversation, runTurn, silenceSpeech, stopListening,
 } from "../voice/conversation";
 import { JarvisCardView } from "./JarvisCards";
 import { jarvisLevel } from "./level";
@@ -173,7 +173,8 @@ function OpenPanel() {
     if (s.busy) return;
     const ask = text;
     setText("");
-    void runTurn(ask);
+    // Typed "send it" / "yes" approves the pending draft, as when spoken.
+    void handleUtterance(ask);
   };
 
   const listening = s.phase === "listening" || s.phase === "recording";

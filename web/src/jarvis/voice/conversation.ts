@@ -270,10 +270,10 @@ function pendingDraft(): { entry: JarvisCardEntry; card: JarvisDraftCard } | nul
   return pending.length === 1 ? { entry: pending[0], card: pending[0].card as JarvisDraftCard } : null;
 }
 
-/** A spoken turn: "send it" / "cancel" with exactly one pending draft is
-    handled here through the card's own endpoints; anything else goes to
-    the assistant. */
-async function handleUtterance(text: string): Promise<void> {
+/** A spoken or typed turn: "send it" / "cancel" (or a bare yes/no to the
+    read-back's "Send it?") with exactly one pending draft is handled here
+    through the card's own endpoints; anything else goes to the assistant. */
+export async function handleUtterance(text: string): Promise<void> {
   const draft = pendingDraft();
   const lastSaid = useJarvis.getState().log.filter(e => e.role === "assistant").at(-1)?.text;
   const intent = draft && caps.api ? draftIntent(text, { answersSendIt: asksToSend(lastSaid) }) : null;
