@@ -1,5 +1,5 @@
 /* Instance-admin Settings: shell for instance-wide options.
-   Today: Features + Credentials for voice / Ask AI. More tabs can land here later. */
+   Today: Features + Credentials for voice / Ask AI / Jarvis. More tabs can land here later. */
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -11,8 +11,10 @@ import {
   useCodexOauthStatus,
   useTestInstanceAi,
   useUpdateInstanceAi,
+  type InstanceAiJarvis,
   type InstanceAiSettings,
   type InstanceAiUpdate,
+  type JarvisProvider,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
@@ -254,7 +256,6 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
   const suggested = data.suggested_models_by_provider?.[provider]
     || data.suggested_models
     || [];
-  const selectedModel = modelField.value;
 
   return (
     <div className="ai-section">
@@ -279,22 +280,112 @@ function SearchFeatures({ data }: { data: InstanceAiSettings["search"] }) {
           ))}
         </select>
       </div>
+      <ModelSelect
+        value={modelField.value}
+        suggested={suggested}
+        disabled={update.isPending}
+        onChange={model => save({ model, model_provider: provider })}
+      />
+    </div>
+  );
+}
+
+/* The provider's suggested models, keeping a saved id the list doesn't know. */
+function ModelSelect({
+  value, suggested, disabled, onChange, label = "Model",
+}: {
+  value: string;
+  suggested: string[];
+  disabled: boolean;
+  onChange: (model: string) => void;
+  label?: string;
+}) {
+  return (
+    <div className="ai-row">
+      <label>{label}</label>
+      <select aria-label={label} value={value} disabled={disabled} onChange={e => onChange(e.target.value)}>
+        {suggested.map(m => <option key={m} value={m}>{m}</option>)}
+        {value && !suggested.includes(value) && <option value={value}>{value}</option>}
+      </select>
+    </div>
+  );
+}
+
+const JARVIS_CREDENTIAL: Record<JarvisProvider, string> = {
+  codex: "No ChatGPT account is connected yet.",
+  openai: "No OpenAI API key is set yet.",
+  anthropic: "No Anthropic API key is set yet.",
+};
+
+/* Jarvis mode's brain. Its own switch (independent of Ask AI) and model per
+   provider; credentials come from the Credentials tab, so a provider without
+   one gets a hop there instead of a key field here. */
+function JarvisFeatures({ data }: { data: InstanceAiJarvis }) {
+  const update = useUpdateInstanceAi();
+  const setTab = useUiState(s => s.setSettingsTab);
+  const [provider, setProvider] = useState(data.provider);
+
+  useEffect(() => {
+    setProvider(data.provider);
+  }, [data.provider]);
+
+  const save = (patch: NonNullable<InstanceAiUpdate["jarvis"]>) => {
+    update.mutate({ jarvis: patch }, {
+      onSuccess: () => toast("Jarvis settings saved", { variant: "ok" }),
+      onError: e => toast(`Couldn't save: ${(e as Error).message || e}`, { variant: "warn" }),
+    });
+  };
+
+  const key = provider as JarvisProvider;
+  const providers = data.providers?.length
+    ? data.providers
+    : [
+        { id: "codex", label: "ChatGPT (Codex sign-in)" },
+        { id: "openai", label: "OpenAI" },
+        { id: "anthropic", label: "Anthropic" },
+      ];
+  const modelField = data.models?.[key] || data.model;
+  const missing = data.credentials?.[key] === false;
+
+  return (
+    <div className="ai-section" aria-label="Jarvis settings" role="group">
+      <SectionHead
+        title="Jarvis"
+        enabled={data.enabled}
+        onEnabled={enabled => save({ enabled })}
+      />
+      <p className="conn-hint">The Agora assistant: catches you up, searches, and drafts messages for you to send.</p>
       <div className="ai-row">
-        <label>Model</label>
+        <label>Provider</label>
         <select
-          value={selectedModel}
+          aria-label="Jarvis provider"
+          value={provider}
           disabled={update.isPending}
           onChange={e => {
             const next = e.target.value;
-            save({ model: next, model_provider: provider });
+            setProvider(next);
+            save({ provider: next });
           }}
         >
-          {suggested.map(m => <option key={m} value={m}>{m}</option>)}
-          {selectedModel && !suggested.includes(selectedModel) && (
-            <option value={selectedModel}>{selectedModel}</option>
-          )}
+          {providers.map(p => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
         </select>
       </div>
+      <ModelSelect
+        label="Jarvis model"
+        value={modelField.value}
+        suggested={data.suggested_models_by_provider?.[provider] || []}
+        disabled={update.isPending}
+        onChange={model => save({ model, model_provider: provider })}
+      />
+      {missing && (
+        <p className="conn-hint jarvis-credential-missing">
+          {JARVIS_CREDENTIAL[key] || "This provider has no credential yet."} Jarvis stays off until it has one.{" "}
+          <button type="button" className="btn sm" onClick={() => setTab("credentials")}>Open Credentials</button>
+        </p>
+      )}
+      <p className="conn-hint">Listening and spoken replies use the Voice settings above.</p>
     </div>
   );
 }
@@ -603,6 +694,7 @@ export function AiSettingsPane() {
               <SttFeatures data={q.data.voice} />
               <TtsFeatures data={q.data.voice} />
               <SearchFeatures data={q.data.search} />
+              {q.data.jarvis && <JarvisFeatures data={q.data.jarvis} />}
             </>
           )}
           {q.data && activeTab === "credentials" && (

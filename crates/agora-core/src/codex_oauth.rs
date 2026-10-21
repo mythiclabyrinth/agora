@@ -336,11 +336,33 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
-/// What one streamed `/responses` round produced.
+/// What one streamed model round produced.
 #[derive(Clone, Debug, Default)]
 pub struct ToolTurn {
     pub text: String,
     pub calls: Vec<FunctionCall>,
+    /// Provider-native assistant content to replay verbatim on the next
+    /// round (Anthropic's signed thinking blocks must come back unchanged).
+    /// Kept on the transcript under [`REPLAY_KEY`]; Responses requests strip it.
+    pub replay: Option<Value>,
+}
+
+/// Transcript-item key for [`ToolTurn::replay`]. Leading underscore: private
+/// to Agora, never sent to a Responses endpoint.
+pub const REPLAY_KEY: &str = "_replay";
+
+/// Transcript items as a Responses `input`: drops Agora-private `_…` keys,
+/// which the endpoint would reject as unknown parameters.
+fn responses_input(input: &[Value]) -> Vec<Value> {
+    input
+        .iter()
+        .map(|item| match item.as_object() {
+            Some(obj) if obj.keys().any(|k| k.starts_with('_')) => Value::Object(
+                obj.iter().filter(|(k, _)| !k.starts_with('_')).map(|(k, v)| (k.clone(), v.clone())).collect(),
+            ),
+            _ => item.clone(),
+        })
+        .collect()
 }
 
 /// Request body for a tool-enabled streamed round. Same two backend
@@ -351,7 +373,7 @@ pub fn tool_request_body(model: &str, instructions: &str, input: &[Value], tools
         "store": false,
         "stream": true,
         "instructions": instructions,
-        "input": input,
+        "input": responses_input(input),
     });
     if !tools.is_empty() {
         body["tools"] = json!(tools);
@@ -471,18 +493,24 @@ impl ToolStreamAccumulator {
     }
 
     /// Close the stream: promote half-finished calls, surface errors.
-    pub fn finish(mut self) -> anyhow::Result<ToolTurn> {
+    pub fn finish(self) -> anyhow::Result<ToolTurn> {
+        self.finish_as("Codex")
+    }
+
+    /// [`Self::finish`], naming `provider` in errors (the OpenAI API streams
+    /// the same events).
+    pub fn finish_as(mut self, provider: &str) -> anyhow::Result<ToolTurn> {
         if let Some(err) = self.error.take() {
-            anyhow::bail!("Codex stream error: {err}");
+            anyhow::bail!("{provider} stream error: {err}");
         }
         for (_, call) in std::mem::take(&mut self.pending) {
             self.push_call(call);
         }
         anyhow::ensure!(
             !self.text.trim().is_empty() || !self.calls.is_empty(),
-            "empty response from Codex stream"
+            "empty response from {provider} stream"
         );
-        Ok(ToolTurn { text: self.text, calls: self.calls })
+        Ok(ToolTurn { text: self.text, calls: self.calls, replay: None })
     }
 }
 
@@ -516,6 +544,52 @@ impl SseLineBuffer {
     }
 }
 
+/// Generous: a streamed tool round can think for a while before the first
+/// byte; the body read itself is bounded in [`post_sse`].
+pub const TOOL_TURN_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// POST `body` on a prepared request (URL + auth headers are the caller's)
+/// and hand each SSE `data:` payload to `feed` as it arrives. Shared by every
+/// Jarvis brain, so the providers differ only in their event parser.
+/// Blocking — call from `spawn_blocking`.
+pub fn post_sse(req: ureq::Request, body: &Value, feed: &mut dyn FnMut(&str)) -> anyhow::Result<()> {
+    use std::io::BufRead;
+    let response = req
+        .timeout(TOOL_TURN_TIMEOUT)
+        .set("Content-Type", "application/json")
+        .set("Accept", "text/event-stream")
+        .send_json(body.clone())
+        .map_err(flatten_http_error)?;
+    let reader = std::io::BufReader::new(response.into_reader().take(16 * 1024 * 1024));
+    let mut lines = SseLineBuffer::default();
+    for line in reader.lines() {
+        if let Some(payload) = lines.line(&line?) {
+            feed(&payload);
+        }
+    }
+    if let Some(payload) = lines.flush() {
+        feed(&payload);
+    }
+    Ok(())
+}
+
+/// One tool-enabled round on any Responses-API stream (Codex or the OpenAI
+/// API), calling `on_delta` for each text chunk as it arrives.
+pub fn stream_responses_turn(
+    req: ureq::Request,
+    body: &Value,
+    provider: &str,
+    on_delta: &mut dyn FnMut(&str),
+) -> anyhow::Result<ToolTurn> {
+    let mut acc = ToolStreamAccumulator::default();
+    post_sse(req, body, &mut |payload| {
+        if let Some(d) = acc.feed(payload) {
+            on_delta(&d);
+        }
+    })?;
+    acc.finish_as(provider)
+}
+
 /// Run one tool-enabled round against Codex, calling `on_delta` for each
 /// streamed text chunk as it arrives. Blocking — call from `spawn_blocking`.
 pub fn stream_tool_turn(
@@ -524,36 +598,13 @@ pub fn stream_tool_turn(
     body: &Value,
     on_delta: &mut dyn FnMut(&str),
 ) -> anyhow::Result<ToolTurn> {
-    use std::io::BufRead;
     let mut req = ureq::post(CODEX_RESPONSES_URL)
-        // Generous: a streamed tool round can think for a while before the
-        // first byte; the read itself is bounded below.
-        .timeout(Duration::from_secs(180))
         .set("Authorization", &format!("Bearer {access_token}"))
-        .set("Content-Type", "application/json")
-        .set("Accept", "text/event-stream")
         .set("OpenAI-Beta", "responses=experimental");
     if !account_id.trim().is_empty() {
         req = req.set("ChatGPT-Account-Id", account_id.trim());
     }
-    let response = req.send_json(body.clone()).map_err(flatten_http_error)?;
-    let reader = std::io::BufReader::new(response.into_reader().take(16 * 1024 * 1024));
-    let mut lines = SseLineBuffer::default();
-    let mut acc = ToolStreamAccumulator::default();
-    for line in reader.lines() {
-        let line = line?;
-        if let Some(payload) = lines.line(&line) {
-            if let Some(d) = acc.feed(&payload) {
-                on_delta(&d);
-            }
-        }
-    }
-    if let Some(payload) = lines.flush() {
-        if let Some(d) = acc.feed(&payload) {
-            on_delta(&d);
-        }
-    }
-    acc.finish()
+    stream_responses_turn(req, body, "Codex", on_delta)
 }
 
 /// True for errors that a token refresh can fix.
@@ -961,6 +1012,18 @@ data: {\"type\":\"error\",\"error\":{\"message\":\"Stream must be set to true\"}
         assert_eq!(body["input"][2]["call_id"], "call_1");
         let bare = tool_request_body("m", "i", &input, &[]);
         assert!(bare.get("tools").is_none() && bare.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn tool_request_body_strips_agora_private_replay_keys() {
+        // An Anthropic round's signed blocks ride along on the transcript; a
+        // Responses endpoint would 400 on the unknown field after a provider switch.
+        let input = vec![json!({"type":"function_call","call_id":"c1","name":"get_unreads","arguments":"{}",
+            REPLAY_KEY: {"provider":"anthropic","content":[{"type":"thinking","thinking":"","signature":"sig"}]}})];
+        let body = tool_request_body("m", "i", &input, &[]);
+        assert!(body["input"][0].get(REPLAY_KEY).is_none());
+        assert_eq!(body["input"][0]["call_id"], "c1");
+        assert!(input[0].get(REPLAY_KEY).is_some(), "the transcript itself keeps it");
     }
 
     #[test]

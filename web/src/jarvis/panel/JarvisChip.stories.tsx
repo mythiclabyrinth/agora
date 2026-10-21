@@ -6,7 +6,7 @@ import { useUiState } from "../../state/ui";
 import { JarvisChip } from "./JarvisChip";
 
 const jarvisMe = { ...fixtureMe, jarvis: true, jarvis_hint: null };
-const hint = "Connect ChatGPT in Settings → AI to enable Jarvis mode.";
+const hint = "Connect ChatGPT under Settings → Credentials (or pick another provider under Settings → Features → Jarvis) to enable Jarvis mode.";
 
 const meta = {
   title: "Web/Jarvis/Chip",
@@ -69,6 +69,7 @@ export const UnavailableAdminHint: Story = {
     await expect(body.findByText(hint)).resolves.toBeVisible();
     await userEvent.click(body.getByRole("button", { name: "Open settings" }));
     expect(useUiState.getState().panel).toBe("settings");
+    expect(useUiState.getState().settingsTab).toBe("features");
     expect(useJarvis.getState().enabled).toBe(false);
   },
 };

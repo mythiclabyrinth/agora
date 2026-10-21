@@ -112,6 +112,28 @@ const emptySettings = {
       ],
     },
   },
+  jarvis: {
+    enabled: true,
+    available: false,
+    provider: "codex",
+    providers: [
+      { id: "codex", label: "ChatGPT (Codex sign-in)" },
+      { id: "openai", label: "OpenAI" },
+      { id: "anthropic", label: "Anthropic" },
+    ],
+    model: { value: "gpt-6-sol", source: "default" },
+    models: {
+      codex: { value: "gpt-6-sol", source: "default" },
+      openai: { value: "gpt-4.1-mini", source: "default" },
+      anthropic: { value: "claude-sonnet-5", source: "default" },
+    },
+    suggested_models_by_provider: {
+      codex: ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"],
+      openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o", "gpt-4o-mini"],
+      anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    },
+    credentials: { codex: false, openai: false, anthropic: false },
+  },
   credentials: {
     openai: { configured: false, hint: null, source: "none" },
     groq: { configured: false, hint: null, source: "none" },
@@ -149,6 +171,13 @@ const configuredSettings = {
     groq: { configured: false, hint: null, source: "none" },
     anthropic: { configured: true, hint: "ant-…here", source: "env" },
     oauth: emptySettings.credentials.oauth,
+  },
+  jarvis: {
+    ...emptySettings.jarvis,
+    available: true,
+    provider: "anthropic",
+    model: { value: "claude-sonnet-5", source: "default" },
+    credentials: { codex: false, openai: true, anthropic: true },
   },
 };
 
@@ -391,5 +420,44 @@ export const ConfiguredCredentials: Story = {
   parameters: Configured.parameters,
   play: async ({ canvasElement }) => {
     await userEvent.click(await within(canvasElement).findByRole("tab", { name: "Credentials" }));
+  },
+};
+
+export const JarvisSection: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Features" }));
+    const section = within(await canvas.findByRole("group", { name: "Jarvis settings" }));
+    // Its own switch, independent of Ask AI's.
+    const toggle = section.getByRole("checkbox", { name: "Enabled" });
+    expect(toggle).toBeChecked();
+    expect(section.getByRole("combobox", { name: "Jarvis provider" })).toHaveDisplayValue("ChatGPT (Codex sign-in)");
+    expect(section.getByRole("combobox", { name: "Jarvis model" })).toHaveDisplayValue("gpt-6-sol");
+    expect(section.getByText(/Voice settings/)).toBeVisible();
+    // No ChatGPT sign-in yet: say so, and hop to Credentials.
+    expect(section.getByText(/No ChatGPT account is connected yet/)).toBeVisible();
+    await userEvent.click(section.getByRole("button", { name: "Open Credentials" }));
+    await expect(canvas.findByText("OpenAI Codex")).resolves.toBeVisible();
+    expect(canvas.getByRole("tab", { name: "Credentials" })).toHaveAttribute("aria-selected", "true");
+    // Back on Features, provider and switch save Jarvis's own settings.
+    await userEvent.click(canvas.getByRole("tab", { name: "Features" }));
+    const again = within(await canvas.findByRole("group", { name: "Jarvis settings" }));
+    await userEvent.selectOptions(again.getByRole("combobox", { name: "Jarvis provider" }), "anthropic");
+    await waitFor(() => expect(putAi).toHaveBeenCalledWith({ jarvis: { provider: "anthropic" } }));
+    await userEvent.click(again.getByRole("checkbox", { name: "Enabled" }));
+    await waitFor(() => expect(putAi).toHaveBeenCalledWith({ jarvis: { enabled: false } }));
+  },
+};
+
+export const JarvisSectionConfigured: Story = {
+  parameters: Configured.parameters,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Features" }));
+    const section = within(await canvas.findByRole("group", { name: "Jarvis settings" }));
+    expect(section.getByRole("combobox", { name: "Jarvis provider" })).toHaveDisplayValue("Anthropic");
+    expect(section.queryByRole("button", { name: "Open Credentials" })).toBeNull();
+    await userEvent.selectOptions(section.getByRole("combobox", { name: "Jarvis model" }), "claude-opus-5");
+    await waitFor(() => expect(putAi).toHaveBeenCalledWith({ jarvis: { model: "claude-opus-5", model_provider: "anthropic" } }));
   },
 };

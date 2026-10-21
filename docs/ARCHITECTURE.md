@@ -70,9 +70,16 @@ One Rust core, three clients (see the repo layout table in the
   `session_version` (bumping it revokes their sessions), Google OAuth state
   encoding, and Apple JWT verification. See [AUTH.md](AUTH.md) for the flows.
 - **Jarvis mode** (`jarvis.rs`) — the voice assistant panel's brain:
-  `POST /api/jarvis/turn` streams (SSE) a tool-using turn on the instance's
-  ChatGPT connection (`codex_oauth.rs`), obeying the same "AI answers"
-  switch as Ask AI. Every tool reads through the caller's own `require_*`
+  `POST /api/jarvis/turn` streams (SSE) a tool-using turn on the provider
+  chosen under Settings → Features → Jarvis (`ai.jarvis` in `config.json`:
+  its own Enabled switch, independent of Ask AI's, a provider and a model
+  per provider). `codex` runs on the instance's ChatGPT sign-in
+  (`codex_oauth.rs`), `openai` on the OpenAI Responses API (same request
+  and event shapes), `anthropic` on the Messages API, translating the
+  Responses-shaped transcript and replaying each round's native content
+  (signed thinking) verbatim. Credentials are the Credentials tab's, shared
+  with Ask AI and voice; Jarvis is available only when switched on and its
+  provider has one. Every tool reads through the caller's own `require_*`
   gates; the model can only *draft*, and `POST /api/jarvis/drafts/{id}/send`
   posts as the user after they confirm. `/api/jarvis/transcribe` and
   `/api/jarvis/speech` reuse `voice.rs`. Conversations and drafts are

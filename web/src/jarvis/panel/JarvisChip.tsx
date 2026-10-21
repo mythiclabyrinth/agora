@@ -1,6 +1,7 @@
 /* Header "Jarvis mode" chip: toggles the per-device mode (which arms the
    wake word, JarvisWakeHost) and opens the panel. Hidden unless
-   /api/me advertises `jarvis`; admins get a hint to connect ChatGPT. */
+   /api/me advertises `jarvis`; admins get the server's hint (switch it on,
+   or give its provider a credential) and a hop to Settings → Features. */
 
 import { ThinkingOrb } from "thinking-orbs";
 import { ariaCombo, currentPlatform, formatCombo, useMe } from "@agora/core";
@@ -29,8 +30,12 @@ export function JarvisChip() {
     return (
       <button className="jv-chip is-unavailable" title={me.jarvis_hint}
         onClick={() => {
-          toast(me.jarvis_hint || "Connect ChatGPT to enable Jarvis mode", { actionLabel: "Open settings",
-            onAction: () => useUiState.getState().openPanel("settings") });
+          toast(me.jarvis_hint || "Set up Jarvis under Settings → Features", { actionLabel: "Open settings",
+            onAction: () => {
+              // The Jarvis section is where both fixes start (switch, provider, Credentials hop).
+              useUiState.getState().setSettingsTab("features");
+              useUiState.getState().openPanel("settings");
+            } });
         }}>
         Jarvis mode
       </button>

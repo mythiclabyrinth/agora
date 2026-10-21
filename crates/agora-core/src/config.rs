@@ -645,12 +645,99 @@ impl Default for AiSearchSettings {
     }
 }
 
+/// Jarvis mode's brain. Same provider ids as Ask AI, chosen independently,
+/// and no credentials of its own: codex uses the instance's ChatGPT sign-in
+/// (`ai.search.codex_*`), openai the shared OpenAI key, anthropic the
+/// Anthropic key Ask AI uses (env fallbacks included).
+pub const JARVIS_PROVIDER_CODEX: &str = SEARCH_PROVIDER_CODEX;
+pub const JARVIS_PROVIDER_OPENAI: &str = SEARCH_PROVIDER_OPENAI;
+pub const JARVIS_PROVIDER_ANTHROPIC: &str = SEARCH_PROVIDER_ANTHROPIC;
+/// ChatGPT, because that is what Jarvis ran on before it had settings.
+pub const DEFAULT_JARVIS_PROVIDER: &str = JARVIS_PROVIDER_CODEX;
+
+fn default_jarvis_provider() -> String {
+    DEFAULT_JARVIS_PROVIDER.to_string()
+}
+
+pub fn is_supported_jarvis_provider(p: &str) -> bool {
+    matches!(p, JARVIS_PROVIDER_CODEX | JARVIS_PROVIDER_OPENAI | JARVIS_PROVIDER_ANTHROPIC)
+}
+
+/// Human name of a Jarvis provider's credential, for hints and errors.
+pub fn jarvis_provider_label(p: &str) -> &'static str {
+    match p {
+        JARVIS_PROVIDER_OPENAI => "OpenAI",
+        JARVIS_PROVIDER_ANTHROPIC => "Anthropic",
+        _ => "ChatGPT",
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiJarvisSettings {
+    /// Jarvis's own switch, independent of Ask AI's. On by default so
+    /// instances that used Jarvis before it had settings keep it.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// `codex` (ChatGPT sign-in), `openai` (API key), or `anthropic` (API key).
+    #[serde(default = "default_jarvis_provider")]
+    pub provider: String,
+    /// Per-provider model overrides (same three slots as Ask AI, but Jarvis's
+    /// own values). Empty slots resolve to the provider default.
+    #[serde(default)]
+    pub models: AiSearchModels,
+}
+
+impl Default for AiJarvisSettings {
+    fn default() -> Self {
+        Self { enabled: true, provider: default_jarvis_provider(), models: AiSearchModels::default() }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AiSettings {
     #[serde(default)]
     pub voice: AiVoiceSettings,
     #[serde(default)]
     pub search: AiSearchSettings,
+    #[serde(default)]
+    pub jarvis: AiJarvisSettings,
+}
+
+/// Runtime Jarvis settings after config/env/default resolution. Credential
+/// availability is reported per provider so the settings UI can say which
+/// choice would work; the keys themselves stay server-side.
+#[derive(Clone, Debug)]
+pub struct ResolvedJarvis {
+    pub enabled: bool,
+    pub provider: String,
+    pub model: String,
+    pub model_source: AiFieldSource,
+    pub models: ResolvedSearchModels,
+    /// ChatGPT sign-in present (refresh or access token).
+    pub codex_ready: bool,
+    pub openai_api_key: Option<String>,
+    pub anthropic_api_key: Option<String>,
+}
+
+impl ResolvedJarvis {
+    /// Whether `provider` has the credential it needs.
+    pub fn credentialed(&self, provider: &str) -> bool {
+        match provider {
+            JARVIS_PROVIDER_OPENAI => self.openai_api_key.is_some(),
+            JARVIS_PROVIDER_ANTHROPIC => self.anthropic_api_key.is_some(),
+            _ => self.codex_ready,
+        }
+    }
+
+    /// The selected provider has its credential.
+    pub fn ready(&self) -> bool {
+        self.credentialed(&self.provider)
+    }
+
+    /// Switched on and credentialed (the mock flag is the caller's business).
+    pub fn available(&self) -> bool {
+        self.enabled && self.ready()
+    }
 }
 
 /// Runtime voice settings after config/env/default resolution.
@@ -1281,6 +1368,43 @@ impl Config {
         }
     }
 
+    /// Resolve Jarvis settings. Credentials are the ones the Credentials tab
+    /// manages for Ask AI / voice — the same config-first, env-fallback keys
+    /// — so Jarvis never needs a secret of its own.
+    pub fn jarvis(
+        &self,
+        anthropic_api_key_env: Option<&str>,
+        openai_api_key_env: Option<&str>,
+    ) -> ResolvedJarvis {
+        let data = self.data.lock().unwrap();
+        let j = &data.ai.jarvis;
+        let provider = {
+            let p = j.provider.trim();
+            if is_supported_jarvis_provider(p) { p.to_string() } else { DEFAULT_JARVIS_PROVIDER.to_string() }
+        };
+        let models = ResolvedSearchModels {
+            anthropic: resolve_provider_model(&j.models, JARVIS_PROVIDER_ANTHROPIC),
+            openai: resolve_provider_model(&j.models, JARVIS_PROVIDER_OPENAI),
+            codex: resolve_provider_model(&j.models, JARVIS_PROVIDER_CODEX),
+        };
+        let (model, model_source) = match provider.as_str() {
+            JARVIS_PROVIDER_OPENAI => models.openai.clone(),
+            JARVIS_PROVIDER_ANTHROPIC => models.anthropic.clone(),
+            _ => models.codex.clone(),
+        };
+        let s = &data.ai.search;
+        ResolvedJarvis {
+            enabled: j.enabled,
+            provider,
+            model,
+            model_source,
+            models,
+            codex_ready: !s.codex_refresh_token.trim().is_empty() || !s.codex_access_token.trim().is_empty(),
+            openai_api_key: resolve_secret(&data.ai.voice.api_key, openai_api_key_env).0,
+            anthropic_api_key: resolve_secret(&s.api_key, anthropic_api_key_env).0,
+        }
+    }
+
     /// Persist refreshed Codex OAuth tokens after a successful refresh.
     pub fn store_codex_tokens(&self, tokens: &crate::codex_oauth::CodexTokens) {
         let now = std::time::SystemTime::now()
@@ -1857,6 +1981,116 @@ mod tests {
         assert!(s.available());
         assert!(s.oauth_configured);
         assert_eq!(s.account_id, "acct");
+    }
+
+    #[test]
+    fn config_without_jarvis_loads_enabled_on_codex_and_round_trips() {
+        // Pre-settings configs had no `ai.jarvis`: Jarvis ran on ChatGPT, and
+        // must keep doing so after the upgrade.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"search":{"enabled":false,"codex_refresh_token":"rt"}}}"#,
+        )
+        .unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        let snap = cfg.snapshot();
+        assert!(snap.ai.jarvis.enabled);
+        assert_eq!(snap.ai.jarvis.provider, JARVIS_PROVIDER_CODEX);
+        let j = cfg.jarvis(None, None);
+        assert!(j.available(), "Ask AI being off does not turn Jarvis off");
+        assert_eq!(j.model, crate::codex_oauth::DEFAULT_CODEX_MODEL);
+        assert_eq!(j.model_source, AiFieldSource::Default);
+        // Saving and reloading is idempotent.
+        cfg.update(|_| {});
+        let again = Config::load(dir.path()).unwrap().snapshot();
+        assert!(again.ai.jarvis.enabled);
+        assert_eq!(again.ai.jarvis.provider, JARVIS_PROVIDER_CODEX);
+        assert!(again.ai.jarvis.models.codex.is_empty());
+        // A partial section fills in the rest.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"jarvis":{"provider":"anthropic"}}}"#,
+        )
+        .unwrap();
+        let snap = Config::load(dir.path()).unwrap().snapshot();
+        assert!(snap.ai.jarvis.enabled);
+        assert_eq!(snap.ai.jarvis.provider, JARVIS_PROVIDER_ANTHROPIC);
+    }
+
+    #[test]
+    fn jarvis_models_default_like_ask_ai_but_are_jarvis_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        let j = cfg.jarvis(None, None);
+        assert_eq!(j.models.codex.0, crate::codex_oauth::DEFAULT_CODEX_MODEL);
+        assert_eq!(j.models.openai.0, crate::ai::DEFAULT_OPENAI_SEARCH_MODEL);
+        assert_eq!(j.models.anthropic.0, DEFAULT_SEARCH_MODEL);
+        cfg.update(|c| {
+            c.ai.search.models.anthropic = "claude-opus-5".into();
+            c.ai.jarvis.models.anthropic = "claude-haiku-4-5-20251001".into();
+            c.ai.jarvis.provider = JARVIS_PROVIDER_ANTHROPIC.into();
+        });
+        let j = cfg.jarvis(None, None);
+        assert_eq!(j.model, "claude-haiku-4-5-20251001", "never Ask AI's slot");
+        assert_eq!(j.model_source, AiFieldSource::Config);
+        cfg.update(|c| c.ai.jarvis.provider = "bogus".into());
+        assert_eq!(cfg.jarvis(None, None).provider, JARVIS_PROVIDER_CODEX, "unknown falls back to the default");
+    }
+
+    #[test]
+    fn jarvis_shares_credentials_tab_keys_with_env_fallbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load(dir.path()).unwrap();
+        let j = cfg.jarvis(None, None);
+        assert!(!j.credentialed(JARVIS_PROVIDER_CODEX));
+        assert!(!j.credentialed(JARVIS_PROVIDER_OPENAI));
+        assert!(!j.credentialed(JARVIS_PROVIDER_ANTHROPIC));
+        // Env fallbacks count, exactly as for Ask AI.
+        let j = cfg.jarvis(Some("ant-env"), Some("sk-env"));
+        assert_eq!(j.anthropic_api_key.as_deref(), Some("ant-env"));
+        assert_eq!(j.openai_api_key.as_deref(), Some("sk-env"));
+        // Config wins: the Anthropic key is Ask AI's, the OpenAI key voice's.
+        cfg.update(|c| {
+            c.ai.search.api_key = "ant-cfg".into();
+            c.ai.voice.api_key = "sk-cfg".into();
+            c.ai.search.codex_access_token = "at".into();
+        });
+        let j = cfg.jarvis(Some("ant-env"), Some("sk-env"));
+        assert_eq!(j.anthropic_api_key.as_deref(), Some("ant-cfg"));
+        assert_eq!(j.openai_api_key.as_deref(), Some("sk-cfg"));
+        assert!(j.credentialed(JARVIS_PROVIDER_CODEX), "an access token alone is a sign-in");
+    }
+
+    #[test]
+    fn jarvis_availability_matrix_ignores_ask_ai_switch() {
+        for search_enabled in [true, false] {
+            for enabled in [true, false] {
+                for provider in [JARVIS_PROVIDER_CODEX, JARVIS_PROVIDER_OPENAI, JARVIS_PROVIDER_ANTHROPIC] {
+                    for keyed in [true, false] {
+                        let dir = tempfile::tempdir().unwrap();
+                        let cfg = Config::load(dir.path()).unwrap();
+                        cfg.update(|c| {
+                            c.ai.search.enabled = search_enabled;
+                            c.ai.jarvis.enabled = enabled;
+                            c.ai.jarvis.provider = provider.into();
+                            if keyed {
+                                match provider {
+                                    JARVIS_PROVIDER_OPENAI => c.ai.voice.api_key = "sk".into(),
+                                    JARVIS_PROVIDER_ANTHROPIC => c.ai.search.api_key = "ant".into(),
+                                    _ => c.ai.search.codex_refresh_token = "rt".into(),
+                                }
+                            }
+                        });
+                        let j = cfg.jarvis(None, None);
+                        assert_eq!(j.ready(), keyed, "{provider} keyed={keyed}");
+                        assert_eq!(j.available(), enabled && keyed,
+                            "{provider} enabled={enabled} keyed={keyed} search={search_enabled}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

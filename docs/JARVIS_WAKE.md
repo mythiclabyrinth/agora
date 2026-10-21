@@ -59,7 +59,11 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   destination and text and ask "Send it?".
 - **Server**: both endpoints are caller-authenticated and Jarvis-gated, not
   channel-scoped, and reuse `voice.rs` with the instance's configured
-  provider, model and voice. Transcribe has the channel endpoint's 15 MB
+  provider, model and voice. "Jarvis-gated" means Jarvis's own switch and
+  brain provider (Settings → Features → Jarvis: ChatGPT, OpenAI or
+  Anthropic, each using the key or sign-in from Credentials), not Ask AI's;
+  the voice loop itself always follows the Voice settings, whichever brain
+  answers. Transcribe has the channel endpoint's 15 MB
   limit; speech takes at most 600 characters (one sentence at a time) and
   shares the message speech LRU cache. With `AGORA_JARVIS_MOCK=1` and no key,
   both fall back to mocks: transcripts from `AGORA_JARVIS_MOCK_TRANSCRIPT`

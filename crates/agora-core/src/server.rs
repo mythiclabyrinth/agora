@@ -717,7 +717,8 @@ async fn me(
     // Ask AI even when credentials are missing; missing keys fail at use time.
     let voice = resolved_voice(&state);
     let search = resolved_search_ai(&state);
-    let jarvis = crate::jarvis::user_allowed(&user) && crate::jarvis::brain_kind(&search).is_some();
+    let jarvis_ai = resolved_jarvis(&state);
+    let jarvis = crate::jarvis::user_allowed(&user) && crate::jarvis::brain_kind(&jarvis_ai).is_some();
     let mock = crate::jarvis::mock_enabled();
     Ok(Json(json!({
         "username": user.username,
@@ -738,9 +739,9 @@ async fn me(
         "voice_tts": voice.tts_enabled,
         "search_ai": search.enabled,
         // Jarvis mode: the assistant panel. True only when this caller may
-        // use it and the instance can run a brain (ChatGPT connected).
+        // use it, Jarvis is switched on, and its provider has a credential.
         "jarvis": jarvis,
-        "jarvis_hint": jarvis_hint(&user, &search),
+        "jarvis_hint": jarvis_hint(&user, &jarvis_ai),
         // The panel's voice loop: /api/jarvis/transcribe and /speech work
         // (enabled and keyed, unlike the coarse voice_stt / voice_tts).
         "jarvis_stt": jarvis && jarvis_stt_source(&voice, mock).is_ok(),
@@ -1780,22 +1781,34 @@ async fn search_ask(
 
 // ------------------------------------------------------------ jarvis mode
 
+/// What the selected provider is missing, phrased for a person: "connect
+/// ChatGPT" (the sign-in) vs "add an OpenAI API key".
+fn jarvis_credential_ask(provider: &str) -> String {
+    match provider {
+        crate::config::JARVIS_PROVIDER_CODEX => "connect ChatGPT".to_string(),
+        p => format!("add an {} API key", crate::config::jarvis_provider_label(p)),
+    }
+}
+
 /// Why Jarvis is unavailable, for the UI hint (admins get the fix).
-fn jarvis_hint(user: &AuthedUser, search: &crate::config::ResolvedSearchAi) -> Value {
-    if !crate::jarvis::user_allowed(user) || crate::jarvis::brain_kind(search).is_some() {
+fn jarvis_hint(user: &AuthedUser, jarvis: &crate::config::ResolvedJarvis) -> Value {
+    if !crate::jarvis::user_allowed(user) || crate::jarvis::brain_kind(jarvis).is_some() {
         return Value::Null;
     }
-    if !search.enabled {
+    if !jarvis.enabled {
         return json!(if user.instance_admin {
-            "AI answers are turned off for this instance; turn them on under Settings → Features to use Jarvis mode."
+            "Jarvis mode is turned off for this instance; turn it on under Settings → Features → Jarvis."
         } else {
-            "AI answers are turned off for this instance."
+            "Jarvis mode is turned off for this instance."
         });
     }
+    let ask = jarvis_credential_ask(&jarvis.provider);
     json!(if user.instance_admin {
-        "Connect ChatGPT under Settings → Credentials to enable Jarvis mode."
+        let mut ask = ask;
+        ask[..1].make_ascii_uppercase();
+        format!("{ask} under Settings → Credentials (or pick another provider under Settings → Features → Jarvis) to enable Jarvis mode.")
     } else {
-        "Jarvis mode needs an admin to connect ChatGPT."
+        format!("Jarvis mode isn't set up yet: ask an admin to {ask}.")
     })
 }
 
@@ -1803,17 +1816,23 @@ fn require_jarvis(state: &AppState, user: &AuthedUser) -> Result<crate::jarvis::
     if !crate::jarvis::user_allowed(user) {
         return Err(err(StatusCode::FORBIDDEN, "Jarvis mode is limited to instance admins"));
     }
-    let search = resolved_search_ai(state);
-    if !search.enabled && !crate::jarvis::mock_enabled() {
-        return Err(err(StatusCode::BAD_REQUEST, "AI answers are disabled for this instance"));
+    let jarvis = resolved_jarvis(state);
+    if !jarvis.enabled && !crate::jarvis::mock_enabled() {
+        return Err(err(StatusCode::BAD_REQUEST, "Jarvis mode is disabled for this instance"));
     }
-    crate::jarvis::brain_kind(&search).ok_or_else(|| {
+    crate::jarvis::brain_kind(&jarvis).ok_or_else(|| {
+        let label = crate::config::jarvis_provider_label(&jarvis.provider);
+        let what = match jarvis.provider.as_str() {
+            crate::config::JARVIS_PROVIDER_CODEX => "ChatGPT".to_string(),
+            _ => format!("an {label} API key"),
+        };
+        let fix = if jarvis.provider == crate::config::JARVIS_PROVIDER_CODEX { "connect it" } else { "add it" };
         err(
             StatusCode::BAD_REQUEST,
-            if user.instance_admin {
-                "Jarvis mode needs ChatGPT: connect it under Settings → Credentials"
+            &if user.instance_admin {
+                format!("Jarvis mode needs {what}: {fix} under Settings → Credentials")
             } else {
-                "Jarvis mode needs ChatGPT: ask an admin to connect it under Settings → Credentials"
+                format!("Jarvis mode needs {what}: ask an admin to {fix} under Settings → Credentials")
             },
         )
     })
@@ -1849,10 +1868,22 @@ fn force_refresh_codex(state: &AppState, stale: &str) -> anyhow::Result<(String,
     Ok((tokens.access_token, tokens.account_id))
 }
 
+/// The brain for `kind`, on Jarvis's own model for that provider (never Ask
+/// AI's) and the shared Credentials-tab credential.
 fn make_brain(state: &AppState, kind: crate::jarvis::BrainKind) -> anyhow::Result<Box<dyn crate::jarvis::Brain>> {
+    let jarvis = resolved_jarvis(state);
     match kind {
         crate::jarvis::BrainKind::Mock => Ok(Box::new(crate::jarvis::MockBrain::with_delay(Duration::from_millis(45)))),
+        crate::jarvis::BrainKind::OpenAi => Ok(Box::new(crate::jarvis::OpenAiBrain {
+            api_key: jarvis.openai_api_key.clone().ok_or_else(|| anyhow::anyhow!("no OpenAI API key is configured"))?,
+            model: jarvis.models.openai.0.clone(),
+        })),
+        crate::jarvis::BrainKind::Anthropic => Ok(Box::new(crate::jarvis::AnthropicBrain {
+            api_key: jarvis.anthropic_api_key.clone().ok_or_else(|| anyhow::anyhow!("no Anthropic API key is configured"))?,
+            model: jarvis.models.anthropic.0.clone(),
+        })),
         crate::jarvis::BrainKind::Codex => {
+            // The sign-in tokens live with Ask AI's settings; only the model is Jarvis's.
             let search = resolved_search_ai(state);
             let (access, account) = refresh_codex_if_needed(state, &search)?;
             let can_refresh = !state.config.snapshot().ai.search.codex_refresh_token.trim().is_empty();
@@ -1860,7 +1891,7 @@ fn make_brain(state: &AppState, kind: crate::jarvis::BrainKind) -> anyhow::Resul
             Ok(Box::new(crate::jarvis::CodexBrain {
                 access_token: access,
                 account_id: account,
-                model: search.models.codex.0.clone(),
+                model: jarvis.models.codex.0.clone(),
                 refresh: can_refresh.then(|| {
                     Box::new(move |stale: &str| force_refresh_codex(&refresh_state, stale))
                         as crate::jarvis::TokenRefresher
@@ -1915,7 +1946,12 @@ async fn jarvis_turn(
         let mut brain = match make_brain(&state, kind) {
             Ok(b) => b,
             Err(e) => {
-                emit(crate::jarvis::ev_error(&format!("Couldn't reach ChatGPT: {}", truncate_err(&format!("{e:#}"), 240))));
+                let who = match kind {
+                    crate::jarvis::BrainKind::OpenAi => "OpenAI",
+                    crate::jarvis::BrainKind::Anthropic => "Anthropic",
+                    _ => "ChatGPT",
+                };
+                emit(crate::jarvis::ev_error(&format!("Couldn't reach {who}: {}", truncate_err(&format!("{e:#}"), 240))));
                 return;
             }
         };
@@ -1927,7 +1963,8 @@ async fn jarvis_turn(
                 emit(crate::jarvis::ev_done(&conversation_id, &answer));
             }
             Err(e) => {
-                tracing::warn!(user = %user.username, "jarvis turn failed: {}", truncate_err(&format!("{e:#}"), 300));
+                tracing::warn!(user = %user.username, provider = brain.provider(), model = brain.model(),
+                    "jarvis turn failed: {}", truncate_err(&format!("{e:#}"), 300));
                 emit(crate::jarvis::ev_error(&format!("The assistant hit a problem: {}", truncate_err(&format!("{e:#}"), 240))));
             }
         }
@@ -4297,6 +4334,13 @@ fn resolved_search_ai(state: &AppState) -> crate::config::ResolvedSearchAi {
     state.config.search_ai(anthropic.as_deref(), openai.as_deref())
 }
 
+/// Jarvis settings with the same env key fallbacks Ask AI and voice use.
+fn resolved_jarvis(state: &AppState) -> crate::config::ResolvedJarvis {
+    let anthropic = env_opt("ANTHROPIC_API_KEY");
+    let openai = env_opt("OPENAI_API_KEY");
+    state.config.jarvis(anthropic.as_deref(), openai.as_deref())
+}
+
 /// Refresh Codex OAuth if we only have a refresh token. Blocking — call from
 /// `spawn_blocking`. Persists rotated tokens via `store_codex_tokens`.
 fn refresh_codex_if_needed(
@@ -4392,7 +4436,36 @@ fn instance_ai_payload(state: &AppState) -> Value {
         crate::config::resolve_secret(&snap.ai.voice.groq_api_key, groq_env.as_deref())
     };
     let codex_models = resolve_codex_suggested_models(state, &search);
+    let jarvis = resolved_jarvis(state);
     json!({
+        // Jarvis's own switch, provider and models. Credentials are the
+        // Credentials tab's; only whether each provider has one goes out.
+        "jarvis": {
+            "enabled": jarvis.enabled,
+            "available": jarvis.available(),
+            "provider": jarvis.provider,
+            "providers": [
+                { "id": crate::config::JARVIS_PROVIDER_CODEX, "label": "ChatGPT (Codex sign-in)" },
+                { "id": crate::config::JARVIS_PROVIDER_OPENAI, "label": "OpenAI" },
+                { "id": crate::config::JARVIS_PROVIDER_ANTHROPIC, "label": "Anthropic" },
+            ],
+            "model": ai_value_field(&jarvis.model, jarvis.model_source),
+            "models": {
+                "codex": ai_value_field(&jarvis.models.codex.0, jarvis.models.codex.1),
+                "openai": ai_value_field(&jarvis.models.openai.0, jarvis.models.openai.1),
+                "anthropic": ai_value_field(&jarvis.models.anthropic.0, jarvis.models.anthropic.1),
+            },
+            "suggested_models_by_provider": {
+                "codex": codex_models,
+                "openai": crate::ai::SUGGESTED_OPENAI_MODELS,
+                "anthropic": crate::ai::SUGGESTED_ANTHROPIC_MODELS,
+            },
+            "credentials": {
+                "codex": jarvis.credentialed(crate::config::JARVIS_PROVIDER_CODEX),
+                "openai": jarvis.credentialed(crate::config::JARVIS_PROVIDER_OPENAI),
+                "anthropic": jarvis.credentialed(crate::config::JARVIS_PROVIDER_ANTHROPIC),
+            },
+        },
         "voice": {
             "stt_enabled": voice.stt_enabled,
             "tts_enabled": voice.tts_enabled,
@@ -4596,7 +4669,7 @@ fn schedule_codex_models_refresh(state: &AppState) {
     });
 }
 
-/// GET /api/instance/ai — instance-admin view of voice + Ask-AI settings.
+/// GET /api/instance/ai — instance-admin view of voice, Ask-AI and Jarvis settings.
 /// Secrets never leave the server as plaintext; only a masked hint + source.
 async fn get_instance_ai(
     State(state): State<AppState>,
@@ -4672,6 +4745,19 @@ async fn update_instance_ai(
             return Err(err(
                 StatusCode::BAD_REQUEST,
                 &format!("unsupported search provider `{p}` (anthropic, openai, or codex)"),
+            ));
+        }
+    }
+    if let Some(p) = payload
+        .pointer("/jarvis/provider")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if !crate::config::is_supported_jarvis_provider(p) {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("unsupported Jarvis provider `{p}` (codex, openai, or anthropic)"),
             ));
         }
     }
@@ -4948,6 +5034,39 @@ async fn update_instance_ai(
                 c.ai.search
                     .models
                     .set(&model_provider, m.trim().chars().take(120).collect());
+            }
+        }
+        // Jarvis mirrors the Ask AI section, minus secrets: it has none.
+        if let Some(j) = payload.get("jarvis") {
+            if let Some(enabled) = j.get("enabled").and_then(|x| x.as_bool()) {
+                c.ai.jarvis.enabled = enabled;
+            }
+            if let Some(p) = j.get("provider").and_then(|x| x.as_str()).map(str::trim).filter(|p| !p.is_empty()) {
+                c.ai.jarvis.provider = p.to_string();
+            }
+            // `model` writes the active provider's slot (or `model_provider`'s).
+            let model_provider = j
+                .get("model_provider")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|p| crate::config::is_supported_jarvis_provider(p))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let p = c.ai.jarvis.provider.trim();
+                    if crate::config::is_supported_jarvis_provider(p) {
+                        p.to_string()
+                    } else {
+                        crate::config::DEFAULT_JARVIS_PROVIDER.to_string()
+                    }
+                });
+            if let Some(models) = j.get("models").and_then(|x| x.as_object()) {
+                for (prov, val) in models {
+                    if let (true, Some(m)) = (crate::config::is_supported_jarvis_provider(prov), val.as_str()) {
+                        c.ai.jarvis.models.set(prov, m.trim().chars().take(120).collect());
+                    }
+                }
+            } else if let Some(m) = j.get("model").and_then(|x| x.as_str()) {
+                c.ai.jarvis.models.set(&model_provider, m.trim().chars().take(120).collect());
             }
         }
         if let Some(cred) = payload.get("credentials") {
@@ -10078,26 +10197,215 @@ mod tests {
         state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
         let me_of = |h| me(State(state.clone()), Query(HashMap::new()), h);
         let before = me_of(session_headers(&state, "ana")).await.unwrap().0;
-        assert_eq!(before["jarvis"], false);
-        assert!(before["jarvis_hint"].as_str().unwrap().contains("admin"));
-        let admin = me_of(admin_headers(&state)).await.unwrap().0;
-        assert!(admin["jarvis_hint"].as_str().unwrap().contains("Settings"));
+        assert_eq!(before["jarvis"], crate::jarvis::mock_enabled());
+        if !crate::jarvis::mock_enabled() {
+            assert!(before["jarvis_hint"].as_str().unwrap().contains("ask an admin"));
+            let admin = me_of(admin_headers(&state)).await.unwrap().0;
+            assert!(admin["jarvis_hint"].as_str().unwrap().contains("Settings → Credentials"));
+        }
         state.config.update(|c| c.ai.search.codex_refresh_token = "rt-test".into());
         let after = me_of(session_headers(&state, "ana")).await.unwrap().0;
         assert_eq!(after["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
         assert!(after["jarvis_hint"].is_null());
+        // Jarvis no longer follows Ask AI's "AI answers" switch…
+        state.config.update(|c| c.ai.search.enabled = false);
+        let ask_off = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(ask_off["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
+        assert_eq!(ask_off["search_ai"], false);
         if !crate::jarvis::mock_enabled() {
-            // The instance's "AI answers" switch turns Jarvis off too.
-            state.config.update(|c| c.ai.search.enabled = false);
+            // …it obeys its own.
+            state.config.update(|c| {
+                c.ai.search.enabled = true;
+                c.ai.jarvis.enabled = false;
+            });
             let off = me_of(session_headers(&state, "ana")).await.unwrap().0;
             assert_eq!(off["jarvis"], false);
+            assert_eq!(off["search_ai"], true, "Ask AI is unaffected");
             assert!(off["jarvis_hint"].as_str().unwrap().contains("turned off"));
+            let admin = me_of(admin_headers(&state)).await.unwrap().0;
+            assert!(admin["jarvis_hint"].as_str().unwrap().contains("Features → Jarvis"));
             let turn = jarvis_turn(State(state.clone()), Query(HashMap::new()), session_headers(&state, "ana"),
                 Json(json!({"text": "catch me up"}))).await;
-            let e = turn.err().expect("turn refused while AI answers are off");
+            let e = turn.err().expect("turn refused while Jarvis is off");
             assert_eq!(e.0, StatusCode::BAD_REQUEST);
             assert!(e.1 .0["detail"].as_str().unwrap().contains("disabled"));
         }
+    }
+
+    fn env_has(key: &str) -> bool {
+        std::env::var(key).is_ok_and(|v| !v.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn me_and_turn_gate_on_the_selected_jarvis_providers_credential() {
+        if crate::jarvis::mock_enabled() {
+            return; // the mock brain makes Jarvis available regardless
+        }
+        let (state, _dir) = test_state();
+        state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
+        let me_of = |h| me(State(state.clone()), Query(HashMap::new()), h);
+        // ChatGPT connected, but Jarvis set to Anthropic: the sign-in doesn't count.
+        state.config.update(|c| {
+            c.ai.search.codex_refresh_token = "rt-test".into();
+            c.ai.jarvis.provider = crate::config::JARVIS_PROVIDER_ANTHROPIC.into();
+            c.ai.search.api_key.clear();
+        });
+        if !env_has("ANTHROPIC_API_KEY") {
+            let m = me_of(session_headers(&state, "ana")).await.unwrap().0;
+            assert_eq!(m["jarvis"], false);
+            assert!(m["jarvis_hint"].as_str().unwrap().contains("Anthropic API key"), "{m}");
+            let admin = me_of(admin_headers(&state)).await.unwrap().0;
+            assert!(admin["jarvis_hint"].as_str().unwrap().starts_with("Add an Anthropic API key under Settings → Credentials"));
+            let e = jarvis_turn(State(state.clone()), Query(HashMap::new()), session_headers(&state, "ana"),
+                Json(json!({"text": "hi"}))).await.err().unwrap();
+            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            let detail = e.1 .0["detail"].as_str().unwrap().to_string();
+            assert!(detail.contains("needs an Anthropic API key") && detail.contains("ask an admin"), "{detail}");
+        }
+        // The Anthropic key Ask AI uses is Jarvis's too.
+        state.config.update(|c| c.ai.search.api_key = "ant-test-key".into());
+        let m = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(m["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
+        assert!(m["jarvis_hint"].is_null());
+        // OpenAI uses the shared OpenAI key.
+        state.config.update(|c| {
+            c.ai.jarvis.provider = crate::config::JARVIS_PROVIDER_OPENAI.into();
+            c.ai.voice.api_key.clear();
+        });
+        if !env_has("OPENAI_API_KEY") {
+            assert_eq!(me_of(session_headers(&state, "ana")).await.unwrap().0["jarvis"], false);
+        }
+        state.config.update(|c| c.ai.voice.api_key = "sk-test-key".into());
+        assert_eq!(me_of(session_headers(&state, "ana")).await.unwrap().0["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
+        assert_eq!(require_jarvis(&state, &jarvis_user(&state, "ana")).unwrap(), crate::jarvis::BrainKind::OpenAi);
+    }
+
+    #[test]
+    fn make_brain_uses_jarvis_provider_model_and_shared_credentials() {
+        let (state, _dir) = test_state();
+        state.config.update(|c| {
+            // An access token: no refresh round-trip in the test.
+            c.ai.search.codex_access_token = "at-test".into();
+            c.ai.search.models.codex = "ask-ai-model".into();
+            c.ai.jarvis.models.codex = "gpt-5.6-sol".into();
+            c.ai.search.api_key = "ant-test".into();
+            c.ai.voice.api_key = "sk-test".into();
+        });
+        let brain = make_brain(&state, crate::jarvis::BrainKind::Codex).unwrap();
+        assert_eq!((brain.provider(), brain.model()), ("ChatGPT", "gpt-5.6-sol"), "Jarvis's model, not Ask AI's");
+        let brain = make_brain(&state, crate::jarvis::BrainKind::OpenAi).unwrap();
+        assert_eq!((brain.provider(), brain.model()), ("OpenAI", crate::ai::DEFAULT_OPENAI_SEARCH_MODEL));
+        state.config.update(|c| c.ai.jarvis.models.anthropic = "claude-haiku-4-5-20251001".into());
+        let brain = make_brain(&state, crate::jarvis::BrainKind::Anthropic).unwrap();
+        assert_eq!((brain.provider(), brain.model()), ("Anthropic", "claude-haiku-4-5-20251001"));
+        assert_eq!(make_brain(&state, crate::jarvis::BrainKind::Mock).unwrap().provider(), "the mock assistant");
+        if !env_has("ANTHROPIC_API_KEY") {
+            state.config.update(|c| c.ai.search.api_key.clear());
+            assert!(make_brain(&state, crate::jarvis::BrainKind::Anthropic).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn instance_ai_jarvis_settings_round_trip_admin_only_without_secrets() {
+        let (state, _dir) = test_state();
+        state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
+        let put = |h, body: Value| update_instance_ai(State(state.clone()), Query(HashMap::new()), h, Json(body));
+        let denied = put(session_headers(&state, "ana"), json!({"jarvis": {"enabled": false}})).await;
+        assert_eq!(denied.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert!(state.config.snapshot().ai.jarvis.enabled, "a member's PUT changes nothing");
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), admin_headers(&state)).await.unwrap().0;
+        let j = &got["jarvis"];
+        assert_eq!(j["enabled"], true);
+        assert_eq!(j["provider"], "codex");
+        assert_eq!(j["providers"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["codex", "openai", "anthropic"]);
+        assert_eq!(j["model"]["value"], crate::codex_oauth::DEFAULT_CODEX_MODEL);
+        assert_eq!(j["models"]["anthropic"]["value"], crate::config::DEFAULT_SEARCH_MODEL);
+        assert_eq!(j["credentials"]["codex"], false);
+        assert!(j["suggested_models_by_provider"]["anthropic"].as_array().unwrap().len() > 1);
+
+        let updated = put(admin_headers(&state), json!({
+            "credentials": {"anthropic": {"api_key": "ant-very-secret-key"}},
+            "search": {"enabled": false},
+            "jarvis": {"enabled": true, "provider": "anthropic", "model": "claude-opus-5"},
+        })).await.unwrap().0;
+        let j = &updated["jarvis"];
+        assert_eq!(j["provider"], "anthropic");
+        assert_eq!(j["model"], json!({"value": "claude-opus-5", "source": "config"}));
+        assert_eq!(j["models"]["codex"]["source"], "default", "model writes only the active slot");
+        assert_eq!(j["credentials"]["anthropic"], true);
+        assert_eq!(j["available"], true, "Ask AI being off doesn't matter");
+        assert_eq!(updated["search"]["enabled"], false);
+        assert_eq!(updated["search"]["models"]["anthropic"]["source"], "default", "Ask AI's model is untouched");
+        // Booleans only: no key, hint or token anywhere in the Jarvis section.
+        let text = j.to_string();
+        assert!(!text.contains("ant-very-secret-key") && !text.contains("ant-…"), "{text}");
+        assert!(j["credentials"]["anthropic"].is_boolean());
+
+        // models (per slot) and model_provider; off switch; unknown provider rejected.
+        let updated = put(admin_headers(&state), json!({"jarvis": {
+            "enabled": false, "models": {"openai": "gpt-4.1", "bogus": "x"}, "model": "ignored-when-models-present",
+        }})).await.unwrap().0;
+        assert_eq!(updated["jarvis"]["enabled"], false);
+        assert_eq!(updated["jarvis"]["available"], false);
+        assert_eq!(updated["jarvis"]["models"]["openai"]["value"], "gpt-4.1");
+        assert_eq!(updated["jarvis"]["model"]["value"], "claude-opus-5");
+        let updated = put(admin_headers(&state), json!({"jarvis": {"model": "gpt-6-luna", "model_provider": "codex"}})).await.unwrap().0;
+        assert_eq!(updated["jarvis"]["models"]["codex"]["value"], "gpt-6-luna");
+        assert_eq!(updated["jarvis"]["provider"], "anthropic");
+        let bad = put(admin_headers(&state), json!({"jarvis": {"provider": "gemini"}})).await;
+        let e = bad.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        assert!(e.1 .0["detail"].as_str().unwrap().contains("Jarvis provider"));
+        assert_eq!(state.config.snapshot().ai.jarvis.provider, "anthropic");
+    }
+
+    /// Scripted brain: returns canned rounds, records what it was sent.
+    struct Scripted {
+        rounds: Vec<crate::codex_oauth::ToolTurn>,
+        seen: Vec<Vec<Value>>,
+    }
+
+    impl crate::jarvis::Brain for Scripted {
+        fn step(&mut self, _: &str, input: &[Value], _: &[Value], _: &mut dyn FnMut(&str))
+            -> anyhow::Result<crate::codex_oauth::ToolTurn> {
+            self.seen.push(input.to_vec());
+            Ok(self.rounds.remove(0))
+        }
+        fn provider(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    #[test]
+    fn jarvis_run_turn_keeps_each_rounds_native_content_on_its_first_item() {
+        let (state, _dir) = test_state();
+        let user = AuthedUser { username: "root".into(), display_name: "Root".into(), instance_admin: true };
+        let ctx = crate::jarvis::ToolCtx::new(&state, &user);
+        let native = json!({"provider": "anthropic", "content": [
+            {"type": "thinking", "thinking": "", "signature": "s1"},
+            {"type": "tool_use", "id": "toolu_1", "name": "list_agents", "input": {}}]});
+        let mut brain = Scripted {
+            rounds: vec![
+                crate::codex_oauth::ToolTurn {
+                    calls: vec![crate::codex_oauth::FunctionCall { call_id: "toolu_1".into(), name: "list_agents".into(), arguments: "{}".into() }],
+                    replay: Some(native.clone()),
+                    ..Default::default()
+                },
+                crate::codex_oauth::ToolTurn { text: "Nobody is online.".into(), replay: Some(json!({"provider": "anthropic", "content": [{"type": "text", "text": "Nobody is online."}]})), ..Default::default() },
+            ],
+            seen: vec![],
+        };
+        let (items, answer) = crate::jarvis::run_turn(&ctx, &mut brain, vec![], "who's online", &crate::jarvis::TurnContext::default(), &mut |_| true).unwrap();
+        assert_eq!(answer, "Nobody is online.");
+        assert_eq!(items[1]["type"], "function_call");
+        assert_eq!(items[1]["_replay"], native);
+        assert_eq!(items[2]["type"], "function_call_output");
+        assert!(items[2].get("_replay").is_none());
+        assert_eq!(items[3]["_replay"]["content"][0]["text"], "Nobody is online.");
+        // Round two saw round one's native content, and Anthropic gets it back verbatim.
+        let msgs = crate::jarvis::anthropic_messages(&brain.seen[1]);
+        assert_eq!(msgs[1]["content"], native["content"]);
     }
 
     fn jarvis_speech_request(headers: HeaderMap, text: &str) -> Request<Body> {

@@ -2,10 +2,12 @@
 //! the caller's own view of the workspace, powering `POST /api/jarvis/turn`.
 //!
 //! - **Brain** — a [`Brain`] runs one model round over a Responses-API-shaped
-//!   transcript. The target is the instance's ChatGPT subscription via
-//!   [`crate::codex_oauth`]; [`MockBrain`] is a deterministic stand-in for
-//!   demos (`AGORA_JARVIS_MOCK=1`) and tests. Other providers would translate
-//!   the same transcript items.
+//!   transcript, on the provider picked under Settings → Features → Jarvis:
+//!   the instance's ChatGPT sign-in ([`CodexBrain`], via
+//!   [`crate::codex_oauth`]), the OpenAI Responses API ([`OpenAiBrain`], same
+//!   wire shape), or Anthropic Messages ([`AnthropicBrain`], which translates
+//!   the transcript). [`MockBrain`] is a deterministic stand-in for demos
+//!   (`AGORA_JARVIS_MOCK=1`) and tests.
 //! - **Tools** — thin wrappers over store/hub reads, every one gated with the
 //!   same helpers the REST routes use, so the assistant can never see more
 //!   than the caller could in the UI (agent DMs stay owner-only).
@@ -393,6 +395,14 @@ pub trait Brain: Send {
         tools: &[Value],
         on_delta: &mut dyn FnMut(&str),
     ) -> anyhow::Result<crate::codex_oauth::ToolTurn>;
+
+    /// Who the user is talking to, for error messages ("Couldn't reach …").
+    fn provider(&self) -> &'static str;
+
+    /// The model id this brain calls (empty for the mock).
+    fn model(&self) -> &str {
+        ""
+    }
 }
 
 /// Re-mints `(access_token, account_id)` after an auth error.
@@ -431,6 +441,359 @@ impl Brain for CodexBrain {
             other => other,
         }
     }
+
+    fn provider(&self) -> &'static str {
+        "ChatGPT"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+/// Spend cap per OpenAI round. Generous because reasoning models count their
+/// hidden reasoning against it; answers themselves are a few sentences.
+/// (Unlike the Codex backend, the OpenAI API accepts the field.)
+pub const OPENAI_MAX_OUTPUT_TOKENS: u32 = 4096;
+
+/// OpenAI Responses API with an API key: the Codex request and event shapes
+/// (`store: false`, the whole transcript replayed each round) plus an output cap.
+pub struct OpenAiBrain {
+    pub api_key: String,
+    pub model: String,
+}
+
+pub fn openai_request_body(model: &str, instructions: &str, input: &[Value], tools: &[Value]) -> Value {
+    let mut body = crate::codex_oauth::tool_request_body(model, instructions, input, tools);
+    body["max_output_tokens"] = json!(OPENAI_MAX_OUTPUT_TOKENS);
+    body
+}
+
+impl Brain for OpenAiBrain {
+    fn step(
+        &mut self,
+        instructions: &str,
+        input: &[Value],
+        tools: &[Value],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> anyhow::Result<crate::codex_oauth::ToolTurn> {
+        let body = openai_request_body(&self.model, instructions, input, tools);
+        let req = ureq::post(crate::ai::OPENAI_RESPONSES_URL).set("Authorization", &format!("Bearer {}", self.api_key));
+        crate::codex_oauth::stream_responses_turn(req, &body, "OpenAI", on_delta)
+    }
+
+    fn provider(&self) -> &'static str {
+        "OpenAI"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+/// Anthropic `max_tokens` per round. It caps thinking plus answer, and
+/// current Claude models think adaptively by default, so it sits well above
+/// what a spoken answer needs.
+pub const ANTHROPIC_MAX_TOKENS: u32 = 8192;
+
+/// Anthropic Messages API with an API key. The Responses-shaped transcript is
+/// translated per request ([`anthropic_messages`]); each round's native
+/// content (signed thinking blocks included) rides along on the transcript so
+/// it can be replayed unchanged, which Anthropic requires within a tool loop.
+pub struct AnthropicBrain {
+    pub api_key: String,
+    pub model: String,
+}
+
+impl Brain for AnthropicBrain {
+    fn step(
+        &mut self,
+        instructions: &str,
+        input: &[Value],
+        tools: &[Value],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> anyhow::Result<crate::codex_oauth::ToolTurn> {
+        let body = anthropic_request_body(&self.model, instructions, input, tools);
+        let req = ureq::post(crate::ai::ANTHROPIC_URL)
+            .set("x-api-key", &self.api_key)
+            .set("anthropic-version", crate::ai::ANTHROPIC_VERSION);
+        let mut acc = AnthropicStream::default();
+        crate::codex_oauth::post_sse(req, &body, &mut |payload| {
+            if let Some(d) = acc.feed(payload) {
+                on_delta(&d);
+            }
+        })?;
+        acc.finish()
+    }
+
+    fn provider(&self) -> &'static str {
+        "Anthropic"
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+/// Function tool specs (Responses shape) as Anthropic tools.
+pub fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|t| json!({"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}))
+        .collect()
+}
+
+pub fn anthropic_request_body(model: &str, instructions: &str, input: &[Value], tools: &[Value]) -> Value {
+    let mut body = json!({
+        "model": model,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "stream": true,
+        "system": instructions,
+        "messages": anthropic_messages(input),
+    });
+    if !tools.is_empty() {
+        body["tools"] = json!(anthropic_tools(tools));
+        // One call per round, as on the Responses side (parallel_tool_calls: false).
+        body["tool_choice"] = json!({"type": "auto", "disable_parallel_tool_use": true});
+    }
+    body
+}
+
+/// Append blocks to the last message when it has `role`, else start one:
+/// Anthropic wants strictly alternating turns.
+fn push_blocks(messages: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
+    if blocks.is_empty() {
+        return;
+    }
+    if let Some(last) = messages.last_mut().filter(|m| m["role"] == role) {
+        if let Some(content) = last["content"].as_array_mut() {
+            content.extend(blocks);
+            return;
+        }
+    }
+    messages.push(json!({"role": role, "content": blocks}));
+}
+
+fn item_text(item: &Value) -> String {
+    item["content"]
+        .as_array()
+        .map(|parts| parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join(""))
+        .or_else(|| item["content"].as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// Translate a Responses-shaped transcript to Anthropic `messages`: user text
+/// → user text, assistant `output_text` → assistant text, `function_call` →
+/// assistant `tool_use` (id = call_id), `function_call_output` → user
+/// `tool_result`, adjacent same-role turns merged. Rounds that came from
+/// Anthropic replay their native content instead of the derived blocks, so
+/// signed thinking survives; rounds from another provider translate plainly.
+pub fn anthropic_messages(input: &[Value]) -> Vec<Value> {
+    let mut messages: Vec<Value> = Vec::new();
+    // tool_use ids already emitted from a native replay.
+    let mut replayed: Vec<String> = Vec::new();
+    for item in input {
+        let native = item[crate::codex_oauth::REPLAY_KEY]
+            .as_object()
+            .filter(|r| r.get("provider").and_then(Value::as_str) == Some("anthropic"))
+            .and_then(|r| r.get("content"))
+            .and_then(Value::as_array)
+            .filter(|c| !c.is_empty());
+        if let Some(content) = native {
+            replayed.extend(
+                content.iter().filter(|b| b["type"] == "tool_use").filter_map(|b| b["id"].as_str().map(String::from)),
+            );
+            push_blocks(&mut messages, "assistant", content.clone());
+            continue;
+        }
+        match (item["type"].as_str(), item["role"].as_str()) {
+            (Some("message"), Some("user")) => {
+                let text = item_text(item);
+                if !text.trim().is_empty() {
+                    push_blocks(&mut messages, "user", vec![json!({"type": "text", "text": text})]);
+                }
+            }
+            (Some("message"), Some("assistant")) => {
+                let text = item_text(item);
+                if !text.trim().is_empty() {
+                    push_blocks(&mut messages, "assistant", vec![json!({"type": "text", "text": text})]);
+                }
+            }
+            (Some("function_call"), _) => {
+                let id = item["call_id"].as_str().unwrap_or_default();
+                if replayed.iter().any(|r| r == id) {
+                    continue;
+                }
+                // Anthropic requires an object; the model may send "" for no args.
+                let input = item["arguments"]
+                    .as_str()
+                    .and_then(|a| serde_json::from_str::<Value>(a).ok())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| json!({}));
+                push_blocks(&mut messages, "assistant", vec![json!({
+                    "type": "tool_use", "id": id, "name": item["name"], "input": input,
+                })]);
+            }
+            (Some("function_call_output"), _) => {
+                let output = item["output"].as_str().map(String::from).unwrap_or_else(|| item["output"].to_string());
+                push_blocks(&mut messages, "user", vec![json!({
+                    "type": "tool_result", "tool_use_id": item["call_id"], "content": output,
+                })]);
+            }
+            _ => {}
+        }
+    }
+    messages
+}
+
+/// Incremental parser for an Anthropic Messages SSE stream. Rebuilds every
+/// content block (text, thinking + signature, tool_use, anything newer kept
+/// as sent) so the round can be replayed verbatim.
+#[derive(Default)]
+pub struct AnthropicStream {
+    /// Blocks by stream index, in order.
+    blocks: Vec<(u64, Value)>,
+    /// Streamed tool input JSON by block index.
+    partial_json: HashMap<u64, String>,
+    stop_reason: Option<String>,
+    pub completed: bool,
+    pub error: Option<String>,
+}
+
+impl AnthropicStream {
+    fn block(&mut self, index: u64) -> Option<&mut Value> {
+        self.blocks.iter_mut().find(|(i, _)| *i == index).map(|(_, b)| b)
+    }
+
+    fn close_tool_input(&mut self, index: u64) {
+        let Some(raw) = self.partial_json.remove(&index) else { return };
+        let input = if raw.trim().is_empty() {
+            Some(json!({}))
+        } else {
+            serde_json::from_str::<Value>(&raw).ok().filter(Value::is_object)
+        };
+        if let Some(block) = self.block(index) {
+            match input {
+                Some(v) => block["input"] = v,
+                // Cut off mid-JSON (max_tokens): not a call we can run.
+                None => block["_incomplete"] = json!(true),
+            }
+        }
+    }
+
+    /// Feed one SSE `data:` payload. Returns a text delta to surface live.
+    pub fn feed(&mut self, payload: &str) -> Option<String> {
+        let v: Value = serde_json::from_str(payload).ok()?;
+        let index = v["index"].as_u64().unwrap_or(0);
+        match v["type"].as_str().unwrap_or("") {
+            "content_block_start" => {
+                let mut block = v["content_block"].clone();
+                if block["type"] == "tool_use" {
+                    self.partial_json.insert(index, String::new());
+                    if !block["input"].is_object() {
+                        block["input"] = json!({});
+                    }
+                }
+                self.blocks.push((index, block));
+                None
+            }
+            "content_block_delta" => {
+                let delta = &v["delta"];
+                let append = |block: &mut Value, key: &str, piece: &str| {
+                    let mut s = block[key].as_str().unwrap_or_default().to_string();
+                    s.push_str(piece);
+                    block[key] = json!(s);
+                };
+                match delta["type"].as_str().unwrap_or("") {
+                    "text_delta" => {
+                        let text = delta["text"].as_str()?.to_string();
+                        let block = self.block(index)?;
+                        append(block, "text", &text);
+                        Some(text)
+                    }
+                    "input_json_delta" => {
+                        let piece = delta["partial_json"].as_str().unwrap_or_default();
+                        self.partial_json.entry(index).or_default().push_str(piece);
+                        None
+                    }
+                    "thinking_delta" => {
+                        let piece = delta["thinking"].as_str().unwrap_or_default().to_string();
+                        append(self.block(index)?, "thinking", &piece);
+                        None
+                    }
+                    "signature_delta" => {
+                        let piece = delta["signature"].as_str().unwrap_or_default().to_string();
+                        append(self.block(index)?, "signature", &piece);
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            "content_block_stop" => {
+                self.close_tool_input(index);
+                None
+            }
+            "message_delta" => {
+                if let Some(r) = v["delta"]["stop_reason"].as_str() {
+                    self.stop_reason = Some(r.to_string());
+                }
+                None
+            }
+            "message_stop" => {
+                self.completed = true;
+                None
+            }
+            "error" => {
+                let msg = v.pointer("/error/message").and_then(Value::as_str).unwrap_or("stream error");
+                self.error = Some(msg.to_string());
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Close the stream into a [`crate::codex_oauth::ToolTurn`].
+    pub fn finish(mut self) -> anyhow::Result<crate::codex_oauth::ToolTurn> {
+        if let Some(err) = self.error.take() {
+            anyhow::bail!("Anthropic stream error: {err}");
+        }
+        let open: Vec<u64> = self.partial_json.keys().copied().collect();
+        for index in open {
+            self.close_tool_input(index);
+        }
+        // Dropped: cut-off tool calls, and empty text blocks, which the API
+        // rejects on replay. Empty *thinking* stays: its signature is the point.
+        let content: Vec<Value> = self
+            .blocks
+            .into_iter()
+            .map(|(_, b)| b)
+            .filter(|b| b.get("_incomplete").is_none())
+            .filter(|b| b["type"] != "text" || !b["text"].as_str().unwrap_or_default().is_empty())
+            .collect();
+        let text: String = content.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
+        let calls: Vec<crate::codex_oauth::FunctionCall> = content
+            .iter()
+            .filter(|b| b["type"] == "tool_use")
+            .map(|b| crate::codex_oauth::FunctionCall {
+                call_id: b["id"].as_str().unwrap_or_default().to_string(),
+                name: b["name"].as_str().unwrap_or_default().to_string(),
+                arguments: b["input"].to_string(),
+            })
+            .filter(|c| !c.call_id.is_empty() && !c.name.is_empty())
+            .collect();
+        if text.trim().is_empty() && calls.is_empty() {
+            anyhow::bail!(match self.stop_reason.as_deref() {
+                Some("refusal") => "Anthropic declined to answer that request".to_string(),
+                Some("max_tokens") => "Anthropic ran out of output tokens before answering".to_string(),
+                _ => "empty response from Anthropic stream".to_string(),
+            });
+        }
+        Ok(crate::codex_oauth::ToolTurn {
+            text,
+            calls,
+            replay: Some(json!({"provider": "anthropic", "content": content})),
+        })
+    }
 }
 
 /// Deterministic scripted brain: real tools, canned reasoning. It exists so
@@ -466,7 +829,7 @@ impl MockBrain {
                 std::thread::sleep(self.word_delay);
             }
         }
-        crate::codex_oauth::ToolTurn { text: text.into(), calls: vec![] }
+        crate::codex_oauth::ToolTurn { text: text.into(), ..Default::default() }
     }
 }
 
@@ -620,7 +983,11 @@ impl Brain for MockBrain {
         if calls.is_empty() {
             return Ok(self.say("Done.", on_delta));
         }
-        Ok(crate::codex_oauth::ToolTurn { text: String::new(), calls })
+        Ok(crate::codex_oauth::ToolTurn { calls, ..Default::default() })
+    }
+
+    fn provider(&self) -> &'static str {
+        "the mock assistant"
     }
 }
 
@@ -628,6 +995,8 @@ impl Brain for MockBrain {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrainKind {
     Codex,
+    OpenAi,
+    Anthropic,
     Mock,
 }
 
@@ -686,19 +1055,26 @@ pub fn mock_enabled() -> bool {
     matches!(std::env::var("AGORA_JARVIS_MOCK").ok().as_deref(), Some("1" | "true"))
 }
 
-/// Jarvis needs the instance's "AI answers" switch on (the same one Ask AI
-/// obeys) and ChatGPT connected (Codex OAuth tokens), whichever provider Ask
-/// AI uses; or the explicit mock flag.
-pub fn brain_kind(search: &crate::config::ResolvedSearchAi) -> Option<BrainKind> {
-    if mock_enabled() {
-        Some(BrainKind::Mock)
-    } else if !search.enabled {
-        None
-    } else if search.oauth_configured || search.access_token.is_some() {
-        Some(BrainKind::Codex)
-    } else {
-        None
+/// Jarvis runs when its own switch (Settings → Features → Jarvis) is on and
+/// the selected provider has its credential, whatever Ask AI is set to; or
+/// on the explicit mock flag, which overrides both for demos.
+pub fn brain_kind(jarvis: &crate::config::ResolvedJarvis) -> Option<BrainKind> {
+    brain_kind_with(jarvis, mock_enabled())
+}
+
+/// [`brain_kind`] with the mock flag passed in, so tests need no env.
+pub fn brain_kind_with(jarvis: &crate::config::ResolvedJarvis, mock: bool) -> Option<BrainKind> {
+    if mock {
+        return Some(BrainKind::Mock);
     }
+    if !jarvis.available() {
+        return None;
+    }
+    Some(match jarvis.provider.as_str() {
+        crate::config::JARVIS_PROVIDER_OPENAI => BrainKind::OpenAi,
+        crate::config::JARVIS_PROVIDER_ANTHROPIC => BrainKind::Anthropic,
+        _ => BrainKind::Codex,
+    })
 }
 
 pub fn user_allowed(user: &AuthedUser) -> bool {
@@ -1385,11 +1761,24 @@ pub fn run_turn(
         if !live {
             anyhow::bail!("client went away");
         }
+        let round_start = items.len();
         if !step.text.trim().is_empty() {
             answer = step.text.clone();
             items.push(json!({"type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": step.text}]}));
         }
+        // The provider's native round rides on its first item (text, or the
+        // first call pushed below), so a translating brain can replay it.
+        let mut replay = step.replay;
+        let mut attach = |items: &mut Vec<Value>| {
+            // Only take it once the item exists: with no text, it waits for the first call.
+            if let Some(first) = items.get_mut(round_start) {
+                if let Some(r) = replay.take() {
+                    first[crate::codex_oauth::REPLAY_KEY] = r;
+                }
+            }
+        };
+        attach(&mut items);
         if step.calls.is_empty() {
             return Ok((items, answer));
         }
@@ -1409,6 +1798,7 @@ pub fn run_turn(
                 out_s = format!("{} (truncated)", clip(&out_s, MAX_TOOL_OUTPUT_CHARS));
             }
             items.push(json!({"type": "function_call", "call_id": call.call_id, "name": call.name, "arguments": call.arguments}));
+            attach(&mut items);
             items.push(json!({"type": "function_call_output", "call_id": call.call_id, "output": out_s}));
         }
     }
@@ -1546,6 +1936,336 @@ mod tests {
         }
         assert!(!s.allow_transcribe("bob"), "transcriptions have their own, smaller budget");
         assert!(s.allow_transcribe("cy"));
+    }
+
+    fn resolved(enabled: bool, provider: &str, codex: bool, openai: bool, anthropic: bool) -> crate::config::ResolvedJarvis {
+        let m = |s: &str| (s.to_string(), crate::config::AiFieldSource::Default);
+        crate::config::ResolvedJarvis {
+            enabled,
+            provider: provider.into(),
+            model: "m".into(),
+            model_source: crate::config::AiFieldSource::Default,
+            models: crate::config::ResolvedSearchModels { anthropic: m("a"), openai: m("o"), codex: m("c") },
+            codex_ready: codex,
+            openai_api_key: openai.then(|| "sk".to_string()),
+            anthropic_api_key: anthropic.then(|| "ant".to_string()),
+        }
+    }
+
+    #[test]
+    fn brain_kind_follows_jarvis_switch_provider_and_its_credential() {
+        use crate::config::{JARVIS_PROVIDER_ANTHROPIC as A, JARVIS_PROVIDER_CODEX as C, JARVIS_PROVIDER_OPENAI as O};
+        assert_eq!(brain_kind_with(&resolved(true, C, true, false, false), false), Some(BrainKind::Codex));
+        assert_eq!(brain_kind_with(&resolved(true, O, false, true, false), false), Some(BrainKind::OpenAi));
+        assert_eq!(brain_kind_with(&resolved(true, A, false, false, true), false), Some(BrainKind::Anthropic));
+        // Another provider's credential does not count.
+        assert_eq!(brain_kind_with(&resolved(true, O, true, false, true), false), None);
+        assert_eq!(brain_kind_with(&resolved(true, A, true, true, false), false), None);
+        assert_eq!(brain_kind_with(&resolved(true, C, false, true, true), false), None);
+        // Off means off, credentials or not.
+        for p in [C, O, A] {
+            assert_eq!(brain_kind_with(&resolved(false, p, true, true, true), false), None);
+            // The mock flag overrides both, for demos.
+            assert_eq!(brain_kind_with(&resolved(false, p, false, false, false), true), Some(BrainKind::Mock));
+        }
+    }
+
+    fn tools_fixture() -> Vec<Value> {
+        vec![tool("read_channel", "Read a channel.", json!({"channel": {"type": "string"}}), &["channel"])]
+    }
+
+    #[test]
+    fn openai_request_body_is_the_codex_shape_with_an_output_cap() {
+        let input = vec![user_item("hi"),
+            json!({"type": "function_call", "call_id": "c1", "name": "read_channel", "arguments": "{}",
+                "_replay": {"provider": "anthropic", "content": []}})];
+        let body = openai_request_body("gpt-4.1-mini", "be brief", &input, &tools_fixture());
+        assert_eq!(body["model"], "gpt-4.1-mini");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["instructions"], "be brief");
+        assert_eq!(body["max_output_tokens"], OPENAI_MAX_OUTPUT_TOKENS);
+        assert_eq!(body["tool_choice"], "auto");
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["parameters"]["required"][0], "channel");
+        assert!(body["input"][1].get("_replay").is_none(), "Agora-private keys never leave");
+    }
+
+    #[test]
+    fn anthropic_request_body_uses_system_input_schema_and_one_call_per_round() {
+        let body = anthropic_request_body("claude-sonnet-5", INSTRUCTIONS, &[user_item("catch me up")], &tools_fixture());
+        assert_eq!(body["model"], "claude-sonnet-5");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], ANTHROPIC_MAX_TOKENS);
+        assert_eq!(body["system"], INSTRUCTIONS);
+        assert_eq!(body["messages"], json!([{"role": "user", "content": [{"type": "text", "text": "catch me up"}]}]));
+        let t = &body["tools"][0];
+        assert_eq!(t["name"], "read_channel");
+        assert_eq!(t["description"], "Read a channel.");
+        assert_eq!(t["input_schema"]["type"], "object");
+        assert_eq!(t["input_schema"]["properties"]["channel"]["type"], "string");
+        assert!(t.get("parameters").is_none() && t.get("strict").is_none() && t.get("type").is_none());
+        assert_eq!(body["tool_choice"], json!({"type": "auto", "disable_parallel_tool_use": true}));
+        // All the real tools translate.
+        let all = anthropic_tools(&tool_specs());
+        assert_eq!(all.len(), tool_specs().len());
+        assert!(all.iter().all(|t| t["input_schema"]["type"] == "object"));
+        let bare = anthropic_request_body("m", "i", &[user_item("x")], &[]);
+        assert!(bare.get("tools").is_none() && bare.get("tool_choice").is_none());
+    }
+
+    fn assistant_item(text: &str) -> Value {
+        json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]})
+    }
+    fn call_item(id: &str, name: &str, args: &str) -> Value {
+        json!({"type": "function_call", "call_id": id, "name": name, "arguments": args})
+    }
+    fn output_item(id: &str, out: &str) -> Value {
+        json!({"type": "function_call_output", "call_id": id, "output": out})
+    }
+
+    #[test]
+    fn anthropic_translation_maps_turns_tools_and_merges_roles() {
+        let input = vec![
+            // A prior turn.
+            user_item("what's new"),
+            call_item("c0", "get_unreads", ""),
+            output_item("c0", "{\"items\":[]}"),
+            assistant_item("All caught up."),
+            // This turn: text before a call, two calls each with its result
+            // (as run_turn records them), then two calls answered together.
+            user_item("tell helper in general to rerun"),
+            assistant_item("Let me find them."),
+            call_item("c1", "resolve_target", "{\"name\":\"helper\",\"kind\":\"agent\"}"),
+            output_item("c1", "{\"candidates\":[]}"),
+            call_item("c2", "resolve_target", "{\"name\":\"general\",\"kind\":\"channel\"}"),
+            output_item("c2", "{\"candidates\":[]}"),
+            call_item("c3", "list_agents", "{}"),
+            call_item("c4", "list_groups_channels", "not json"),
+            output_item("c3", "{\"agents\":[]}"),
+            output_item("c4", "{\"groups\":[]}"),
+        ];
+        let m = anthropic_messages(&input);
+        let roles: Vec<&str> = m.iter().map(|x| x["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant", "user"]);
+        // Prior turn: empty args became {}, the result is a tool_result, and
+        // the closing text is its own assistant message.
+        assert_eq!(m[1]["content"], json!([{"type": "tool_use", "id": "c0", "name": "get_unreads", "input": {}}]));
+        assert_eq!(m[2]["content"][0], json!({"type": "tool_result", "tool_use_id": "c0", "content": "{\"items\":[]}"}));
+        assert_eq!(m[3]["content"], json!([{"type": "text", "text": "All caught up."}]));
+        // The new user text follows a plain assistant turn.
+        assert_eq!(m[4]["content"], json!([{"type": "text", "text": "tell helper in general to rerun"}]));
+        // Text and the first call share one assistant turn.
+        assert_eq!(m[5]["content"][0], json!({"type": "text", "text": "Let me find them."}));
+        assert_eq!(m[5]["content"][1]["id"], "c1");
+        assert_eq!(m[5]["content"][1]["input"], json!({"name": "helper", "kind": "agent"}));
+        assert_eq!(m[6]["content"][0]["tool_use_id"], "c1");
+        assert_eq!(m[7]["content"], json!([{"type": "tool_use", "id": "c2", "name": "resolve_target",
+            "input": {"name": "general", "kind": "channel"}}]));
+        assert_eq!(m[8]["content"][0]["tool_use_id"], "c2");
+        // Consecutive calls merge into one assistant turn, their results into
+        // one user turn in call order; unparseable args become {}.
+        let calls = m[9]["content"].as_array().unwrap();
+        assert_eq!(calls.iter().map(|b| b["id"].as_str().unwrap()).collect::<Vec<_>>(), ["c3", "c4"]);
+        assert_eq!(calls[1]["input"], json!({}));
+        let results = m[10]["content"].as_array().unwrap();
+        assert_eq!(results.iter().map(|b| b["tool_use_id"].as_str().unwrap()).collect::<Vec<_>>(), ["c3", "c4"]);
+        assert!(results.iter().all(|b| b["type"] == "tool_result"));
+    }
+
+    #[test]
+    fn anthropic_translation_replays_native_rounds_verbatim() {
+        let native = json!([
+            {"type": "thinking", "thinking": "", "signature": "sig-abc"},
+            {"type": "text", "text": "Checking."},
+            {"type": "tool_use", "id": "toolu_1", "name": "get_unreads", "input": {"limit": 5}},
+        ]);
+        let mut carrier = assistant_item("Checking.");
+        carrier["_replay"] = json!({"provider": "anthropic", "content": native});
+        let input = vec![
+            user_item("catch me up"),
+            carrier,
+            call_item("toolu_1", "get_unreads", "{\"limit\":5}"),
+            output_item("toolu_1", "{}"),
+        ];
+        let m = anthropic_messages(&input);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m[1]["role"], "assistant");
+        assert_eq!(m[1]["content"], native, "signed thinking survives; the call is not duplicated");
+        assert_eq!(m[2]["content"][0]["tool_use_id"], "toolu_1");
+        // A replay from another provider is ignored, and the plain items translate.
+        let mut foreign = call_item("c9", "list_agents", "{}");
+        foreign["_replay"] = json!({"provider": "other", "content": [{"type": "x"}]});
+        let m = anthropic_messages(&[user_item("hi"), foreign, output_item("c9", "{}")]);
+        assert_eq!(m[1]["content"][0]["type"], "tool_use");
+    }
+
+    fn feed_anthropic(body: &str) -> (AnthropicStream, String) {
+        let mut lines = crate::codex_oauth::SseLineBuffer::default();
+        let mut acc = AnthropicStream::default();
+        let mut live = String::new();
+        for line in body.split('\n') {
+            if let Some(p) = lines.line(line) {
+                if let Some(d) = acc.feed(&p) {
+                    live.push_str(&d);
+                }
+            }
+        }
+        if let Some(p) = lines.flush() {
+            acc.feed(&p);
+        }
+        (acc, live)
+    }
+
+    #[test]
+    fn anthropic_stream_streams_text_live() {
+        let body = "\
+event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: ping\n\
+data: {\"type\":\"ping\"}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Two threads \"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"need you.\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\",\"index\":0}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":7}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\
+\n";
+        let (acc, live) = feed_anthropic(body);
+        assert_eq!(live, "Two threads need you.");
+        assert!(acc.completed);
+        let turn = acc.finish().unwrap();
+        assert_eq!(turn.text, "Two threads need you.");
+        assert!(turn.calls.is_empty());
+        assert_eq!(turn.replay.unwrap()["content"], json!([{"type": "text", "text": "Two threads need you."}]));
+    }
+
+    #[test]
+    fn anthropic_stream_assembles_chunked_tool_input_and_keeps_signed_thinking() {
+        let body = "\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"content\":[]}}\n\
+\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\
+\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQBCg\"}}\n\
+\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"==\"}}\n\
+\n\
+data: {\"type\":\"content_block_stop\",\"index\":0}\n\
+\n\
+data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"read_channel\",\"input\":{}}}\n\
+\n\
+data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\"}}\n\
+\n\
+data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"chan\"}}\n\
+\n\
+data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"nel\\\": \\\"general\\\"}\"}}\n\
+\n\
+data: {\"type\":\"content_block_stop\",\"index\":1}\n\
+\n\
+data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_02\",\"name\":\"get_unreads\",\"input\":{}}}\n\
+\n\
+data: {\"type\":\"content_block_stop\",\"index\":2}\n\
+\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\
+\n\
+data: {\"type\":\"message_stop\"}\n\
+\n";
+        let (acc, live) = feed_anthropic(body);
+        assert!(live.is_empty());
+        let turn = acc.finish().unwrap();
+        assert!(turn.text.is_empty());
+        assert_eq!(turn.calls.len(), 2);
+        assert_eq!(turn.calls[0].call_id, "toolu_01");
+        assert_eq!(turn.calls[0].name, "read_channel");
+        assert_eq!(serde_json::from_str::<Value>(&turn.calls[0].arguments).unwrap(), json!({"channel": "general"}));
+        assert_eq!(turn.calls[1].arguments, "{}", "no input deltas means empty args");
+        let content = turn.replay.unwrap()["content"].clone();
+        assert_eq!(content[0], json!({"type": "thinking", "thinking": "", "signature": "EqQBCg=="}));
+        assert_eq!(content[1]["input"], json!({"channel": "general"}));
+        assert_eq!(content.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn anthropic_stream_surfaces_errors_and_drops_cut_off_calls() {
+        let body = "\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_3\",\"content\":[]}}\n\
+\n\
+event: error\n\
+data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\
+\n";
+        let err = feed_anthropic(body).0.finish().unwrap_err().to_string();
+        assert!(err.contains("Overloaded"), "{err}");
+        // max_tokens mid-JSON: the half call is dropped, not run with junk.
+        let cut = "\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_9\",\"name\":\"search_messages\",\"input\":{}}}\n\
+\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\": \\\"dep\"}}\n\
+\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\
+\n\
+data: {\"type\":\"message_stop\"}\n\
+\n";
+        let err = feed_anthropic(cut).0.finish().unwrap_err().to_string();
+        assert!(err.contains("ran out of output tokens"), "{err}");
+        let refused = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n";
+        assert!(feed_anthropic(refused).0.finish().unwrap_err().to_string().contains("declined"));
+    }
+
+    /// Opt-in live spikes against the real OpenAI and Anthropic APIs. Never
+    /// run in CI (`#[ignore]`) and need a key in the env; they print only call
+    /// names and sizes, never the key:
+    ///
+    /// `OPENAI_API_KEY=… cargo test -p agora-core live_openai_jarvis_spike -- --ignored --nocapture`
+    /// `ANTHROPIC_API_KEY=… cargo test -p agora-core live_anthropic_jarvis_spike -- --ignored --nocapture`
+    fn live_spike(brain: &mut dyn Brain) {
+        let tools = vec![tool("get_weather", "Current weather for a city.",
+            json!({"city": {"type": "string"}}), &["city"])];
+        let mut input = vec![user_item("What's the weather in Paris? Use the tool.")];
+        let first = brain.step("You are terse. Always use tools when relevant.", &input, &tools, &mut |_| {})
+            .expect("first round failed");
+        eprintln!("round1: calls={:?} text_chars={}", first.calls.iter().map(|c| (&c.name, &c.arguments)).collect::<Vec<_>>(), first.text.len());
+        let call = first.calls.first().expect("no tool call").clone();
+        let mut fc = json!({"type": "function_call", "call_id": call.call_id, "name": call.name, "arguments": call.arguments});
+        if let Some(r) = first.replay {
+            fc[crate::codex_oauth::REPLAY_KEY] = r;
+        }
+        input.push(fc);
+        input.push(json!({"type": "function_call_output", "call_id": call.call_id, "output": "{\"temp_c\":18,\"sky\":\"clear\"}"}));
+        let second = brain.step("You are terse. Always use tools when relevant.", &input, &tools, &mut |_| {})
+            .expect("tool result follow-up rejected");
+        eprintln!("round2: calls={} text={:?}", second.calls.len(), second.text);
+        assert!(!second.text.trim().is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn live_openai_jarvis_spike() {
+        let Ok(api_key) = std::env::var("OPENAI_API_KEY") else { return eprintln!("skipped: OPENAI_API_KEY not set") };
+        let model = std::env::var("AGORA_OPENAI_MODEL").unwrap_or_else(|_| crate::ai::DEFAULT_OPENAI_SEARCH_MODEL.into());
+        live_spike(&mut OpenAiBrain { api_key, model });
+    }
+
+    #[test]
+    #[ignore]
+    fn live_anthropic_jarvis_spike() {
+        let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") else { return eprintln!("skipped: ANTHROPIC_API_KEY not set") };
+        let model = std::env::var("AGORA_ANTHROPIC_MODEL").unwrap_or_else(|_| crate::config::DEFAULT_SEARCH_MODEL.into());
+        live_spike(&mut AnthropicBrain { api_key, model });
     }
 
     #[test]

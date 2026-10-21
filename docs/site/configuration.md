@@ -68,3 +68,23 @@ Ask AI **providers** (set in the UI Features tab):
 | `codex` | **Codex OAuth** via PKCE — **Authorize Codex** in Credentials (loopback on desktop/localhost; paste the redirected URL when hosted). Model list is fetched live from the Codex catalog when linked. |
 
 Models are chosen per provider in the Features tab. If a call fails (bad key, expired OAuth, unknown model), Ask AI / voice returns an explicit error naming the provider and model.
+
+### Jarvis mode
+
+The assistant panel (⌘J / Ctrl+J) has its own **Jarvis** section in the
+Features tab: an Enabled switch (independent of Ask AI's; on by default),
+a provider, and a model per provider. It stores no secrets of its own: each
+provider uses the credential the Credentials tab already holds, including
+the env fallbacks above.
+
+| Provider | Credential | Default model |
+| --- | --- | --- |
+| `codex` (default) | the ChatGPT / Codex OAuth sign-in | the Codex default |
+| `openai` | the OpenAI API key shared with voice (config or `OPENAI_API_KEY`) | Ask AI's OpenAI default |
+| `anthropic` | the Anthropic API key Ask AI uses (config or `ANTHROPIC_API_KEY`) | Ask AI's Anthropic default |
+
+Jarvis is offered only when it is switched on **and** the selected provider
+has its credential; the section says so and links to Credentials when it is
+missing. Listening and spoken replies use the Voice settings, whichever
+provider answers. Stored under `ai.jarvis` in `config.json`; configs from
+before this setting load as enabled on `codex`.
