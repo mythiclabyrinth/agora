@@ -280,7 +280,9 @@ export const Briefing: Story = {
     const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
     const card = within(panel.getByTestId("jarvis-digest"));
     expect(card.getAllByRole("listitem")).toHaveLength(2);
+    const releaseRow = card.getByRole("button", { name: "Open thread: #release, Friday launch, needs your attention" });
     await userEvent.click(card.getByRole("button", { name: "Needs you 2" }));
+    expect(card.getByRole("button", { name: "Open thread: #release, Friday launch, needs your attention" })).toBe(releaseRow);
     expect(card.getAllByRole("listitem")).toHaveLength(2);
     expect(card.queryByText("#infra")).toBeNull();
     await userEvent.click(card.getByRole("button", { name: "All activity" }));
@@ -361,5 +363,136 @@ export const EarlierResults: Story = {
     expect(briefings[1]).toBeVisible();
     await userEvent.click(within(panel.getByTestId("jarvis-draft")).getByRole("button", { name: "Edit" }));
     expect(panel.getByLabelText("Draft message")).not.toHaveAttribute("readonly");
+  },
+};
+
+const discardDraft = fn(() => ({ ok: true, cancelled: true }));
+
+export const DiscardDraft: Story = {
+  parameters: {
+    ...Draft.parameters,
+    apiRoutes: { "GET /api/me": jarvisMe, "DELETE /api/jarvis/drafts/jd_story": discardDraft },
+  },
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
+    const card = panel.getByTestId("jarvis-draft");
+    expect(card.closest(".jv-cards")).toHaveAttribute("aria-live", "polite");
+    expect(within(card).getByText(/Expires in/)).toHaveAttribute("aria-live", "off");
+    expect(panel.queryByRole("button", { name: "Dismiss card" })).toBeNull();
+    const discard = within(card).getByRole("button", { name: "Discard draft" });
+    discard.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(discardDraft).toHaveBeenCalled());
+    expect(panel.queryByTestId("jarvis-draft")).toBeNull();
+    expect(useJarvis.getState().cards).toHaveLength(0);
+    expect(panel.getByLabelText("Ask Agora")).toHaveFocus();
+  },
+};
+
+export const DraftExpiring: Story = {
+  parameters: {
+    appearance: "dark",
+    setup: () => open({ ...briefingState, cards: [{ ...entry("expiring", draft), expiresAt: Date.now() + 19000 }] })(),
+  },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-draft"));
+    expect(card.getByText(/Expires in/)).toHaveClass("is-soon");
+    expect(card.getByRole("button", { name: "Send" })).toBeEnabled();
+    await userEvent.click(card.getByRole("button", { name: "Edit" }));
+    expect(card.getByLabelText("Draft message")).toHaveFocus();
+    expect(card.getByLabelText("Draft message")).not.toHaveAttribute("readonly");
+  },
+};
+
+export const DraftExpired: Story = {
+  parameters: {
+    setup: () => open({ ...briefingState, cards: [{ ...entry("expired", draft), expiresAt: Date.now() - 1000 }] })(),
+  },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-draft"));
+    await expect(card.findByText("Expired")).resolves.toBeVisible();
+    expect(card.queryByRole("button", { name: "Send" })).toBeNull();
+    expect(card.getByText("Nothing was sent. Ask Agora for a fresh draft.")).toBeVisible();
+  },
+};
+
+export const DraftSending: Story = {
+  parameters: { setup: open({ ...briefingState, cards: [{ ...entry("sending", draft), status: "sending" }] }) },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-draft"));
+    expect(card.getByRole("button", { name: "Sending…" })).toBeDisabled();
+    expect(card.getByRole("button", { name: "Discard draft" })).toBeDisabled();
+    expect(card.getByRole("button", { name: "Edit" })).toBeDisabled();
+  },
+};
+
+export const DraftSent: Story = {
+  parameters: { appearance: "light", setup: open({ ...briefingState, cards: [{ ...entry("sent", draft), status: "sent" }] }) },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-draft"));
+    expect(card.getByText("Sent")).toBeVisible();
+    expect(card.queryByRole("button", { name: "Send" })).toBeNull();
+    await userEvent.click(card.getByRole("button", { name: "Open conversation" }));
+    expect(useUiState.getState().sel.c).toBe("general");
+  },
+};
+
+const matches: JarvisCard = {
+  kind: "messages", title: "The release decision",
+  messages: [
+    { id: 401, channel_id: "general", channel_name: "release", group_id: "product", group_name: "Product", thread_id: 101, author: "Priya", text: "Staging checks are green. Tom, can you approve the 25% rollout before we move ahead?", ts: 0 },
+    { id: 402, channel_id: "general", channel_name: "release", group_id: "product", group_name: "Product", thread_id: 101, author: "Marco", text: "The rollback is ready. I will watch error rates during the first hour.", ts: 0 },
+  ],
+};
+
+export const SearchResults: Story = {
+  parameters: { appearance: "dark", setup: open({ ...briefingState, cards: [entry("matches", matches)] }) },
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
+    expect(panel.getByRole("heading", { name: "The release decision" })).toBeVisible();
+    const hit = panel.getByRole("button", { name: /Priya.*Staging checks/ });
+    hit.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(useUiState.getState().threadRoot).toBe(101);
+  },
+};
+
+export const MixedWorkspaceResults: Story = {
+  parameters: { appearance: "dark", setup: open({ ...briefingState, cards: [entry("briefing", briefing), entry("draft", draft), entry("search", matches)] }) },
+  play: async ({ canvasElement }) => {
+    const dialog = await within(canvasElement).findByRole("dialog", { name: "Agora assistant" });
+    const panel = within(dialog);
+    expect(panel.getByText("2 results")).toBeVisible();
+    expect(dialog.querySelectorAll('[aria-live="polite"].jv-cards')).toHaveLength(1);
+    const earlier = dialog.querySelector(".jv-previous-results .jv-cards");
+    expect(earlier).not.toHaveAttribute("aria-live");
+    await userEvent.click(panel.getByText("Earlier results"));
+    expect(panel.getByRole("heading", { name: "The release decision" })).toBeVisible();
+  },
+};
+
+export const EmptyBriefing: Story = {
+  parameters: { setup: open({ ...briefingState, cards: [entry("empty", { kind: "digest", items: [] })] }) },
+};
+
+const undoDraft = fn(() => ({ ok: true }));
+export const DraftUndo: Story = {
+  parameters: {
+    ...Draft.parameters,
+    apiRoutes: {
+      "GET /api/me": jarvisMe,
+      "POST /api/jarvis/drafts/jd_story/send": sendDraft,
+      "DELETE /api/channels/general/messages/9001": undoDraft,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = within(await canvas.findByTestId("jarvis-draft"));
+    await userEvent.click(card.getByRole("button", { name: "Send" }));
+    await expect(card.findByText("Sent")).resolves.toBeVisible();
+    await userEvent.click(await canvas.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(undoDraft).toHaveBeenCalled());
+    expect(card.getByText("This draft is closed. It cannot be sent again.")).toBeVisible();
+    expect(card.queryByRole("button", { name: "Send" })).toBeNull();
   },
 };

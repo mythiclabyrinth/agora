@@ -9987,6 +9987,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn jarvis_maximal_draft_with_mentions_is_still_sendable() {
+        let f = jarvis_fixture();
+        let long = "x".repeat(MAX_MESSAGE_CHARS + 500);
+        let (out, _) = make_draft(&f, "bob", json!({"channel_id": f.team, "text": long, "mentions": ["helper"]}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        let sent = send_draft(&f.state, &id, "bob", None).await.expect("a clipped draft fits after the mention prefix").0;
+        let text = sent["message"]["text"].as_str().unwrap();
+        assert!(text.starts_with("@helper ") && text.chars().count() <= MAX_MESSAGE_CHARS, "{}", text.chars().count());
+    }
+
+    #[tokio::test]
     async fn jarvis_rejected_send_keeps_the_draft_sendable() {
         let f = jarvis_fixture();
         let (out, _) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "short"}));

@@ -1202,12 +1202,16 @@ impl ToolCtx<'_> {
                 return Err(format!("Unknown agent or user “{raw}”. Use resolve_target to find their id."));
             }
         }
+        // Leave room for the @handles final_text may prefix (and clip's
+        // ellipsis), so even a maximal draft stays sendable.
+        let prefix: usize = mentions.iter().map(|m| m.handle.chars().count() + 2).sum();
+        let budget = crate::server::MAX_MESSAGE_CHARS.saturating_sub(prefix + 1).max(1);
         let draft = self.state.jarvis.create_draft(Draft {
             id: String::new(),
             username: self.user.username.clone(),
             channel_id: cid.to_string(),
             thread_id,
-            text: clip(&text, crate::server::MAX_MESSAGE_CHARS),
+            text: clip(&text, budget),
             mentions,
             expires: Instant::now() + DRAFT_TTL,
         });

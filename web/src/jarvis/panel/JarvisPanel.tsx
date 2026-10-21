@@ -19,6 +19,7 @@ import {
 } from "../voice/conversation";
 import { JarvisCardView } from "./JarvisCards";
 import { jarvisLevel } from "./level";
+import { splitCards, splitTurn } from "./derive";
 import { orbLook, phaseLabel } from "./orbState";
 import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
 
@@ -94,9 +95,7 @@ function OpenPanel() {
   const rootRef = useRef<HTMLDivElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const followAnswer = useRef(true);
-  const latestTurnStart = Math.max(0, s.log.reduce((last, item, i) => item.role === "user" ? i : last, 0));
-  const currentLog = s.log.slice(latestTurnStart);
-  const history = s.log.slice(0, latestTurnStart);
+  const { history, current: currentLog } = splitTurn(s.log);
   const currentTurnId = currentLog[0]?.id;
   const stt = me?.jarvis_stt === true;
   const tts = me?.jarvis_tts === true;
@@ -193,9 +192,7 @@ function OpenPanel() {
   const lastId = s.log.at(-1)?.id;
   const hasConversation = s.log.length > 0;
   // Keep actionable drafts visible even when a later result arrives.
-  const primaryCards = s.cards.filter((entry, i) => i === 0 ||
-    (entry.card.kind === "draft" && (!entry.status || entry.status === "pending" || entry.status === "sending")));
-  const earlierCards = s.cards.filter(entry => !primaryCards.includes(entry));
+  const { primary: primaryCards, earlier: earlierCards } = splitCards(s.cards);
   const voiceHint = liveActive ? "Live voice is using the microphone"
     : s.micMuted ? (s.enabled ? "Conversation muted · wake word stays on" : "Conversation muted · type to continue")
     : !stt ? "Voice input is unavailable · type to continue"
@@ -246,7 +243,6 @@ function OpenPanel() {
             aria-live="polite" aria-busy={s.busy} data-testid="jarvis-log"
             onWheel={() => { followAnswer.current = false; }}
             onTouchMove={() => { followAnswer.current = false; }}
-            onPointerDown={() => { followAnswer.current = false; }}
             onKeyDown={e => {
               if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home"].includes(e.key)) followAnswer.current = false;
               if (e.key === "End") followAnswer.current = true;
@@ -268,8 +264,8 @@ function OpenPanel() {
           </div>}
         </div>
         {s.cards.length > 0 && <section className="jv-results" aria-label="Conversation details">
-          <div className="jv-section-label"><span>From your workspace</span>{s.cards.length > 1 && <span>{s.cards.length} results</span>}</div>
-          <div className="jv-cards">
+          <div className="jv-section-label"><span>From your workspace</span>{primaryCards.length > 1 && <span>{primaryCards.length} results</span>}</div>
+          <div className="jv-cards" aria-live="polite">
             {primaryCards.map(entry => <JarvisCardView key={entry.id} entry={entry} />)}
           </div>
           {earlierCards.length > 0 && <details className="jv-previous-results"><summary>Earlier results <span>{earlierCards.length}</span><Icon name="chevron-down" /></summary>
