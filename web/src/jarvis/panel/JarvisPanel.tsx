@@ -20,20 +20,42 @@ import {
 import { JarvisCardView } from "./JarvisCards";
 import { jarvisLevel } from "./level";
 import { orbLook, phaseLabel } from "./orbState";
+import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
 
 export { jarvisLevel };
 
-function usePrefersReducedMotion(): boolean {
-  const query = "(prefers-reduced-motion: reduce)";
-  const [reduced, setReduced] = useState(() => typeof matchMedia === "function" && matchMedia(query).matches);
+/** One audio sample per frame goes directly to the halo, without rerendering
+    the transcript. The animation stops when hidden, idle, or reduced-motion. */
+function Presence({ phase, theme, reduced }: {
+  phase: ReturnType<typeof useJarvis.getState>["phase"];
+  theme: "dark" | "light";
+  reduced: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const active = ["listening", "recording", "speaking"].includes(phase);
   useEffect(() => {
-    if (typeof matchMedia !== "function") return;
-    const mq = matchMedia(query);
-    const on = () => setReduced(mq.matches);
-    mq.addEventListener("change", on);
-    return () => mq.removeEventListener("change", on);
-  }, []);
-  return reduced;
+    if (reduced || !active) { ref.current?.style.removeProperty("--jv-level"); return; }
+    let frame = 0;
+    let last = 0;
+    const paint = (now: number) => {
+      if (now - last > 32 && !document.hidden) {
+        ref.current?.style.setProperty("--jv-level", String(Math.max(0, Math.min(1, jarvisLevel.get()))));
+        last = now;
+      }
+      frame = requestAnimationFrame(paint);
+    };
+    frame = requestAnimationFrame(paint);
+    return () => cancelAnimationFrame(frame);
+  }, [active, reduced]);
+  const look = orbLook(phase);
+  return <div className="jv-presence" ref={ref} aria-hidden="true">
+    <div className="jv-aura" />
+    <div className="jv-orbit" />
+    <div className="jv-orb">
+      <ThinkingOrb state={look.state} size={64} paused={look.paused || reduced} theme={theme} />
+    </div>
+    <span className="jv-orbit-point" />
+  </div>;
 }
 
 export function JarvisPanel() {
@@ -71,6 +93,11 @@ function OpenPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const followAnswer = useRef(true);
+  const latestTurnStart = Math.max(0, s.log.reduce((last, item, i) => item.role === "user" ? i : last, 0));
+  const currentLog = s.log.slice(latestTurnStart);
+  const history = s.log.slice(0, latestTurnStart);
+  const currentTurnId = currentLog[0]?.id;
   const stt = me?.jarvis_stt === true;
   const tts = me?.jarvis_tts === true;
 
@@ -104,12 +131,27 @@ function OpenPanel() {
   useEffect(() => { if (s.speakerOff) silenceSpeech(); }, [s.speakerOff]);
 
   useEffect(() => {
+    // Reopening a completed exchange starts at its beginning. Only a new,
+    // active turn follows the text; scrolling back pauses automatic following.
+    followAnswer.current = useJarvis.getState().busy || useJarvis.getState().phase === "speaking";
+  }, [currentTurnId]);
+  useEffect(() => {
     const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && followAnswer.current) el.scrollTop = el.scrollHeight;
   }, [s.log]);
+  useEffect(() => {
+    const el = logRef.current;
+    const mark = el?.querySelector(".jv-spoken");
+    if (!el || !mark || !followAnswer.current) return;
+    const line = mark.getBoundingClientRect();
+    const viewport = el.getBoundingClientRect();
+    if (line.top < viewport.top) el.scrollTop += line.top - viewport.top;
+    else if (line.bottom > viewport.bottom) el.scrollTop += line.bottom - viewport.bottom;
+  }, [s.spoken]);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    const previousFocus = document.activeElement;
+    inputRef.current?.focus({ preventScroll: true });
     // Capture phase so Esc closes the panel before the app's own Esc
     // shortcuts (mark read, close thread) see it.
     const onKey = (event: KeyboardEvent) => {
@@ -121,7 +163,10 @@ function OpenPanel() {
       useJarvis.getState().close();
     };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus({ preventScroll: true });
+    };
   }, []);
 
   const submit = (event: FormEvent) => {
@@ -132,10 +177,9 @@ function OpenPanel() {
     void runTurn(ask);
   };
 
-  const look = orbLook(s.phase);
   const listening = s.phase === "listening" || s.phase === "recording";
   const status = s.error ? s.error
-    : s.label || (s.phase === "listening" ? "Listening — just talk" : phaseLabel(s.phase));
+    : s.label || (s.phase === "listening" ? "Listening — just talk" : s.phase === "armed" && s.log.length > 0 ? "Ready when you are" : phaseLabel(s.phase));
   const admin = me?.instance_admin === true;
   const micTitle = !stt
     ? (admin ? "Voice input isn't set up — add a speech-to-text key in Settings → AI. Type instead."
@@ -147,62 +191,122 @@ function OpenPanel() {
       : "Spoken replies aren't set up on this server — text only.")
     : s.speakerOff ? "Speaker off — replies are text only" : "Speaker on — replies are spoken (click for text only)";
   const lastId = s.log.at(-1)?.id;
+  const hasConversation = s.log.length > 0;
+  // Keep actionable drafts visible even when a later result arrives.
+  const primaryCards = s.cards.filter((entry, i) => i === 0 ||
+    (entry.card.kind === "draft" && (!entry.status || entry.status === "pending" || entry.status === "sending")));
+  const earlierCards = s.cards.filter(entry => !primaryCards.includes(entry));
+  const voiceHint = liveActive ? "Live voice is using the microphone"
+    : s.micMuted ? (s.enabled ? "Conversation muted · wake word stays on" : "Conversation muted · type to continue")
+    : !stt ? "Voice input is unavailable · type to continue"
+    : s.phase === "speaking" && !s.speakerOff ? "You can speak to interrupt"
+    : listening ? "I'm listening. Take your time."
+    : s.enabled ? "Say “Hey Jarvis” to continue" : "Type a message, or turn on Jarvis mode";
+  const choosePrompt = (prompt: string) => {
+    setText(prompt);
+    inputRef.current?.focus({ preventScroll: true });
+  };
   const panel = (
-    <div className={`jv-panel phase-${s.phase}`} ref={rootRef} role="dialog" aria-label="Agora assistant" data-testid="jarvis-panel">
-      {s.cards.length > 0 && (
-        <div className="jv-cards" aria-live="polite">
-          {s.cards.map(entry => <JarvisCardView key={entry.id} entry={entry} />)}
+    <div className={`jv-panel phase-${s.phase}${hasConversation ? " has-conversation" : ""}`}
+      ref={rootRef} role="dialog" aria-label="Agora assistant" data-testid="jarvis-panel">
+      <header className="jv-header">
+        <div className="jv-identity"><span className="jv-brand-mark"><Icon name="sparkles" /></span>
+          <span className="jv-brand">Agora<span className="jv-eyebrow">Your workspace assistant</span></span>
         </div>
-      )}
-      <div className="jv-main">
-        <div className="jv-orb" aria-hidden="true">
-          <ThinkingOrb state={look.state} size={64} paused={look.paused || reduced} theme={theme} />
+        <div className="jv-head-actions">
+          {(s.conversationId || s.cards.length > 0 || hasConversation) && (
+            <button type="button" className="jv-new" title="Start a new conversation" onClick={() => newConversation(api)}>
+              <Icon name="plus" /><span>New</span>
+            </button>
+          )}
+          <button className="jv-close" aria-label="Close assistant (Esc)" title="Close assistant · Esc"
+            onClick={() => useJarvis.getState().close()}><Icon name="x" /></button>
         </div>
-        <div className="jv-copy">
-          <div className={`jv-status${s.error ? " is-error" : ""}`} aria-live="polite" data-testid="jarvis-status">{status}</div>
-          <div className="jv-log" ref={logRef} aria-live="polite" data-testid="jarvis-log">
-            {s.log.length === 0 && (
-              <div className="jv-hint">{stt && !s.micMuted
-                ? "Say “catch me up” or “tell Claude in #release to rerun the deploy”."
-                : "Try “catch me up” or “tell Claude in #release to rerun the deploy”."}</div>
-            )}
-            {s.log.map(entry => (
+      </header>
+      <div className="jv-body">
+        <section className="jv-stage" aria-label="Assistant activity">
+          <Presence phase={s.phase} theme={theme} reduced={reduced} />
+          <div className={`jv-status${s.error ? " is-error" : ""}`} role="status" data-testid="jarvis-status">
+            <span className="jv-status-dot" aria-hidden="true" />{status}
+          </div>
+          {!hasConversation && !s.error && <>
+            <h2 className="jv-greeting">{listening ? "Go ahead. I'm here." : "Let's pick up the thread."}</h2>
+            <p className="jv-hint">Catch up, find an answer, or put a thought into words.</p>
+          </>}
+          {s.busy && !currentLog.some(e => e.role === "assistant" && e.text) && (
+            <div className="jv-progress" aria-hidden="true"><span /><span /><span /></div>
+          )}
+        </section>
+        <div className="jv-conversation">
+          {history.length > 0 && <details className="jv-history" key={currentTurnId}>
+            <summary><Icon name="messages-square" /> Earlier in this conversation <span>{history.filter(e => e.role === "user").length}</span><Icon name="chevron-down" /></summary>
+            <div className="jv-history-log">{history.map(entry => <LogLine key={entry.id} entry={entry} spoken={null} streaming={false} />)}</div>
+          </details>}
+          <div className="jv-log" ref={logRef} role="log" aria-label="Current conversation" tabIndex={0}
+            aria-live="polite" aria-busy={s.busy} data-testid="jarvis-log"
+            onWheel={() => { followAnswer.current = false; }}
+            onTouchMove={() => { followAnswer.current = false; }}
+            onPointerDown={() => { followAnswer.current = false; }}
+            onKeyDown={e => {
+              if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home"].includes(e.key)) followAnswer.current = false;
+              if (e.key === "End") followAnswer.current = true;
+            }}
+            onScroll={e => {
+              const el = e.currentTarget;
+              if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) followAnswer.current = true;
+            }}>
+            {currentLog.map(entry => (
               <LogLine key={entry.id} entry={entry}
                 spoken={s.spoken?.id === entry.id ? s.spoken : null}
                 streaming={s.busy && entry.id === lastId && entry.role === "assistant"} />
             ))}
           </div>
+          {!hasConversation && !s.error && <div className="jv-suggestions" aria-label="Suggested questions">
+            <button type="button" onClick={() => choosePrompt("Catch me up on my unread conversations")}><Icon name="sparkles" />Catch me up<Icon name="chevron-right" /></button>
+            <button type="button" onClick={() => choosePrompt("What needs my attention?")}><Icon name="at-sign" />What needs me?<Icon name="chevron-right" /></button>
+            <button type="button" onClick={() => choosePrompt("Help me draft a message to ")}><Icon name="pencil" />Draft a message<Icon name="chevron-right" /></button>
+          </div>}
         </div>
-        <div className="jv-head-actions">
-          <button type="button" className={`jv-toggle${!stt ? " is-unavailable" : s.micMuted ? " is-off" : listening ? " is-live" : ""}`}
-            aria-label="Microphone" aria-pressed={stt && !s.micMuted} aria-disabled={!stt} title={micTitle}
-            data-testid="jarvis-mic"
-            onClick={() => { if (stt) useJarvis.getState().setMicMuted(!s.micMuted); }}>
-            <Icon name={stt && !s.micMuted ? "mic" : "mic-off"} />
-          </button>
-          <button type="button" className={`jv-toggle${!tts ? " is-unavailable" : s.speakerOff ? " is-off" : s.phase === "speaking" ? " is-live" : ""}`}
-            aria-label="Speaker" aria-pressed={tts && !s.speakerOff} aria-disabled={!tts} title={speakerTitle}
-            data-testid="jarvis-speaker"
-            onClick={() => { if (tts) useJarvis.getState().setSpeakerOff(!s.speakerOff); }}>
-            <Icon name={tts && !s.speakerOff ? "volume-2" : "volume-x"} />
-          </button>
-          {(s.conversationId || s.cards.length > 0 || s.log.length > 0) && (
-            <button className="btn sm" title="Start over" onClick={() => newConversation(api)}>New</button>
-          )}
-          <button className="jv-close" aria-label="Close assistant (Esc)" onClick={() => useJarvis.getState().close()}><Icon name="x" /></button>
-        </div>
+        {s.cards.length > 0 && <section className="jv-results" aria-label="Conversation details">
+          <div className="jv-section-label"><span>From your workspace</span>{s.cards.length > 1 && <span>{s.cards.length} results</span>}</div>
+          <div className="jv-cards">
+            {primaryCards.map(entry => <JarvisCardView key={entry.id} entry={entry} />)}
+          </div>
+          {earlierCards.length > 0 && <details className="jv-previous-results"><summary>Earlier results <span>{earlierCards.length}</span><Icon name="chevron-down" /></summary>
+            <div className="jv-cards">{earlierCards.map(entry => <JarvisCardView key={entry.id} entry={entry} />)}</div>
+          </details>}
+        </section>}
       </div>
-      <form className="jv-input" onSubmit={submit}>
-        <input ref={inputRef} value={text} onChange={e => setText(e.target.value)} maxLength={4000}
-          placeholder={s.busy ? "Working…" : listening ? "Or type…" : "Ask Agora…"} aria-label="Ask Agora" />
-        <button className="btn sm primary" type="submit" disabled={s.busy || !text.trim()}>Ask</button>
-      </form>
+      <footer className="jv-footer">
+        <div className="jv-controls">
+          <div className="jv-voice-controls">
+            <button type="button" className={`jv-toggle${!stt ? " is-unavailable" : s.micMuted ? " is-off" : listening ? " is-live" : ""}`}
+              aria-label="Microphone" aria-pressed={stt && !s.micMuted} aria-disabled={!stt} title={micTitle}
+              data-testid="jarvis-mic"
+              onClick={() => { if (stt) useJarvis.getState().setMicMuted(!s.micMuted); }}>
+              <Icon name={stt && !s.micMuted ? "mic" : "mic-off"} /><span>{!stt ? "Voice unavailable" : s.micMuted ? "Mic off" : "Mic on"}</span>
+            </button>
+            <button type="button" className={`jv-toggle${!tts ? " is-unavailable" : s.speakerOff ? " is-off" : s.phase === "speaking" ? " is-live" : ""}`}
+              aria-label="Speaker" aria-pressed={tts && !s.speakerOff} aria-disabled={!tts} title={speakerTitle}
+              data-testid="jarvis-speaker"
+              onClick={() => { if (tts) useJarvis.getState().setSpeakerOff(!s.speakerOff); }}>
+              <Icon name={tts && !s.speakerOff ? "volume-2" : "volume-x"} /><span>{!tts || s.speakerOff ? "Sound off" : "Sound on"}</span>
+            </button>
+          </div>
+          <span className="jv-voice-hint">{voiceHint}</span>
+        </div>
+        <form className="jv-input" onSubmit={submit}>
+          <input ref={inputRef} value={text} onChange={e => setText(e.target.value)} maxLength={4000}
+            placeholder={s.busy ? "Working…" : listening ? "Or type…" : "Ask Agora…"} aria-label="Ask Agora" />
+          <button className="jv-submit" type="submit" aria-label="Ask" title="Send message" disabled={s.busy || !text.trim()}><Icon name="arrow-up" /></button>
+        </form>
+      </footer>
     </div>
   );
   return (
     <div className="jv-dock">
       {reduced ? panel : (
-        <VoiceBeam level={jarvisLevel.get} theme={theme} idle={s.busy || listening ? 0.3 : 0.12} className="jv-beam">
+        <VoiceBeam colorVariant="ocean" level={jarvisLevel.get} theme={theme} idle={s.busy || listening ? 0.2 : 0.04} className="jv-beam">
           {panel}
         </VoiceBeam>
       )}

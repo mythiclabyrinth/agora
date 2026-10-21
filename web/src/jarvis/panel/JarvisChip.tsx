@@ -11,9 +11,12 @@ import { bindingFor, useShortcutState } from "../../state/shortcuts";
 import { useUiState } from "../../state/ui";
 import { JARVIS_WAKE_MODEL } from "../wake/JarvisWakeHost";
 import { orbLook } from "./orbState";
+import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
+import { Icon } from "../../lib/icons";
 
 export function JarvisChip() {
   const me = useMe().data;
+  const reduced = usePrefersReducedMotion();
   const enabled = useJarvis(s => s.enabled);
   const phase = useJarvis(s => s.phase);
   const wake = useJarvis(s => s.wake);
@@ -42,7 +45,7 @@ export function JarvisChip() {
     : wake === "starting" ? "Waiting for the microphone… — click to turn off"
     : "Turn off Jarvis mode";
   return (
-    <button className={`jv-chip${enabled ? " is-on" : ""}${enabled && wake === "error" ? " is-error" : ""}`} aria-pressed={enabled}
+    <button className={`jv-chip${enabled ? " is-on" : ""}${enabled && wake === "error" ? " is-error" : ""}`} aria-pressed={enabled} aria-label="Jarvis mode"
       aria-keyshortcuts={ariaCombo(combo, currentPlatform())}
       title={`${hint}${key ? ` · ${key} opens the assistant` : ""}`}
       onClick={() => {
@@ -50,8 +53,10 @@ export function JarvisChip() {
         st.setEnabled(!enabled);
         if (!enabled) st.open(); else st.close();
       }}>
-      {enabled && <ThinkingOrb state={look.state} size={20} paused={look.paused} theme={theme} aria-hidden="true" />}
+      {enabled && <ThinkingOrb state={look.state} size={20} paused={look.paused || reduced} theme={theme} aria-hidden="true" />}
+      {!enabled && <Icon name="sparkles" />}
       <span>Jarvis mode</span>
+      {enabled && <span className={`jv-chip-signal${wake === "error" ? " is-error" : ""}`} aria-hidden="true" />}
     </button>
   );
 }

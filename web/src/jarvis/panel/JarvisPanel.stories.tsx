@@ -4,7 +4,7 @@ import type { JarvisCard } from "@agora/core";
 import { fixtureMe, fixtureRootMessage } from "@agora/core/testing/fixtures";
 import { useJarvis, type JarvisCardEntry, type JarvisLogEntry, type JarvisState } from "../../state/jarvis";
 import { useUiState } from "../../state/ui";
-import { JarvisPanel } from "./JarvisPanel";
+import { JarvisPanel, jarvisLevel } from "./JarvisPanel";
 
 const jarvisMe = { ...fixtureMe, jarvis: true, jarvis_hint: null };
 const voiceMe = { ...jarvisMe, jarvis_stt: true, jarvis_tts: true };
@@ -117,9 +117,9 @@ export const Digest: Story = {
   play: async ({ canvasElement }) => {
     const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
     const card = within(panel.getByTestId("jarvis-digest"));
-    expect(card.getByText("Needs you")).toBeVisible();
+    expect(card.getByRole("button", { name: "Needs you 1" })).toBeVisible();
     expect(card.getByText("4 new")).toBeVisible();
-    await userEvent.click(card.getByRole("button", { name: "Open thread →" }));
+    await userEvent.click(card.getByRole("button", { name: "Open thread: #storybook, Release checklist, needs your attention" }));
     expect(useUiState.getState().sel.c).toBe("general");
     expect(useUiState.getState().threadRoot).toBe(101);
   },
@@ -222,7 +222,7 @@ export const Muted: Story = {
     expect(mic).toHaveAttribute("aria-pressed", "false");
     expect(mic).toHaveClass("is-off");
     expect(mic.title).toBe("Mic off — type instead");
-    expect(panel.getByText(/^Try “catch me up”/)).toBeVisible();
+    expect(panel.getByText("Conversation muted · wake word stays on")).toBeVisible();
     await userEvent.click(mic);
     expect(useJarvis.getState().micMuted).toBe(false);
   },
@@ -244,3 +244,122 @@ export const VoiceUnavailable: Story = {
   },
 };
 
+
+// Richer fixtures exercise the real layout pressure: many results, a long
+// transcript and live speech. These doubles do not access the microphone.
+const briefing: JarvisCard = {
+  kind: "digest",
+  items: [
+    { channel_id: "release", channel_name: "release", group_id: "launch", group_name: "Launch", thread_id: 201, thread_title: "Friday launch", gist: "Staging is green. Priya needs your go-ahead for the 25% rollout.", needs_you: true, unread: 6, mentions: 1 },
+    { channel_id: "design", channel_name: "design", group_id: "launch", group_name: "Launch", thread_id: 202, thread_title: "A calmer onboarding", gist: "The new direction is ready. Lena is waiting for your feedback on the first-run experience.", needs_you: true, unread: 4, mentions: 1 },
+    { channel_id: "infra", channel_name: "infra", group_id: "platform", group_name: "Platform", thread_id: null, gist: "The cache fix is live. Search latency is back under 200 ms.", needs_you: false, unread: 8, mentions: 0 },
+    { channel_id: "general", channel_name: "general", group_id: "launch", group_name: "Launch", thread_id: null, gist: "The team shared a recap from this morning's planning session.", needs_you: false, unread: 3, mentions: 0 },
+    { channel_id: "watercooler", channel_name: "watercooler", group_id: "random", group_name: "Random", thread_id: null, gist: "A few good reads for the weekend, collected by the team.", needs_you: false, unread: 2, mentions: 0 },
+  ],
+};
+const briefingAnswer = "You're almost caught up. Two things need you: the launch go-ahead and feedback on the new onboarding. Everything else is moving along.";
+const briefingState: Partial<JarvisState> = {
+  phase: "armed", conversationId: "jc_preview",
+  log: [said("user", "Catch me up on what I missed."), said("assistant", briefingAnswer)],
+  cards: [entry("briefing", briefing)],
+};
+
+export const Welcome: Story = {
+  parameters: { apiRoutes: { "GET /api/me": voiceMe }, setup: open({}), appearance: "dark" },
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
+    await userEvent.click(panel.getByRole("button", { name: "Catch me up" }));
+    expect(panel.getByLabelText("Ask Agora")).toHaveValue("Catch me up on my unread conversations");
+    expect(panel.getByRole("button", { name: "Ask" })).toBeEnabled();
+  },
+};
+
+export const Briefing: Story = {
+  parameters: { apiRoutes: { "GET /api/me": voiceMe }, appearance: "dark", setup: open(briefingState) },
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
+    const card = within(panel.getByTestId("jarvis-digest"));
+    expect(card.getAllByRole("listitem")).toHaveLength(2);
+    await userEvent.click(card.getByRole("button", { name: "Needs you 2" }));
+    expect(card.getAllByRole("listitem")).toHaveLength(2);
+    expect(card.queryByText("#infra")).toBeNull();
+    await userEvent.click(card.getByRole("button", { name: "All activity" }));
+    await userEvent.click(card.getByRole("button", { name: "Show 3 more conversations" }));
+    expect(card.getAllByRole("listitem")).toHaveLength(5);
+    await userEvent.click(card.getByRole("button", { name: "Show less" }));
+    expect(card.getAllByRole("listitem")).toHaveLength(2);
+  },
+};
+
+export const BriefingLight: Story = {
+  parameters: { ...Briefing.parameters, appearance: "light" },
+};
+
+export const SpeakingPreview: Story = {
+  parameters: { ...Speaking.parameters, appearance: "dark" },
+  play: async ({ canvasElement }) => {
+    const panel = await within(canvasElement).findByRole("dialog", { name: "Agora assistant" });
+    const halo = panel.querySelector(".jv-aura")!;
+    const before = getComputedStyle(halo).transform;
+    const source = jarvisLevel.source;
+    try {
+      jarvisLevel.source = () => 0.8;
+      await waitFor(() => expect(getComputedStyle(halo).transform).not.toBe(before));
+    } finally { jarvisLevel.source = source; }
+  },
+};
+
+export const DraftPreview: Story = {
+  parameters: { ...Draft.parameters, appearance: "light" },
+};
+
+export const ConversationHistory: Story = {
+  parameters: {
+    setup: open({ ...briefingState, log: [
+      said("user", "How did the release go?", "old-question"),
+      said("assistant", "The rollout went smoothly. No new incidents.", "old-answer"),
+      ...briefingState.log!,
+    ] }),
+  },
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
+    expect(panel.getByText("The rollout went smoothly. No new incidents.")).not.toBeVisible();
+    await userEvent.click(panel.getByText("Earlier in this conversation"));
+    expect(panel.getByText("The rollout went smoothly. No new incidents.")).toBeVisible();
+    expect(panel.getByText(briefingAnswer)).toBeVisible();
+  },
+};
+
+export const LongAnswer: Story = {
+  parameters: {
+    setup: open({ ...briefingState, log: [said("user", "Give me the full picture."), said("assistant", Array.from({ length: 12 }, (_, i) => `${i + 1}. The release is moving forward. Priya has confirmed the staging checks and is waiting for the rollout decision.`).join("\n\n"))] }),
+  },
+  play: async ({ canvasElement }) => {
+    const panel = await within(canvasElement).findByRole("dialog", { name: "Agora assistant" });
+    const rect = panel.getBoundingClientRect();
+    expect(rect.top).toBeGreaterThanOrEqual(0);
+    expect(rect.bottom).toBeLessThanOrEqual(window.innerHeight);
+    const input = within(panel).getByLabelText("Ask Agora").getBoundingClientRect();
+    expect(input.bottom).toBeLessThanOrEqual(rect.bottom);
+    expect(input.height).toBeGreaterThan(20);
+    const log = within(panel).getByTestId("jarvis-log");
+    expect(log.scrollHeight).toBeGreaterThan(log.clientHeight);
+  },
+};
+
+export const EarlierResults: Story = {
+  parameters: {
+    setup: open({ ...briefingState, cards: [entry("new-result", briefing), entry("pending-draft", draft), entry("old-result", digest)] }),
+  },
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
+    expect(panel.getByTestId("jarvis-draft")).toBeVisible();
+    const briefings = panel.getAllByTestId("jarvis-digest");
+    expect(briefings[0]).toBeVisible();
+    expect(briefings[1]).not.toBeVisible();
+    await userEvent.click(panel.getByText("Earlier results"));
+    expect(briefings[1]).toBeVisible();
+    await userEvent.click(within(panel.getByTestId("jarvis-draft")).getByRole("button", { name: "Edit" }));
+    expect(panel.getByLabelText("Draft message")).not.toHaveAttribute("readonly");
+  },
+};

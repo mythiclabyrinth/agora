@@ -1,7 +1,7 @@
 /* Card stack for the Agora assistant: digests, message hits, and drafts.
    Cards carry the detail so the spoken answer can stay short. */
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { ApiError, cancelJarvisDraft, sendJarvisDraft, useApi, type ApiClient, type JarvisCard, type JarvisDigestItem, type JarvisMessageHit } from "@agora/core";
 import { Icon } from "../../lib/icons";
 import { toast } from "../../lib/toast";
@@ -28,17 +28,20 @@ function jumpTo(target: { group_id: string; channel_id: string; thread_id?: numb
 const where = (i: { channel_name: string; group_id: string }) => i.group_id === "__dms" ? i.channel_name : `#${i.channel_name}`;
 
 function DigestRow({ item }: { item: JarvisDigestItem }) {
+  const gistId = useId();
   return (
-    <li className="jv-digest-row">
-      <div className="jv-digest-head">
-        <span className="jv-where">{where(item)}</span>
-        {item.thread_id != null && <span className="jv-thread" title={item.thread_title || "Thread"}>› {item.thread_title || "thread"}</span>}
-        {item.needs_you && <span className="jv-badge">Needs you</span>}
-        {item.unread > 0 && <span className="jv-count">{item.unread} new</span>}
-      </div>
-      <p className="jv-gist">{item.gist}</p>
-      <button className="jv-link" onClick={() => jumpTo(item)}>
-        Open {item.thread_id != null ? "thread" : "channel"} →
+    <li className={`jv-digest-row${item.needs_you ? " needs-you" : ""}`}>
+      <button className="jv-digest-target" onClick={() => jumpTo(item)}
+        aria-describedby={gistId}
+        aria-label={`Open ${item.thread_id != null ? "thread" : "channel"}: ${where(item)}${item.thread_title ? `, ${item.thread_title}` : ""}${item.needs_you ? ", needs your attention" : ""}`}>
+        <span className="jv-digest-head">
+          <span className="jv-where">{where(item)}</span>
+          {item.needs_you && <span className="jv-badge">Needs you</span>}
+          {item.unread > 0 && <span className="jv-count">{item.unread} new</span>}
+        </span>
+        {item.thread_id != null && <span className="jv-thread" title={item.thread_title || "Thread"}>{item.thread_title || "Thread"}</span>}
+        <span className="jv-gist" id={gistId}>{item.gist}</span>
+        <span className="jv-row-arrow" aria-hidden="true"><Icon name="chevron-right" /></span>
       </button>
     </li>
   );
@@ -149,8 +152,29 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
           <button className="btn sm" disabled={status === "sending"} onClick={cancel}>Cancel</button>
         </>}
       </div>
+      {live && <p className="jv-confirm-hint"><Icon name="lock" />Only sent after you confirm.</p>}
     </div>
   );
+}
+
+function DigestCard({ items }: { items: JarvisDigestItem[] }) {
+  const [onlyNeedsYou, setOnlyNeedsYou] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const needed = items.filter(item => item.needs_you).length;
+  const ordered = [...items].sort((a, b) => Number(b.needs_you) - Number(a.needs_you));
+  const filtered = onlyNeedsYou ? ordered.filter(item => item.needs_you) : ordered;
+  const visible = expanded ? filtered : filtered.slice(0, 2);
+  return <div className="jv-card jv-digest" data-testid="jarvis-digest">
+    <div className="jv-card-title"><Icon name="sparkles" /><span>Your briefing</span><span className="jv-card-total">{items.length} conversations</span></div>
+    {needed > 0 && <div className="jv-filters" aria-label="Filter briefing">
+      <button type="button" aria-pressed={!onlyNeedsYou} onClick={() => { setOnlyNeedsYou(false); setExpanded(false); }}>All activity</button>
+      <button type="button" aria-pressed={onlyNeedsYou} onClick={() => { setOnlyNeedsYou(true); setExpanded(false); }}>Needs you <span>{needed}</span></button>
+    </div>}
+    <ul>{visible.map((item, i) => <DigestRow key={`${item.channel_id}:${item.thread_id ?? ""}:${i}`} item={item} />)}</ul>
+    {filtered.length > 2 && <button type="button" className="jv-show-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+      {expanded ? "Show less" : `Show ${filtered.length - 2} more conversations`}<Icon name={expanded ? "chevron-up" : "chevron-down"} />
+    </button>}
+  </div>;
 }
 
 export function JarvisCardView({ entry }: { entry: JarvisCardEntry }) {
@@ -161,10 +185,7 @@ export function JarvisCardView({ entry }: { entry: JarvisCardEntry }) {
   if (card.kind === "digest") {
     return (
       <div className="jv-card-wrap">{close}
-        <div className="jv-card jv-digest" data-testid="jarvis-digest">
-          <div className="jv-card-title"><Icon name="sparkles" /> Digest</div>
-          <ul>{card.items.map(i => <DigestRow key={`${i.channel_id}:${i.thread_id ?? ""}`} item={i} />)}</ul>
-        </div>
+        <DigestCard items={card.items} />
       </div>
     );
   }
