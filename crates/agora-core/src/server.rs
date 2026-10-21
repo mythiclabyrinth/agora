@@ -36,7 +36,7 @@ use crate::hub::{normalize_thread_alias, AgentHandle, Hub};
 use crate::store::{new_token, now, NewAttachment};
 use crate::attachments::{agent_wire_limit, attachment_mime, safe_filename, sniff_video_mime};
 
-const MAX_MESSAGE_CHARS: usize = 20_000;
+pub(crate) const MAX_MESSAGE_CHARS: usize = 20_000;
 const MAX_PINS_PER_CHANNEL: i64 = 25;
 const MAX_FILES_PER_MESSAGE: usize = 5;
 const MAX_AGENT_AVATAR_BYTES: usize = 2 * 1024 * 1024;
@@ -59,6 +59,8 @@ const SPEECH_CACHE_MAX: usize = 64;
 
 /// message_id + TTS fingerprint -> audio bytes, most-recently-used last.
 type SpeechCache = std::sync::Mutex<Vec<(i64, String, Vec<u8>)>>;
+/// Speech cache slot for Jarvis sentences (keyed by text in the fingerprint).
+const JARVIS_SPEECH_CACHE_ID: i64 = -1;
 
 /// Requests per client per window on the auth surface (Google sign-in): enough
 /// for a real round-trip and retries, low enough to blunt automated abuse of an
@@ -66,7 +68,7 @@ type SpeechCache = std::sync::Mutex<Vec<(i64, String, Vec<u8>)>>;
 const AUTH_RATE_MAX: u32 = 30;
 /// Requests per client per window on the upload surface (message/voice/import).
 const UPLOAD_RATE_MAX: u32 = 60;
-const RATE_WINDOW: Duration = Duration::from_secs(60);
+pub(crate) const RATE_WINDOW: Duration = Duration::from_secs(60);
 
 /// Tiny fixed-window rate limiter — no external dependency. Keyed by an opaque
 /// string (client IP when known, a shared bucket otherwise). This is an origin
@@ -80,7 +82,7 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
-    fn new(window: Duration, max: u32) -> Self {
+    pub(crate) fn new(window: Duration, max: u32) -> Self {
         Self {
             window,
             max,
@@ -89,7 +91,7 @@ impl RateLimiter {
     }
 
     /// True if the request is within budget; false once the key is over it.
-    fn allow(&self, key: &str) -> bool {
+    pub(crate) fn allow(&self, key: &str) -> bool {
         let now = Instant::now();
         let mut buckets = self.buckets.lock().unwrap();
         // Opportunistic sweep so a churn of distinct keys can't grow the map
@@ -137,6 +139,8 @@ pub struct AppState {
     pub auth_limiter: Arc<RateLimiter>,
     /// Per-client fixed-window limiter for the upload surface.
     pub upload_limiter: Arc<RateLimiter>,
+    /// Jarvis mode conversations and pending drafts (in-memory, bounded).
+    pub jarvis: Arc<crate::jarvis::JarvisState>,
 }
 
 /// Pending authorization_code + PKCE exchange for Codex OAuth.
@@ -293,7 +297,7 @@ fn require_group_admin(
 
 /// The channel if it exists *and* the caller may see it (member of its
 /// group). Most message-path handlers start here.
-fn require_channel_member(
+pub(crate) fn require_channel_member(
     state: &AppState,
     user: &AuthedUser,
     channel_id: &str,
@@ -321,7 +325,7 @@ fn require_channel_admin(
     }
 }
 
-fn require_channel_postable(state: &AppState, user: &AuthedUser, channel_id: &str) -> Result<Value, ApiError> {
+pub(crate) fn require_channel_postable(state: &AppState, user: &AuthedUser, channel_id: &str) -> Result<Value, ApiError> {
     let channel = require_channel_member(state, user, channel_id)?;
     if channel["kind"] == "agent_dm" {
         let agent_id = channel["dm_agent_id"].as_str().unwrap_or_default();
@@ -336,7 +340,7 @@ fn require_channel_postable(state: &AppState, user: &AuthedUser, channel_id: &st
 }
 
 /// Message lookup gated the same way as [`require_channel_member`].
-fn require_message_visible(
+pub(crate) fn require_message_visible(
     state: &AppState,
     user: &AuthedUser,
     message_id: i64,
@@ -454,6 +458,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/messages/{message_id}/speech", get(message_speech))
         .route("/api/search", get(search))
         .route("/api/search/ask", post(search_ask))
+        .route("/api/jarvis/turn", post(jarvis_turn))
+        .route("/api/jarvis/transcribe", post(jarvis_transcribe).layer(voice_body_limit()))
+        .route("/api/jarvis/speech", post(jarvis_speech))
+        .route("/api/jarvis/conversations/{conversation_id}", delete(jarvis_reset))
+        .route("/api/jarvis/drafts/{draft_id}", delete(jarvis_cancel_draft))
+        .route("/api/jarvis/drafts/{draft_id}/send", post(jarvis_send_draft).delete(jarvis_cancel_draft))
         .route("/api/threads", get(list_threads))
         .route("/api/unreads", get(list_unreads))
         .route("/api/approvals", get(list_approvals))
@@ -678,7 +688,7 @@ fn byte_range(raw: &str, size: u64) -> Option<Result<(u64, u64), ()>> {
     Some(if start <= end && start < size { Ok((start, end)) } else { Err(()) })
 }
 
-fn resolve_thread(
+pub(crate) fn resolve_thread(
     state: &AppState,
     channel_id: &str,
     thread_id: Option<i64>,
@@ -707,6 +717,9 @@ async fn me(
     // Ask AI even when credentials are missing; missing keys fail at use time.
     let voice = resolved_voice(&state);
     let search = resolved_search_ai(&state);
+    let jarvis_ai = resolved_jarvis(&state);
+    let jarvis = crate::jarvis::user_allowed(&user) && crate::jarvis::brain_kind(&jarvis_ai).is_some();
+    let mock = crate::jarvis::mock_enabled();
     Ok(Json(json!({
         "username": user.username,
         "display_name": user.display_name,
@@ -725,6 +738,14 @@ async fn me(
         "drafts_sync": true,
         "voice_tts": voice.tts_enabled,
         "search_ai": search.enabled,
+        // Jarvis mode: the assistant panel. True only when this caller may
+        // use it, Jarvis is switched on, and its provider has a credential.
+        "jarvis": jarvis,
+        "jarvis_hint": jarvis_hint(&user, &jarvis_ai),
+        // The panel's voice loop: /api/jarvis/transcribe and /speech work
+        // (enabled and keyed, unlike the coarse voice_stt / voice_tts).
+        "jarvis_stt": jarvis && jarvis_stt_source(&voice, mock).is_ok(),
+        "jarvis_tts": jarvis && jarvis_tts_source(&voice, mock).is_ok(),
         // MapLibre style URL for map artifacts; empty when the operator has
         // not configured tiles, in which case clients draw the SVG fallback.
         "map_style_url": state.config.map_style_url(),
@@ -1758,6 +1779,422 @@ async fn search_ask(
     Ok(Json(json!({"answer": answer, "model": model, "provider": provider, "sources": sources})))
 }
 
+// ------------------------------------------------------------ jarvis mode
+
+/// What the selected provider is missing, phrased for a person: "connect
+/// ChatGPT" (the sign-in) vs "add an OpenAI API key".
+fn jarvis_credential_ask(provider: &str) -> String {
+    match provider {
+        crate::config::JARVIS_PROVIDER_CODEX => "connect ChatGPT".to_string(),
+        p => format!("add an {} API key", crate::config::jarvis_provider_label(p)),
+    }
+}
+
+/// Why Jarvis is unavailable, for the UI hint (admins get the fix).
+fn jarvis_hint(user: &AuthedUser, jarvis: &crate::config::ResolvedJarvis) -> Value {
+    if !crate::jarvis::user_allowed(user) || crate::jarvis::brain_kind(jarvis).is_some() {
+        return Value::Null;
+    }
+    if !jarvis.enabled {
+        return json!(if user.instance_admin {
+            "Jarvis mode is turned off for this instance; turn it on under Settings → Features → Jarvis."
+        } else {
+            "Jarvis mode is turned off for this instance."
+        });
+    }
+    let ask = jarvis_credential_ask(&jarvis.provider);
+    json!(if user.instance_admin {
+        let mut chars = ask.chars();
+        let ask: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+        format!("{ask} under Settings → Credentials (or pick another provider under Settings → Features → Jarvis) to enable Jarvis mode.")
+    } else {
+        format!("Jarvis mode isn't set up yet: ask an admin to {ask}.")
+    })
+}
+
+fn require_jarvis(state: &AppState, user: &AuthedUser) -> Result<crate::jarvis::BrainKind, ApiError> {
+    if !crate::jarvis::user_allowed(user) {
+        return Err(err(StatusCode::FORBIDDEN, "Jarvis mode is limited to instance admins"));
+    }
+    let jarvis = resolved_jarvis(state);
+    if !jarvis.enabled && !crate::jarvis::mock_enabled() {
+        return Err(err(StatusCode::BAD_REQUEST, "Jarvis mode is disabled for this instance"));
+    }
+    crate::jarvis::brain_kind(&jarvis).ok_or_else(|| {
+        let label = crate::config::jarvis_provider_label(&jarvis.provider);
+        let what = match jarvis.provider.as_str() {
+            crate::config::JARVIS_PROVIDER_CODEX => "ChatGPT".to_string(),
+            _ => format!("an {label} API key"),
+        };
+        let fix = if jarvis.provider == crate::config::JARVIS_PROVIDER_CODEX { "connect it" } else { "add it" };
+        err(
+            StatusCode::BAD_REQUEST,
+            &if user.instance_admin {
+                format!("Jarvis mode needs {what}: {fix} under Settings → Credentials")
+            } else {
+                format!("Jarvis mode needs {what}: ask an admin to {fix} under Settings → Credentials")
+            },
+        )
+    })
+}
+
+/// Serializes every ChatGPT token refresh (refresh tokens are single-use):
+/// taken by `refresh_codex_if_needed` and `force_refresh_codex`.
+static CODEX_REFRESHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Force a Codex token refresh after `stale` was rejected mid-turn.
+/// ChatGPT refresh tokens are single-use, so concurrent turns that all hit
+/// an expired token must not each refresh: one does, under a lock, and the
+/// rest pick up the token it stored.
+fn force_refresh_codex(state: &AppState, stale: &str) -> anyhow::Result<(String, String)> {
+    let _guard = CODEX_REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
+    let (current, refresh, account) = {
+        let snap = state.config.snapshot();
+        (
+            snap.ai.search.codex_access_token.trim().to_string(),
+            snap.ai.search.codex_refresh_token.trim().to_string(),
+            snap.ai.search.codex_account_id.clone(),
+        )
+    };
+    if !current.is_empty() && current != stale {
+        return Ok((current, account));
+    }
+    anyhow::ensure!(!refresh.is_empty(), "ChatGPT session expired — reconnect it under Settings → Credentials");
+    let mut tokens = crate::codex_oauth::refresh_access_token(&refresh)?;
+    if tokens.account_id.is_empty() {
+        tokens.account_id = account;
+    }
+    state.config.store_codex_tokens(&tokens);
+    Ok((tokens.access_token, tokens.account_id))
+}
+
+/// The brain for `kind`, on Jarvis's own model for that provider (never Ask
+/// AI's) and the shared Credentials-tab credential.
+fn make_brain(state: &AppState, kind: crate::jarvis::BrainKind) -> anyhow::Result<Box<dyn crate::jarvis::Brain>> {
+    let jarvis = resolved_jarvis(state);
+    match kind {
+        crate::jarvis::BrainKind::Mock => Ok(Box::new(crate::jarvis::MockBrain::with_delay(Duration::from_millis(45)))),
+        crate::jarvis::BrainKind::OpenAi => Ok(Box::new(crate::jarvis::OpenAiBrain {
+            api_key: jarvis.openai_api_key.clone().ok_or_else(|| anyhow::anyhow!("no OpenAI API key is configured"))?,
+            model: jarvis.models.openai.0.clone(),
+        })),
+        crate::jarvis::BrainKind::Anthropic => Ok(Box::new(crate::jarvis::AnthropicBrain {
+            api_key: jarvis.anthropic_api_key.clone().ok_or_else(|| anyhow::anyhow!("no Anthropic API key is configured"))?,
+            model: jarvis.models.anthropic.0.clone(),
+        })),
+        crate::jarvis::BrainKind::Codex => {
+            // The sign-in tokens live with Ask AI's settings; only the model is Jarvis's.
+            let search = resolved_search_ai(state);
+            let (access, account) = refresh_codex_if_needed(state, &search)?;
+            let can_refresh = !state.config.snapshot().ai.search.codex_refresh_token.trim().is_empty();
+            let refresh_state = state.clone();
+            Ok(Box::new(crate::jarvis::CodexBrain {
+                access_token: access,
+                account_id: account,
+                model: jarvis.models.codex.0.clone(),
+                refresh: can_refresh.then(|| {
+                    Box::new(move |stale: &str| force_refresh_codex(&refresh_state, stale))
+                        as crate::jarvis::TokenRefresher
+                }),
+            }))
+        }
+    }
+}
+
+/// POST /api/jarvis/turn {conversation_id?, text, context?: {channel_id?, thread_id?}}
+/// — one assistant turn, streamed as Server-Sent Events: `start`, `status`
+/// {phase,label}, `tool` {name,summary}, `delta` {text}, `card` {card},
+/// `done` {conversation_id,text}, or `error` {message}. Everything the model
+/// reads goes through the caller's own visibility gates; it can draft but
+/// never send.
+async fn jarvis_turn(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Response, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let kind = require_jarvis(&state, &user)?;
+    if !state.jarvis.allow(&user.username) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many assistant requests — slow down"));
+    }
+    let text = payload["text"].as_str().unwrap_or("").trim().to_string();
+    if text.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "Say or type something first"));
+    }
+    if text.chars().count() > crate::jarvis::MAX_TURN_CHARS {
+        return Err(err(StatusCode::BAD_REQUEST, "That request is too long"));
+    }
+    let conversation_id = payload["conversation_id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 64)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("jc_{}", new_token()));
+    let hint = crate::jarvis::TurnContext {
+        channel_id: payload["context"]["channel_id"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+        thread_id: payload["context"]["thread_id"].as_i64(),
+    };
+    let permit = state.jarvis.begin_turn(&user.username).ok_or_else(|| {
+        err(StatusCode::TOO_MANY_REQUESTS, "The assistant is still working on your last request — try again in a moment")
+    })?;
+    let (tx, rx) = unbounded_channel::<Value>();
+    tokio::task::spawn_blocking(move || {
+        // Held for the whole turn; dropped on every exit, disconnects included.
+        let _permit = permit;
+        let mut emit = |ev: Value| tx.send(ev).is_ok();
+        emit(crate::jarvis::ev_start(&conversation_id));
+        let mut brain = match make_brain(&state, kind) {
+            Ok(b) => b,
+            Err(e) => {
+                let who = match kind {
+                    crate::jarvis::BrainKind::OpenAi => "OpenAI",
+                    crate::jarvis::BrainKind::Anthropic => "Anthropic",
+                    _ => "ChatGPT",
+                };
+                emit(crate::jarvis::ev_error(&format!("Couldn't reach {who}: {}", truncate_err(&format!("{e:#}"), 240))));
+                return;
+            }
+        };
+        let prior = state.jarvis.conversation(&conversation_id, &user.username);
+        let ctx = crate::jarvis::ToolCtx::new(&state, &user);
+        match crate::jarvis::run_turn(&ctx, brain.as_mut(), prior, &text, &hint, &mut emit) {
+            Ok((items, answer)) => {
+                state.jarvis.save_conversation(&conversation_id, &user.username, items);
+                emit(crate::jarvis::ev_done(&conversation_id, &answer));
+            }
+            Err(e) => {
+                tracing::warn!(user = %user.username, provider = brain.provider(), model = brain.model(),
+                    "jarvis turn failed: {}", truncate_err(&format!("{e:#}"), 300));
+                emit(crate::jarvis::ev_error(&format!("The assistant hit a problem: {}", truncate_err(&format!("{e:#}"), 240))));
+            }
+        }
+    });
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        let ev = rx.recv().await?;
+        Some((Ok::<_, std::convert::Infallible>(crate::jarvis::sse_frame(&ev)), rx))
+    });
+    Ok(Response::builder()
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        // Reverse proxies (nginx, Railway's edge) must not buffer the stream.
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(stream))
+        .unwrap())
+}
+
+/// DELETE /api/jarvis/conversations/{id} — forget a conversation ("new chat").
+async fn jarvis_reset(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    state.jarvis.reset_conversation(&conversation_id, &user.username);
+    Ok(Json(json!({"ok": true})))
+}
+
+/// POST /api/jarvis/drafts/{id}/send {text?} — the user's explicit
+/// confirmation of an assistant draft. Re-checks everything at send time:
+/// the draft is the caller's, unexpired, and unsent (claimed atomically, so
+/// it is single-use), and the caller can still post to that channel/thread.
+/// Posts through the normal user path, as the caller.
+async fn jarvis_send_draft(
+    State(state): State<AppState>,
+    Path(draft_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Option<Json<Value>>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    // Turning Jarvis off (or restricting it) also stops drafts already issued.
+    require_jarvis(&state, &user)?;
+    if !state.jarvis.allow(&user.username) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many assistant requests — slow down"));
+    }
+    let payload = body.map(|Json(v)| v).unwrap_or_default();
+    let draft_err = |e| match e {
+        crate::jarvis::DraftError::NotFound => err(StatusCode::NOT_FOUND, "This draft is no longer available — it was sent, cancelled, or isn't yours"),
+        crate::jarvis::DraftError::Expired => err(StatusCode::GONE, "This draft expired — ask again to redraft it"),
+    };
+    // Every check runs against a peeked copy, so a rejected send (too long,
+    // thread gone, access lost) leaves the draft sendable; it is claimed
+    // atomically only once nothing can stop the post.
+    let draft = state.jarvis.peek_draft(&draft_id, &user.username).map_err(draft_err)?;
+    require_channel_postable(&state, &user, &draft.channel_id)?;
+    let thread_id = resolve_thread(&state, &draft.channel_id, draft.thread_id)?;
+    let edited = payload["text"].as_str().map(str::trim).filter(|t| !t.is_empty());
+    let text = draft.final_text(edited);
+    if text.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(err(StatusCode::BAD_REQUEST, "Message too long"));
+    }
+    let draft = state.jarvis.take_draft(&draft_id, &user.username).map_err(draft_err)?;
+    let timezone = client_timezone(payload["timezone"].as_str().unwrap_or(""));
+    let hub = Arc::clone(&state.hub);
+    let channel_id = draft.channel_id.clone();
+    let message = tokio::task::spawn_blocking(move || {
+        hub.post_user_message_opts(
+            &channel_id, &text, &user.username, Some(&user.display_name), thread_id,
+            vec![], false, timezone.as_deref(), false, false,
+        )
+    }).await.map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Message write failed"))?;
+    Ok(Json(json!({"ok": true, "message": message})))
+}
+
+/// DELETE /api/jarvis/drafts/{id} (or …/send) — cancel. Idempotent.
+async fn jarvis_cancel_draft(
+    State(state): State<AppState>,
+    Path(draft_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let cancelled = state.jarvis.cancel_draft(&draft_id, &user.username);
+    Ok(Json(json!({"ok": true, "cancelled": cancelled})))
+}
+
+/// Where the panel's voice loop gets STT / TTS: the instance's configured
+/// provider when it is enabled and keyed, else the mock brain's stand-ins
+/// (`AGORA_JARVIS_MOCK=1`: demos and browser tests). `Err` is the reason the
+/// panel shows instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JarvisVoiceSource {
+    Real,
+    Mock,
+}
+
+fn jarvis_stt_source(voice: &crate::config::ResolvedVoice, mock: bool) -> Result<JarvisVoiceSource, &'static str> {
+    if voice.stt_enabled && voice.stt_api_key().is_some() {
+        Ok(JarvisVoiceSource::Real)
+    } else if mock {
+        Ok(JarvisVoiceSource::Mock)
+    } else if !voice.stt_enabled {
+        Err("Voice input is disabled for this instance")
+    } else {
+        Err("Voice input is not configured (set a key for the selected STT provider in Settings → Credentials)")
+    }
+}
+
+fn jarvis_tts_source(voice: &crate::config::ResolvedVoice, mock: bool) -> Result<JarvisVoiceSource, &'static str> {
+    if voice.tts_enabled && voice.tts_api_key().is_some() {
+        Ok(JarvisVoiceSource::Real)
+    } else if mock {
+        Ok(JarvisVoiceSource::Mock)
+    } else if !voice.tts_enabled {
+        Err("Spoken replies are disabled for this instance")
+    } else {
+        Err("Spoken replies are not configured (set a key for the selected TTS provider in Settings → Credentials)")
+    }
+}
+
+/// POST /api/jarvis/transcribe — the panel's spoken turn, as text. Not
+/// channel-scoped (the assistant works across the workspace) and writes
+/// nothing; the client then runs the turn with the transcript.
+async fn jarvis_transcribe(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_jarvis(&state, &user)?;
+    if !state.jarvis.allow(&user.username) || !state.jarvis.allow_transcribe(&user.username) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many voice requests — slow down"));
+    }
+    let voice = resolved_voice(&state);
+    let source = jarvis_stt_source(&voice, crate::jarvis::mock_enabled())
+        .map_err(|reason| err(StatusCode::BAD_REQUEST, reason))?;
+    let upload_id = new_token();
+    let upload = read_voice_upload(multipart, &upload_id, None).await?;
+    let text = match source {
+        JarvisVoiceSource::Mock => crate::jarvis::mock_transcript(upload.audio.len())
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "Couldn't hear anything in that recording"))?,
+        JarvisVoiceSource::Real => {
+            let key = voice.stt_api_key().unwrap_or_default().to_string();
+            let (provider, model) = (voice.stt_provider.clone(), voice.stt_model.clone());
+            run_voice_transcription(
+                &voice.stt_provider, &voice.stt_model, &upload_id, None,
+                move || crate::voice::transcribe(&provider, &key, &upload.audio, &upload.filename, &model),
+            ).await?
+        }
+    };
+    Ok(Json(json!({ "text": text.trim() })))
+}
+
+/// POST /api/jarvis/speech `{text}` — one sentence of the assistant's answer
+/// as audio, with the instance's TTS provider and voice. The client speaks
+/// the streamed answer sentence by sentence, so the cap is small.
+async fn jarvis_speech(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Response, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_jarvis(&state, &user)?;
+    let text = payload["text"].as_str().unwrap_or("").trim().to_string();
+    if text.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "Nothing to speak"));
+    }
+    if text.chars().count() > crate::jarvis::MAX_SPEECH_CHARS {
+        return Err(err(StatusCode::BAD_REQUEST, &format!(
+            "Too much text to speak at once (max {} characters)", crate::jarvis::MAX_SPEECH_CHARS,
+        )));
+    }
+    if !state.jarvis.allow(&user.username) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many assistant requests — slow down"));
+    }
+    let voice = resolved_voice(&state);
+    let source = jarvis_tts_source(&voice, crate::jarvis::mock_enabled())
+        .map_err(|reason| err(StatusCode::BAD_REQUEST, reason))?;
+    let audio = match source {
+        JarvisVoiceSource::Mock => crate::jarvis::mock_speech_wav(&text),
+        JarvisVoiceSource::Real => {
+            let key = voice.tts_api_key().unwrap_or_default().to_string();
+            let (provider, model, tts_voice, accent) = (
+                voice.tts_provider.clone(), voice.tts_model.clone(), voice.tts_voice.clone(), voice.tts_accent.clone(),
+            );
+            // Same LRU as message speech; sentences repeat ("Done.", read-backs).
+            let fp = format!("jarvis\0{provider}\0{model}\0{tts_voice}\0{accent}\0{text}");
+            let cached = {
+                let mut cache = state.speech_cache.lock().unwrap();
+                cache.iter().position(|(id, f, _)| *id == JARVIS_SPEECH_CACHE_ID && *f == fp).map(|i| {
+                    let entry = cache.remove(i);
+                    let audio = entry.2.clone();
+                    cache.push(entry);
+                    audio
+                })
+            };
+            match cached {
+                Some(audio) => audio,
+                None => {
+                    let label = format!("{provider} / {model}");
+                    let audio = tokio::task::spawn_blocking(move || {
+                        crate::voice::synthesize(&provider, &key, &text, &model, &tts_voice, &accent).map(|s| s.bytes)
+                    })
+                    .await
+                    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Speech task failed"))?
+                    .map_err(|e| {
+                        tracing::error!("jarvis speech synthesis failed: {e}");
+                        err(StatusCode::BAD_GATEWAY, &format!(
+                            "Speech synthesis failed ({label}): {}", truncate_err(&format!("{e:#}"), 200),
+                        ))
+                    })?;
+                    let mut cache = state.speech_cache.lock().unwrap();
+                    cache.push((JARVIS_SPEECH_CACHE_ID, fp, audio.clone()));
+                    if cache.len() > SPEECH_CACHE_MAX {
+                        cache.remove(0);
+                    }
+                    audio
+                }
+            }
+        }
+    };
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert("content-type", crate::voice::audio_content_type(&audio).parse().unwrap());
+    Ok((resp_headers, audio).into_response())
+}
+
 async fn post_message(
     State(state): State<AppState>,
     Path(channel_id): Path<String>,
@@ -2691,7 +3128,7 @@ async fn list_threads(
     Ok(Json(json!({"threads": state.hub.store.my_threads(&user.username, limit)})))
 }
 
-fn visible_inbox_channels(state: &AppState, user: &AuthedUser) -> Vec<String> {
+pub(crate) fn visible_inbox_channels(state: &AppState, user: &AuthedUser) -> Vec<String> {
     state.hub.store.visible_inbox_channels(&user.username, user.instance_admin)
 }
 
@@ -3902,12 +4339,27 @@ fn resolved_search_ai(state: &AppState) -> crate::config::ResolvedSearchAi {
     state.config.search_ai(anthropic.as_deref(), openai.as_deref())
 }
 
+/// Jarvis settings with the same env key fallbacks Ask AI and voice use.
+fn resolved_jarvis(state: &AppState) -> crate::config::ResolvedJarvis {
+    let anthropic = env_opt("ANTHROPIC_API_KEY");
+    let openai = env_opt("OPENAI_API_KEY");
+    state.config.jarvis(anthropic.as_deref(), openai.as_deref())
+}
+
 /// Refresh Codex OAuth if we only have a refresh token. Blocking — call from
 /// `spawn_blocking`. Persists rotated tokens via `store_codex_tokens`.
 fn refresh_codex_if_needed(
     state: &AppState,
     search: &crate::config::ResolvedSearchAi,
 ) -> anyhow::Result<(String, String)> {
+    if let Some(access) = &search.access_token {
+        return Ok((access.clone(), search.account_id.clone()));
+    }
+    // Refresh tokens are single-use: every caller (Ask AI, the models poll,
+    // the connection test, Jarvis) refreshes under one lock, and re-reads
+    // first in case the holder before it already stored a fresh token.
+    let _guard = CODEX_REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
+    let search = &resolved_search_ai(state);
     if let Some(access) = &search.access_token {
         return Ok((access.clone(), search.account_id.clone()));
     }
@@ -3989,7 +4441,36 @@ fn instance_ai_payload(state: &AppState) -> Value {
         crate::config::resolve_secret(&snap.ai.voice.groq_api_key, groq_env.as_deref())
     };
     let codex_models = resolve_codex_suggested_models(state, &search);
+    let jarvis = resolved_jarvis(state);
     json!({
+        // Jarvis's own switch, provider and models. Credentials are the
+        // Credentials tab's; only whether each provider has one goes out.
+        "jarvis": {
+            "enabled": jarvis.enabled,
+            "available": jarvis.available(),
+            "provider": jarvis.provider,
+            "providers": [
+                { "id": crate::config::JARVIS_PROVIDER_CODEX, "label": "ChatGPT (Codex sign-in)" },
+                { "id": crate::config::JARVIS_PROVIDER_OPENAI, "label": "OpenAI" },
+                { "id": crate::config::JARVIS_PROVIDER_ANTHROPIC, "label": "Anthropic" },
+            ],
+            "model": ai_value_field(&jarvis.model, jarvis.model_source),
+            "models": {
+                "codex": ai_value_field(&jarvis.models.codex.0, jarvis.models.codex.1),
+                "openai": ai_value_field(&jarvis.models.openai.0, jarvis.models.openai.1),
+                "anthropic": ai_value_field(&jarvis.models.anthropic.0, jarvis.models.anthropic.1),
+            },
+            "suggested_models_by_provider": {
+                "codex": codex_models,
+                "openai": crate::ai::SUGGESTED_OPENAI_MODELS,
+                "anthropic": crate::ai::SUGGESTED_ANTHROPIC_MODELS,
+            },
+            "credentials": {
+                "codex": jarvis.credentialed(crate::config::JARVIS_PROVIDER_CODEX),
+                "openai": jarvis.credentialed(crate::config::JARVIS_PROVIDER_OPENAI),
+                "anthropic": jarvis.credentialed(crate::config::JARVIS_PROVIDER_ANTHROPIC),
+            },
+        },
         "voice": {
             "stt_enabled": voice.stt_enabled,
             "tts_enabled": voice.tts_enabled,
@@ -4193,7 +4674,7 @@ fn schedule_codex_models_refresh(state: &AppState) {
     });
 }
 
-/// GET /api/instance/ai — instance-admin view of voice + Ask-AI settings.
+/// GET /api/instance/ai — instance-admin view of voice, Ask-AI and Jarvis settings.
 /// Secrets never leave the server as plaintext; only a masked hint + source.
 async fn get_instance_ai(
     State(state): State<AppState>,
@@ -4269,6 +4750,19 @@ async fn update_instance_ai(
             return Err(err(
                 StatusCode::BAD_REQUEST,
                 &format!("unsupported search provider `{p}` (anthropic, openai, or codex)"),
+            ));
+        }
+    }
+    if let Some(p) = payload
+        .pointer("/jarvis/provider")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if !crate::config::is_supported_jarvis_provider(p) {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("unsupported Jarvis provider `{p}` (codex, openai, or anthropic)"),
             ));
         }
     }
@@ -4545,6 +5039,39 @@ async fn update_instance_ai(
                 c.ai.search
                     .models
                     .set(&model_provider, m.trim().chars().take(120).collect());
+            }
+        }
+        // Jarvis mirrors the Ask AI section, minus secrets: it has none.
+        if let Some(j) = payload.get("jarvis") {
+            if let Some(enabled) = j.get("enabled").and_then(|x| x.as_bool()) {
+                c.ai.jarvis.enabled = enabled;
+            }
+            if let Some(p) = j.get("provider").and_then(|x| x.as_str()).map(str::trim).filter(|p| !p.is_empty()) {
+                c.ai.jarvis.provider = p.to_string();
+            }
+            // `model` writes the active provider's slot (or `model_provider`'s).
+            let model_provider = j
+                .get("model_provider")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|p| crate::config::is_supported_jarvis_provider(p))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let p = c.ai.jarvis.provider.trim();
+                    if crate::config::is_supported_jarvis_provider(p) {
+                        p.to_string()
+                    } else {
+                        crate::config::DEFAULT_JARVIS_PROVIDER.to_string()
+                    }
+                });
+            if let Some(models) = j.get("models").and_then(|x| x.as_object()) {
+                for (prov, val) in models {
+                    if let (true, Some(m)) = (crate::config::is_supported_jarvis_provider(prov), val.as_str()) {
+                        c.ai.jarvis.models.set(prov, m.trim().chars().take(120).collect());
+                    }
+                }
+            } else if let Some(m) = j.get("model").and_then(|x| x.as_str()) {
+                c.ai.jarvis.models.set(&model_provider, m.trim().chars().take(120).collect());
             }
         }
         if let Some(cred) = payload.get("credentials") {
@@ -5770,6 +6297,7 @@ mod tests {
             codex_models_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             auth_limiter,
             upload_limiter,
+            jarvis: Arc::default(),
         };
         (state, dir)
     }
@@ -9431,5 +9959,617 @@ mod tests {
             signin_session_for_email(&state, "late@x.io", Some(stale_token)),
             Err("no_access")
         );
+    }
+
+    // ------------------------------------------------------------ jarvis
+
+    struct JarvisFixture {
+        state: AppState,
+        _dir: tempfile::TempDir,
+        team: String,
+        secret: String,
+        ana_dm: String,
+    }
+
+    /// ana: member of #general only. bob: member of #general and #secret.
+    /// bob owns a DM with "helper"; ana has her own DM too.
+    fn jarvis_fixture() -> JarvisFixture {
+        let (state, dir) = test_state();
+        // Jarvis available (ChatGPT signed in): draft sends are Jarvis-gated.
+        state.config.update(|c| c.ai.search.codex_refresh_token = "rt-test".into());
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.create_user("bob", "Bob", None, "member").unwrap();
+        let group = store.create_group("Team", "", None);
+        let gid = group["id"].as_str().unwrap().to_string();
+        let team = store.create_channel(&gid, "general", "")["id"].as_str().unwrap().to_string();
+        let secret = store.create_channel(&gid, "secret", "")["id"].as_str().unwrap().to_string();
+        store.add_member(&gid, "user", "ana", "member", Some(&team));
+        store.add_member(&gid, "user", "bob", "member", None);
+        store.upsert_agent("helper", "Helper Bot", "test", false, false, 0);
+        store.add_member(&gid, "agent", "helper", "member", None);
+        store.set_agent_dm_policy("helper", true, &[]);
+        // Through the hub so the @ana mention is recorded like a real post.
+        state.hub.post_user_message_opts(&team, "deploy is blocked on review @ana", "bob", Some("Bob"), None,
+            vec![], false, None, false, false);
+        store.add_message(&secret, "the launch codename is PELICAN", "user", "bob", Some("Bob"), None, &[]);
+        let bob_dm = store.open_agent_dm("bob", "helper", "Helper Bot")["id"].as_str().unwrap().to_string();
+        store.add_message(&bob_dm, "bob private DM: salary PELICAN", "user", "bob", Some("Bob"), None, &[]);
+        let ana_dm = store.open_agent_dm("ana", "helper", "Helper Bot")["id"].as_str().unwrap().to_string();
+        JarvisFixture { state, _dir: dir, team, secret, ana_dm }
+    }
+
+    fn jarvis_user(state: &AppState, username: &str) -> AuthedUser {
+        authed_user(state, bearer(&session_headers(state, username)).as_deref().unwrap()).unwrap()
+    }
+
+    fn run_tool(state: &AppState, user: &AuthedUser, name: &str, args: Value) -> (Value, Vec<Value>) {
+        let ctx = crate::jarvis::ToolCtx::new(state, user);
+        let mut cards = Vec::new();
+        let out = ctx.run(name, &args, &mut |c| cards.push(c));
+        (out, cards)
+    }
+
+    #[test]
+    fn jarvis_cached_channel_list_never_outlives_access() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let ctx = crate::jarvis::ToolCtx::new(&f.state, &ana);
+        let mut cards = Vec::new();
+        assert!(ctx.run("list_groups_channels", &json!({}), &mut |c| cards.push(c)).to_string().contains("general"));
+        // Access revoked mid-turn: the cached list still names #general, but
+        // reading or drafting into it re-checks the live gates.
+        let gid = f.state.hub.store.channel(&f.team).unwrap()["group_id"].as_str().unwrap().to_string();
+        f.state.hub.store.remove_member_all(&gid, "user", "ana");
+        let out = ctx.run("read_channel", &json!({"channel": f.team}), &mut |c| cards.push(c));
+        assert!(out["error"].is_string(), "{out}");
+        let out = ctx.run("draft_message", &json!({"channel_id": f.team, "text": "hi"}), &mut |c| cards.push(c));
+        assert!(out["error"].is_string(), "{out}");
+    }
+
+    #[test]
+    fn jarvis_tools_only_see_the_callers_channels() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let (out, _) = run_tool(&f.state, &ana, "read_channel", json!({"channel": f.secret}));
+        assert!(out["error"].is_string(), "{out}");
+        let (out, _) = run_tool(&f.state, &ana, "read_channel", json!({"channel": "secret"}));
+        assert!(out["error"].is_string(), "by name too: {out}");
+        let (out, _) = run_tool(&f.state, &ana, "read_channel", json!({"channel": "#general"}));
+        assert_eq!(out["messages"][0]["text"], "deploy is blocked on review @ana");
+        assert!(out["note"].as_str().unwrap().contains("untrusted"));
+        let secret_root = f.state.hub.store.messages(&f.secret, None, None, 1)[0]["id"].as_i64().unwrap();
+        let (out, _) = run_tool(&f.state, &ana, "read_thread", json!({"thread_id": secret_root}));
+        assert!(out["error"].is_string());
+        let (out, cards) = run_tool(&f.state, &ana, "search_messages", json!({"query": "PELICAN"}));
+        assert_eq!(out["messages"].as_array().unwrap().len(), 0, "{out}");
+        assert!(cards.is_empty());
+        let (out, _) = run_tool(&f.state, &ana, "list_groups_channels", json!({}));
+        let s = out.to_string();
+        assert!(s.contains("general") && !s.contains("secret"), "{s}");
+        let (out, _) = run_tool(&f.state, &ana, "resolve_target", json!({"name": "secret", "kind": "channel"}));
+        assert!(out["candidates"].as_array().unwrap().iter().all(|c| c["id"] != f.secret.as_str()));
+        let (out, cards) = run_tool(&f.state, &ana, "show_digest", json!({"items": [{"channel_id": f.secret, "gist": "x"}]}));
+        assert_eq!(out["shown"], 0);
+        assert!(cards.is_empty());
+        let (out, _) = run_tool(&f.state, &ana, "draft_message", json!({"channel_id": f.secret, "text": "hi"}));
+        assert!(out["error"].is_string());
+        // bob sees #secret.
+        let bob = jarvis_user(&f.state, "bob");
+        let (out, cards) = run_tool(&f.state, &bob, "search_messages", json!({"query": "PELICAN codename"}));
+        assert!(out.to_string().contains("launch codename"));
+        assert_eq!(cards[0]["card"]["kind"], "messages");
+    }
+
+    #[test]
+    fn jarvis_never_leaks_other_users_agent_dms_even_to_admins() {
+        let f = jarvis_fixture();
+        let admin = AuthedUser { username: "root".into(), display_name: "Root".into(), instance_admin: true };
+        let (out, _) = run_tool(&f.state, &admin, "search_messages", json!({"query": "salary"}));
+        assert_eq!(out["messages"].as_array().unwrap().len(), 0, "{out}");
+        let (out, _) = run_tool(&f.state, &admin, "list_groups_channels", json!({}));
+        assert!(!out.to_string().contains("Direct messages"), "{out}");
+        let ana = jarvis_user(&f.state, "ana");
+        let (out, _) = run_tool(&f.state, &ana, "search_messages", json!({"query": "salary"}));
+        assert_eq!(out["messages"].as_array().unwrap().len(), 0);
+        let (out, _) = run_tool(&f.state, &ana, "list_groups_channels", json!({}));
+        assert!(out.to_string().contains(f.ana_dm.as_str()), "own DM is listed: {out}");
+    }
+
+    async fn send_draft(state: &AppState, id: &str, who: &str, body: Option<Value>) -> Result<Json<Value>, ApiError> {
+        jarvis_send_draft(State(state.clone()), Path(id.to_string()), Query(HashMap::new()),
+            session_headers(state, who), body.map(Json)).await
+    }
+
+    fn make_draft(f: &JarvisFixture, who: &str, args: Value) -> (Value, Vec<Value>) {
+        let user = jarvis_user(&f.state, who);
+        run_tool(&f.state, &user, "draft_message", args)
+    }
+
+    #[tokio::test]
+    async fn jarvis_draft_posts_nothing_until_the_owner_confirms() {
+        let f = jarvis_fixture();
+        let before = f.state.hub.store.messages(&f.team, None, None, 200).len();
+        let (out, cards) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "can you look at the deploy?", "mentions": ["helper"]}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        assert_eq!(out["status"], "awaiting_user_confirmation");
+        assert_eq!(cards[0]["card"]["kind"], "draft");
+        assert_eq!(cards[0]["card"]["final_text"], "@helper can you look at the deploy?");
+        assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before, "drafting must not post");
+        // Someone else can neither send nor cancel it.
+        assert_eq!(send_draft(&f.state, &id, "bob", None).await.unwrap_err().0, StatusCode::NOT_FOUND);
+        let cancel = jarvis_cancel_draft(State(f.state.clone()), Path(id.clone()), Query(HashMap::new()), session_headers(&f.state, "bob")).await.unwrap();
+        assert_eq!(cancel.0["cancelled"], false);
+        assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before);
+        // The owner sends it (with an edit), as themselves.
+        let sent = send_draft(&f.state, &id, "ana", Some(json!({"text": "could you check the deploy?"}))).await.unwrap().0;
+        assert_eq!(sent["message"]["author_id"], "ana");
+        assert_eq!(sent["message"]["author_type"], "user");
+        assert_eq!(sent["message"]["text"], "@helper could you check the deploy?");
+        assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before + 1);
+        // Single use.
+        assert_eq!(send_draft(&f.state, &id, "ana", None).await.unwrap_err().0, StatusCode::NOT_FOUND);
+        assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before + 1);
+    }
+
+    #[tokio::test]
+    async fn jarvis_turned_off_stops_issued_drafts_from_sending() {
+        if crate::jarvis::mock_enabled() {
+            return; // the mock flag keeps Jarvis available regardless
+        }
+        let f = jarvis_fixture();
+        let (out, _) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "later"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        f.state.config.update(|c| c.ai.jarvis.enabled = false);
+        let e = send_draft(&f.state, &id, "ana", None).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        assert!(!f.state.hub.store.messages(&f.team, None, None, 200).iter().any(|m| m["text"] == "later"));
+        // Switched back on, the (unexpired) draft can still go.
+        f.state.config.update(|c| c.ai.jarvis.enabled = true);
+        assert_eq!(send_draft(&f.state, &id, "ana", None).await.unwrap().0["message"]["text"], "later");
+    }
+
+    #[tokio::test]
+    async fn jarvis_maximal_draft_with_mentions_is_still_sendable() {
+        let f = jarvis_fixture();
+        let long = "x".repeat(MAX_MESSAGE_CHARS + 500);
+        let (out, _) = make_draft(&f, "bob", json!({"channel_id": f.team, "text": long, "mentions": ["helper"]}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        let sent = send_draft(&f.state, &id, "bob", None).await.expect("a clipped draft fits after the mention prefix").0;
+        let text = sent["message"]["text"].as_str().unwrap();
+        assert!(text.starts_with("@helper ") && text.chars().count() <= MAX_MESSAGE_CHARS, "{}", text.chars().count());
+    }
+
+    #[tokio::test]
+    async fn jarvis_rejected_send_keeps_the_draft_sendable() {
+        let f = jarvis_fixture();
+        let (out, _) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "short"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        let before = f.state.hub.store.messages(&f.team, None, None, 200).len();
+        let long = "x".repeat(MAX_MESSAGE_CHARS + 1);
+        let e = send_draft(&f.state, &id, "ana", Some(json!({"text": long}))).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before, "nothing posted");
+        let sent = send_draft(&f.state, &id, "ana", None).await.expect("still sendable after the 400").0;
+        assert_eq!(sent["message"]["text"], "short");
+        let gone = send_draft(&f.state, &id, "ana", None).await.unwrap_err();
+        assert_eq!(gone.0, StatusCode::NOT_FOUND);
+        assert!(gone.1 .0["detail"].as_str().unwrap().contains("no longer available"));
+    }
+
+    #[tokio::test]
+    async fn jarvis_draft_send_rechecks_expiry_and_access() {
+        let f = jarvis_fixture();
+        let (out, _) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "late"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        f.state.jarvis.expire_draft_for_test(&id);
+        assert_eq!(send_draft(&f.state, &id, "ana", None).await.unwrap_err().0, StatusCode::GONE);
+        // Access revoked between drafting and sending.
+        let (out, _) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "revoked"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        let gid = f.state.hub.store.channel(&f.team).unwrap()["group_id"].as_str().unwrap().to_string();
+        f.state.hub.store.remove_member_all(&gid, "user", "ana");
+        assert_eq!(send_draft(&f.state, &id, "ana", None).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert!(!f.state.hub.store.messages(&f.team, None, None, 200).iter().any(|m| m["text"] == "revoked"));
+        // Unknown mentions and agents outside the channel are refused at draft time.
+        let (out, _) = make_draft(&f, "bob", json!({"channel_id": f.team, "text": "x", "mentions": ["nobody"]}));
+        assert!(out["error"].is_string());
+        // Cancel by the owner removes it.
+        let (out, _) = make_draft(&f, "bob", json!({"channel_id": f.team, "text": "nvm"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        let c = jarvis_cancel_draft(State(f.state.clone()), Path(id.clone()), Query(HashMap::new()), session_headers(&f.state, "bob")).await.unwrap();
+        assert_eq!(c.0["cancelled"], true);
+        assert_eq!(send_draft(&f.state, &id, "bob", None).await.unwrap_err().0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn jarvis_mock_turn_streams_status_digest_and_draft_cards() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let ctx = crate::jarvis::ToolCtx::new(&f.state, &ana);
+        let mut brain = crate::jarvis::MockBrain::default();
+        let mut events = Vec::new();
+        let hint = crate::jarvis::TurnContext { channel_id: Some(f.secret.clone()), thread_id: None };
+        let (items, answer) = crate::jarvis::run_turn(&ctx, &mut brain, vec![], "catch me up", &hint,
+            &mut |e| { events.push(e); true }).unwrap();
+        // A context hint for a channel ana can't see is dropped, not echoed.
+        assert!(!items[0].to_string().contains(&f.secret));
+        let phases: Vec<&str> = events.iter().filter(|e| e["type"] == "status").filter_map(|e| e["phase"].as_str()).collect();
+        assert!(phases.contains(&"thinking") && phases.contains(&"searching") && phases.contains(&"weaving"), "{phases:?}");
+        let digest = events.iter().find(|e| e["type"] == "card").unwrap();
+        assert_eq!(digest["card"]["kind"], "digest");
+        assert_eq!(digest["card"]["items"][0]["channel_name"], "general");
+        assert_eq!(digest["card"]["items"][0]["needs_you"], true);
+        assert!(answer.contains("unread"), "{answer}");
+        assert!(events.iter().any(|e| e["type"] == "delta"));
+        // Follow-up in the same conversation: a draft, never a send.
+        let before = f.state.hub.store.messages(&f.team, None, None, 200).len();
+        let mut events = Vec::new();
+        let (items2, answer) = crate::jarvis::run_turn(&ctx, &mut brain, items.clone(), "tell helper in general to rerun the deploy",
+            &crate::jarvis::TurnContext::default(), &mut |e| { events.push(e); true }).unwrap();
+        assert!(items2.len() > items.len());
+        let card = events.iter().find(|e| e["type"] == "card").expect("draft card");
+        assert_eq!(card["card"]["kind"], "draft");
+        assert_eq!(card["card"]["final_text"], "@helper rerun the deploy");
+        assert!(answer.contains("Drafted"));
+        assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before);
+    }
+
+    #[tokio::test]
+    async fn me_advertises_jarvis_only_when_chatgpt_is_connected() {
+        let (state, _dir) = test_state();
+        state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
+        let me_of = |h| me(State(state.clone()), Query(HashMap::new()), h);
+        let before = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(before["jarvis"], crate::jarvis::mock_enabled());
+        if !crate::jarvis::mock_enabled() {
+            assert!(before["jarvis_hint"].as_str().unwrap().contains("ask an admin"));
+            let admin = me_of(admin_headers(&state)).await.unwrap().0;
+            assert!(admin["jarvis_hint"].as_str().unwrap().contains("Settings → Credentials"));
+        }
+        state.config.update(|c| c.ai.search.codex_refresh_token = "rt-test".into());
+        let after = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(after["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
+        assert!(after["jarvis_hint"].is_null());
+        // Jarvis no longer follows Ask AI's "AI answers" switch…
+        state.config.update(|c| c.ai.search.enabled = false);
+        let ask_off = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(ask_off["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
+        assert_eq!(ask_off["search_ai"], false);
+        if !crate::jarvis::mock_enabled() {
+            // …it obeys its own.
+            state.config.update(|c| {
+                c.ai.search.enabled = true;
+                c.ai.jarvis.enabled = false;
+            });
+            let off = me_of(session_headers(&state, "ana")).await.unwrap().0;
+            assert_eq!(off["jarvis"], false);
+            assert_eq!(off["search_ai"], true, "Ask AI is unaffected");
+            assert!(off["jarvis_hint"].as_str().unwrap().contains("turned off"));
+            let admin = me_of(admin_headers(&state)).await.unwrap().0;
+            assert!(admin["jarvis_hint"].as_str().unwrap().contains("Features → Jarvis"));
+            let turn = jarvis_turn(State(state.clone()), Query(HashMap::new()), session_headers(&state, "ana"),
+                Json(json!({"text": "catch me up"}))).await;
+            let e = turn.err().expect("turn refused while Jarvis is off");
+            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            assert!(e.1 .0["detail"].as_str().unwrap().contains("disabled"));
+        }
+    }
+
+    fn env_has(key: &str) -> bool {
+        std::env::var(key).is_ok_and(|v| !v.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn me_and_turn_gate_on_the_selected_jarvis_providers_credential() {
+        if crate::jarvis::mock_enabled() {
+            return; // the mock brain makes Jarvis available regardless
+        }
+        let (state, _dir) = test_state();
+        state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
+        let me_of = |h| me(State(state.clone()), Query(HashMap::new()), h);
+        // ChatGPT connected, but Jarvis set to Anthropic: the sign-in doesn't count.
+        state.config.update(|c| {
+            c.ai.search.codex_refresh_token = "rt-test".into();
+            c.ai.jarvis.provider = crate::config::JARVIS_PROVIDER_ANTHROPIC.into();
+            c.ai.search.api_key.clear();
+        });
+        if !env_has("ANTHROPIC_API_KEY") {
+            let m = me_of(session_headers(&state, "ana")).await.unwrap().0;
+            assert_eq!(m["jarvis"], false);
+            assert!(m["jarvis_hint"].as_str().unwrap().contains("Anthropic API key"), "{m}");
+            let admin = me_of(admin_headers(&state)).await.unwrap().0;
+            assert!(admin["jarvis_hint"].as_str().unwrap().starts_with("Add an Anthropic API key under Settings → Credentials"));
+            let e = jarvis_turn(State(state.clone()), Query(HashMap::new()), session_headers(&state, "ana"),
+                Json(json!({"text": "hi"}))).await.err().unwrap();
+            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            let detail = e.1 .0["detail"].as_str().unwrap().to_string();
+            assert!(detail.contains("needs an Anthropic API key") && detail.contains("ask an admin"), "{detail}");
+        }
+        // The Anthropic key Ask AI uses is Jarvis's too.
+        state.config.update(|c| c.ai.search.api_key = "ant-test-key".into());
+        let m = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(m["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
+        assert!(m["jarvis_hint"].is_null());
+        // OpenAI uses the shared OpenAI key.
+        state.config.update(|c| {
+            c.ai.jarvis.provider = crate::config::JARVIS_PROVIDER_OPENAI.into();
+            c.ai.voice.api_key.clear();
+        });
+        if !env_has("OPENAI_API_KEY") {
+            assert_eq!(me_of(session_headers(&state, "ana")).await.unwrap().0["jarvis"], false);
+        }
+        state.config.update(|c| c.ai.voice.api_key = "sk-test-key".into());
+        assert_eq!(me_of(session_headers(&state, "ana")).await.unwrap().0["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
+        assert_eq!(require_jarvis(&state, &jarvis_user(&state, "ana")).unwrap(), crate::jarvis::BrainKind::OpenAi);
+    }
+
+    #[test]
+    fn make_brain_uses_jarvis_provider_model_and_shared_credentials() {
+        let (state, _dir) = test_state();
+        state.config.update(|c| {
+            // An access token: no refresh round-trip in the test.
+            c.ai.search.codex_access_token = "at-test".into();
+            c.ai.search.models.codex = "ask-ai-model".into();
+            c.ai.jarvis.models.codex = "gpt-5.6-sol".into();
+            c.ai.search.api_key = "ant-test".into();
+            c.ai.voice.api_key = "sk-test".into();
+        });
+        let brain = make_brain(&state, crate::jarvis::BrainKind::Codex).unwrap();
+        assert_eq!((brain.provider(), brain.model()), ("ChatGPT", "gpt-5.6-sol"), "Jarvis's model, not Ask AI's");
+        let brain = make_brain(&state, crate::jarvis::BrainKind::OpenAi).unwrap();
+        assert_eq!((brain.provider(), brain.model()), ("OpenAI", crate::ai::DEFAULT_OPENAI_SEARCH_MODEL));
+        state.config.update(|c| c.ai.jarvis.models.anthropic = "claude-haiku-4-5-20251001".into());
+        let brain = make_brain(&state, crate::jarvis::BrainKind::Anthropic).unwrap();
+        assert_eq!((brain.provider(), brain.model()), ("Anthropic", "claude-haiku-4-5-20251001"));
+        assert_eq!(make_brain(&state, crate::jarvis::BrainKind::Mock).unwrap().provider(), "the mock assistant");
+        if !env_has("ANTHROPIC_API_KEY") {
+            state.config.update(|c| c.ai.search.api_key.clear());
+            assert!(make_brain(&state, crate::jarvis::BrainKind::Anthropic).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn instance_ai_jarvis_settings_round_trip_admin_only_without_secrets() {
+        let (state, _dir) = test_state();
+        state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
+        let put = |h, body: Value| update_instance_ai(State(state.clone()), Query(HashMap::new()), h, Json(body));
+        let denied = put(session_headers(&state, "ana"), json!({"jarvis": {"enabled": false}})).await;
+        assert_eq!(denied.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert!(state.config.snapshot().ai.jarvis.enabled, "a member's PUT changes nothing");
+        let got = get_instance_ai(State(state.clone()), Query(HashMap::new()), admin_headers(&state)).await.unwrap().0;
+        let j = &got["jarvis"];
+        assert_eq!(j["enabled"], true);
+        assert_eq!(j["provider"], "codex");
+        assert_eq!(j["providers"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["codex", "openai", "anthropic"]);
+        assert_eq!(j["model"]["value"], crate::codex_oauth::DEFAULT_CODEX_MODEL);
+        assert_eq!(j["models"]["anthropic"]["value"], crate::config::DEFAULT_SEARCH_MODEL);
+        assert_eq!(j["credentials"]["codex"], false);
+        assert!(j["suggested_models_by_provider"]["anthropic"].as_array().unwrap().len() > 1);
+
+        let updated = put(admin_headers(&state), json!({
+            "credentials": {"anthropic": {"api_key": "ant-very-secret-key"}},
+            "search": {"enabled": false},
+            "jarvis": {"enabled": true, "provider": "anthropic", "model": "claude-opus-5"},
+        })).await.unwrap().0;
+        let j = &updated["jarvis"];
+        assert_eq!(j["provider"], "anthropic");
+        assert_eq!(j["model"], json!({"value": "claude-opus-5", "source": "config"}));
+        assert_eq!(j["models"]["codex"]["source"], "default", "model writes only the active slot");
+        assert_eq!(j["credentials"]["anthropic"], true);
+        assert_eq!(j["available"], true, "Ask AI being off doesn't matter");
+        assert_eq!(updated["search"]["enabled"], false);
+        assert_eq!(updated["search"]["models"]["anthropic"]["source"], "default", "Ask AI's model is untouched");
+        // Booleans only: no key, hint or token anywhere in the Jarvis section.
+        let text = j.to_string();
+        assert!(!text.contains("ant-very-secret-key") && !text.contains("ant-…"), "{text}");
+        assert!(j["credentials"]["anthropic"].is_boolean());
+
+        // models (per slot) and model_provider; off switch; unknown provider rejected.
+        let updated = put(admin_headers(&state), json!({"jarvis": {
+            "enabled": false, "models": {"openai": "gpt-4.1", "bogus": "x"}, "model": "ignored-when-models-present",
+        }})).await.unwrap().0;
+        assert_eq!(updated["jarvis"]["enabled"], false);
+        assert_eq!(updated["jarvis"]["available"], false);
+        assert_eq!(updated["jarvis"]["models"]["openai"]["value"], "gpt-4.1");
+        assert_eq!(updated["jarvis"]["model"]["value"], "claude-opus-5");
+        let updated = put(admin_headers(&state), json!({"jarvis": {"model": "gpt-6-luna", "model_provider": "codex"}})).await.unwrap().0;
+        assert_eq!(updated["jarvis"]["models"]["codex"]["value"], "gpt-6-luna");
+        assert_eq!(updated["jarvis"]["provider"], "anthropic");
+        let bad = put(admin_headers(&state), json!({"jarvis": {"provider": "gemini"}})).await;
+        let e = bad.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        assert!(e.1 .0["detail"].as_str().unwrap().contains("Jarvis provider"));
+        assert_eq!(state.config.snapshot().ai.jarvis.provider, "anthropic");
+    }
+
+    /// Scripted brain: returns canned rounds, records what it was sent.
+    struct Scripted {
+        rounds: Vec<crate::codex_oauth::ToolTurn>,
+        seen: Vec<Vec<Value>>,
+    }
+
+    impl crate::jarvis::Brain for Scripted {
+        fn step(&mut self, _: &str, input: &[Value], _: &[Value], _: &mut dyn FnMut(&str))
+            -> anyhow::Result<crate::codex_oauth::ToolTurn> {
+            self.seen.push(input.to_vec());
+            Ok(self.rounds.remove(0))
+        }
+        fn provider(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    #[test]
+    fn jarvis_run_turn_keeps_each_rounds_native_content_on_its_first_item() {
+        let (state, _dir) = test_state();
+        let user = AuthedUser { username: "root".into(), display_name: "Root".into(), instance_admin: true };
+        let ctx = crate::jarvis::ToolCtx::new(&state, &user);
+        let native = json!({"provider": "anthropic", "content": [
+            {"type": "thinking", "thinking": "", "signature": "s1"},
+            {"type": "tool_use", "id": "toolu_1", "name": "list_agents", "input": {}}]});
+        let mut brain = Scripted {
+            rounds: vec![
+                crate::codex_oauth::ToolTurn {
+                    calls: vec![crate::codex_oauth::FunctionCall { call_id: "toolu_1".into(), name: "list_agents".into(), arguments: "{}".into() }],
+                    replay: Some(native.clone()),
+                    ..Default::default()
+                },
+                crate::codex_oauth::ToolTurn { text: "Nobody is online.".into(), replay: Some(json!({"provider": "anthropic", "content": [{"type": "text", "text": "Nobody is online."}]})), ..Default::default() },
+            ],
+            seen: vec![],
+        };
+        let (items, answer) = crate::jarvis::run_turn(&ctx, &mut brain, vec![], "who's online", &crate::jarvis::TurnContext::default(), &mut |_| true).unwrap();
+        assert_eq!(answer, "Nobody is online.");
+        assert_eq!(items[1]["type"], "function_call");
+        assert_eq!(items[1]["_replay"], native);
+        assert_eq!(items[2]["type"], "function_call_output");
+        assert!(items[2].get("_replay").is_none());
+        assert_eq!(items[3]["_replay"]["content"][0]["text"], "Nobody is online.");
+        // Round two saw round one's native content, and Anthropic gets it back verbatim.
+        let msgs = crate::jarvis::anthropic_messages(&brain.seen[1]);
+        assert_eq!(msgs[1]["content"], native["content"]);
+    }
+
+    fn jarvis_speech_request(headers: HeaderMap, text: &str) -> Request<Body> {
+        let mut request = Request::post("/api/jarvis/speech")
+            .extension(ConnectInfo("127.0.0.1:12350".parse::<SocketAddr>().unwrap()))
+            .body(Body::from(json!({ "text": text }).to_string()))
+            .unwrap();
+        *request.headers_mut() = headers;
+        request.headers_mut().insert("content-type", "application/json".parse().unwrap());
+        request
+    }
+
+    async fn status_and_body(response: Response) -> (StatusCode, String) {
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn jarvis_voice_routes_need_a_user_and_jarvis() {
+        let (state, _dir, _) = voice_post_fixture();
+        let app = router(state.clone());
+        let (status, _) = status_and_body(app.clone().oneshot(
+            empty_voice_request("/api/jarvis/transcribe".into(), HeaderMap::new()),
+        ).await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = status_and_body(app.clone().oneshot(
+            jarvis_speech_request(HeaderMap::new(), "hello"),
+        ).await.unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        if crate::jarvis::mock_enabled() {
+            return; // the mock brain makes Jarvis available without ChatGPT
+        }
+        let (status, body) = status_and_body(app.clone().oneshot(
+            empty_voice_request("/api/jarvis/transcribe".into(), session_headers(&state, "alice")),
+        ).await.unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("needs ChatGPT"), "{body}");
+        let (status, body) = status_and_body(app.oneshot(
+            jarvis_speech_request(session_headers(&state, "alice"), "hello"),
+        ).await.unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("needs ChatGPT"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn jarvis_voice_routes_explain_disabled_voice_and_cap_speech() {
+        let (state, _dir, _) = voice_post_fixture();
+        state.config.update(|c| {
+            c.ai.search.codex_refresh_token = "rt-test".into();
+            c.ai.voice.stt_enabled = false;
+            c.ai.voice.tts_enabled = false;
+        });
+        let app = router(state.clone());
+        let headers = || session_headers(&state, "alice");
+        if !crate::jarvis::mock_enabled() {
+            let (status, body) = status_and_body(app.clone().oneshot(
+                empty_voice_request("/api/jarvis/transcribe".into(), headers()),
+            ).await.unwrap()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(body.contains("Voice input is disabled"), "{body}");
+            let (status, body) = status_and_body(app.clone().oneshot(
+                jarvis_speech_request(headers(), "Two threads need you."),
+            ).await.unwrap()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(body.contains("Spoken replies are disabled"), "{body}");
+        }
+        // Text limits are checked before any provider is involved.
+        let (status, body) = status_and_body(app.clone().oneshot(
+            jarvis_speech_request(headers(), "   "),
+        ).await.unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Nothing to speak"), "{body}");
+        let long = "a".repeat(crate::jarvis::MAX_SPEECH_CHARS + 1);
+        let (status, body) = status_and_body(app.oneshot(
+            jarvis_speech_request(headers(), &long),
+        ).await.unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("Too much text"), "{body}");
+    }
+
+    #[test]
+    fn jarvis_voice_source_prefers_the_configured_provider_then_the_mock() {
+        let (state, _dir) = test_state();
+        state.config.update(|c| {
+            c.ai.voice.stt_enabled = true;
+            c.ai.voice.tts_enabled = true;
+            c.ai.voice.api_key = String::new();
+            c.ai.voice.groq_api_key = String::new();
+        });
+        let unkeyed = state.config.voice(None, None);
+        assert!(jarvis_stt_source(&unkeyed, false).unwrap_err().contains("not configured"));
+        assert!(jarvis_tts_source(&unkeyed, false).unwrap_err().contains("not configured"));
+        assert_eq!(jarvis_stt_source(&unkeyed, true), Ok(JarvisVoiceSource::Mock));
+        assert_eq!(jarvis_tts_source(&unkeyed, true), Ok(JarvisVoiceSource::Mock));
+        state.config.update(|c| c.ai.voice.api_key = "sk-test".into());
+        let keyed = state.config.voice(None, None);
+        assert_eq!(jarvis_stt_source(&keyed, true), Ok(JarvisVoiceSource::Real));
+        assert_eq!(jarvis_tts_source(&keyed, false), Ok(JarvisVoiceSource::Real));
+        state.config.update(|c| c.ai.voice.tts_enabled = false);
+        let off = state.config.voice(None, None);
+        assert!(jarvis_tts_source(&off, false).unwrap_err().contains("disabled"));
+        assert_eq!(jarvis_stt_source(&off, false), Ok(JarvisVoiceSource::Real));
+    }
+
+    #[tokio::test]
+    async fn me_advertises_jarvis_voice_only_when_usable() {
+        let (state, _dir) = test_state();
+        state.hub.store.create_user("ana", "Ana", None, "member").unwrap();
+        state.config.update(|c| {
+            c.ai.search.codex_refresh_token = "rt-test".into();
+            c.ai.voice.api_key = String::new();
+        });
+        let me_of = |h| me(State(state.clone()), Query(HashMap::new()), h);
+        let usable = std::env::var_os("OPENAI_API_KEY").is_some() || crate::jarvis::mock_enabled();
+        let before = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(before["jarvis_stt"], usable);
+        assert_eq!(before["jarvis_tts"], usable);
+        state.config.update(|c| {
+            c.ai.voice.api_key = "sk-test".into();
+            c.ai.voice.stt_provider = crate::config::VOICE_PROVIDER_OPENAI.into();
+            c.ai.voice.tts_provider = crate::config::VOICE_PROVIDER_OPENAI.into();
+            c.ai.voice.tts_enabled = false;
+        });
+        let after = me_of(session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(after["jarvis_stt"], true);
+        assert_eq!(after["jarvis_tts"], crate::jarvis::mock_enabled());
+    }
+
+    #[test]
+    fn jarvis_mock_voice_is_a_bounded_wav_and_ignores_tiny_clips() {
+        let wav = crate::jarvis::mock_speech_wav("Two threads need you.");
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(crate::voice::audio_content_type(&wav), crate::voice::AUDIO_WAV);
+        let seconds = |w: &[u8]| (w.len() - 44) as f32 / 32_000.0;
+        assert!((0.39..=8.01).contains(&seconds(&wav)));
+        assert!((seconds(&crate::jarvis::mock_speech_wav("ok")) - 0.4).abs() < 0.01);
+        assert!((seconds(&crate::jarvis::mock_speech_wav(&"x".repeat(600))) - 8.0).abs() < 0.01);
+        assert!(crate::jarvis::mock_transcript(200).is_none());
+        assert!(crate::jarvis::mock_transcript(8_000).is_some());
     }
 }

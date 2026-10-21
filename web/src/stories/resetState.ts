@@ -12,6 +12,7 @@ import { useRequireAgent } from "../state/requireAgent";
 import { useToasts } from "../lib/toast";
 import { useAppearance } from "../state/appearance";
 import { useShortcutState } from "../state/shortcuts";
+import { useJarvis } from "../state/jarvis";
 
 const STORAGE_KEYS = [
   "agora_token",
@@ -31,6 +32,9 @@ const STORAGE_KEYS = [
   "agora_speak",
   "agora_thread_require_agent",
   "agoEmojiRecent",
+  "agora_jarvis_enabled",
+  "agora_jarvis_mic_muted",
+  "agora_jarvis_speaker_off",
 ];
 
 /* The preview's own URL, captured before any story play rewrites history.
@@ -83,6 +87,11 @@ export function resetStoryState(): void {
   useVoiceRec.setState({ recordingKey: null, startedAt: 0, busyKey: null });
   useLiveVoice.setState({ scope: null, state: "listening", muted: false });
   useSpeak.setState({ on: false });
+  useJarvis.setState({
+    enabled: false, isOpen: false, phase: "idle", label: "", transcript: "", caption: "", cards: [],
+    conversationId: null, error: null, busy: false, pendingAsk: null, wake: "off", wakeError: null,
+    log: [], spoken: null, micMuted: false, speakerOff: false, listenSeq: 0, micOwned: false,
+  });
   useRequireAgent.getState().resetAll();
   useToasts.setState({ toasts: [] });
 }

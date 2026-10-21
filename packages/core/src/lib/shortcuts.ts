@@ -10,13 +10,14 @@ export interface Shortcut {
   sequence?: string;
   rebindable?: boolean;
   desktopOnly?: boolean;
-  feature?: "voice_stt";
+  feature?: "voice_stt" | "jarvis";
 }
 
 // Mod is Command on macOS and Control elsewhere. Codes name physical keys.
 export const SHORTCUTS: readonly Shortcut[] = [
   { id: "help.sheet", section: "Navigation", label: "Keyboard shortcuts", keys: { mac: "Mod+Slash", other: "Mod+Slash" }, scope: "global", sequence: "?", rebindable: true },
   { id: "search", section: "Navigation", label: "Search conversations", keys: { mac: "Mod+KeyK", other: "Mod+KeyK" }, scope: "global", rebindable: true },
+  { id: "jarvis.open", section: "Navigation", label: "Ask Agora (Jarvis mode)", keys: { mac: "Mod+KeyJ", other: "Mod+KeyJ" }, scope: "global", feature: "jarvis", rebindable: true },
   { id: "nav.inbox", section: "Navigation", label: "Go to Inbox", keys: {}, scope: "notTyping", sequence: "G I" },
   { id: "nav.unreads", section: "Navigation", label: "Go to Unreads", keys: { mac: "Mod+Shift+KeyU", other: "Mod+Shift+KeyU" }, scope: "global", sequence: "G U", rebindable: true },
   { id: "nav.threads", section: "Navigation", label: "Go to Threads", keys: { mac: "Mod+Shift+KeyL", other: "Mod+Shift+KeyL" }, scope: "global", sequence: "G T", rebindable: true },

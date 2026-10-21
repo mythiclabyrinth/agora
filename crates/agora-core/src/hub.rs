@@ -438,7 +438,7 @@ fn resolved_mention_tokens(text: &str, known: &HashSet<String>) -> Vec<String> {
         .collect()
 }
 
-fn mention_token_groups(text: &str) -> Vec<Vec<String>> {
+pub(crate) fn mention_token_groups(text: &str) -> Vec<Vec<String>> {
     let mut out = Vec::new();
     let bytes: Vec<char> = text.chars().collect();
     let mut i = 0;

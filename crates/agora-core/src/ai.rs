@@ -13,9 +13,11 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 const OPENAI_CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
+/// Responses API (API key) — Jarvis's tool loop, same events as Codex.
+pub(crate) const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ANSWER_TOKENS: u32 = 1024;
 

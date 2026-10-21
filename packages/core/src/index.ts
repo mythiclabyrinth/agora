@@ -39,4 +39,5 @@ export * from "./lib/links";
 export * from "./lib/requireAgent";
 export * from "./lib/membershipAccess";
 export * from "./lib/shortcuts";
+export * from "./lib/jarvis";
 export * from "./notifications/actions";

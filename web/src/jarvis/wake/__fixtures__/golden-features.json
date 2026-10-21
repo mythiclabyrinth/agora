@@ -1,0 +1,7 @@
+{
+  "hey_agora_daniel.wav": { "frames": 343, "sha256": "d2c077b4da96aaec1f6ee917e384ae2c00745f46e898264e02c43963a67d8ab7" },
+  "hey_agora_samantha.wav": { "frames": 368, "sha256": "0f6ec0a1f22b908afedfbb7969d5c70f2afceec68a56a4ce035be124de6240c5" },
+  "hey_jarvis_karen.wav": { "frames": 353, "sha256": "f8400891c37012f4d508bd739975075ced03c44dfe96ae8096edd4199f319838" },
+  "near_misses.wav": { "frames": 948, "sha256": "bbc412df3a80a95faa83dc18d03fb5512e696d2dd9dbafa88055709cb8e72883" },
+  "negatives.wav": { "frames": 1777, "sha256": "b77b4b86f06476bd43c6cf4744e40d50c3cded85ca547c204765593667073c46" }
+}

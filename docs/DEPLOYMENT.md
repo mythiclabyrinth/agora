@@ -213,7 +213,9 @@ Voice / Ask AI keys may be set by instance admins in the **Settings** UI
 `openai` or `groq`; TTS can use `openai` or Groq Orpheus. Accent and voice are set
 per instance in Settings → Features (accent is shared across providers). Models and Enabled toggles are set
 per feature in Settings → Features; for Codex OAuth the dropdown prefers the
-live Codex catalog when linked (else a hard-coded fallback).
+live Codex catalog when linked (else a hard-coded fallback). Jarvis mode has its
+own Enabled switch, provider (`codex`, `openai` or `anthropic`) and models in
+Settings → Features → Jarvis, reusing those same credentials.
 Env key fallbacks are **not** folded into `config.json` at boot — see
 [configuration.md](site/configuration.md#voice-and-ask-ai).
 

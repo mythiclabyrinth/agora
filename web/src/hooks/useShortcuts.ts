@@ -7,6 +7,7 @@ import { navigateAgoraHistory, useUiState } from "../state/ui";
 import { useVoiceRec, voiceCancel } from "../state/voiceRec";
 import { getPointerZone, isShortcutMode, overlayOpen, setPointerZone, setShortcutMode } from "../state/shortcutFocus";
 import { isDesktopShell } from "../lib/chime";
+import { useJarvis } from "../state/jarvis";
 
 const editing = (target: EventTarget | null) => target instanceof HTMLElement && !!target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])");
 const typeTarget = (target: EventTarget | null) => target instanceof HTMLElement &&
@@ -91,6 +92,12 @@ export function useShortcuts(): void {
         case "nav.unreads": state.goInbox("unreads"); return true;
         case "nav.threads": state.goInbox("threads"); return true;
         case "settings": state.openPanel("settings"); return true;
+        case "jarvis.open": {
+          if (!me?.jarvis) return false;
+          const jarvis = useJarvis.getState();
+          if (jarvis.isOpen) jarvis.close(); else jarvis.open();
+          return true;
+        }
         case "ui.sidebar": state.toggleSide(); return true;
         case "thread.expand": if (state.threadRoot == null) return false; state.toggleThreadSize(); return true;
         case "thread.close": if (state.threadRoot == null) return false; state.closeThread(); return true;
@@ -203,7 +210,7 @@ export function useShortcuts(): void {
       }
       for (const shortcut of SHORTCUTS) {
         if (overlay && !allowedOverlay(shortcut.id)) continue;
-        if (shortcut.feature === "voice_stt" && !me?.voice_stt) continue;
+        if (shortcut.feature && !me?.[shortcut.feature]) continue;
         if (shortcut.scope === "notTyping" && typing) continue;
         if (shortcut.scope === "inbox" && (typing || state.view.kind !== "inbox")) continue;
         if (shortcut.scope === "composer" && !composerKey()) continue;

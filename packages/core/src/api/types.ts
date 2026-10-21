@@ -25,6 +25,16 @@ export interface Me {
   voice_tts?: boolean;
   /** Ask AI Enabled (credentials checked when the user asks). */
   search_ai?: boolean;
+  /** Jarvis mode (the Agora assistant panel) is usable by this caller: it is
+      switched on, its provider has a credential, and the access policy
+      allows them. */
+  jarvis?: boolean;
+  /** Why Jarvis is unavailable (admins get the fix); null when available. */
+  jarvis_hint?: string | null;
+  /** The assistant panel can transcribe speech (/api/jarvis/transcribe). */
+  jarvis_stt?: boolean;
+  /** The assistant panel can speak replies (/api/jarvis/speech). */
+  jarvis_tts?: boolean;
   /** Operator-configured MapLibre style URL for map artifacts; empty/absent
       means clients fall back to the coordinate-only SVG map. */
   map_style_url?: string;
@@ -853,10 +863,29 @@ export interface InstanceAiCredentials {
   };
 }
 
-/** GET /api/instance/ai — instance-admin voice + Ask-AI settings. */
+export type JarvisProvider = "codex" | "openai" | "anthropic";
+
+/** Jarvis mode's brain: its own switch, provider and per-provider models.
+    Credentials are shared with the Credentials tab; only whether each
+    provider has one is reported. */
+export interface InstanceAiJarvis {
+  enabled: boolean;
+  /** Enabled and the selected provider has a credential. */
+  available: boolean;
+  provider: string;
+  providers: InstanceAiProviderOption[];
+  model: AiValueField;
+  models: Record<JarvisProvider, AiValueField>;
+  suggested_models_by_provider: Record<string, string[]>;
+  credentials: Record<JarvisProvider, boolean>;
+}
+
+/** GET /api/instance/ai — instance-admin voice, Ask-AI and Jarvis settings. */
 export interface InstanceAiSettings {
   voice: InstanceAiVoice;
   search: InstanceAiSearch;
+  /** Absent on servers that predate Jarvis provider settings. */
+  jarvis?: InstanceAiJarvis;
   credentials: InstanceAiCredentials;
 }
 
@@ -887,6 +916,13 @@ export type InstanceAiUpdate = {
     model_provider?: string;
     models?: Partial<Record<"anthropic" | "openai" | "codex", string>>;
     clear_oauth?: boolean;
+  };
+  jarvis?: {
+    enabled?: boolean;
+    provider?: string;
+    model?: string;
+    model_provider?: string;
+    models?: Partial<Record<JarvisProvider, string>>;
   };
   credentials?: {
     openai?: { api_key?: string; clear_key?: boolean };
