@@ -1785,6 +1785,13 @@ fn jarvis_hint(user: &AuthedUser, search: &crate::config::ResolvedSearchAi) -> V
     if !crate::jarvis::user_allowed(user) || crate::jarvis::brain_kind(search).is_some() {
         return Value::Null;
     }
+    if !search.enabled {
+        return json!(if user.instance_admin {
+            "AI answers are turned off for this instance; turn them on under Settings → Features to use Jarvis mode."
+        } else {
+            "AI answers are turned off for this instance."
+        });
+    }
     json!(if user.instance_admin {
         "Connect ChatGPT under Settings → Credentials to enable Jarvis mode."
     } else {
@@ -1796,7 +1803,11 @@ fn require_jarvis(state: &AppState, user: &AuthedUser) -> Result<crate::jarvis::
     if !crate::jarvis::user_allowed(user) {
         return Err(err(StatusCode::FORBIDDEN, "Jarvis mode is limited to instance admins"));
     }
-    crate::jarvis::brain_kind(&resolved_search_ai(state)).ok_or_else(|| {
+    let search = resolved_search_ai(state);
+    if !search.enabled && !crate::jarvis::mock_enabled() {
+        return Err(err(StatusCode::BAD_REQUEST, "AI answers are disabled for this instance"));
+    }
+    crate::jarvis::brain_kind(&search).ok_or_else(|| {
         err(
             StatusCode::BAD_REQUEST,
             if user.instance_admin {
@@ -1808,7 +1819,8 @@ fn require_jarvis(state: &AppState, user: &AuthedUser) -> Result<crate::jarvis::
     })
 }
 
-/// Serializes Jarvis's ChatGPT token refreshes (refresh tokens are single-use).
+/// Serializes every ChatGPT token refresh (refresh tokens are single-use):
+/// taken by `refresh_codex_if_needed` and `force_refresh_codex`.
 static CODEX_REFRESHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Force a Codex token refresh after `stale` was rejected mid-turn.
@@ -1841,16 +1853,8 @@ fn make_brain(state: &AppState, kind: crate::jarvis::BrainKind) -> anyhow::Resul
     match kind {
         crate::jarvis::BrainKind::Mock => Ok(Box::new(crate::jarvis::MockBrain::with_delay(Duration::from_millis(45)))),
         crate::jarvis::BrainKind::Codex => {
-            let mut search = resolved_search_ai(state);
-            let (access, account) = if search.access_token.is_some() {
-                refresh_codex_if_needed(state, &search)?
-            } else {
-                // No access token yet (just connected): mint one under the
-                // refresh lock, re-reading in case a concurrent turn did.
-                let _guard = CODEX_REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
-                search = resolved_search_ai(state);
-                refresh_codex_if_needed(state, &search)?
-            };
+            let search = resolved_search_ai(state);
+            let (access, account) = refresh_codex_if_needed(state, &search)?;
             let can_refresh = !state.config.snapshot().ai.search.codex_refresh_token.trim().is_empty();
             let refresh_state = state.clone();
             Ok(Box::new(crate::jarvis::CodexBrain {
@@ -1916,7 +1920,7 @@ async fn jarvis_turn(
             }
         };
         let prior = state.jarvis.conversation(&conversation_id, &user.username);
-        let ctx = crate::jarvis::ToolCtx { state: &state, user: &user };
+        let ctx = crate::jarvis::ToolCtx::new(&state, &user);
         match crate::jarvis::run_turn(&ctx, brain.as_mut(), prior, &text, &hint, &mut emit) {
             Ok((items, answer)) => {
                 state.jarvis.save_conversation(&conversation_id, &user.username, items);
@@ -4299,6 +4303,14 @@ fn refresh_codex_if_needed(
     state: &AppState,
     search: &crate::config::ResolvedSearchAi,
 ) -> anyhow::Result<(String, String)> {
+    if let Some(access) = &search.access_token {
+        return Ok((access.clone(), search.account_id.clone()));
+    }
+    // Refresh tokens are single-use: every caller (Ask AI, the models poll,
+    // the connection test, Jarvis) refreshes under one lock, and re-reads
+    // first in case the holder before it already stored a fresh token.
+    let _guard = CODEX_REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
+    let search = &resolved_search_ai(state);
     if let Some(access) = &search.access_token {
         return Ok((access.clone(), search.account_id.clone()));
     }
@@ -9866,10 +9878,27 @@ mod tests {
     }
 
     fn run_tool(state: &AppState, user: &AuthedUser, name: &str, args: Value) -> (Value, Vec<Value>) {
-        let ctx = crate::jarvis::ToolCtx { state, user };
+        let ctx = crate::jarvis::ToolCtx::new(state, user);
         let mut cards = Vec::new();
         let out = ctx.run(name, &args, &mut |c| cards.push(c));
         (out, cards)
+    }
+
+    #[test]
+    fn jarvis_cached_channel_list_never_outlives_access() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let ctx = crate::jarvis::ToolCtx::new(&f.state, &ana);
+        let mut cards = Vec::new();
+        assert!(ctx.run("list_groups_channels", &json!({}), &mut |c| cards.push(c)).to_string().contains("general"));
+        // Access revoked mid-turn: the cached list still names #general, but
+        // reading or drafting into it re-checks the live gates.
+        let gid = f.state.hub.store.channel(&f.team).unwrap()["group_id"].as_str().unwrap().to_string();
+        f.state.hub.store.remove_member_all(&gid, "user", "ana");
+        let out = ctx.run("read_channel", &json!({"channel": f.team}), &mut |c| cards.push(c));
+        assert!(out["error"].is_string(), "{out}");
+        let out = ctx.run("draft_message", &json!({"channel_id": f.team, "text": "hi"}), &mut |c| cards.push(c));
+        assert!(out["error"].is_string(), "{out}");
     }
 
     #[test]
@@ -10003,7 +10032,7 @@ mod tests {
     fn jarvis_mock_turn_streams_status_digest_and_draft_cards() {
         let f = jarvis_fixture();
         let ana = jarvis_user(&f.state, "ana");
-        let ctx = crate::jarvis::ToolCtx { state: &f.state, user: &ana };
+        let ctx = crate::jarvis::ToolCtx::new(&f.state, &ana);
         let mut brain = crate::jarvis::MockBrain::default();
         let mut events = Vec::new();
         let hint = crate::jarvis::TurnContext { channel_id: Some(f.secret.clone()), thread_id: None };
@@ -10046,6 +10075,18 @@ mod tests {
         let after = me_of(session_headers(&state, "ana")).await.unwrap().0;
         assert_eq!(after["jarvis"], !crate::jarvis::JARVIS_ADMINS_ONLY);
         assert!(after["jarvis_hint"].is_null());
+        if !crate::jarvis::mock_enabled() {
+            // The instance's "AI answers" switch turns Jarvis off too.
+            state.config.update(|c| c.ai.search.enabled = false);
+            let off = me_of(session_headers(&state, "ana")).await.unwrap().0;
+            assert_eq!(off["jarvis"], false);
+            assert!(off["jarvis_hint"].as_str().unwrap().contains("turned off"));
+            let turn = jarvis_turn(State(state.clone()), Query(HashMap::new()), session_headers(&state, "ana"),
+                Json(json!({"text": "catch me up"}))).await;
+            let e = turn.err().expect("turn refused while AI answers are off");
+            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            assert!(e.1 .0["detail"].as_str().unwrap().contains("disabled"));
+        }
     }
 
     fn jarvis_speech_request(headers: HeaderMap, text: &str) -> Request<Body> {

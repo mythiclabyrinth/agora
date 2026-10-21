@@ -205,7 +205,7 @@ Albert) is likely a TTS artifact.
 
 ### Real browsers (`tools/wake-wasm/browser-e2e.mjs`)
 
-`npm run build && node tools/wake-wasm/browser-e2e.mjs 20` serves `web/dist`
+`VITE_WAKE_DEBUG=1 npm run build && node tools/wake-wasm/browser-e2e.mjs 20` serves `web/dist`
 with `vite preview`, opens the dev panel headless, and loops a fixture into
 the real AudioWorklet → worker → wasm path for 20 s:
 
@@ -273,6 +273,10 @@ next click or key (emulated in Chromium).
 source .worktree-env && npm run dev -w web -- --port "$AGORA_WEB_PORT"
 # open http://127.0.0.1:$AGORA_WEB_PORT/?wakeDebug=1 (sticks; ?wakeDebug=0 clears)
 ```
+
+The query flag only works on the dev server: production builds mount the
+harness only when built with `VITE_WAKE_DEBUG=1`, because it can open the
+mic outside Jarvis mode.
 
 The panel (bottom right) has Start mic, model choice (Hey Agora / Hey
 Jarvis), the cutoff slider, live score and 3 s peak bars with the cutoff

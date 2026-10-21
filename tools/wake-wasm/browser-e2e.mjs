@@ -6,7 +6,8 @@
 // fixture WAVs into it, either as a MediaStream (?wakeFeed, both engines) or
 // through Chromium's fake microphone (getUserMedia path).
 //
-//   npm run build && node tools/wake-wasm/browser-e2e.mjs [seconds=20]
+//   VITE_WAKE_DEBUG=1 npm run build && node tools/wake-wasm/browser-e2e.mjs [seconds=20]
+//   (production builds only mount the dev panel with VITE_WAKE_DEBUG=1)
 //
 // Prints detections, inference time per step and worker load per scenario,
 // and exits non-zero if a positive clip was never heard or a negative was.

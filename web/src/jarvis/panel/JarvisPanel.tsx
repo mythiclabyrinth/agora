@@ -15,7 +15,7 @@ import { useAppearance } from "../../state/appearance";
 import { useJarvis, type JarvisLogEntry } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
 import {
-  abortTurn, closeVoice, configureVoice, listen, runTurn, silenceSpeech, stopListening,
+  closeVoice, configureVoice, listen, newConversation, runTurn, silenceSpeech, stopListening,
 } from "../voice/conversation";
 import { JarvisCardView } from "./JarvisCards";
 import { jarvisLevel } from "./level";
@@ -187,7 +187,7 @@ function OpenPanel() {
             <Icon name={tts && !s.speakerOff ? "volume-2" : "volume-x"} />
           </button>
           {(s.conversationId || s.cards.length > 0 || s.log.length > 0) && (
-            <button className="btn sm" title="Start over" onClick={() => { abortTurn(); useJarvis.getState().reset(); }}>New</button>
+            <button className="btn sm" title="Start over" onClick={() => newConversation(api)}>New</button>
           )}
           <button className="jv-close" aria-label="Close assistant (Esc)" onClick={() => useJarvis.getState().close()}><Icon name="x" /></button>
         </div>

@@ -69,6 +69,15 @@ One Rust core, three clients (see the repo layout table in the
 - **Auth** (`auth.rs`) — HMAC session tokens that embed the user's
   `session_version` (bumping it revokes their sessions), Google OAuth state
   encoding, and Apple JWT verification. See [AUTH.md](AUTH.md) for the flows.
+- **Jarvis mode** (`jarvis.rs`) — the voice assistant panel's brain:
+  `POST /api/jarvis/turn` streams (SSE) a tool-using turn on the instance's
+  ChatGPT connection (`codex_oauth.rs`), obeying the same "AI answers"
+  switch as Ask AI. Every tool reads through the caller's own `require_*`
+  gates; the model can only *draft*, and `POST /api/jarvis/drafts/{id}/send`
+  posts as the user after they confirm. `/api/jarvis/transcribe` and
+  `/api/jarvis/speech` reuse `voice.rs`. Conversations and drafts are
+  in-memory and expiring. The client lives in `web/src/jarvis/` (panel,
+  voice loop, and the on-device wake word, see [JARVIS_WAKE.md](JARVIS_WAKE.md)).
 
 The mobile client keeps its own split: react-query for server data (the
 hooks live in `@agora/core`), zustand for the session

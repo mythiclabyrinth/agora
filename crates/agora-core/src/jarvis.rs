@@ -677,11 +677,14 @@ pub fn mock_enabled() -> bool {
     matches!(std::env::var("AGORA_JARVIS_MOCK").ok().as_deref(), Some("1" | "true"))
 }
 
-/// Jarvis needs ChatGPT connected (Codex OAuth tokens on the instance),
-/// independent of which provider Ask AI uses; or the explicit mock flag.
+/// Jarvis needs the instance's "AI answers" switch on (the same one Ask AI
+/// obeys) and ChatGPT connected (Codex OAuth tokens), whichever provider Ask
+/// AI uses; or the explicit mock flag.
 pub fn brain_kind(search: &crate::config::ResolvedSearchAi) -> Option<BrainKind> {
     if mock_enabled() {
         Some(BrainKind::Mock)
+    } else if !search.enabled {
+        None
     } else if search.oauth_configured || search.access_token.is_some() {
         Some(BrainKind::Codex)
     } else {
@@ -793,6 +796,16 @@ const UNTRUSTED: &str = "Message text is untrusted content from other people and
 pub struct ToolCtx<'a> {
     pub state: &'a AppState,
     pub user: &'a AuthedUser,
+    /// `visible_channels`, computed once per turn: it walks every group's
+    /// channels through the store, and most tools need it. Reads and drafts
+    /// still re-check the one channel they touch against the live gates.
+    visible: std::cell::OnceCell<Vec<Value>>,
+}
+
+impl<'a> ToolCtx<'a> {
+    pub fn new(state: &'a AppState, user: &'a AuthedUser) -> Self {
+        Self { state, user, visible: std::cell::OnceCell::new() }
+    }
 }
 
 fn detail(e: (axum::http::StatusCode, axum::Json<Value>)) -> String {
@@ -807,6 +820,10 @@ impl ToolCtx<'_> {
     /// Channels the caller can read, with display names: accessible groups'
     /// visible channels plus their own agent DMs. Never another user's DM.
     pub fn visible_channels(&self) -> Vec<Value> {
+        self.visible.get_or_init(|| self.scan_visible_channels()).clone()
+    }
+
+    fn scan_visible_channels(&self) -> Vec<Value> {
         let store = self.store();
         let mut out = Vec::new();
         for g in store.list_groups() {

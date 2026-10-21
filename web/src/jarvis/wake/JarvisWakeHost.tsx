@@ -6,7 +6,7 @@
    near-miss phrases to ship (docs/JARVIS_WAKE.md), and stays behind the
    ?wakeDebug=1 harness until it is retrained. */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useMe } from "@agora/core";
 import { playChime } from "../../lib/chime";
 import { useJarvis } from "../../state/jarvis";
@@ -26,6 +26,8 @@ export function JarvisWakeHost() {
   // The panel's voice loop holds its own capture while a conversation runs.
   const micOwned = useJarvis(s => s.micOwned);
   const on = available && enabled;
+  const wakeRef = useRef<WakeDetector | null>(null);
+  const voiceInRef = useRef(false);
 
   useEffect(() => {
     if (!on) {
@@ -78,6 +80,3 @@ export function JarvisWakeHost() {
 
   return null;
 }
-
-const wakeRef: { current: WakeDetector | null } = { current: null };
-const voiceInRef = { current: false };

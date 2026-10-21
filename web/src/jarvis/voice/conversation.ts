@@ -17,7 +17,7 @@
    (state/jarvis.ts) carries everything the panel renders. */
 
 import {
-  jarvisSpeech, jarvisTranscribe, jarvisTurn, type ApiClient,
+  jarvisSpeech, jarvisTranscribe, jarvisTurn, resetJarvisConversation, type ApiClient,
 } from "@agora/core";
 import { sessionToken } from "../../lib/auth";
 import { armChimeNow, playChime } from "../../lib/chime";
@@ -141,15 +141,19 @@ function closeMic(): void {
     window and skips the chime: the conversation is already going. */
 export async function listen(reason: "open" | "followUp" = "open"): Promise<void> {
   if (!canListen()) return;
+  // Mid-turn (a wake or an unmute while it answers): no chime, since the
+  // capture waits for the follow-up, but the mic still opens so talking
+  // over the answer interrupts it.
+  const busy = useJarvis.getState().busy;
   wantMic = true;
-  if (reason === "open") {
+  if (reason === "open" && !busy) {
     armChimeNow();
     playChime(0.5);
   }
   const m = await openMic();
   if (!m || !wantMic || !canListen()) return;
   if (capture === "recording" || capture === "transcribing") return;
-  if (useJarvis.getState().busy) return; // a turn is running; the follow-up comes after it
+  if (useJarvis.getState().busy) return; // a turn started while the mic opened
   capture = "waiting";
   endpointer.reset();
   listenUntil = performance.now() + (reason === "followUp" ? FOLLOW_UP_MS : OPEN_WINDOW_MS);
@@ -381,6 +385,16 @@ export function abortTurn(): void {
   turnAbort = null;
   stopSpeech();
   useJarvis.getState().endTurn();
+}
+
+/** The panel's "New": abort the turn, tell the server to forget the
+    conversation (it would otherwise keep the transcript for its idle TTL),
+    and reset the session. Fire-and-forget: a failed delete just expires. */
+export function newConversation(api: ApiClient): void {
+  abortTurn();
+  const id = useJarvis.getState().conversationId;
+  if (id) void resetJarvisConversation(api, id).catch(() => {});
+  useJarvis.getState().reset();
 }
 
 // ------------------------------------------------------------------ speech

@@ -312,8 +312,11 @@ export class WakeEngine {
 
     const sums = this.detectors.map((d) => d.sum);
     const windows = this.detectors.map((d) => d.m.window);
+    // The meter shows the best model; a detection only goes to one that is
+    // above the cutoff right now (a model that crossed and fell back is out).
     const best = wakeArbitrate(sums, windows, this.detectors.map(() => true));
     this._score = best < 0 ? 0 : Math.floor(sums[best] / windows[best]);
+    const winner = wakeArbitrate(sums, windows, this.detectors.map((d) => d.sum > cutoff * d.m.window));
     const crossed = this.detectors.some((d) => d.crossPos);
     if (this.warmup || !crossed) return -1;
 
@@ -329,7 +332,12 @@ export class WakeEngine {
       return -1;
     }
     this.arbitrateLeft = -1;
-    return best;
+    if (winner < 0) {
+      // Every crossing fell back below the cutoff while it was being decided.
+      for (const d of this.detectors) d.crossPos = 0;
+      return -1;
+    }
+    return winner;
   }
 }
 

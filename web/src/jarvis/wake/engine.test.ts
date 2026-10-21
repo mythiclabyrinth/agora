@@ -36,6 +36,24 @@ const quiet = (ms: number) => new Int16Array(ms * 16);
 const msOfStep = (step: number) => step * 30;
 
 describe("WakeEngine policy (Wake.cpp)", () => {
+  it("with several models, a crossing that falls back below the cutoff before the decision fires nothing", () => {
+    // A spikes for five steps then drops to 0; B never rises. By the end of
+    // the arbitration wait A's window holds zeros again.
+    const a = scripted("a", (s) => (s >= 40 && s < 45 ? 255 : 0));
+    const b = scripted("b", () => 10);
+    const e = new WakeEngine(frontend, [a, b], { vad: false });
+    expect(e.feed(loud(4000))).toEqual([]);
+  });
+
+  it("with several models, the decision goes to the one above the cutoff at that moment", () => {
+    const a = scripted("a", (s) => (s >= 40 && s < 45 ? 255 : 0));
+    const b = scripted("b", (s) => (s >= 42 && s < 60 ? 255 : 0));
+    const e = new WakeEngine(frontend, [a, b], { vad: false });
+    const d = e.feed(loud(4000));
+    expect(d).toHaveLength(1);
+    expect(d[0].id).toBe("b");
+  });
+
   it("fires once the window sum passes cutoff * window, strictly", () => {
     // 242 * 5 = 1210 is the line at 0.95; five 242s sit on it and do not fire.
     const on = scripted("a", (s) => (s >= 40 && s < 45 ? 242 : s >= 60 && s < 65 ? 243 : 0));
