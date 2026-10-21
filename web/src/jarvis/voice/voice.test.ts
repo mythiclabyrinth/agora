@@ -99,6 +99,18 @@ describe("sentence chunker", () => {
   });
 });
 
+describe("endpointer reset", () => {
+  it("does not charge the gap before a reset to the next utterance", () => {
+    const e = createEndpointer();
+    e.step(0, 0);
+    e.step(0, 50);
+    e.reset();
+    expect(e.step(0.05, 300)).toBe("start");
+    e.step(0.05, 350);
+    expect(e.voicedMs).toBe(50);
+  });
+});
+
 describe("long sentences", () => {
   it("cuts a run-on read-back into speakable pieces whose offsets index the answer", () => {
     const body = Array.from({ length: 90 }, (_, i) => `word${i}`).join(" ") + ", and then " +

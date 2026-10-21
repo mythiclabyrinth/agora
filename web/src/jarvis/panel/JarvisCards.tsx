@@ -55,14 +55,14 @@ function MessageRow({ hit }: { hit: JarvisMessageHit }) {
   );
 }
 
-function useCountdown(seconds: number): number {
-  const [startedAt] = useState(() => Date.now());
+/** Seconds left until `expiresAt` (ms since epoch). */
+function useCountdown(expiresAt: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
-  return Math.max(0, Math.round(seconds - (now - startedAt) / 1000));
+  return Math.max(0, Math.round((expiresAt - now) / 1000));
 }
 
 /** Confirm a draft (the card's Send, or a spoken "send it"): the server
@@ -111,7 +111,8 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
   const setCardText = useJarvis(s => s.setCardText);
   const text = entry.text ?? card.text;
   const [editing, setEditing] = useState(false);
-  const left = useCountdown(card.expires_in);
+  const [fallbackExpiry] = useState(() => Date.now() + card.expires_in * 1000);
+  const left = useCountdown(entry.expiresAt ?? fallbackExpiry);
   const status = entry.status ?? "pending";
   const live = status === "pending" && left > 0;
 
@@ -134,7 +135,7 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
           {card.mentions.map(m => <span key={m.id} className="jv-mention" title={m.kind === "agent" ? "Agent" : "Person"}>@{m.handle}</span>)}
         </div>
       )}
-      <textarea className="jv-draft-text" value={text} readOnly={!editing || !live} rows={Math.min(6, Math.max(2, Math.ceil(text.length / 60)))}
+      <textarea className="jv-draft-text" value={text} maxLength={20000} readOnly={!editing || !live} rows={Math.min(6, Math.max(2, Math.ceil(text.length / 60)))}
         aria-label="Draft message" onChange={e => setCardText(entry.id, e.target.value)} />
       <div className="jv-draft-actions">
         {status === "sent" && <span className="jv-done"><Icon name="check" /> Sent</span>}

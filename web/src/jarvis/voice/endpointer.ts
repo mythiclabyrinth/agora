@@ -96,6 +96,9 @@ export function createEndpointer(options: EndpointerOptions = {}): Endpointer {
       speaking = false;
       bargeRun = 0;
       voiced = 0;
+      // Otherwise the next step charges the gap since the last one (up to
+      // 250 ms) to the new utterance.
+      lastAt = null;
     },
     get speaking() { return speaking; },
     get voicedMs() { return voiced; },

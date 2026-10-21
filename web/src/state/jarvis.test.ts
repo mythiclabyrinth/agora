@@ -153,6 +153,8 @@ describe("useJarvis", () => {
     } });
     const id = useJarvis.getState().cards[0].id;
     expect(useJarvis.getState().cards[0].text).toBeUndefined();
+    const expiresAt = useJarvis.getState().cards[0].expiresAt ?? 0;
+    expect(Math.abs(expiresAt - (Date.now() + 120_000))).toBeLessThan(1000);
     useJarvis.getState().setCardText(id, "ship it after the review");
     expect(useJarvis.getState().cards[0].text).toBe("ship it after the review");
   });

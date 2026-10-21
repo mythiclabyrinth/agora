@@ -1808,13 +1808,15 @@ fn require_jarvis(state: &AppState, user: &AuthedUser) -> Result<crate::jarvis::
     })
 }
 
+/// Serializes Jarvis's ChatGPT token refreshes (refresh tokens are single-use).
+static CODEX_REFRESHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Force a Codex token refresh after `stale` was rejected mid-turn.
 /// ChatGPT refresh tokens are single-use, so concurrent turns that all hit
 /// an expired token must not each refresh: one does, under a lock, and the
 /// rest pick up the token it stored.
 fn force_refresh_codex(state: &AppState, stale: &str) -> anyhow::Result<(String, String)> {
-    static REFRESHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = CODEX_REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
     let (current, refresh, account) = {
         let snap = state.config.snapshot();
         (
@@ -1839,8 +1841,16 @@ fn make_brain(state: &AppState, kind: crate::jarvis::BrainKind) -> anyhow::Resul
     match kind {
         crate::jarvis::BrainKind::Mock => Ok(Box::new(crate::jarvis::MockBrain::with_delay(Duration::from_millis(45)))),
         crate::jarvis::BrainKind::Codex => {
-            let search = resolved_search_ai(state);
-            let (access, account) = refresh_codex_if_needed(state, &search)?;
+            let mut search = resolved_search_ai(state);
+            let (access, account) = if search.access_token.is_some() {
+                refresh_codex_if_needed(state, &search)?
+            } else {
+                // No access token yet (just connected): mint one under the
+                // refresh lock, re-reading in case a concurrent turn did.
+                let _guard = CODEX_REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
+                search = resolved_search_ai(state);
+                refresh_codex_if_needed(state, &search)?
+            };
             let can_refresh = !state.config.snapshot().ai.search.codex_refresh_token.trim().is_empty();
             let refresh_state = state.clone();
             Ok(Box::new(crate::jarvis::CodexBrain {
@@ -1889,8 +1899,13 @@ async fn jarvis_turn(
         channel_id: payload["context"]["channel_id"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
         thread_id: payload["context"]["thread_id"].as_i64(),
     };
+    let permit = state.jarvis.begin_turn(&user.username).ok_or_else(|| {
+        err(StatusCode::TOO_MANY_REQUESTS, "The assistant is still working on your last request — try again in a moment")
+    })?;
     let (tx, rx) = unbounded_channel::<Value>();
     tokio::task::spawn_blocking(move || {
+        // Held for the whole turn; dropped on every exit, disconnects included.
+        let _permit = permit;
         let mut emit = |ev: Value| tx.send(ev).is_ok();
         emit(crate::jarvis::ev_start(&conversation_id));
         let mut brain = match make_brain(&state, kind) {
@@ -1952,10 +1967,14 @@ async fn jarvis_send_draft(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     let payload = body.map(|Json(v)| v).unwrap_or_default();
-    let draft = state.jarvis.take_draft(&draft_id, &user.username).map_err(|e| match e {
-        crate::jarvis::DraftError::NotFound => err(StatusCode::NOT_FOUND, "This draft was already sent, cancelled, or isn't yours"),
+    let draft_err = |e| match e {
+        crate::jarvis::DraftError::NotFound => err(StatusCode::NOT_FOUND, "This draft is no longer available — it was sent, cancelled, or isn't yours"),
         crate::jarvis::DraftError::Expired => err(StatusCode::GONE, "This draft expired — ask again to redraft it"),
-    })?;
+    };
+    // Every check runs against a peeked copy, so a rejected send (too long,
+    // thread gone, access lost) leaves the draft sendable; it is claimed
+    // atomically only once nothing can stop the post.
+    let draft = state.jarvis.peek_draft(&draft_id, &user.username).map_err(draft_err)?;
     require_channel_postable(&state, &user, &draft.channel_id)?;
     let thread_id = resolve_thread(&state, &draft.channel_id, draft.thread_id)?;
     let edited = payload["text"].as_str().map(str::trim).filter(|t| !t.is_empty());
@@ -1963,6 +1982,7 @@ async fn jarvis_send_draft(
     if text.chars().count() > MAX_MESSAGE_CHARS {
         return Err(err(StatusCode::BAD_REQUEST, "Message too long"));
     }
+    let draft = state.jarvis.take_draft(&draft_id, &user.username).map_err(draft_err)?;
     let timezone = client_timezone(payload["timezone"].as_str().unwrap_or(""));
     let hub = Arc::clone(&state.hub);
     let channel_id = draft.channel_id.clone();
@@ -9935,6 +9955,23 @@ mod tests {
         // Single use.
         assert_eq!(send_draft(&f.state, &id, "ana", None).await.unwrap_err().0, StatusCode::NOT_FOUND);
         assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before + 1);
+    }
+
+    #[tokio::test]
+    async fn jarvis_rejected_send_keeps_the_draft_sendable() {
+        let f = jarvis_fixture();
+        let (out, _) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "short"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        let before = f.state.hub.store.messages(&f.team, None, None, 200).len();
+        let long = "x".repeat(MAX_MESSAGE_CHARS + 1);
+        let e = send_draft(&f.state, &id, "ana", Some(json!({"text": long}))).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before, "nothing posted");
+        let sent = send_draft(&f.state, &id, "ana", None).await.expect("still sendable after the 400").0;
+        assert_eq!(sent["message"]["text"], "short");
+        let gone = send_draft(&f.state, &id, "ana", None).await.unwrap_err();
+        assert_eq!(gone.0, StatusCode::NOT_FOUND);
+        assert!(gone.1 .0["detail"].as_str().unwrap().contains("no longer available"));
     }
 
     #[tokio::test]

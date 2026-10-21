@@ -141,7 +141,7 @@ impl Draft {
             .mentions
             .iter()
             .map(|m| format!("@{}", m.handle))
-            .filter(|h| !lower.contains(&h.to_lowercase()))
+            .filter(|h| !mentions_handle(&lower, &h.to_lowercase()))
             .collect();
         if missing.is_empty() {
             body.to_string()
@@ -149,6 +149,17 @@ impl Draft {
             format!("{} {body}", missing.join(" "))
         }
     }
+}
+
+/// `@handle` appears as a whole token: "@helper" is not satisfied by
+/// "@helperbot", which would leave the meant agent unaddressed.
+fn mentions_handle(lower_body: &str, lower_handle: &str) -> bool {
+    lower_body.match_indices(lower_handle).any(|(at, m)| {
+        lower_body[at + m.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-'))
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -163,6 +174,30 @@ pub enum DraftError {
 /// request per sentence, so this sits well above the upload limit, which it
 /// deliberately does not share: talking must not use up file uploads.
 const REQUESTS_PER_MINUTE: u32 = 240;
+/// Turns one user may have running at once. Two, not one: after a barge-in
+/// the abandoned turn only notices at its next model round.
+const MAX_TURNS_PER_USER: usize = 2;
+/// Turns running at once across the instance. Each holds a blocking-pool
+/// thread for its whole length (up to MAX_ROUNDS model calls).
+const MAX_TURNS_TOTAL: usize = 32;
+
+/// A running turn's slot; dropping it (on any exit path) frees the slot.
+pub struct TurnPermit {
+    state: std::sync::Arc<JarvisState>,
+    username: String,
+}
+
+impl Drop for TurnPermit {
+    fn drop(&mut self) {
+        let mut running = self.state.running.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = running.get_mut(&self.username) {
+            *n -= 1;
+            if *n == 0 {
+                running.remove(&self.username);
+            }
+        }
+    }
+}
 
 /// Per-process Jarvis memory: conversations, pending drafts, and the
 /// per-user request budget.
@@ -170,6 +205,8 @@ pub struct JarvisState {
     conversations: Mutex<HashMap<String, Conversation>>,
     drafts: Mutex<HashMap<String, Draft>>,
     limiter: crate::server::RateLimiter,
+    /// Turns in flight per user.
+    running: Mutex<HashMap<String, usize>>,
 }
 
 impl Default for JarvisState {
@@ -178,6 +215,7 @@ impl Default for JarvisState {
             conversations: Mutex::default(),
             drafts: Mutex::default(),
             limiter: crate::server::RateLimiter::new(crate::server::RATE_WINDOW, REQUESTS_PER_MINUTE),
+            running: Mutex::default(),
         }
     }
 }
@@ -187,6 +225,19 @@ impl JarvisState {
     /// desktop app every local user shares one address.
     pub fn allow(&self, username: &str) -> bool {
         self.limiter.allow(username)
+    }
+
+    /// A slot for one turn, or None when this user (or the instance) already
+    /// has as many running as it may.
+    pub fn begin_turn(self: &std::sync::Arc<Self>, username: &str) -> Option<TurnPermit> {
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let total: usize = running.values().sum();
+        let mine = running.get(username).copied().unwrap_or(0);
+        if mine >= MAX_TURNS_PER_USER || total >= MAX_TURNS_TOTAL {
+            return None;
+        }
+        *running.entry(username.to_string()).or_insert(0) += 1;
+        Some(TurnPermit { state: std::sync::Arc::clone(self), username: username.to_string() })
     }
 
     /// Prior transcript for a follow-up, only if it is the caller's.
@@ -246,6 +297,18 @@ impl JarvisState {
         draft.id = format!("jd_{}", crate::store::new_token());
         drafts.insert(draft.id.clone(), draft.clone());
         draft
+    }
+
+    /// The caller's unexpired draft, left in place: send checks everything
+    /// against this copy first and only then claims it.
+    pub fn peek_draft(&self, id: &str, username: &str) -> Result<Draft, DraftError> {
+        let drafts = self.drafts.lock().unwrap();
+        match drafts.get(id) {
+            Some(d) if d.username != username => Err(DraftError::NotFound),
+            None => Err(DraftError::NotFound),
+            Some(d) if d.expires <= Instant::now() => Err(DraftError::Expired),
+            Some(d) => Ok(d.clone()),
+        }
     }
 
     /// Atomically claim a draft for sending: owner-only, unexpired, single
@@ -1311,8 +1374,9 @@ pub fn run_turn(
                 emit(c);
             }
             let mut out_s = serde_json::to_string(&out).unwrap_or_default();
-            if out_s.len() > MAX_TOOL_OUTPUT_CHARS {
-                out_s = format!("{}…(truncated)", clip(&out_s, MAX_TOOL_OUTPUT_CHARS));
+            if out_s.chars().count() > MAX_TOOL_OUTPUT_CHARS {
+                // clip() already ends in an ellipsis.
+                out_s = format!("{} (truncated)", clip(&out_s, MAX_TOOL_OUTPUT_CHARS));
             }
             items.push(json!({"type": "function_call", "call_id": call.call_id, "name": call.name, "arguments": call.arguments}));
             items.push(json!({"type": "function_call_output", "call_id": call.call_id, "output": out_s}));
@@ -1396,6 +1460,9 @@ mod tests {
         };
         assert_eq!(d.final_text(None), "@claude please ship it");
         assert_eq!(d.final_text(Some("@Claude ship it now")), "@Claude ship it now");
+        // A longer handle that merely starts with it does not count.
+        assert_eq!(d.final_text(Some("ask @claudebot to ship")), "@claude ask @claudebot to ship");
+        assert_eq!(d.final_text(Some("@claude, ship it")), "@claude, ship it");
     }
 
     #[test]
@@ -1415,6 +1482,22 @@ mod tests {
             s.create_draft(mk("ana"));
         }
         assert!(s.drafts.lock().unwrap().len() <= MAX_DRAFTS_PER_USER);
+    }
+
+    #[test]
+    fn running_turns_are_capped_per_user_and_freed_on_drop() {
+        let s = std::sync::Arc::new(JarvisState::default());
+        let a = s.begin_turn("ana").unwrap();
+        let b = s.begin_turn("ana").unwrap();
+        assert!(s.begin_turn("ana").is_none(), "third concurrent turn is refused");
+        assert!(s.begin_turn("bob").is_some(), "other users are unaffected");
+        drop(a);
+        let c = s.begin_turn("ana").expect("a finished turn frees its slot");
+        drop((b, c));
+        assert!(s.running.lock().unwrap().is_empty());
+        let held: Vec<_> = (0..MAX_TURNS_TOTAL).map(|i| s.begin_turn(&format!("u{}", i % 16)).unwrap()).collect();
+        assert!(s.begin_turn("zed").is_none(), "the instance-wide cap holds");
+        drop(held);
     }
 
     #[test]

@@ -74,9 +74,14 @@ function OpenPanel() {
   const stt = me?.jarvis_stt === true;
   const tts = me?.jarvis_tts === true;
 
-  // The voice loop follows the panel: open while mounted, closed on unmount.
-  configureVoice({ api, stt, tts, open: true });
-  useEffect(() => () => { configureVoice({ open: false }); closeVoice(); }, []);
+  // The voice loop follows the panel: open while mounted, closed on unmount
+  // (StrictMode's dev remount included). Effects run in order, so this is
+  // configured before the listen effects below fire.
+  useEffect(() => { configureVoice({ api, stt, tts }); }, [api, stt, tts]);
+  useEffect(() => {
+    configureVoice({ open: true });
+    return () => { configureVoice({ open: false }); closeVoice(); };
+  }, []);
 
   // open() (chip, shortcut, wake word) asks to listen; open(text) queues a typed turn.
   const listenSeq = s.listenSeq;

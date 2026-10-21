@@ -29,6 +29,8 @@ export interface JarvisCardEntry {
   status?: "pending" | "sending" | "sent" | "cancelled" | "expired";
   /** A draft's body as edited in its card; what Send (or "send it") posts. */
   text?: string;
+  /** When a draft card's server-side draft expires (ms since epoch). */
+  expiresAt?: number;
 }
 
 const ENABLED_KEY = "agora_jarvis_enabled";
@@ -201,6 +203,8 @@ export const useJarvis = create<JarvisState>((set, get) => ({
         const entry: JarvisCardEntry = {
           id: `jc${++cardSeq}`, card: event.card,
           status: event.card.kind === "draft" ? "pending" : undefined,
+          // Anchored to arrival, so reopening the panel can't restart the clock.
+          expiresAt: event.card.kind === "draft" ? Date.now() + event.card.expires_in * 1000 : undefined,
         };
         // Newest first; a stack, not a log.
         return { cards: [entry, ...s.cards].slice(0, MAX_CARDS) };
