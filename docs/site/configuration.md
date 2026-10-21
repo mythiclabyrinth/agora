@@ -86,5 +86,7 @@ the env fallbacks above.
 Jarvis is offered only when it is switched on **and** the selected provider
 has its credential; the section says so and links to Credentials when it is
 missing. Listening and spoken replies use the Voice settings, whichever
-provider answers. Stored under `ai.jarvis` in `config.json`; configs from
-before this setting load as enabled on `codex`.
+provider answers. Stored under `ai.jarvis` in `config.json`. A config from
+before this setting loads on `codex` with the switch copied once from "AI
+answers" (so an instance with AI turned off stays off); fresh installs start
+with Jarvis on.

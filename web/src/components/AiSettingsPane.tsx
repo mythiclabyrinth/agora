@@ -381,7 +381,7 @@ function JarvisFeatures({ data }: { data: InstanceAiJarvis }) {
       />
       {missing && (
         <p className="conn-hint jarvis-credential-missing">
-          {JARVIS_CREDENTIAL[key] || "This provider has no credential yet."} Jarvis stays off until it has one.{" "}
+          {JARVIS_CREDENTIAL[key] || "This provider has no credential yet."}{data.enabled ? " Jarvis stays off until it has one." : ""}{" "}
           <button type="button" className="btn sm" onClick={() => setTab("credentials")}>Open Credentials</button>
         </p>
       )}

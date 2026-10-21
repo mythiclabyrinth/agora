@@ -1804,8 +1804,8 @@ fn jarvis_hint(user: &AuthedUser, jarvis: &crate::config::ResolvedJarvis) -> Val
     }
     let ask = jarvis_credential_ask(&jarvis.provider);
     json!(if user.instance_admin {
-        let mut ask = ask;
-        ask[..1].make_ascii_uppercase();
+        let mut chars = ask.chars();
+        let ask: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
         format!("{ask} under Settings → Credentials (or pick another provider under Settings → Features → Jarvis) to enable Jarvis mode.")
     } else {
         format!("Jarvis mode isn't set up yet: ask an admin to {ask}.")
@@ -2007,6 +2007,11 @@ async fn jarvis_send_draft(
     body: Option<Json<Value>>,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
+    // Turning Jarvis off (or restricting it) also stops drafts already issued.
+    require_jarvis(&state, &user)?;
+    if !state.jarvis.allow(&user.username) {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "Too many assistant requests — slow down"));
+    }
     let payload = body.map(|Json(v)| v).unwrap_or_default();
     let draft_err = |e| match e {
         crate::jarvis::DraftError::NotFound => err(StatusCode::NOT_FOUND, "This draft is no longer available — it was sent, cancelled, or isn't yours"),
@@ -9970,6 +9975,8 @@ mod tests {
     /// bob owns a DM with "helper"; ana has her own DM too.
     fn jarvis_fixture() -> JarvisFixture {
         let (state, dir) = test_state();
+        // Jarvis available (ChatGPT signed in): draft sends are Jarvis-gated.
+        state.config.update(|c| c.ai.search.codex_refresh_token = "rt-test".into());
         let store = &state.hub.store;
         store.create_user("ana", "Ana", None, "member").unwrap();
         store.create_user("bob", "Bob", None, "member").unwrap();
@@ -10103,6 +10110,23 @@ mod tests {
         // Single use.
         assert_eq!(send_draft(&f.state, &id, "ana", None).await.unwrap_err().0, StatusCode::NOT_FOUND);
         assert_eq!(f.state.hub.store.messages(&f.team, None, None, 200).len(), before + 1);
+    }
+
+    #[tokio::test]
+    async fn jarvis_turned_off_stops_issued_drafts_from_sending() {
+        if crate::jarvis::mock_enabled() {
+            return; // the mock flag keeps Jarvis available regardless
+        }
+        let f = jarvis_fixture();
+        let (out, _) = make_draft(&f, "ana", json!({"channel_id": f.team, "text": "later"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        f.state.config.update(|c| c.ai.jarvis.enabled = false);
+        let e = send_draft(&f.state, &id, "ana", None).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        assert!(!f.state.hub.store.messages(&f.team, None, None, 200).iter().any(|m| m["text"] == "later"));
+        // Switched back on, the (unexpired) draft can still go.
+        f.state.config.update(|c| c.ai.jarvis.enabled = true);
+        assert_eq!(send_draft(&f.state, &id, "ana", None).await.unwrap().0["message"]["text"], "later");
     }
 
     #[tokio::test]

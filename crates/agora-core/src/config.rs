@@ -1035,7 +1035,21 @@ impl Config {
         std::fs::create_dir_all(data_dir)?;
         let path = data_dir.join("config.json");
         let mut data: ConfigData = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(text) => {
+                let mut data: ConfigData = serde_json::from_str(&text).unwrap_or_default();
+                // One-time migration: a config from before Jarvis had its own
+                // switch carries the admin's "AI answers" decision, which then
+                // also governed Jarvis. Keep it, so an instance with AI turned
+                // off doesn't wake up with Jarvis on. Persisted by the save
+                // below; fresh installs keep the default (on).
+                let has_jarvis = serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .is_some_and(|raw| raw.pointer("/ai/jarvis").is_some());
+                if !has_jarvis {
+                    data.ai.jarvis.enabled = data.ai.search.enabled;
+                }
+                data
+            }
             Err(_) => ConfigData::default(),
         };
         if data.admin_key.is_empty() {
@@ -1985,12 +1999,12 @@ mod tests {
 
     #[test]
     fn config_without_jarvis_loads_enabled_on_codex_and_round_trips() {
-        // Pre-settings configs had no `ai.jarvis`: Jarvis ran on ChatGPT, and
-        // must keep doing so after the upgrade.
+        // Pre-settings configs had no `ai.jarvis`: Jarvis runs on ChatGPT and
+        // inherits the admin's "AI answers" decision once, at upgrade.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.json"),
-            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"search":{"enabled":false,"codex_refresh_token":"rt"}}}"#,
+            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"search":{"enabled":true,"codex_refresh_token":"rt"}}}"#,
         )
         .unwrap();
         let cfg = Config::load(dir.path()).unwrap();
@@ -1998,7 +2012,7 @@ mod tests {
         assert!(snap.ai.jarvis.enabled);
         assert_eq!(snap.ai.jarvis.provider, JARVIS_PROVIDER_CODEX);
         let j = cfg.jarvis(None, None);
-        assert!(j.available(), "Ask AI being off does not turn Jarvis off");
+        assert!(j.available());
         assert_eq!(j.model, crate::codex_oauth::DEFAULT_CODEX_MODEL);
         assert_eq!(j.model_source, AiFieldSource::Default);
         // Saving and reloading is idempotent.
@@ -2007,6 +2021,22 @@ mod tests {
         assert!(again.ai.jarvis.enabled);
         assert_eq!(again.ai.jarvis.provider, JARVIS_PROVIDER_CODEX);
         assert!(again.ai.jarvis.models.codex.is_empty());
+        // AI turned off before the upgrade: Jarvis starts off too, and the
+        // migration is persisted, so later turning Ask AI on doesn't flip it.
+        let off = tempfile::tempdir().unwrap();
+        std::fs::write(
+            off.path().join("config.json"),
+            r#"{"admin_key":"k","session_secret":"s","instance_id":"i","ai":{"search":{"enabled":false,"codex_refresh_token":"rt"}}}"#,
+        )
+        .unwrap();
+        let cfg = Config::load(off.path()).unwrap();
+        assert!(!cfg.snapshot().ai.jarvis.enabled, "an admin's AI-off decision survives the upgrade");
+        assert!(!cfg.jarvis(None, None).available());
+        cfg.update(|c| c.ai.search.enabled = true);
+        assert!(!Config::load(off.path()).unwrap().snapshot().ai.jarvis.enabled, "migrated once, then independent");
+        // Fresh installs default to on.
+        let fresh = tempfile::tempdir().unwrap();
+        assert!(Config::load(fresh.path()).unwrap().snapshot().ai.jarvis.enabled);
         // A partial section fills in the rest.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
