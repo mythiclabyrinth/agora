@@ -92,10 +92,21 @@ describe("draft edits and sends", () => {
 
   it("a failed save never sends", async () => {
     useJarvis.setState({ cards: [card({ text: "edited" })] });
-    updateJarvisDraft.mockRejectedValueOnce(new ApiError(409, "This draft changed since you reviewed it"));
+    updateJarvisDraft.mockRejectedValueOnce(new ApiError(500, "Server error"));
     expect(await sendDraftEntry(api, shown(), shown().card as never)).toBe(false);
     expect(sendJarvisDraft).not.toHaveBeenCalled();
     expect(shown().status).toBe("pending");
+  });
+
+  it("a save refused as stale closes the card, so it is never retried or approvable", async () => {
+    useJarvis.setState({ cards: [card({ text: "edited" })] });
+    cancelJarvisDraft.mockClear();
+    updateJarvisDraft.mockRejectedValueOnce(new ApiError(409, "This draft changed since you reviewed it"));
+    expect(await saveDraftEdit(api, "jc1")).toBe(false);
+    expect(shown().status).toBe("cancelled");
+    expect(isLiveDraft(shown())).toBe(false);
+    expect(cancelJarvisDraft).toHaveBeenCalledWith(api, "jd_1");
+    expect(toast).toHaveBeenLastCalledWith(expect.stringContaining("Ask for a fresh draft"), { variant: "warn" });
   });
 
   it("refuses an empty draft without calling the server", async () => {

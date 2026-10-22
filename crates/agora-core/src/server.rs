@@ -1936,6 +1936,10 @@ async fn jarvis_turn(
     let hint = crate::jarvis::TurnContext {
         channel_id: payload["context"]["channel_id"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
         thread_id: payload["context"]["thread_id"].as_i64(),
+        unsaved_drafts: payload["unsaved_drafts"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).take(16).map(str::to_string).collect())
+            .unwrap_or_default(),
     };
     let permit = state.jarvis.begin_turn(&user.username).ok_or_else(|| {
         err(StatusCode::TOO_MANY_REQUESTS, "The assistant is still working on your last request — try again in a moment")
@@ -2030,9 +2034,15 @@ pub(crate) fn run_jarvis_turn(
         };
         let handled = match decision {
             _ if !state.jarvis.is_current(cid, username, turn.generation) => return,
+            // The card shows an edit the server couldn't save: posting the
+            // server's copy would send text the user isn't looking at.
+            Approval::Confirm if hint.unsaved_drafts.contains(&draft.id) => Some((
+                format!("Your edit to the draft for {} isn't saved, so I didn't send it. Check the card, then press Send.", draft.destination),
+                turn.offered.clone(),
+            )),
             Approval::Confirm => match send_jarvis_draft(state, user, &draft.id, draft.revision, Some(cid), None) {
-                Ok((message, _)) => {
-                    emit(crate::jarvis::ev_draft_sent(&draft.id, &message));
+                Ok((message, already_sent)) => {
+                    emit(crate::jarvis::ev_draft_sent(&draft.id, &message, already_sent));
                     let reply = if ack.is_empty() { format!("Sent to {}.", draft.destination) } else { ack };
                     Some((reply, vec![]))
                 }
@@ -10434,10 +10444,21 @@ mod tests {
 
     /// One Jarvis turn through [`run_jarvis_turn`], as the route runs it.
     fn jarvis_turn_events(f: &JarvisFixture, who: &str, conv: &str, brain: &mut dyn crate::jarvis::Brain, text: &str) -> Vec<Value> {
+        jarvis_turn_events_with(f, who, conv, brain, text, &crate::jarvis::TurnContext::default())
+    }
+
+    fn jarvis_turn_events_with(
+        f: &JarvisFixture,
+        who: &str,
+        conv: &str,
+        brain: &mut dyn crate::jarvis::Brain,
+        text: &str,
+        hint: &crate::jarvis::TurnContext,
+    ) -> Vec<Value> {
         let user = jarvis_user(&f.state, who);
         let turn = f.state.jarvis.begin_turn_in(conv, who).expect("own conversation");
         let mut events = Vec::new();
-        run_jarvis_turn(&f.state, &user, &turn, brain, text, &crate::jarvis::TurnContext::default(), &mut |e| {
+        run_jarvis_turn(&f.state, &user, &turn, brain, text, hint, &mut |e| {
             events.push(e);
             true
         });
@@ -10497,6 +10518,25 @@ mod tests {
         let events = jarvis_turn_events(&f, "ana", "jc_hedge", &mut brain, "no, just send it");
         assert_eq!(of_type(&events, "draft_sent")[0]["draft_id"], id.as_str());
         assert_eq!(posted(&f, "ship the fix"), 1);
+    }
+
+    #[test]
+    fn jarvis_a_yes_never_posts_a_draft_whose_card_edit_is_unsaved() {
+        let f = jarvis_fixture();
+        let id = offer(&f, "jc_unsaved", "old text");
+        // The card shows an edit the server couldn't save: a yes posts nothing.
+        let hint = crate::jarvis::TurnContext { unsaved_drafts: vec![id.clone()], ..Default::default() };
+        let mut brain = scripted(vec![decide("confirm", "Sent.")]);
+        let events = jarvis_turn_events_with(&f, "ana", "jc_unsaved", &mut brain, "yes go ahead", &hint);
+        assert!(of_type(&events, "draft_sent").is_empty());
+        assert_eq!(posted(&f, "old text"), 0);
+        assert!(of_type(&events, "done")[0]["text"].as_str().unwrap().contains("isn't saved"));
+        // Still on offer: once the edit is in sync, a yes sends it once.
+        let mut brain = scripted(vec![decide("confirm", "Sent.")]);
+        let events = jarvis_turn_events(&f, "ana", "jc_unsaved", &mut brain, "yes");
+        assert_eq!(of_type(&events, "draft_sent")[0]["draft_id"], id.as_str());
+        assert_eq!(of_type(&events, "draft_sent")[0]["already_sent"], false);
+        assert_eq!(posted(&f, "old text"), 1);
     }
 
     #[test]
@@ -10737,7 +10777,7 @@ mod tests {
         let ctx = crate::jarvis::ToolCtx::new(&f.state, &ana);
         let mut brain = crate::jarvis::MockBrain::default();
         let mut events = Vec::new();
-        let hint = crate::jarvis::TurnContext { channel_id: Some(f.secret.clone()), thread_id: None };
+        let hint = crate::jarvis::TurnContext { channel_id: Some(f.secret.clone()), ..Default::default() };
         let (items, answer) = crate::jarvis::run_turn(&ctx, &mut brain, vec![], "catch me up", &hint,
             &mut |e| { events.push(e); true }).unwrap();
         // A context hint for a channel ana can't see is dropped, not echoed.

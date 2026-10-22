@@ -222,6 +222,16 @@ describe("replies to a draft", () => {
     expect(spokenTexts()).toEqual(["Sent to #release."]);
   });
 
+  it("no second Undo toast when the card's Send already posted it", async () => {
+    useJarvis.setState({ cards: [draft("a")] });
+    answerWith([
+      { type: "draft_sent", draft_id: "d_a", message: { id: 42 }, already_sent: true } as unknown as JarvisEvent,
+    ], "Sent to #release.");
+    await voice.handleUtterance("yes go ahead");
+    expect(useJarvis.getState().cards[0]).toMatchObject({ status: "sent", messageId: 42 });
+    expect(cards.announceSent).not.toHaveBeenCalled();
+  });
+
   it("applies draft_cancelled for a spoken no and for a superseded draft", async () => {
     useJarvis.setState({ cards: [draft("b"), draft("a")] });
     answerWith([{ type: "draft_cancelled", draft_id: "d_a", superseded_by: null } as JarvisEvent], "Cancelled. Nothing was sent.");
@@ -242,6 +252,25 @@ describe("replies to a draft", () => {
     expect(cards.saveDraftEdit).toHaveBeenCalledTimes(1);
     expect(cards.saveDraftEdit).toHaveBeenCalledWith(api, "a");
     expect(order).toEqual(["save", "turn"]);
+  });
+
+  it("names drafts whose edit couldn't be saved, so the server won't approve them", async () => {
+    cards.saveDraftEdit.mockResolvedValue(false);
+    useJarvis.setState({ cards: [{ ...draft("a"), text: "" }, draft("b")] });
+    answer("Okay.");
+    await voice.handleUtterance("yes");
+    expect(core.jarvisTurn.mock.calls[0][1]).toMatchObject({ unsaved_drafts: ["d_a"] });
+  });
+
+  it("leaves closed and expired cards alone: no save, nothing held", async () => {
+    useJarvis.setState({ cards: [
+      { ...draft("a"), text: "edited", status: "expired" },
+      { ...draft("b"), text: "edited", expiresAt: Date.now() - 1000 },
+    ] });
+    answer("Okay.");
+    await voice.handleUtterance("yes");
+    expect(cards.saveDraftEdit).not.toHaveBeenCalled();
+    expect(core.jarvisTurn.mock.calls[0][1].unsaved_drafts).toBeUndefined();
   });
 
   it("a dropped connection is one plain error", async () => {

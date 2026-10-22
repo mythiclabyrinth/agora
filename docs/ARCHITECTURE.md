@@ -92,10 +92,12 @@ One Rust core, three clients (see the repo layout table in the
   (`confirm|cancel|revise|clarify|unrelated`; anything else counts as
   unrelated). Only `confirm` posts, through the same send path, bound to the
   draft's revision; a repeat or racing send returns the message already
-  posted. Turns in one conversation are newest-wins (a barge-in supersedes
+  posted. A card edit that couldn't be saved is named in the turn
+  (`unsaved_drafts`), and a reply then can't approve that draft, so a yes
+  never posts text other than what the card shows. Turns in one conversation are newest-wins (a barge-in supersedes
   the running turn, which can no longer draft, send, or save), and reset
   cancels the conversation's pending drafts. Provider requests are bounded
-  (10 s connect, 45 s to first response, 60 s idle, 180 s per turn) and
+  (10 s connect, 45 s to first response, 60 s idle, 300 s per turn) and
   retried once only when nothing from the failed request was used.
   `/api/jarvis/transcribe` (which reports silence as `no_speech`) and
   `/api/jarvis/speech` reuse `voice.rs`. Conversations and drafts are

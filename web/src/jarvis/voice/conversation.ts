@@ -28,7 +28,7 @@ import { sessionToken } from "../../lib/auth";
 import { armChimeNow, playChime } from "../../lib/chime";
 import { recMime, voiceSupported } from "../../lib/voice";
 import { toast } from "../../lib/toast";
-import { useJarvis } from "../../state/jarvis";
+import { isLiveDraft, useJarvis } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
 import { useUiState } from "../../state/ui";
 import { announceSent, saveDraftEdit, type JarvisDraftCard } from "../panel/JarvisCards";
@@ -248,7 +248,8 @@ async function transcribe(blob: Blob): Promise<void> {
   try {
     // Breath and rustle come back as `noSpeech` (empty text): routine
     // hands-free, so it just keeps listening without an error.
-    text = (await jarvisTranscribe(session(), blob)).text;
+    const heard = await jarvisTranscribe(session(), blob);
+    text = heard.noSpeech ? "" : heard.text;
   } catch (e) {
     useJarvis.setState({ error: (e as Error).message || "Transcription failed" });
   }
@@ -275,19 +276,23 @@ export async function handleUtterance(text: string): Promise<void> {
   await runTurn(text);
 }
 
-/** The server posted a draft the user approved: the card's Undo toast. */
-function onDraftSent(draftId: string, messageId: number): void {
+/** The server posted a draft the user approved: the card's Undo toast —
+    unless the card's Send got there first and already showed one. */
+function onDraftSent(draftId: string, messageId: number, alreadySent: boolean): void {
   const entry = useJarvis.getState().cards.find(c => c.card.kind === "draft" && c.card.draft_id === draftId);
-  if (entry && caps.api) announceSent(caps.api, entry.id, entry.card as JarvisDraftCard, messageId);
+  if (entry && caps.api && !alreadySent) announceSent(caps.api, entry.id, entry.card as JarvisDraftCard, messageId);
 }
 
 /** Card edits still waiting for their debounce are saved before the turn,
-    so a spoken yes is judged against the text the card shows. */
-async function flushDraftEdits(): Promise<void> {
+    so a spoken yes is judged against the text the card shows. Resolves the
+    drafts whose edit could not be saved: the server won't let this turn
+    approve those, since its copy is not what the card shows. */
+async function flushDraftEdits(): Promise<string[]> {
   const api = caps.api;
-  if (!api) return;
-  const edited = useJarvis.getState().cards.filter(c => c.card.kind === "draft" && c.text !== undefined);
-  await Promise.all(edited.map(c => saveDraftEdit(api, c.id)));
+  if (!api) return [];
+  const edited = useJarvis.getState().cards.filter(c => isLiveDraft(c) && c.text !== undefined);
+  const saved = await Promise.all(edited.map(c => saveDraftEdit(api, c.id)));
+  return edited.filter((_, i) => !saved[i]).map(c => (c.card as JarvisDraftCard).draft_id);
 }
 
 /** A dropped connection reads as a browser error ("Failed to fetch"); say it plainly, once. */
@@ -314,7 +319,7 @@ export async function runTurn(raw: string): Promise<void> {
   turnAbort = ctl;
   const store = useJarvis.getState();
   store.beginTurn(ask);
-  await flushDraftEdits();
+  const unsaved = await flushDraftEdits();
   if (ctl.signal.aborted) return;
   const answerId = useJarvis.getState().log.at(-1)?.id ?? "";
   const chunker = createSentenceChunker();
@@ -327,13 +332,14 @@ export async function runTurn(raw: string): Promise<void> {
         text: ask,
         conversation_id: store.conversationId,
         context: ui.view.kind === "channel" && ui.sel.c ? { channel_id: ui.sel.c, thread_id: ui.threadRoot } : undefined,
+        unsaved_drafts: unsaved.length ? unsaved : undefined,
       },
       event => {
         if (ctl.signal.aborted) return;
         if (event.type === "delta") jarvisLevel.bump();
         else if (event.type === "status" && event.phase !== "speaking") jarvisLevel.bump(0.12);
         useJarvis.getState().applyEvent(event);
-        if (event.type === "draft_sent") onDraftSent(event.draft_id, event.message.id);
+        if (event.type === "draft_sent") onDraftSent(event.draft_id, event.message.id, event.already_sent === true);
         // The answer is still being spoken: no flash of "armed" in between.
         if (event.type === "done" && (speech.playing || speech.queue.length)) useJarvis.getState().setVoicePhase("speaking");
         if (event.type === "delta") {

@@ -135,9 +135,11 @@ pub fn ev_done(conversation_id: &str, text: &str) -> Value {
 pub fn ev_error(message: &str) -> Value {
     json!({"type": "error", "message": message})
 }
-/// A draft was posted (by an approved reply); `message` is the posted message.
-pub fn ev_draft_sent(draft_id: &str, message: &Value) -> Value {
-    json!({"type": "draft_sent", "draft_id": draft_id, "message": message})
+/// A draft was posted (by an approved reply); `message` is the posted
+/// message. `already_sent`: the card's Send got there first and showed its
+/// own confirmation.
+pub fn ev_draft_sent(draft_id: &str, message: &Value, already_sent: bool) -> Value {
+    json!({"type": "draft_sent", "draft_id": draft_id, "message": message, "already_sent": already_sent})
 }
 /// A draft was cancelled: by a spoken "no", or replaced by a newer draft
 /// (`superseded_by`).
@@ -636,7 +638,15 @@ impl JarvisState {
     /// `new` replaces the drafts the previous turn offered for the same
     /// place in the same conversation. Called only once `new` exists, so a
     /// failed redraft never loses the original. Returns the cancelled ids.
-    pub fn supersede(&self, offered: &[String], new: &Draft) -> Vec<String> {
+    pub fn supersede(&self, turn: &ConversationTurn, new: &Draft) -> Vec<String> {
+        // Checked under the conversation lock: a turn replaced by a barge-in
+        // must not cancel the draft the user is still looking at, since its
+        // own card (and the cancel event) never reach the client.
+        let convs = self.conversations.lock().unwrap();
+        if !convs.get(&turn.conversation_id).is_some_and(|c| c.username == new.username && c.generation == turn.generation) {
+            return Vec::new();
+        }
+        let offered = &turn.offered;
         let mut drafts = self.drafts.lock().unwrap();
         let mut out = Vec::new();
         for id in offered {
@@ -1983,7 +1993,7 @@ impl ToolCtx<'_> {
         // Only now that the new draft exists does it replace the one the
         // user was asked about, so a failed redraft never loses the original.
         if let Some(t) = &self.turn {
-            for old in self.state.jarvis.supersede(&t.offered, &draft) {
+            for old in self.state.jarvis.supersede(t, &draft) {
                 emit(ev_draft_cancelled(&old, Some(&draft.id)));
             }
         }
@@ -2135,6 +2145,9 @@ pub fn parse_approval(raw: &str) -> (Approval, String) {
 pub struct TurnContext {
     pub channel_id: Option<String>,
     pub thread_id: Option<i64>,
+    /// Drafts whose card shows an edit the server doesn't have (it couldn't
+    /// be saved): a reply this turn must not approve them.
+    pub unsaved_drafts: Vec<String>,
 }
 
 pub fn user_item(text: &str) -> Value {
@@ -2807,7 +2820,12 @@ data: {\"type\":\"message_stop\"}\n\
         // Superseding cancels only the same place in the same conversation.
         let elsewhere = s.create_draft(Draft { conversation_id: Some("c1".into()), ..Draft::new("ana", "other", "t") });
         let new = mk("c1");
-        let gone = s.supersede(&[b.id.clone(), elsewhere.id.clone(), new.id.clone()], &new);
+        let ids = vec![b.id.clone(), elsewhere.id.clone(), new.id.clone()];
+        let stale = ConversationTurn { offered: ids.clone(), ..s.begin_turn_in("c1", "ana").unwrap() };
+        let current = ConversationTurn { offered: ids, ..s.begin_turn_in("c1", "ana").unwrap() };
+        assert!(s.supersede(&stale, &new).is_empty(), "a replaced turn cancels nothing");
+        assert!(s.peek_draft(&b.id, "ana").unwrap().is_live());
+        let gone = s.supersede(&current, &new);
         assert_eq!(gone, vec![b.id.clone()]);
         assert!(s.peek_draft(&elsewhere.id, "ana").unwrap().is_live());
         // Reset cancels what the conversation left pending.

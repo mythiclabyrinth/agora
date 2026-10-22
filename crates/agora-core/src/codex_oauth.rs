@@ -563,7 +563,7 @@ pub const JARVIS_LIMITS: StreamLimits = StreamLimits {
     connect: Duration::from_secs(10),
     first_response: Duration::from_secs(45),
     idle: Duration::from_secs(60),
-    turn: Duration::from_secs(180),
+    turn: Duration::from_secs(300),
 };
 
 /// One turn's shared clock: every provider request in the turn (the

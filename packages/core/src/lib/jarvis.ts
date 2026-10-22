@@ -69,7 +69,7 @@ export type JarvisEvent =
   | { type: "delta"; text: string }
   | { type: "card"; card: JarvisCard }
   /** The user approved the offered draft in their own words; it was posted. */
-  | { type: "draft_sent"; draft_id: string; message: Message }
+  | { type: "draft_sent"; draft_id: string; message: Message; already_sent?: boolean }
   /** Cancelled by a spoken "no", or replaced by a newer draft (`superseded_by`). */
   | { type: "draft_cancelled"; draft_id: string; superseded_by: string | null }
   | { type: "done"; conversation_id: string; text: string }
@@ -79,6 +79,8 @@ export interface JarvisTurnRequest {
   text: string;
   conversation_id?: string | null;
   context?: { channel_id?: string | null; thread_id?: number | null };
+  /** Drafts whose card edit couldn't be saved: not approvable this turn. */
+  unsaved_drafts?: string[];
 }
 
 /** Incremental SSE parser: feed arbitrary chunks, get whole events out.

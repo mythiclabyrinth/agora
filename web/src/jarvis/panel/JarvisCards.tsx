@@ -86,6 +86,15 @@ function draftFailed(entryId: string, e: unknown, prefix: string): void {
   toast(prefix + ((e as Error).message || "request failed"), { variant: status === 409 ? "warn" : "error" });
 }
 
+/** A save the server refused as stale (409): the draft changed or was sent
+    elsewhere, so this card can't catch up. It is closed — never retried,
+    never approvable — and a fresh draft is the way on. */
+function draftConflict(api: ApiClient, entryId: string, draftId: string, e: unknown): void {
+  useJarvis.getState().setCardStatus(entryId, "cancelled");
+  void cancelJarvisDraft(api, draftId).catch(() => { /* already gone */ });
+  toast(`${(e as Error).message || "This draft changed elsewhere"}. Ask for a fresh draft.`, { variant: "warn" });
+}
+
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const saving = new Map<string, Promise<boolean>>();
 
@@ -111,7 +120,8 @@ export function saveDraftEdit(api: ApiClient, entryId: string): Promise<boolean>
       useJarvis.getState().setCardSaved(entryId, saved.text, saved.revision);
       return true;
     } catch (e) {
-      draftFailed(entryId, e, "Couldn't save the edit: ");
+      if (e instanceof ApiError && e.status === 409) draftConflict(api, entryId, entry.card.draft_id, e);
+      else draftFailed(entryId, e, "Couldn't save the edit: ");
       return false;
     }
   });
