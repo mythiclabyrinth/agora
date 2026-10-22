@@ -330,9 +330,11 @@ export async function runTurn(raw: string): Promise<void> {
       session(),
       {
         text: ask,
-        conversation_id: store.conversationId,
+        // Re-read after the save's await: the store is not the snapshot's.
+        conversation_id: useJarvis.getState().conversationId,
         context: ui.view.kind === "channel" && ui.sel.c ? { channel_id: ui.sel.c, thread_id: ui.threadRoot } : undefined,
         unsaved_drafts: unsaved.length ? unsaved : undefined,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
       event => {
         if (ctl.signal.aborted) return;

@@ -109,6 +109,19 @@ describe("draft edits and sends", () => {
     expect(toast).toHaveBeenLastCalledWith(expect.stringContaining("Ask for a fresh draft"), { variant: "warn" });
   });
 
+  it("a save that finds the draft already sent leaves the card alone", async () => {
+    useJarvis.setState({ cards: [card({ text: "edited" })] });
+    cancelJarvisDraft.mockClear();
+    updateJarvisDraft.mockRejectedValueOnce(new ApiError(409, "This draft was already sent"));
+    expect(await saveDraftEdit(api, "jc1")).toBe(false);
+    expect(shown().status).toBe("pending"); // its draft_sent event marks it sent
+    expect(cancelJarvisDraft).not.toHaveBeenCalled();
+    useJarvis.setState({ cards: [card({ text: "edited again", status: "sent" })] });
+    updateJarvisDraft.mockRejectedValueOnce(new ApiError(410, "This draft expired"));
+    await saveDraftEdit(api, "jc1");
+    expect(shown().status).toBe("sent");
+  });
+
   it("refuses an empty draft without calling the server", async () => {
     useJarvis.setState({ cards: [card({ text: "   " })] });
     expect(await sendDraftEntry(api, shown(), shown().card as never)).toBe(false);

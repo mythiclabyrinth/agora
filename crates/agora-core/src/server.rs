@@ -1936,6 +1936,7 @@ async fn jarvis_turn(
     let hint = crate::jarvis::TurnContext {
         channel_id: payload["context"]["channel_id"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
         thread_id: payload["context"]["thread_id"].as_i64(),
+        timezone: client_timezone(payload["timezone"].as_str().unwrap_or_default()),
         unsaved_drafts: payload["unsaved_drafts"]
             .as_array()
             .map(|a| a.iter().filter_map(Value::as_str).take(16).map(str::to_string).collect())
@@ -2016,8 +2017,8 @@ pub(crate) fn run_jarvis_turn(
     use crate::jarvis::{ev_delta, ev_done, ev_error, ev_status, Approval};
     let cid = turn.conversation_id.as_str();
     let username = user.username.as_str();
-    // A hedged reply ("only if Priya agrees") leaves the draft on offer, so
-    // the user can still approve it after the assistant's follow-up.
+    // A reply that doesn't settle the draft leaves it on offer, so the user
+    // can still approve it after the assistant's follow-up.
     let mut keep_offered: Vec<String> = vec![];
     if let Some(draft) = state.jarvis.offered_draft(turn, username) {
         if !emit(ev_status("thinking", "Checking your reply")) {
@@ -2040,7 +2041,7 @@ pub(crate) fn run_jarvis_turn(
                 format!("Your edit to the draft for {} isn't saved, so I didn't send it. Check the card, then press Send.", draft.destination),
                 turn.offered.clone(),
             )),
-            Approval::Confirm => match send_jarvis_draft(state, user, &draft.id, draft.revision, Some(cid), None) {
+            Approval::Confirm => match send_jarvis_draft(state, user, &draft.id, draft.revision, Some(cid), hint.timezone.as_deref()) {
                 Ok((message, already_sent)) => {
                     emit(crate::jarvis::ev_draft_sent(&draft.id, &message, already_sent));
                     let reply = if ack.is_empty() { format!("Sent to {}.", draft.destination) } else { ack };
@@ -2057,11 +2058,12 @@ pub(crate) fn run_jarvis_turn(
                 }
                 Some((if ack.is_empty() { "Cancelled. Nothing was sent.".to_string() } else { ack }, vec![]))
             }
-            Approval::Clarify => {
+            // Only confirm, cancel, or a real redraft end the offer: a hedge,
+            // an aside, or a garbled check answer leaves it approvable.
+            Approval::Clarify | Approval::Revise | Approval::Unrelated => {
                 keep_offered = vec![draft.id.clone()];
                 None
             }
-            Approval::Revise | Approval::Unrelated => None,
         };
         if let Some((reply, offered)) = handled {
             emit(ev_status("speaking", "Answering"));
@@ -2087,7 +2089,17 @@ pub(crate) fn run_jarvis_turn(
         Err(e) => {
             tracing::warn!(user = %username, provider = brain.provider(), model = brain.model(),
                 "jarvis turn failed: {}", truncate_err(&format!("{e:#}"), 300));
-            emit(ev_error(&jarvis_failure_message(brain.provider(), &e)));
+            let failure = jarvis_failure_message(brain.provider(), &e);
+            // A draft made before the failure is on the user's screen: record
+            // the offer, so a reply can still approve it.
+            let offered = ctx.offered_drafts();
+            if !offered.is_empty() {
+                let mut items = turn.prior.clone();
+                items.push(crate::jarvis::user_item(text));
+                items.push(crate::jarvis::assistant_item(&format!("I drafted a message, then: {failure}")));
+                state.jarvis.commit_turn(cid, username, turn.generation, items, offered);
+            }
+            emit(ev_error(&failure));
         }
     }
 }
@@ -10741,6 +10753,36 @@ mod tests {
         assert_eq!(of_type(&events, "error")[0]["message"], "ChatGPT didn't respond — try again.");
     }
 
+    #[test]
+    fn jarvis_a_draft_made_before_a_stall_can_still_be_approved() {
+        let f = jarvis_fixture();
+        let mut brain = scripted(vec![call("c1", "draft_message", json!({"channel_id": f.team, "text": "ship it at 5"}))]);
+        let events = jarvis_turn_events(&f, "ana", "jc_late", &mut brain, "tell general we ship at 5");
+        let id = of_type(&events, "card")[0]["card"]["draft_id"].as_str().unwrap().to_string();
+        assert_eq!(of_type(&events, "error").len(), 1, "the final round stalled");
+        // The card is on screen, so a yes still sends it, once.
+        let mut brain = scripted(vec![decide("confirm", "Sent.")]);
+        let events = jarvis_turn_events(&f, "ana", "jc_late", &mut brain, "yes");
+        assert_eq!(of_type(&events, "draft_sent")[0]["draft_id"], id.as_str());
+        assert_eq!(posted(&f, "ship it at 5"), 1);
+    }
+
+    #[test]
+    fn jarvis_a_garbled_or_unrelated_answer_leaves_the_draft_approvable() {
+        let f = jarvis_fixture();
+        let id = offer(&f, "jc_garble", "garbled then yes");
+        for (answer, reply) in [("Sure, sending it now!", "yes"), (r#"{"decision":"unrelated"}"#, "who's online?")] {
+            let mut brain = scripted(vec![say(answer), say("Sorry, say that again?")]);
+            let events = jarvis_turn_events(&f, "ana", "jc_garble", &mut brain, reply);
+            assert!(of_type(&events, "draft_sent").is_empty());
+        }
+        assert_eq!(posted(&f, "garbled then yes"), 0);
+        let mut brain = scripted(vec![decide("confirm", "Sent.")]);
+        let events = jarvis_turn_events(&f, "ana", "jc_garble", &mut brain, "yes");
+        assert_eq!(of_type(&events, "draft_sent")[0]["draft_id"], id.as_str());
+        assert_eq!(posted(&f, "garbled then yes"), 1);
+    }
+
     /// A provider that never answers.
     struct Stalling;
 
@@ -10763,8 +10805,7 @@ mod tests {
         let events = jarvis_turn_events(&f, "ana", "jc_mock", &mut brain, "only if it's green");
         assert_eq!(posted(&f, "@helper rerun the deploy"), 0);
         assert!(of_type(&events, "draft_sent").is_empty());
-        // The hedge ended that offer; redraft, then approve.
-        jarvis_turn_events(&f, "ana", "jc_mock", &mut brain, "tell helper in general to rerun the deploy");
+        // The hedge kept the draft on offer: a plain yes now sends it once.
         let events = jarvis_turn_events(&f, "ana", "jc_mock", &mut brain, "yes, send it");
         assert_eq!(of_type(&events, "draft_sent").len(), 1);
         assert_eq!(posted(&f, "@helper rerun the deploy"), 1);
@@ -10991,6 +11032,10 @@ mod tests {
                 if let Some(hook) = self.on_classify.as_mut() {
                     hook();
                 }
+            }
+            // Out of script: the provider stops answering.
+            if self.rounds.is_empty() {
+                return Err(crate::codex_oauth::StreamFailure::Timeout("no response for 60s".into()).into());
             }
             Ok(self.rounds.remove(0))
         }

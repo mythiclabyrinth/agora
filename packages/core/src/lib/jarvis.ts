@@ -81,6 +81,8 @@ export interface JarvisTurnRequest {
   context?: { channel_id?: string | null; thread_id?: number | null };
   /** Drafts whose card edit couldn't be saved: not approvable this turn. */
   unsaved_drafts?: string[];
+  /** IANA timezone, carried by a reply-approved send like the card's Send. */
+  timezone?: string;
 }
 
 /** Incremental SSE parser: feed arbitrary chunks, get whole events out.

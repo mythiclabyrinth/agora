@@ -81,6 +81,8 @@ const cardById = (id: string) => useJarvis.getState().cards.find(c => c.id === i
 function draftFailed(entryId: string, e: unknown, prefix: string): void {
   const status = e instanceof ApiError ? e.status : 0;
   const now = cardById(entryId)?.status;
+  // A reply already posted it: the card says so, and stays that way.
+  if (now === "sent") return;
   if (status === 410 || status === 404) useJarvis.getState().setCardStatus(entryId, "expired");
   else if (now === "sending") useJarvis.getState().setCardStatus(entryId, "pending");
   toast(prefix + ((e as Error).message || "request failed"), { variant: status === 409 ? "warn" : "error" });
@@ -90,6 +92,9 @@ function draftFailed(entryId: string, e: unknown, prefix: string): void {
     elsewhere, so this card can't catch up. It is closed — never retried,
     never approvable — and a fresh draft is the way on. */
 function draftConflict(api: ApiClient, entryId: string, draftId: string, e: unknown): void {
+  // "Already sent" is a 409 too: a spoken yes posted it while this save
+  // was in flight. Its draft_sent event marks the card; nothing to close.
+  if (cardById(entryId)?.status === "sent" || /already sent/i.test((e as Error).message)) return;
   useJarvis.getState().setCardStatus(entryId, "cancelled");
   void cancelJarvisDraft(api, draftId).catch(() => { /* already gone */ });
   toast(`${(e as Error).message || "This draft changed elsewhere"}. Ask for a fresh draft.`, { variant: "warn" });
