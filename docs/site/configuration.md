@@ -86,7 +86,12 @@ the env fallbacks above.
 Jarvis is offered only when it is switched on **and** the selected provider
 has its credential; the section says so and links to Credentials when it is
 missing. Listening and spoken replies use the Voice settings, whichever
-provider answers. Stored under `ai.jarvis` in `config.json`. A config from
+provider answers. The assistant answers in the language you use and judges
+a spoken or typed "yes" to a draft (in any language) with a separate check
+on the same provider; how well a given language works depends on the
+providers chosen for the brain and for voice. A provider that stops
+responding ends the turn after at most three minutes with "… didn't respond
+— try again." Stored under `ai.jarvis` in `config.json`. A config from
 before this setting loads on `codex` with the switch copied once from "AI
 answers" (so an instance with AI turned off stays off); fresh installs start
 with Jarvis on.

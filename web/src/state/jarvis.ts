@@ -27,10 +27,22 @@ export interface JarvisCardEntry {
   card: JarvisCard;
   /** Draft lifecycle as the UI sees it. */
   status?: "pending" | "sending" | "sent" | "cancelled" | "expired";
-  /** A draft's body as edited in its card; what Send (or "send it") posts. */
+  /** A draft's body as edited in its card (saved to the server debounced). */
   text?: string;
+  /** The draft text the server has, and its revision: Send quotes these. */
+  savedText?: string;
+  revision?: number;
   /** When a draft card's server-side draft expires (ms since epoch). */
   expiresAt?: number;
+  /** The posted message, once sent (for Undo). */
+  messageId?: number;
+}
+
+/** A draft card the user can still act on: pending and not past its expiry
+    (the countdown may not have ticked yet, e.g. in a hidden panel). */
+export function isLiveDraft(entry: JarvisCardEntry, now = Date.now()): boolean {
+  return entry.card.kind === "draft" && (entry.status ?? "pending") === "pending"
+    && (entry.expiresAt === undefined || entry.expiresAt > now);
 }
 
 const ENABLED_KEY = "agora_jarvis_enabled";
@@ -102,6 +114,8 @@ export interface JarvisState {
   endTurn: () => void;
   setCardStatus: (id: string, status: JarvisCardEntry["status"]) => void;
   setCardText: (id: string, text: string) => void;
+  /** The server saved a draft edit as `revision`. */
+  setCardSaved: (id: string, text: string, revision: number) => void;
   dismissCard: (id: string) => void;
 }
 
@@ -200,15 +214,27 @@ export const useJarvis = create<JarvisState>((set, get) => ({
         log: withAnswer(s.log, prev => prev + event.text),
       };
       case "card": {
+        const draft = event.card.kind === "draft" ? event.card : null;
         const entry: JarvisCardEntry = {
           id: `jc${++cardSeq}`, card: event.card,
-          status: event.card.kind === "draft" ? "pending" : undefined,
+          status: draft ? "pending" : undefined,
+          savedText: draft?.text, revision: draft ? draft.revision ?? 1 : undefined,
           // Anchored to arrival, so reopening the panel can't restart the clock.
-          expiresAt: event.card.kind === "draft" ? Date.now() + event.card.expires_in * 1000 : undefined,
+          expiresAt: draft ? Date.now() + draft.expires_in * 1000 : undefined,
         };
         // Newest first; a stack, not a log.
         return { cards: [entry, ...s.cards].slice(0, MAX_CARDS) };
       }
+      case "draft_sent": return {
+        cards: s.cards.map(c => c.card.kind === "draft" && c.card.draft_id === event.draft_id
+          ? { ...c, status: "sent" as const, messageId: event.message?.id }
+          : c),
+      };
+      case "draft_cancelled": return {
+        cards: s.cards.map(c => c.card.kind === "draft" && c.card.draft_id === event.draft_id && (c.status ?? "pending") === "pending"
+          ? { ...c, status: "cancelled" as const }
+          : c),
+      };
       case "done": return {
         conversationId: event.conversation_id, busy: false, label: "",
         caption: s.caption || event.text, phase: restingPhase(s.enabled),
@@ -222,6 +248,9 @@ export const useJarvis = create<JarvisState>((set, get) => ({
   endTurn: () => set(s => s.busy ? { busy: false, phase: restingPhase(s.enabled), label: "", log: dropEmptyAnswer(s.log) } : {}),
   setCardStatus: (id, status) => set(s => ({ cards: s.cards.map(c => c.id === id ? { ...c, status } : c) })),
   setCardText: (id, text) => set(s => ({ cards: s.cards.map(c => c.id === id ? { ...c, text } : c) })),
+  setCardSaved: (id, text, revision) => set(s => ({
+    cards: s.cards.map(c => c.id === id ? { ...c, savedText: text, revision } : c),
+  })),
   dismissCard: (id) => set(s => ({ cards: s.cards.filter(c => c.id !== id) })),
 }));
 

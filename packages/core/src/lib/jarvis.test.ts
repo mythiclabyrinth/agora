@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../api/client";
-import { cancelJarvisDraft, createSseParser, jarvisTurn, sendJarvisDraft, type JarvisEvent } from "./jarvis";
+import { cancelJarvisDraft, createSseParser, jarvisTranscribe, jarvisTurn, sendJarvisDraft, updateJarvisDraft, type JarvisEvent } from "./jarvis";
 
 const frame = (event: JarvisEvent) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 
@@ -71,17 +71,32 @@ describe("jarvisTurn", () => {
       .rejects.toMatchObject({ status: 400, message: "Jarvis mode needs ChatGPT" });
   });
 
-  it("sends and cancels drafts on the confirm endpoints", async () => {
+  it("edits, sends at a revision, and cancels drafts on their endpoints", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const api = new ApiClient({ baseUrl: "http://x", token: "t" });
-    await sendJarvisDraft(api, "jd_1", "edited");
+    await updateJarvisDraft(api, "jd_1", "edited", 1);
+    await sendJarvisDraft(api, "jd_1", 2);
     await cancelJarvisDraft(api, "jd_1");
     const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
-    expect(calls[0][0]).toBe("http://x/api/jarvis/drafts/jd_1/send");
-    expect(calls[0][1].method).toBe("POST");
-    expect(JSON.parse(calls[0][1].body as string).text).toBe("edited");
-    expect(calls[1][0]).toBe("http://x/api/jarvis/drafts/jd_1");
-    expect(calls[1][1].method).toBe("DELETE");
+    expect(calls[0][0]).toBe("http://x/api/jarvis/drafts/jd_1");
+    expect(calls[0][1].method).toBe("PUT");
+    expect(JSON.parse(calls[0][1].body as string)).toEqual({ text: "edited", revision: 1 });
+    expect(calls[1][0]).toBe("http://x/api/jarvis/drafts/jd_1/send");
+    expect(calls[1][1].method).toBe("POST");
+    const sent = JSON.parse(calls[1][1].body as string);
+    expect(sent.revision).toBe(2);
+    expect(sent.text).toBeUndefined();
+    expect(calls[2][0]).toBe("http://x/api/jarvis/drafts/jd_1");
+    expect(calls[2][1].method).toBe("DELETE");
+  });
+
+  it("reports silence as a no-speech code, not an error", async () => {
+    const reply = (body: unknown) => vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    const session = { baseUrl: "http://x", token: "t" };
+    vi.stubGlobal("fetch", reply({ text: "", no_speech: true }));
+    expect(await jarvisTranscribe(session, new Blob(["a"]))).toEqual({ text: "", noSpeech: true });
+    vi.stubGlobal("fetch", reply({ text: " hola, envíalo ", no_speech: false }));
+    expect(await jarvisTranscribe(session, new Blob(["a"]))).toEqual({ text: "hola, envíalo", noSpeech: false });
   });
 });

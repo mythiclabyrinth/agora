@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { createEndpointer, frameRms, type EndpointEvent } from "./endpointer";
-import { asksToSend, draftIntent } from "./intent";
 import { createSentenceChunker, MAX_SPOKEN_CHARS } from "./sentences";
 
 /** Feed `ms` of a constant level at 50 ms ticks; returns the non-null events. */
@@ -128,37 +127,61 @@ describe("long sentences", () => {
   });
 });
 
-describe("draft intent", () => {
-  it.each([
-    "send", "Send it.", "send it now", "Yes, send it!", "yes send it", "confirm", "Okay, send it please",
-    "go ahead and send it", "Hey Jarvis, send it", "send the message",
-  ])("confirms %j", (t) => expect(draftIntent(t)).toBe("confirm"));
+describe("sentences in other scripts", () => {
+  const all = (chunks: string[]) => {
+    const c = createSentenceChunker();
+    const out = chunks.flatMap(ch => c.push(ch));
+    return { out, rest: c.flush(), full: chunks.join("") };
+  };
+  const offsetsHold = (r: ReturnType<typeof all>) => {
+    for (const s of [...r.out, ...r.rest]) expect(r.full.slice(s.start, s.end)).toBe(s.text);
+  };
 
-  it.each(["cancel", "Cancel that.", "don't send it", "Do not send", "no, cancel", "never mind", "discard it"])(
-    "cancels %j", (t) => expect(draftIntent(t)).toBe("cancel"),
-  );
-
-  it.each(["yes", "Yeah.", "yep", "Sure.", "OK", "do it", "please do", "Yes please"])(
-    "confirms a bare %j when it answers \"Send it?\"", (t) => {
-      expect(draftIntent(t, { answersSendIt: true })).toBe("confirm");
-      expect(draftIntent(t)).toBeNull(); // otherwise it may answer another question
-    },
-  );
-
-  it.each(["no", "Nope.", "no thanks"])("cancels a bare %j when it answers \"Send it?\"", (t) => {
-    expect(draftIntent(t, { answersSendIt: true })).toBe("cancel");
-    expect(draftIntent(t)).toBeNull();
+  it("splits Chinese and Japanese on full stops with no space after", () => {
+    const r = all(["今天发布。", "你要发送吗？好的"]);
+    expect(r.out.map(s => s.text)).toEqual(["今天发布。", "你要发送吗？"]);
+    expect(r.rest.map(s => s.text)).toEqual(["好的"]);
+    offsetsHold(r);
+    const j = all(["こんにちは。元気ですか！", "またね"]);
+    expect([...j.out, ...j.rest].map(s => s.text)).toEqual(["こんにちは。", "元気ですか！", "またね"]);
   });
 
-  it.each([
-    "", "yes, but change the time to 5pm", "send it to Claude in #release instead", "tell Claude to send the report",
-    "what did you send", "send a message to Ana", "can you cancel my meeting tomorrow",
-  ])("leaves %j to the assistant", (t) => expect(draftIntent(t, { answersSendIt: true })).toBeNull());
+  it("waits for punctuation split across chunks, and keeps a closing quote with its sentence", () => {
+    const r = all(["「送信しました", "。", "」次", "は？"]);
+    expect(r.out.map(s => s.text)).toEqual(["「送信しました。」"]);
+    expect(r.rest.map(s => s.text)).toEqual(["次は？"]);
+    offsetsHold(r);
+    const l = all(["Sent it", ".", " Next"]);
+    expect(l.out.map(s => s.text)).toEqual(["Sent it."]);
+    offsetsHold(l);
+  });
 
-  it("recognises the read-back's closing question", () => {
-    expect(asksToSend('I’ve drafted this in #release: “@claude rerun it.” Send it?')).toBe(true);
-    expect(asksToSend("Drafted it for #release. Send this?")).toBe(true);
-    expect(asksToSend("Which channel did you mean, #release or #releases?")).toBe(false);
-    expect(asksToSend(undefined)).toBe(false);
+  it("splits Hindi on the danda, Arabic on its question mark, and full-width marks", () => {
+    const hi = all(["संदेश भेज दिया। क्या कुछ और", "?"]);
+    expect([...hi.out, ...hi.rest].map(s => s.text)).toEqual(["संदेश भेज दिया।", "क्या कुछ और?"]);
+    offsetsHold(hi);
+    const ar = all(["هل أرسلها؟ نعم"]);
+    expect([...ar.out, ...ar.rest].map(s => s.text)).toEqual(["هل أرسلها؟", "نعم"]);
+    const fw = all(["完了！次；最後"]);
+    expect([...fw.out, ...fw.rest].map(s => s.text)).toEqual(["完了！", "次；", "最後"]);
+  });
+
+  it("keeps highlight offsets right around emoji and other surrogate pairs", () => {
+    const r = all(["Done 🎉. Next 👍🏽 step! ", "𝒳 marks it."]);
+    expect([...r.out, ...r.rest].map(s => s.text)).toEqual(["Done 🎉.", "Next 👍🏽 step!", "𝒳 marks it."]);
+    offsetsHold(r);
+  });
+
+  it("cuts a long unspaced run without splitting a surrogate pair", () => {
+    const text = "字".repeat(MAX_SPOKEN_CHARS - 1) + "😀" + "字".repeat(50);
+    const r = all([text]);
+    const parts = [...r.out, ...r.rest];
+    expect(parts.length).toBe(2);
+    for (const p of parts) {
+      expect(p.text.length).toBeLessThanOrEqual(MAX_SPOKEN_CHARS);
+      expect(/[\uD800-\uDBFF]$/.test(p.text)).toBe(false);
+      expect(text.slice(p.start, p.end)).toBe(p.text);
+    }
+    expect(parts.map(p => p.text).join("")).toBe(text);
   });
 });

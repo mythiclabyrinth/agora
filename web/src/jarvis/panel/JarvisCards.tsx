@@ -2,14 +2,19 @@
    Cards carry the detail so the spoken answer can stay short. */
 
 import { useEffect, useId, useRef, useState } from "react";
-import { ApiError, cancelJarvisDraft, sendJarvisDraft, useApi, type ApiClient, type JarvisCard, type JarvisDigestItem, type JarvisMessageHit } from "@agora/core";
+import {
+  ApiError, cancelJarvisDraft, sendJarvisDraft, updateJarvisDraft, useApi,
+  type ApiClient, type JarvisCard, type JarvisDigestItem, type JarvisMessageHit,
+} from "@agora/core";
 import { Icon } from "../../lib/icons";
 import { toast } from "../../lib/toast";
 import { useJump } from "../../state/jump";
 import { useUiState } from "../../state/ui";
-import { useJarvis, type JarvisCardEntry } from "../../state/jarvis";
+import { isLiveDraft, useJarvis, type JarvisCardEntry } from "../../state/jarvis";
 
 const UNDO_MS = 5000;
+/** Typing pauses this long before an edit is saved (blur and Send save at once). */
+export const SAVE_DEBOUNCE_MS = 700;
 
 export type JarvisDraftCard = Extract<JarvisCard, { kind: "draft" }>;
 
@@ -70,37 +75,100 @@ function useCountdown(expiresAt: number): number {
   return Math.max(0, Math.round((expiresAt - now) / 1000));
 }
 
-/** Confirm a draft (the card's Send, or a spoken "send it"): the server
-    posts it as the user, with a short Undo. Posts the card's text as it
-    stands, edits included. Resolves true once sent. */
+const cardById = (id: string) => useJarvis.getState().cards.find(c => c.id === id);
+
+/** A draft call failed: a gone draft shows as expired; the reason is toasted. */
+function draftFailed(entryId: string, e: unknown, prefix: string): void {
+  const status = e instanceof ApiError ? e.status : 0;
+  const now = cardById(entryId)?.status;
+  if (status === 410 || status === 404) useJarvis.getState().setCardStatus(entryId, "expired");
+  else if (now === "sending") useJarvis.getState().setCardStatus(entryId, "pending");
+  toast(prefix + ((e as Error).message || "request failed"), { variant: status === 409 ? "warn" : "error" });
+}
+
+const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const saving = new Map<string, Promise<boolean>>();
+
+/** Save a draft card's edit to the server when it differs from what the
+    server has, so Send — and a spoken yes, which the server judges against
+    its own copy — post exactly what the card shows. One save per card at a
+    time (each needs the previous revision). Resolves false when the edit
+    could not be saved (or is empty). */
+export function saveDraftEdit(api: ApiClient, entryId: string): Promise<boolean> {
+  const timer = saveTimers.get(entryId);
+  if (timer) {
+    clearTimeout(timer);
+    saveTimers.delete(entryId);
+  }
+  const next = (saving.get(entryId) ?? Promise.resolve(true)).then(async () => {
+    const entry = cardById(entryId);
+    if (!entry || entry.card.kind !== "draft" || entry.text === undefined) return true;
+    const text = entry.text.trim();
+    if (text === (entry.savedText ?? entry.card.text).trim()) return true;
+    if (!text) return false;
+    try {
+      const saved = await updateJarvisDraft(api, entry.card.draft_id, text, entry.revision ?? entry.card.revision ?? 1);
+      useJarvis.getState().setCardSaved(entryId, saved.text, saved.revision);
+      return true;
+    } catch (e) {
+      draftFailed(entryId, e, "Couldn't save the edit: ");
+      return false;
+    }
+  });
+  saving.set(entryId, next);
+  void next.finally(() => { if (saving.get(entryId) === next) saving.delete(entryId); });
+  return next;
+}
+
+/** Save an edit once typing pauses. */
+export function scheduleDraftSave(api: ApiClient, entryId: string): void {
+  const timer = saveTimers.get(entryId);
+  if (timer) clearTimeout(timer);
+  saveTimers.set(entryId, setTimeout(() => { saveTimers.delete(entryId); void saveDraftEdit(api, entryId); }, SAVE_DEBOUNCE_MS));
+}
+
+/** A draft was posted (by Send or by an approved reply): the toast with a
+    short Undo, which deletes the message through the normal delete API. */
+export function announceSent(api: ApiClient, entryId: string, card: JarvisDraftCard, messageId: number): void {
+  const sentAt = Date.now();
+  toast(`Sent to ${card.destination}`, {
+    variant: "ok",
+    actionLabel: "Undo",
+    onAction: () => {
+      if (Date.now() - sentAt > UNDO_MS) { toast("Too late to undo — delete it from the conversation", { variant: "warn" }); return; }
+      void api.delete(`/api/channels/${encodeURIComponent(card.channel_id)}/messages/${messageId}`)
+        .then(() => { useJarvis.getState().setCardStatus(entryId, "cancelled"); toast("Unsent", { variant: "ok" }); })
+        .catch(e => toast("Couldn't undo: " + (e as Error).message, { variant: "error" }));
+    },
+  });
+}
+
+/** Confirm a draft with the card's Send: saves any pending edit first, then
+    sends at the revision the card shows (the server refuses a stale one).
+    Resolves true once sent. */
 export async function sendDraftEntry(api: ApiClient, entry: JarvisCardEntry, card: JarvisDraftCard): Promise<boolean> {
   const { setCardStatus: setStatus } = useJarvis.getState();
-  const text = useJarvis.getState().cards.find(c => c.id === entry.id)?.text ?? entry.text;
+  const text = cardById(entry.id)?.text ?? entry.text;
   if (text !== undefined && !text.trim()) {
     toast("The draft is empty — type a message or cancel it", { variant: "warn" });
     return false;
   }
   setStatus(entry.id, "sending");
+  if (!(await saveDraftEdit(api, entry.id))) {
+    if (cardById(entry.id)?.status === "sending") setStatus(entry.id, "pending");
+    return false;
+  }
   try {
-    const res = await sendJarvisDraft(api, card.draft_id, text);
-    setStatus(entry.id, "sent");
-    const sentAt = Date.now();
-    const mid = res.message.id;
-    toast(`Sent to ${card.destination}`, {
-      variant: "ok",
-      actionLabel: "Undo",
-      onAction: () => {
-        if (Date.now() - sentAt > UNDO_MS) { toast("Too late to undo — delete it from the conversation", { variant: "warn" }); return; }
-        void api.delete(`/api/channels/${encodeURIComponent(card.channel_id)}/messages/${mid}`)
-          .then(() => { setStatus(entry.id, "cancelled"); toast("Unsent", { variant: "ok" }); })
-          .catch(e => toast("Couldn't undo: " + (e as Error).message, { variant: "error" }));
-      },
-    });
+    const revision = cardById(entry.id)?.revision ?? card.revision ?? 1;
+    const res = await sendJarvisDraft(api, card.draft_id, revision);
+    useJarvis.setState(s => ({
+      cards: s.cards.map(c => c.id === entry.id ? { ...c, status: "sent" as const, messageId: res.message.id } : c),
+    }));
+    // Already posted (a spoken yes won the race): its toast was shown then.
+    if (!res.already_sent) announceSent(api, entry.id, card, res.message.id);
     return true;
   } catch (e) {
-    const gone = e instanceof ApiError && (e.status === 410 || e.status === 404);
-    setStatus(entry.id, gone ? "expired" : "pending");
-    toast("Couldn't send: " + (e as Error).message, { variant: "error" });
+    draftFailed(entry.id, e, "Couldn't send: ");
     return false;
   }
 }
@@ -122,7 +190,7 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
   const [fallbackExpiry] = useState(() => Date.now() + card.expires_in * 1000);
   const left = useCountdown(entry.expiresAt ?? fallbackExpiry);
   const status = entry.status ?? "pending";
-  const live = status === "pending" && left > 0;
+  const live = isLiveDraft({ ...entry, expiresAt: entry.expiresAt ?? fallbackExpiry }) && left > 0;
 
   useEffect(() => {
     if (status === "pending" && left === 0) setStatus(entry.id, "expired");
@@ -152,7 +220,9 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
         </div>
       )}
       <textarea ref={editor} className="jv-draft-text" value={text} maxLength={20000} readOnly={!editing || !live} rows={Math.min(6, Math.max(2, Math.ceil(text.length / 60)))}
-        aria-label="Draft message" aria-describedby={hintId} aria-live="off" onChange={e => setCardText(entry.id, e.target.value)} />
+        aria-label="Draft message" aria-describedby={hintId} aria-live="off"
+        onChange={e => { setCardText(entry.id, e.target.value); scheduleDraftSave(api, entry.id); }}
+        onBlur={() => { if (editing) void saveDraftEdit(api, entry.id); }} />
       <p className="jv-confirm-hint" id={hintId}>
         <Icon name={status === "sent" ? "check" : "lock"} />
         {status === "sent" ? "Posted to the conversation. Undo is offered in the send notification." : status === "sending" ? "Posting your confirmed message…" : status === "cancelled" ? "This draft is closed. It cannot be sent again." : status === "expired" ? "Nothing was sent. Ask Agora for a fresh draft." : "Only sent after you confirm."}
@@ -165,6 +235,7 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
           <button className="btn sm" disabled={!live} aria-pressed={editing} onClick={() => {
             setEditing(!editing);
             if (!editing) editor.current?.focus();
+            else void saveDraftEdit(api, entry.id);
           }}>{editing ? "Done" : "Edit"}</button>
           <button className="jv-discard" disabled={!live} onClick={e => {
             const panel = e.currentTarget.closest(".jv-panel");
@@ -210,6 +281,9 @@ function DigestCard({ items }: { items: JarvisDigestItem[] }) {
     on screen. A draft mid-send is only hidden; its send finishes. */
 export function dismissCardEntry(api: ApiClient, entry: JarvisCardEntry): void {
   if (entry.card.kind === "draft" && (entry.status ?? "pending") === "pending") {
+    const timer = saveTimers.get(entry.id);
+    if (timer) clearTimeout(timer);
+    saveTimers.delete(entry.id);
     cancelDraftEntry(api, entry, entry.card);
   }
   useJarvis.getState().dismissCard(entry.id);
@@ -218,7 +292,7 @@ export function dismissCardEntry(api: ApiClient, entry: JarvisCardEntry): void {
 export function JarvisCardView({ entry }: { entry: JarvisCardEntry }) {
   const api = useApi();
   const { card } = entry;
-  const discards = card.kind === "draft" && (entry.status ?? "pending") === "pending";
+  const discards = isLiveDraft(entry);
   const close = !discards && <button className="jv-dismiss" aria-label="Dismiss card"
     title="Hide this card" onClick={e => {
       const panel = e.currentTarget.closest(".jv-panel");

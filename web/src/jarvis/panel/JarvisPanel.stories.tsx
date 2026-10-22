@@ -49,6 +49,7 @@ const draft: JarvisCard = {
   final_text: "@claude please rerun the deploy once the linter passes.",
   mentions: [{ kind: "agent", id: "claude", name: "Claude", handle: "claude" }],
   expires_in: 120,
+  revision: 1,
 };
 
 const entry = (id: string, card: JarvisCard): JarvisCardEntry => ({
@@ -62,7 +63,12 @@ function open(state: Partial<JarvisState>) {
   };
 }
 
-const sendDraft = fn(() => ({ ok: true, message: { ...fixtureRootMessage, id: 9001 } }));
+const sendDraft = fn(() => ({ ok: true, message: { ...fixtureRootMessage, id: 9001 }, already_sent: false }));
+// The card saves an edit (new revision) before Send quotes it.
+const saveDraft = fn((body: unknown) => {
+  const text = (body as { text: string }).text;
+  return { ok: true, draft_id: "jd_story", revision: 2, text, final_text: text };
+});
 
 const meta = {
   title: "Web/Jarvis/Panel",
@@ -129,6 +135,7 @@ export const Draft: Story = {
   parameters: {
     apiRoutes: {
       "GET /api/me": jarvisMe,
+      "PUT /api/jarvis/drafts/jd_story": saveDraft,
       "POST /api/jarvis/drafts/jd_story/send": sendDraft,
     },
     setup: open({
@@ -150,9 +157,9 @@ export const Draft: Story = {
     await userEvent.click(card.getByRole("button", { name: "Edit" }));
     await userEvent.type(text, " Thanks!");
     await userEvent.click(card.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(sendDraft).toHaveBeenCalledWith(expect.objectContaining({
-      text: "@claude please rerun the deploy once the linter passes. Thanks!",
-    })));
+    // The edit is saved first, then Send quotes the revision it produced.
+    await waitFor(() => expect(sendDraft).toHaveBeenCalledWith(expect.objectContaining({ revision: 2 })));
+    expect(saveDraft).toHaveBeenCalledWith({ text: "@claude please rerun the deploy once the linter passes. Thanks!", revision: 1 });
     await expect(card.findByText("Sent")).resolves.toBeVisible();
   },
 };
