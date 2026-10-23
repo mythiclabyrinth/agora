@@ -46,6 +46,7 @@ import { jumpTo } from "../navigate";
 import { jarvisLevel } from "../panel/level";
 import { createEndpointer, ENDPOINT_DEFAULTS, frameRms } from "./endpointer";
 import { createSentenceChunker, type Sentence } from "./sentences";
+import { timeStretch, trimSilence } from "./stretch";
 
 const TICK_MS = 50;
 /** How long the loop waits for speech after opening, or after an answer. */
@@ -530,10 +531,11 @@ export function abortTurn(): void {
     and reset the session. Fire-and-forget: a failed delete just expires. */
 export function newConversation(api: ApiClient): void {
   abortTurn();
-  discardWaitingAudio();
   const id = useJarvis.getState().conversationId;
   if (id) void resetJarvisConversation(api, id).catch(() => {});
   useJarvis.getState().reset();
+  // After reset, which rests the phase: listening shows as listening.
+  discardWaitingAudio();
 }
 
 // ------------------------------------------------------------------ speech
@@ -542,6 +544,9 @@ interface Clip {
   entryId: string;
   sentence: Sentence;
   audio: Promise<Blob | null>;
+  /** Decoded, trimmed and stretched as soon as the audio arrives, while the
+      clip before it plays, so sentences follow each other without a gap. */
+  shaped: Promise<AudioBuffer | null>;
 }
 
 const speech = {
@@ -549,6 +554,8 @@ const speech = {
   playing: false,
   el: null as HTMLAudioElement | null,
   source: null as MediaElementAudioSourceNode | null,
+  /** The clip playing through Web Audio (the usual path; `el` is the fallback). */
+  node: null as AudioBufferSourceNode | null,
   url: "",
   gen: 0,
   abort: null as AbortController | null,
@@ -570,7 +577,8 @@ function enqueueSpeech(entryId: string, sentence: Sentence): void {
     }
     return null;
   });
-  speech.queue.push({ entryId, sentence, audio });
+  const shaped = audio.then(blob => (blob ? shapeClip(blob) : null));
+  speech.queue.push({ entryId, sentence, audio, shaped });
   syncAudio();
   if (!speech.playing) void playNext(speech.gen);
 }
@@ -580,8 +588,22 @@ function speakText(entryId: string, text: string): void {
   [...chunker.push(text), ...chunker.flush()].forEach(s => enqueueSpeech(entryId, s));
 }
 
-function routeThroughAnalyser(el: HTMLAudioElement): void {
-  playbackRouted = false;
+/** The playback graph (context → analyser → speakers), created once. */
+function ensurePlayback(): typeof playback {
+  ensurePlaybackGraph();
+  return playback;
+}
+
+/** Wake a suspended context (WebKit suspends it when idle) before using it,
+    briefly: if it won't run, the clip plays through an element instead. */
+async function runningPlayback(): Promise<typeof playback> {
+  const pb = ensurePlayback();
+  if (!pb || pb.ac.state === "running") return pb;
+  await Promise.race([pb.ac.resume().catch(() => {}), new Promise(r => setTimeout(r, 300))]);
+  return pb;
+}
+
+function ensurePlaybackGraph(): void {
   try {
     if (!playback) {
       const ac = new AudioContext();
@@ -591,8 +613,40 @@ function routeThroughAnalyser(el: HTMLAudioElement): void {
       playback = { ac, analyser, buf: new Float32Array(analyser.fftSize) };
     }
     if (playback.ac.state === "suspended") void playback.ac.resume().catch(() => {});
+  } catch { /* no Web Audio: element playback */ }
+}
+
+/** A clip ready for Web Audio: decoded, its silence trimmed (TTS pads both
+    ends, so sentences sounded stitched together), and sped up to the
+    Jarvis speaking speed with the pitch kept (stretch.ts). Null when Web
+    Audio can't take it; the clip then plays through an element. */
+async function shapeClip(blob: Blob): Promise<AudioBuffer | null> {
+  const pb = ensurePlayback();
+  if (!pb || typeof pb.ac.decodeAudioData !== "function") return null;
+  try {
+    const decoded = await pb.ac.decodeAudioData(await blob.arrayBuffer());
+    const sr = decoded.sampleRate;
+    let mono = decoded.getChannelData(0);
+    if (decoded.numberOfChannels > 1) {
+      const other = decoded.getChannelData(1);
+      mono = mono.map((v, i) => (v + other[i]) / 2);
+    }
+    const [start, end] = trimSilence(mono, sr);
+    const shaped = timeStretch(mono.subarray(start, end), caps.rate, sr);
+    const buf = pb.ac.createBuffer(1, Math.max(1, shaped.length), sr);
+    buf.copyToChannel(Float32Array.from(shaped), 0);
+    return buf;
+  } catch {
+    return null;
+  }
+}
+
+function routeThroughAnalyser(el: HTMLAudioElement): void {
+  playbackRouted = false;
+  try {
+    ensurePlayback();
     // A suspended context would swallow the audio: only route when running.
-    if (playback.ac.state !== "running") return;
+    if (!playback || playback.ac.state !== "running") return;
     speech.source = playback.ac.createMediaElementSource(el);
     speech.source.connect(playback.analyser);
     playbackRouted = true;
@@ -618,6 +672,41 @@ async function playNext(gen: number): Promise<void> {
     void playNext(gen);
     return;
   }
+  const shaped = await clip.shaped;
+  const pb = shaped ? await runningPlayback() : null;
+  if (gen !== speech.gen) return;
+  const st = useJarvis.getState();
+  if (shaped && pb && pb.ac.state === "running") {
+    let node: AudioBufferSourceNode | null = null;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const done = () => {
+      if (watchdog) clearTimeout(watchdog);
+      if (!node || speech.node !== node) return;
+      releaseClip();
+      speech.playing = false;
+      void playNext(gen);
+    };
+    try {
+      node = pb.ac.createBufferSource();
+      node.buffer = shaped;
+      node.connect(pb.analyser);
+      speech.node = node;
+      playbackRouted = true;
+      endpointer.reset();
+      st.setSpoken({ id: clip.entryId, start: clip.sentence.start, end: clip.sentence.end });
+      st.setVoicePhase("speaking");
+      node.onended = done;
+      node.start();
+      // If the context stalls (device change, sleep), move on rather than
+      // leave the queue, and the wake word, waiting forever.
+      const seconds = Number.isFinite(shaped.duration) ? shaped.duration : 30;
+      watchdog = setTimeout(done, seconds * 1000 + 2_000);
+    } catch {
+      done();
+    }
+    return;
+  }
+  // Fallback (no running Web Audio): the browser's own rate change.
   const url = URL.createObjectURL(blob);
   const el = new Audio();
   el.setAttribute("playsinline", "");
@@ -632,7 +721,6 @@ async function playNext(gen: number): Promise<void> {
   speech.el = el;
   speech.url = url;
   endpointer.reset();
-  const st = useJarvis.getState();
   st.setSpoken({ id: clip.entryId, start: clip.sentence.start, end: clip.sentence.end });
   st.setVoicePhase("speaking");
   const finished = () => {
@@ -656,6 +744,13 @@ async function playNext(gen: number): Promise<void> {
 }
 
 function releaseClip(): void {
+  const node = speech.node;
+  if (node) {
+    node.onended = null;
+    try { node.stop(); } catch { /* already ended */ }
+    try { node.disconnect(); } catch { /* already disconnected */ }
+    speech.node = null;
+  }
   const el = speech.el;
   if (el) {
     el.onended = null;

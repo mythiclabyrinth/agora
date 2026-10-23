@@ -49,8 +49,13 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   releases the mic and returns to `armed`, where the wake word takes over
   again. The first window after a wake or open is 10 s.
 - **Speed, background, Stop**: replies play at the Features → Jarvis
-  speaking speed (1×–2×, pitch kept; a change applies from the next
-  sentence). Closing the panel stops listening and drops any recording or
+  speaking speed (1×–2×; a change applies from the next sentence). Each
+  sentence's clip is decoded, its silence trimmed (TTS pads both ends, which
+  made sentences sound stitched together), and sped up with Agora's own
+  pitch-preserving time-stretch (`stretch.ts`, WSOLA) before playing through
+  Web Audio, so it sounds the same in Chromium and the desktop's WebKit,
+  whose built-in rate change is phasey at 1.5×+. Groq Orpheus ignores a
+  speed parameter, so this is done on the client for every provider. Closing the panel stops listening and drops any recording or
   transcription in flight, but the answer keeps streaming and speaking, so
   it can be heard while reading; the wake word stays disarmed while it
   speaks, so the reply can't wake itself through the speakers. Reopening

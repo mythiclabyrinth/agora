@@ -704,6 +704,7 @@ describe("speed, background speech and Stop", () => {
     await pass(500);
     expect(voice.voiceDebugState().capture).toBe("recording");
     voice.newConversation(api);
+    expect(useJarvis.getState().phase).toBe("listening"); // and it says so
     env.rms = 0.001;
     await pass(voice.END_OF_SPEECH_MS + 100);
     expect(core.jarvisTranscribe).not.toHaveBeenCalled();
@@ -727,6 +728,42 @@ describe("speed, background speech and Stop", () => {
     await pass(7_000);
     expect(FakeRecorder.instances.length).toBeGreaterThanOrEqual(2);
     expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+  });
+
+  it("plays clips through Web Audio: silence trimmed, sped up, pitch kept, no element", async () => {
+    const sr = 24_000;
+    const sound = Float32Array.from({ length: sr }, (_, i) => 0.3 * Math.sin((2 * Math.PI * 220 * i) / sr));
+    const padded = new Float32Array(sr * 2);
+    padded.set(sound, sr / 2); // half a second of silence in front, as Orpheus sends it
+    const started: { buffer: { length: number } }[] = [];
+    const proto = FakeAudioContext.prototype as unknown as Record<string, unknown>;
+    proto.decodeAudioData = async () => ({ sampleRate: sr, numberOfChannels: 1, getChannelData: () => padded });
+    proto.createBuffer = (_c: number, length: number, rate: number) => ({ length, sampleRate: rate, duration: length / rate, copyToChannel() {} });
+    proto.createBufferSource = () => {
+      const node = { buffer: null as unknown, onended: null as null | (() => void), connect() {}, disconnect() {}, stop() {},
+        start() { started.push(node as never); } };
+      return node;
+    };
+    try {
+      voice.configureVoice({ rate: 1.5 });
+      answer("All good.");
+      await voice.handleUtterance("status?");
+      await pass(0);
+      expect(started).toHaveLength(1);
+      expect(FakeAudio.instances).toHaveLength(0);
+      // ~1 s of sound (+ pads), at 1.5×: about two thirds of a second, not two.
+      expect(started[0].buffer.length / sr).toBeGreaterThan(0.6);
+      expect(started[0].buffer.length / sr).toBeLessThan(0.8);
+      expect(useJarvis.getState().audioActive).toBe(true);
+      (started[0] as unknown as { onended: () => void }).onended();
+      await pass(0);
+      expect(useJarvis.getState().audioActive).toBe(false);
+    } finally {
+      delete proto.decodeAudioData;
+      delete proto.createBuffer;
+      delete proto.createBufferSource;
+      voice.configureVoice({ rate: 1 });
+    }
   });
 });
 
