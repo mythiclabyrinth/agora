@@ -765,5 +765,31 @@ describe("speed, background speech and Stop", () => {
       voice.configureVoice({ rate: 1 });
     }
   });
+
+  it("a Web Audio setup that throws moves on instead of leaving Jarvis stuck speaking", async () => {
+    const proto = FakeAudioContext.prototype as unknown as Record<string, unknown>;
+    proto.decodeAudioData = async () => ({ sampleRate: 24_000, numberOfChannels: 1, getChannelData: () => new Float32Array(24_000).fill(0.2) });
+    proto.createBuffer = (_c: number, length: number, rate: number) => ({ length, sampleRate: rate, duration: length / rate, copyToChannel() {} });
+    proto.createBufferSource = () => { throw new DOMException("context closed", "InvalidStateError"); };
+    try {
+      answer("One. ", "Two.");
+      await voice.handleUtterance("status?");
+      await pass(0);
+      // Both sentences were attempted and the queue drained: nothing is stuck.
+      expect(voice.voiceDebugState()).toMatchObject({ speaking: false, queued: 0 });
+      expect(useJarvis.getState().audioActive).toBe(false); // the wake word can arm again
+      // The next answer still plays.
+      delete proto.createBufferSource;
+      delete proto.decodeAudioData;
+      answer("Back.");
+      await voice.handleUtterance("again?");
+      await pass(0);
+      expect(spokenTexts().at(-1)).toBe("Back.");
+    } finally {
+      delete proto.decodeAudioData;
+      delete proto.createBuffer;
+      delete proto.createBufferSource;
+    }
+  });
 });
 

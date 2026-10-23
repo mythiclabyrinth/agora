@@ -679,9 +679,15 @@ async function playNext(gen: number): Promise<void> {
   if (shaped && pb && pb.ac.state === "running") {
     let node: AudioBufferSourceNode | null = null;
     let watchdog: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    // Ends this clip once, however it ends (played out, watchdog, or a
+    // setup that threw before the node was even live), so the queue and
+    // the wake word can't be left waiting. A stop or a new turn bumps the
+    // generation, and then this is no longer the clip to finish.
     const done = () => {
       if (watchdog) clearTimeout(watchdog);
-      if (!node || speech.node !== node) return;
+      if (settled || gen !== speech.gen) return;
+      settled = true;
       releaseClip();
       speech.playing = false;
       void playNext(gen);
