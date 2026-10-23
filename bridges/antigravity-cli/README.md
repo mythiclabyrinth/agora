@@ -54,6 +54,7 @@ computer. Keep the computer awake and the bridge running for remote access.
 | `/new <dir>` | Start a fresh conversation under an allowed root |
 | `/worktree <repo> [branch]` | Create and bind an isolated Git worktree |
 | `/worktree show` / `/worktree remove [shared\|force]` | Inspect or remove the thread's worktree. `shared` safely moves other conversations back to the base repo and refuses dirty or unmerged work; `force` discards uncommitted changes and can delete an unmerged branch. |
+| `/worktree list` | List worktrees managed by this agent |
 | `/worktrees` | List worktrees managed by this bridge |
 | `/models` | Run `agy models` to list the models available to your Google account |
 | `/model <alias \| id \| default>` | Store a model override; aliases: `argon`, `flash`, `opus`, `sonnet`, `gptoss` |
@@ -79,6 +80,9 @@ posts that error.
 | `ask` | none | Read-only. Headless agy cannot ask for approval, so edits and commands are denied; the reply lists what was denied. |
 | `plan` | `--mode plan` | Antigravity writes a plan instead of making changes; the bridge posts the plan file's contents. |
 | `force` | `--dangerously-skip-permissions` | Edits and commands with no sandbox, so terminal commands are unrestricted too. Only available when the bridge starts with `ANTIGRAVITY_ALLOW_FORCE=1`. |
+
+Ask and plan pass no approval flags. Their refusal of writes and commands relies
+on headless agy's default permission mode, not a limit enforced by the bridge.
 
 ## How it works
 

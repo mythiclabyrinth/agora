@@ -10,9 +10,9 @@ Antigravity as access to that host within the configured restrictions.
   commands: agy's file tools (such as `write_file`) still write anywhere the
   bridge's OS user can, including outside the workspace, and network access
   stays available. Treat `agent` mode as write access to everything that user
-  can reach. Use `/mode ask` or `/mode plan` in channels
-  that should not edit files or run commands; there, agy denies those tools
-  and the reply lists what was denied.
+  can reach. `/mode ask` and `/mode plan` pass no approval flags. Headless agy's
+  default permission mode auto-denies tools it cannot prompt for; the bridge
+  does not enforce that limit. When agy denies a tool, the reply lists it.
 - `/mode force` auto-approves tools with no sandbox, so terminal commands are
   unrestricted as well. It is refused unless the
   bridge starts with `ANTIGRAVITY_ALLOW_FORCE=1`, and a saved force binding

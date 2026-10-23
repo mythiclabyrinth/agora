@@ -125,6 +125,7 @@ MAX_POST_CHARS = 8000
 MAX_TLDR_CHARS = 2000  # hub drops a longer tldr; pre-truncate so ours always lands
 PROGRESS_THROTTLE = 2.0  # seconds between progress frames
 STOP_GRACE_SECONDS = 10  # SIGTERM first so agy saves the turn; SIGKILL after this
+POST_RESULT_GRACE = 10.0  # agy can leave stdout open after a complete result
 USAGE_COMMAND_TIMEOUT = 30
 USAGE_AFTER_TURN_INTERVAL = 120  # min seconds between post-turn usage refreshes
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -337,7 +338,7 @@ HELP = """Bridge commands (anything else is sent to the bound Antigravity conver
 /use <n | conversation-id> - bind this channel/thread to a conversation
 /new <dir> - bind to a fresh conversation in a directory (must be under an allowed root)
 /worktree <repo> [branch] - isolate this thread in a fresh git worktree + branch
-/worktree [show] - show this thread's worktree; /worktree remove [shared|force] - delete it
+/worktree [show] - show this thread's worktree; /worktree list - list tracked worktrees; /worktree remove [shared|force] - delete it
 /worktrees - list every tracked worktree
 /models - list models available to your Google account
 /model <alias|id|default> - set the model for this channel (aliases: argon, flash, opus, sonnet, gptoss)
@@ -1094,7 +1095,7 @@ class Bridge:
 
         `min_interval` throttles the post-turn refresh (each check spawns agy);
         a hub usage_refresh passes 0 because the hub rate-limits those itself.
-        Concurrent callers share one check.
+        A caller that arrives while a check is running returns without waiting for it.
         """
         lock = getattr(self, "usage_lock", None)
         if lock is None:
@@ -1544,7 +1545,7 @@ class Bridge:
         if cmd == "/commands":
             self.post(frame, HELP)
         elif cmd == "/sessions":
-            limit = int(rest) if rest.isdigit() else self.sessions_limit
+            limit = min(int(rest), 50) if rest.isdigit() else self.sessions_limit
             sessions = await asyncio.to_thread(recent_sessions, limit)
             self.listings[key] = sessions
             self.post(frame, format_sessions(sessions))
@@ -2777,9 +2778,16 @@ class Bridge:
                             self.progress(frame, progress)
                         if state.result is not None:
                             break
-                    await proc.wait()
+                    if state.result is not None:
+                        try:
+                            await asyncio.wait_for(proc.wait(), POST_RESULT_GRACE)
+                        except TimeoutError:
+                            pass
+                    else:
+                        await proc.wait()
             except TimeoutError:
-                raise RuntimeError(f"timed out after {self.timeout}s")
+                if state.result is None:
+                    raise RuntimeError(f"timed out after {self.timeout}s")
             finally:
                 # Never leave an orphaned agy running: any exit path (timeout,
                 # stream parse error, disconnect, cancellation) must kill the

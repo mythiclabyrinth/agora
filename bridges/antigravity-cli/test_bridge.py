@@ -2086,6 +2086,14 @@ class SessionListTests(unittest.TestCase):
         self.assertEqual(b.bindings["c1"]["cwd"], str(self.project.resolve()))
         self.assertIn("No conversation #9", b._cmd_use("c1", "9"))
 
+    def test_sessions_command_caps_requested_count(self):
+        b = make_bridge()
+        b.post = Mock()
+        with patch.object(bridge, "recent_sessions", return_value=[]) as recent:
+            asyncio.run(b._run_command("c1", {"channel_id": "c1"},
+                                       "/sessions", "99999", "/sessions 99999"))
+        recent.assert_called_once_with(50)
+
     def test_use_by_id_validates_against_the_index(self):
         b = make_bridge()
         b._save_state = Mock()
@@ -2842,6 +2850,42 @@ THREAD_CID = "7d2c6a51-0b1e-4c55-9d3e-2a6f0c1b9e10"
 
 
 class RunLifecycleFixTests(unittest.TestCase):
+    def _result_before_exit(self, timeout, grace):
+        b = stream_bridge()
+        b.timeout = timeout
+        binding = {"cwd": "/tmp"}
+        b.bindings["k"] = binding
+
+        async def main():
+            proc, _ = _live_proc([_init(), _text(1, "finished"), _result("finished")])
+            exited = asyncio.Event()
+            old_kill = proc.kill.side_effect
+
+            def kill():
+                old_kill()
+                exited.set()
+
+            async def wait():
+                await exited.wait()
+                return proc.returncode
+
+            proc.kill.side_effect = kill
+            proc.wait = AsyncMock(side_effect=wait)
+            with patch.object(bridge.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)), \
+                    patch.object(bridge, "POST_RESULT_GRACE", grace):
+                reply = await b.run_agent("k", {"channel_id": "c1"}, binding, "go")
+            self.assertEqual(reply, "finished")
+            proc.kill.assert_called_once()
+            self.assertEqual(binding["session_id"], CID)
+
+        asyncio.run(main())
+
+    def test_result_survives_process_lingering_past_grace(self):
+        self._result_before_exit(timeout=0.2, grace=0.01)
+
+    def test_result_survives_overall_timeout_while_waiting_for_exit(self):
+        self._result_before_exit(timeout=0.01, grace=0.2)
+
     # --- 1. a replaced conversation gets the full context note next turn
 
     def test_replaced_conversation_gets_full_note_next_turn(self):
