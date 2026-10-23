@@ -70,8 +70,10 @@ to:
 - **Jarvis mode.** If an admin has set up the assistant (instance AI
   settings: ChatGPT, OpenAI, or Anthropic), what you ask it and the messages
   it reads on your behalf (only ones you can see) are sent by your server to
-  that provider while you use the assistant. Spoken requests and replies
-  follow the voice settings above.
+  that provider while you use the assistant. When you answer one of its
+  drafts, your reply and that draft (nothing else) are sent to the same
+  provider to check whether you approved sending it. Spoken requests and
+  replies follow the voice settings above.
 
 In every case the data flow is: your app sends content only to the Agora
 server you chose; that server (run by you or someone you trust) may then use

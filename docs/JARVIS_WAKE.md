@@ -52,11 +52,26 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   conversational listening and no capture after a wake (typed input only);
   speaker off keeps replies text-only. Without STT / TTS (`/api/me`
   `jarvis_stt` / `jarvis_tts`) they show as unavailable with a hint.
-- **Spoken draft confirmation**: with exactly one pending draft card, a
-  clear "send it" / "yes, send it" / "confirm" or "cancel" / "don't send"
-  (`intent.ts`) calls the card's own confirm / cancel endpoints client-side;
-  the model still cannot send. The prompt asks it to read back the
-  destination and text and ask "Send it?".
+- **Answering a draft in your own words**: every utterance goes to the
+  server as a normal turn; the client never guesses intent. When the
+  previous answer offered exactly one draft that is still live, the server's
+  approval check (a separate call that sees only the reply and that draft)
+  decides: an unconditional yes in any language ("yes go ahead", "haan bhej
+  do", "sí, envíalo") posts it, a clear no cancels it, and anything
+  conditional, hedged, or unrelated ("only if Priya agrees", "हाँ लेकिन पहले
+  पूछो") ends the offer and goes to the assistant, which can draft again to
+  re-offer it; the card's Send still works meanwhile. The loop applies the streamed
+  `draft_sent` / `draft_cancelled` events to the card (Undo toast via the
+  normal message delete) and speaks the short acknowledgement. Card edits
+  are saved (debounced, on blur, and before Send or the next turn), so a
+  yes is judged against the text the card shows.
+- **Languages**: the assistant replies in the language you speak, and the
+  sentence splitter handles scripts without spaces and their full stops
+  (。！？；, danda, Arabic question mark, full-width forms) with highlight
+  offsets intact across emoji. How well other languages are heard, judged
+  and spoken depends on the configured STT, brain, and TTS providers.
+- **Silence**: a recording with no speech returns `no_speech` from
+  `/api/jarvis/transcribe`; the loop keeps listening without an error.
 - **Server**: both endpoints are caller-authenticated and Jarvis-gated, not
   channel-scoped, and reuse `voice.rs` with the instance's configured
   provider, model and voice. "Jarvis-gated" means Jarvis's own switch and
@@ -245,8 +260,9 @@ STT / TTS (no provider keys, so **real STT/TTS were not exercised**): wake →
 listening → "what agents are online" → recording → transcribing → turn →
 answer spoken (1 speech request, 1 playback, sentence highlighted) →
 follow-up listening; a follow-up draft request is read back ("Drafted it for
-#general: …. Send it?") and a spoken "send it" posts it with no extra model
-turn; 8.6 s of silence → `armed` with the conversation's mic track stopped
+#general: …. Send it?") and a spoken "send it" posts it (at the time this
+ran, a client-side phrase match; replies are now judged by the server's
+approval check); 8.6 s of silence → `armed` with the conversation's mic track stopped
 and the wake word re-armed; talking over an answer pauses it and records;
 muted → no capture, even after a wake; speaker off → no speech requests or
 playback. 16/16 checks, no page errors.
@@ -403,7 +419,8 @@ was not run.
   states, are unverified (locked screen during the run).
 - The panel's voice loop has only run against the mock STT / TTS; real
   providers, real rooms and real echo (speakers into the mic) are untested.
-  A spoken "send it" sends the drafted text, not unsaved edits in the card.
+- With two or more drafts offered at once, a bare "yes" approves neither
+  (it can't say which); the card's Send still works.
 - No echo cancellation in the loop beyond the browser's own
   `echoCancellation`: callers must `holdOff()` while Agora speaks, as the
   firmware does around its own sounds.

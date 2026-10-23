@@ -13,7 +13,7 @@ const core = vi.hoisted(() => ({
   jarvisSpeech: vi.fn(),
   resetJarvisConversation: vi.fn(),
 }));
-const cards = vi.hoisted(() => ({ sendDraftEntry: vi.fn(), cancelDraftEntry: vi.fn() }));
+const cards = vi.hoisted(() => ({ announceSent: vi.fn(), saveDraftEdit: vi.fn() }));
 const chime = vi.hoisted(() => ({ armChimeNow: vi.fn(), playChime: vi.fn() }));
 const toasts = vi.hoisted(() => ({ toast: vi.fn() }));
 
@@ -121,7 +121,7 @@ const pass = (ms: number) => vi.advanceTimersByTimeAsync(ms);
 /** Open the loop and say something it will record and transcribe. */
 async function speak(transcript: string | Error) {
   if (transcript instanceof Error) core.jarvisTranscribe.mockRejectedValueOnce(transcript);
-  else core.jarvisTranscribe.mockResolvedValueOnce(transcript);
+  else core.jarvisTranscribe.mockResolvedValueOnce({ text: transcript, noSpeech: !transcript });
   if (voice.voiceDebugState().capture === "off") await voice.listen("open");
   env.rms = 0.05;
   await pass(500);
@@ -133,8 +133,14 @@ type OnEvent = (event: JarvisEvent) => void;
 
 /** A turn that streams `deltas` and finishes. */
 function answer(...deltas: string[]) {
+  answerWith([], ...deltas);
+}
+
+/** A turn that streams `events` first (e.g. draft_sent), then `deltas`. */
+function answerWith(events: JarvisEvent[], ...deltas: string[]) {
   core.jarvisTurn.mockImplementationOnce(async (_s: unknown, _req: unknown, onEvent: OnEvent) => {
     onEvent({ type: "start", conversation_id: "jc1" } as JarvisEvent);
+    for (const e of events) onEvent(e);
     for (const text of deltas) onEvent({ type: "delta", text } as JarvisEvent);
     onEvent({ type: "done", conversation_id: "jc1", text: deltas.join("") } as JarvisEvent);
   });
@@ -159,7 +165,7 @@ function draft(id: string): { id: string; card: JarvisCard; status: "pending" } 
     card: {
       kind: "draft", draft_id: `d_${id}`, channel_id: "c1", channel_name: "release", group_id: "g1",
       group_name: "Eng", thread_id: null, destination: "#release", text: "rerun it", final_text: "rerun it",
-      mentions: [], expires_in: 600,
+      mentions: [], expires_in: 600, revision: 1,
     },
   };
 }
@@ -177,7 +183,7 @@ beforeEach(() => {
   env.getUserMedia.mockImplementation(async () => new FakeStream());
   core.jarvisSpeech.mockImplementation(async (_s: unknown, text: string) => new Blob([text]));
   core.resetJarvisConversation.mockResolvedValue({ ok: true });
-  cards.sendDraftEntry.mockResolvedValue(true);
+  cards.saveDraftEdit.mockResolvedValue(true);
   voice.configureVoice({ api, stt: true, tts: true, open: true });
 });
 
@@ -188,77 +194,90 @@ afterEach(() => {
 
 // ------------------------------------------------------------ tests
 
-describe("spoken draft confirmation", () => {
-  it("'send it' with exactly one pending draft sends it once and runs no model turn", async () => {
+describe("replies to a draft", () => {
+  it.each(["yes", "Send it.", "haan bhej do", "sí, envíalo", "only if Priya agrees", "cancel"])(
+    "sends %j to the server as an ordinary turn, even with a draft pending", async (reply) => {
+      useJarvis.setState({ cards: [draft("a")] });
+      answer("Okay.");
+      await speak(reply);
+      expect(core.jarvisTurn).toHaveBeenCalledTimes(1);
+      expect(core.jarvisTurn.mock.calls[0][1]).toMatchObject({ text: reply });
+      expect(useJarvis.getState().cards[0].status).toBe("pending"); // only the server's events change it
+    },
+  );
+
+  it("applies draft_sent: the card is sent, Undo is offered, the acknowledgement is logged and spoken", async () => {
     const one = draft("a");
     useJarvis.setState({ cards: [one] });
-    await speak("Send it.");
-    expect(cards.sendDraftEntry).toHaveBeenCalledTimes(1);
-    expect(cards.sendDraftEntry).toHaveBeenCalledWith(api, one, one.card);
-    expect(cards.cancelDraftEntry).not.toHaveBeenCalled();
-    expect(core.jarvisTurn).not.toHaveBeenCalled();
+    answerWith([
+      { type: "draft_sent", draft_id: "d_a", message: { id: 42 } } as unknown as JarvisEvent,
+    ], "Sent to #release.");
+    await voice.handleUtterance("yes go ahead");
+    const card = useJarvis.getState().cards[0];
+    expect(card).toMatchObject({ status: "sent", messageId: 42 });
+    expect(cards.announceSent).toHaveBeenCalledWith(api, "a", one.card, 42);
     expect(useJarvis.getState().log.map(e => [e.role, e.text])).toEqual([
-      ["user", "Send it."], ["assistant", "Sent to #release."],
+      ["user", "yes go ahead"], ["assistant", "Sent to #release."],
     ]);
     expect(spokenTexts()).toEqual(["Sent to #release."]);
   });
 
-  it("'cancel' with one pending draft cancels it and runs no model turn", async () => {
-    const one = draft("a");
-    useJarvis.setState({ cards: [one] });
-    await speak("cancel");
-    expect(cards.cancelDraftEntry).toHaveBeenCalledTimes(1);
-    expect(cards.cancelDraftEntry).toHaveBeenCalledWith(api, one, one.card);
-    expect(cards.sendDraftEntry).not.toHaveBeenCalled();
-    expect(core.jarvisTurn).not.toHaveBeenCalled();
-    expect(useJarvis.getState().log.at(-1)?.text).toBe("Cancelled. Nothing was sent.");
-  });
-
-  it("a typed 'yes' to \"Send it?\" sends the draft too (no mic involved)", async () => {
-    const one = draft("a");
-    useJarvis.setState({ cards: [one] });
-    useJarvis.getState().say("I’ve drafted this in #release: “Deploy at 5.” Send it?");
-    await voice.handleUtterance("yes");
-    expect(cards.sendDraftEntry).toHaveBeenCalledTimes(1);
-    expect(core.jarvisTurn).not.toHaveBeenCalled();
-  });
-
-  it("a typed message with no pending draft is an ordinary turn", async () => {
-    answer("What should the message to #release say?");
-    await voice.handleUtterance("send a message to #release");
-    expect(cards.sendDraftEntry).not.toHaveBeenCalled();
-    expect(core.jarvisTurn).toHaveBeenCalledTimes(1);
-  });
-
-  it("a bare 'yes' sends the draft only when it answers the read-back's \"Send it?\"", async () => {
-    const one = draft("a");
-    useJarvis.setState({ cards: [one] });
-    useJarvis.getState().say("I’ve drafted this in #release: “@claude rerun it.” Send it?");
-    await speak("Yes.");
-    expect(cards.sendDraftEntry).toHaveBeenCalledTimes(1);
-    expect(core.jarvisTurn).not.toHaveBeenCalled();
-  });
-
-  it("a bare 'yes' to some other question is an ordinary turn, even with a draft pending", async () => {
+  it("no second Undo toast when the card's Send already posted it", async () => {
     useJarvis.setState({ cards: [draft("a")] });
-    useJarvis.getState().say("Did you mean #release or #releases?");
-    answer("Got it.");
-    await speak("yes");
-    expect(cards.sendDraftEntry).not.toHaveBeenCalled();
-    expect(core.jarvisTurn).toHaveBeenCalledTimes(1);
+    answerWith([
+      { type: "draft_sent", draft_id: "d_a", message: { id: 42 }, already_sent: true } as unknown as JarvisEvent,
+    ], "Sent to #release.");
+    await voice.handleUtterance("yes go ahead");
+    expect(useJarvis.getState().cards[0]).toMatchObject({ status: "sent", messageId: 42 });
+    expect(cards.announceSent).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["no pending draft", [] as ReturnType<typeof draft>[]],
-    ["two pending drafts", [draft("a"), draft("b")]],
-  ])("with %s, 'send it' is an ordinary turn", async (_name, pending) => {
-    useJarvis.setState({ cards: pending });
-    answer("Which one?");
-    await speak("send it");
-    expect(cards.sendDraftEntry).not.toHaveBeenCalled();
-    expect(cards.cancelDraftEntry).not.toHaveBeenCalled();
-    expect(core.jarvisTurn).toHaveBeenCalledTimes(1);
-    expect(core.jarvisTurn.mock.calls[0][1]).toMatchObject({ text: "send it" });
+  it("applies draft_cancelled for a spoken no and for a superseded draft", async () => {
+    useJarvis.setState({ cards: [draft("b"), draft("a")] });
+    answerWith([{ type: "draft_cancelled", draft_id: "d_a", superseded_by: null } as JarvisEvent], "Cancelled. Nothing was sent.");
+    await voice.handleUtterance("no");
+    expect(useJarvis.getState().cards.map(c => c.status)).toEqual(["pending", "cancelled"]);
+    answerWith([{ type: "draft_cancelled", draft_id: "d_b", superseded_by: "d_c" } as JarvisEvent], "Changed it.");
+    await voice.handleUtterance("change it to 5pm");
+    expect(useJarvis.getState().cards.map(c => c.status)).toEqual(["cancelled", "cancelled"]);
+    expect(cards.announceSent).not.toHaveBeenCalled();
+  });
+
+  it("saves card edits before the turn, so a yes is judged against what the card shows", async () => {
+    const order: string[] = [];
+    cards.saveDraftEdit.mockImplementation(async () => { order.push("save"); return true; });
+    useJarvis.setState({ cards: [{ ...draft("a"), text: "rerun it at 5" }, draft("b")] });
+    core.jarvisTurn.mockImplementationOnce(async () => { order.push("turn"); });
+    await voice.handleUtterance("yes");
+    expect(cards.saveDraftEdit).toHaveBeenCalledTimes(1);
+    expect(cards.saveDraftEdit).toHaveBeenCalledWith(api, "a");
+    expect(order).toEqual(["save", "turn"]);
+  });
+
+  it("names drafts whose edit couldn't be saved, so the server won't approve them", async () => {
+    cards.saveDraftEdit.mockResolvedValue(false);
+    useJarvis.setState({ cards: [{ ...draft("a"), text: "" }, draft("b")] });
+    answer("Okay.");
+    await voice.handleUtterance("yes");
+    expect(core.jarvisTurn.mock.calls[0][1]).toMatchObject({ unsaved_drafts: ["d_a"] });
+  });
+
+  it("leaves closed and expired cards alone: no save, nothing held", async () => {
+    useJarvis.setState({ cards: [
+      { ...draft("a"), text: "edited", status: "expired" },
+      { ...draft("b"), text: "edited", expiresAt: Date.now() - 1000 },
+    ] });
+    answer("Okay.");
+    await voice.handleUtterance("yes");
+    expect(cards.saveDraftEdit).not.toHaveBeenCalled();
+    expect(core.jarvisTurn.mock.calls[0][1].unsaved_drafts).toBeUndefined();
+  });
+
+  it("a dropped connection is one plain error", async () => {
+    core.jarvisTurn.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await voice.handleUtterance("catch me up");
+    expect(useJarvis.getState().error).toBe("Couldn't reach Agora — check the connection and try again.");
+    expect(useJarvis.getState().phase).toBe("error");
   });
 });
 
@@ -347,8 +366,8 @@ describe("mic and speaker toggles", () => {
 });
 
 describe("listening edge cases", () => {
-  it("a 'couldn't hear' transcription keeps listening without an error", async () => {
-    await speak(new Error("Couldn't hear anything"));
+  it("a no-speech transcription keeps listening without an error", async () => {
+    await speak("");
     expect(core.jarvisTurn).not.toHaveBeenCalled();
     expect(useJarvis.getState().error).toBeNull();
     expect(useJarvis.getState().phase).toBe("listening");

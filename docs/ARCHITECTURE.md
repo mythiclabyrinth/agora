@@ -80,8 +80,33 @@ One Rust core, three clients (see the repo layout table in the
   (signed thinking) verbatim. Credentials are the Credentials tab's, shared
   with Ask AI and voice; Jarvis is available only when switched on and its
   provider has one. Every tool reads through the caller's own `require_*`
-  gates; the model can only *draft*, and `POST /api/jarvis/drafts/{id}/send`
-  posts as the user after they confirm. `/api/jarvis/transcribe` and
+  gates; the model can only *draft*, and has no tool that sends. A draft is
+  a revisioned, owner- and conversation-bound record (pending → sending →
+  sent | cancelled, or expired); card edits save through
+  `PUT /api/jarvis/drafts/{id}` (bumping the revision) and the card's Send
+  (`POST …/send {revision}`) posts it as the user. A reply in the
+  conversation can also approve it: when the previous turn offered exactly
+  one live draft, the server first runs a separate, tool-free **approval
+  check** on the same provider that sees only the reply and where the
+  draft goes, with names cleaned and clipped (never its body, channel
+  content, or history). It must answer strict JSON
+  (`confirm|cancel|revise|clarify|unrelated`; anything else counts as
+  clarify). Drafting ends the turn with Agora's own read-back and "Send
+  it?" (the model can't add another question for a "yes" to answer), and
+  the offer is for the next reply only: once the check judges that
+  reply as anything but yes or no, the offer ends, even if the rest of the
+  turn fails, so a later "yes" can't approve that draft (its card's Send
+  still can). If the check itself fails, the offer stands for a retry.
+  Only `confirm` posts, through the same send path, bound to the
+  draft's revision; a repeat or racing send returns the message already
+  posted. A card edit that couldn't be saved is named in the turn
+  (`unsaved_drafts`), and a reply then can't approve that draft, so a yes
+  never posts text other than what the card shows. Turns in one conversation are newest-wins (a barge-in supersedes
+  the running turn, which can no longer draft, send, or save), and reset
+  cancels the conversation's pending drafts. Provider requests are bounded
+  (10 s connect, 45 s to first response, 60 s idle, 300 s per turn) and
+  retried once only when nothing from the failed request was used.
+  `/api/jarvis/transcribe` (which reports silence as `no_speech`) and
   `/api/jarvis/speech` reuse `voice.rs`. Conversations and drafts are
   in-memory and expiring. The client lives in `web/src/jarvis/` (panel,
   voice loop, and the on-device wake word, see [JARVIS_WAKE.md](JARVIS_WAKE.md)).

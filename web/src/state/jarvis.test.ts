@@ -46,7 +46,7 @@ describe("useJarvis", () => {
     expect(s()).toMatchObject({ phase: "searching", label: "Checking your unreads" });
     s().applyEvent({ type: "card", card: { kind: "digest", items: [] } });
     s().applyEvent({ type: "card", card: { kind: "draft", draft_id: "jd", channel_id: "c", channel_name: "general", group_id: "g", group_name: "G",
-      thread_id: null, destination: "#general", text: "hi", final_text: "hi", mentions: [], expires_in: 120 } });
+      thread_id: null, destination: "#general", text: "hi", final_text: "hi", mentions: [], expires_in: 120, revision: 1 } });
     expect(s().cards.map(c => c.card.kind)).toEqual(["draft", "digest"]);
     expect(s().cards[0].status).toBe("pending");
     s().applyEvent({ type: "delta", text: "Two " });
@@ -146,10 +146,29 @@ describe("useJarvis", () => {
     expect(s().log).toEqual([]);
   });
 
+  it("applies the server's draft_sent and draft_cancelled to the matching card only", () => {
+    const s = () => useJarvis.getState();
+    const mk = (draft_id: string) => ({ kind: "draft" as const, draft_id, channel_id: "c", channel_name: "release", group_id: "g",
+      group_name: "G", thread_id: null, destination: "#release", text: "t", final_text: "t", mentions: [], expires_in: 120, revision: 3 });
+    s().applyEvent({ type: "card", card: mk("jd_a") });
+    s().applyEvent({ type: "card", card: mk("jd_b") });
+    s().applyEvent({ type: "card", card: mk("jd_c") });
+    expect(s().cards[0]).toMatchObject({ revision: 3, savedText: "t" });
+    s().applyEvent({ type: "draft_sent", draft_id: "jd_a", message: { id: 77 } as never });
+    s().applyEvent({ type: "draft_cancelled", draft_id: "jd_b", superseded_by: "jd_c" });
+    // A cancel never reopens or overrides a sent card.
+    s().applyEvent({ type: "draft_cancelled", draft_id: "jd_a", superseded_by: null });
+    expect(s().cards.map(c => [c.card.kind === "draft" && c.card.draft_id, c.status])).toEqual([
+      ["jd_c", "pending"], ["jd_b", "cancelled"], ["jd_a", "sent"],
+    ]);
+    expect(s().cards[2].messageId).toBe(77);
+  });
+
   it("keeps a draft card's edited text so a spoken confirm sends what is shown", () => {
     useJarvis.getState().applyEvent({ type: "card", card: {
       kind: "draft", draft_id: "jd_1", channel_id: "c", channel_name: "release", group_id: "g", group_name: "G",
       thread_id: null, destination: "#release", text: "ship it", final_text: "ship it", mentions: [], expires_in: 120,
+      revision: 1,
     } });
     const id = useJarvis.getState().cards[0].id;
     expect(useJarvis.getState().cards[0].text).toBeUndefined();

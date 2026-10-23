@@ -544,31 +544,231 @@ impl SseLineBuffer {
     }
 }
 
-/// Generous: a streamed tool round can think for a while before the first
-/// byte; the body read itself is bounded in [`post_sse`].
-pub const TOOL_TURN_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long a Jarvis provider request may take, phase by phase. A stalled
+/// provider must end the turn with a clear error instead of leaving the
+/// panel "thinking" for minutes.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamLimits {
+    /// TCP + TLS connect.
+    pub connect: Duration,
+    /// Request sent → response headers (the model may think before them).
+    pub first_response: Duration,
+    /// Longest silence between body lines once the stream is open.
+    pub idle: Duration,
+    /// Wall-clock budget for a whole turn, across all its rounds.
+    pub turn: Duration,
+}
 
-/// POST `body` on a prepared request (URL + auth headers are the caller's)
-/// and hand each SSE `data:` payload to `feed` as it arrives. Shared by every
-/// Jarvis brain, so the providers differ only in their event parser.
-/// Blocking — call from `spawn_blocking`.
-pub fn post_sse(req: ureq::Request, body: &Value, feed: &mut dyn FnMut(&str)) -> anyhow::Result<()> {
-    use std::io::BufRead;
-    let response = req
-        .timeout(TOOL_TURN_TIMEOUT)
+pub const JARVIS_LIMITS: StreamLimits = StreamLimits {
+    connect: Duration::from_secs(10),
+    first_response: Duration::from_secs(45),
+    idle: Duration::from_secs(60),
+    turn: Duration::from_secs(300),
+};
+
+/// One turn's shared clock: every provider request in the turn (the
+/// approval check and each model round) draws on the same deadline, and the
+/// turn may retry one failed request once.
+#[derive(Debug)]
+pub struct TurnBudget {
+    pub limits: StreamLimits,
+    deadline: std::time::Instant,
+    retry_left: std::sync::atomic::AtomicBool,
+}
+
+impl TurnBudget {
+    pub fn new(limits: StreamLimits) -> Self {
+        Self {
+            limits,
+            deadline: std::time::Instant::now() + limits.turn,
+            retry_left: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    pub fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(std::time::Instant::now())
+    }
+
+    /// Spend the turn's single retry; false once it is gone.
+    fn take_retry(&self) -> bool {
+        self.retry_left.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Default for TurnBudget {
+    fn default() -> Self {
+        Self::new(JARVIS_LIMITS)
+    }
+}
+
+/// A provider that stopped answering (as opposed to one that answered with
+/// an error). Kept as a type so the turn can say "didn't respond — try
+/// again" once, instead of surfacing a transport message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamFailure {
+    /// No connection, or it dropped before anything arrived.
+    Network(String),
+    /// A phase limit or the turn budget ran out.
+    Timeout(String),
+    /// The stream ended before the provider said it was complete.
+    CutOff,
+}
+
+impl std::fmt::Display for StreamFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamFailure::Network(d) => write!(f, "network error: {d}"),
+            StreamFailure::Timeout(d) => write!(f, "timed out: {d}"),
+            StreamFailure::CutOff => write!(f, "the response stream ended early"),
+        }
+    }
+}
+
+impl std::error::Error for StreamFailure {}
+
+/// The [`StreamFailure`] behind `e`, if the provider stopped answering.
+pub fn stream_failure(e: &anyhow::Error) -> Option<&StreamFailure> {
+    e.chain().find_map(|c| c.downcast_ref::<StreamFailure>())
+}
+
+enum SseMsg {
+    Headers(anyhow::Result<()>),
+    Line(String),
+    End(Option<std::io::Error>),
+}
+
+/// POST `body` to `url` with the caller's auth `headers` and hand each SSE
+/// `data:` payload to `feed` as it arrives. Shared by every Jarvis brain, so
+/// the providers differ only in their event parser. Blocking — call from
+/// `spawn_blocking`.
+///
+/// Bounded by `budget`: connect, first response, idle gaps, and the turn's
+/// deadline (keepalive comments reset the idle gap, never the deadline). A
+/// network or timeout failure is retried once per turn, and only when
+/// nothing from the failed attempt reached `feed` — a partial answer is
+/// never replayed.
+pub fn post_sse(
+    url: &str,
+    headers: &[(&str, String)],
+    body: &Value,
+    budget: &TurnBudget,
+    feed: &mut dyn FnMut(&str),
+) -> anyhow::Result<()> {
+    let mut fed = false;
+    let first = post_sse_once(url, headers, body, budget, &mut |p: &str| {
+        fed = true;
+        feed(p)
+    });
+    match first {
+        Err(e) if !fed && stream_failure(&e).is_some_and(|f| *f != StreamFailure::CutOff) && budget.take_retry() => {
+            tracing::info!("jarvis provider request failed ({e}); retrying once");
+            post_sse_once(url, headers, body, budget, feed)
+        }
+        other => other,
+    }
+}
+
+fn post_sse_once(
+    url: &str,
+    headers: &[(&str, String)],
+    body: &Value,
+    budget: &TurnBudget,
+    feed: &mut dyn FnMut(&str),
+) -> anyhow::Result<()> {
+    use std::sync::mpsc::RecvTimeoutError;
+    let limits = budget.limits;
+    let remaining = budget.remaining();
+    if remaining.is_zero() {
+        return Err(StreamFailure::Timeout("the turn ran out of time".into()).into());
+    }
+    // The request runs on its own thread so each phase can be timed here; a
+    // stalled socket is abandoned to ureq's own (looser) limits, after which
+    // the thread notices nobody is listening and exits.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(limits.connect)
+        .timeout_read(limits.idle.max(limits.first_response) + Duration::from_secs(5))
+        .build();
+    let mut req = agent
+        .post(url)
+        .timeout(remaining + Duration::from_secs(5))
         .set("Content-Type", "application/json")
-        .set("Accept", "text/event-stream")
-        .send_json(body.clone())
-        .map_err(flatten_http_error)?;
-    let reader = std::io::BufReader::new(response.into_reader().take(16 * 1024 * 1024));
+        .set("Accept", "text/event-stream");
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    let body = body.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<SseMsg>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let response = match req.send_json(body) {
+            Ok(r) => r,
+            Err(ureq::Error::Transport(t)) => {
+                let _ = tx.send(SseMsg::Headers(Err(StreamFailure::Network(t.to_string()).into())));
+                return;
+            }
+            Err(e) => {
+                let _ = tx.send(SseMsg::Headers(Err(flatten_http_error(e))));
+                return;
+            }
+        };
+        if tx.send(SseMsg::Headers(Ok(()))).is_err() {
+            return;
+        }
+        let reader = std::io::BufReader::new(response.into_reader().take(16 * 1024 * 1024));
+        for line in reader.lines() {
+            let msg = match line {
+                Ok(l) => SseMsg::Line(l),
+                Err(e) => {
+                    let _ = tx.send(SseMsg::End(Some(e)));
+                    return;
+                }
+            };
+            if tx.send(msg).is_err() {
+                return;
+            }
+        }
+        let _ = tx.send(SseMsg::End(None));
+    });
+    // Waits at most `limit`, and never past the turn's deadline.
+    let wait = |limit: Duration, phase: &str| -> anyhow::Result<SseMsg> {
+        let left = budget.remaining();
+        let (timeout, why) = if limit < left {
+            (limit, format!("no {phase} for {:.1}s", limit.as_secs_f32()))
+        } else {
+            (left, "the turn ran out of time".to_string())
+        };
+        match rx.recv_timeout(timeout) {
+            Ok(m) => Ok(m),
+            Err(RecvTimeoutError::Timeout) => Err(StreamFailure::Timeout(why).into()),
+            Err(RecvTimeoutError::Disconnected) => Err(StreamFailure::Network("the request thread ended".into()).into()),
+        }
+    };
+    match wait(limits.first_response, "response")? {
+        SseMsg::Headers(r) => r?,
+        _ => anyhow::bail!("unexpected stream message"),
+    }
     let mut lines = SseLineBuffer::default();
-    for line in reader.lines() {
-        if let Some(payload) = lines.line(&line?) {
-            feed(&payload);
+    let mut any = false;
+    loop {
+        match wait(limits.idle, "data")? {
+            SseMsg::Line(l) => {
+                if let Some(payload) = lines.line(&l) {
+                    any = true;
+                    feed(&payload);
+                }
+            }
+            SseMsg::End(None) => break,
+            SseMsg::End(Some(e)) => return Err(StreamFailure::Network(e.to_string()).into()),
+            SseMsg::Headers(_) => anyhow::bail!("unexpected stream message"),
         }
     }
     if let Some(payload) = lines.flush() {
+        any = true;
         feed(&payload);
+    }
+    if !any {
+        // Headers and then a closed connection: nothing was said.
+        return Err(StreamFailure::Network("the connection closed before any data".into()).into());
     }
     Ok(())
 }
@@ -576,17 +776,23 @@ pub fn post_sse(req: ureq::Request, body: &Value, feed: &mut dyn FnMut(&str)) ->
 /// One tool-enabled round on any Responses-API stream (Codex or the OpenAI
 /// API), calling `on_delta` for each text chunk as it arrives.
 pub fn stream_responses_turn(
-    req: ureq::Request,
+    url: &str,
+    headers: &[(&str, String)],
     body: &Value,
     provider: &str,
+    budget: &TurnBudget,
     on_delta: &mut dyn FnMut(&str),
 ) -> anyhow::Result<ToolTurn> {
     let mut acc = ToolStreamAccumulator::default();
-    post_sse(req, body, &mut |payload| {
+    post_sse(url, headers, body, budget, &mut |payload| {
         if let Some(d) = acc.feed(payload) {
             on_delta(&d);
         }
     })?;
+    if !acc.completed && acc.error.is_none() {
+        // A dropped stream: half an answer is not an answer.
+        return Err(StreamFailure::CutOff.into());
+    }
     acc.finish_as(provider)
 }
 
@@ -596,15 +802,17 @@ pub fn stream_tool_turn(
     access_token: &str,
     account_id: &str,
     body: &Value,
+    budget: &TurnBudget,
     on_delta: &mut dyn FnMut(&str),
 ) -> anyhow::Result<ToolTurn> {
-    let mut req = ureq::post(CODEX_RESPONSES_URL)
-        .set("Authorization", &format!("Bearer {access_token}"))
-        .set("OpenAI-Beta", "responses=experimental");
+    let mut headers = vec![
+        ("Authorization", format!("Bearer {access_token}")),
+        ("OpenAI-Beta", "responses=experimental".to_string()),
+    ];
     if !account_id.trim().is_empty() {
-        req = req.set("ChatGPT-Account-Id", account_id.trim());
+        headers.push(("ChatGPT-Account-Id", account_id.trim().to_string()));
     }
-    stream_responses_turn(req, body, "Codex", on_delta)
+    stream_responses_turn(CODEX_RESPONSES_URL, &headers, body, "Codex", budget, on_delta)
 }
 
 /// True for errors that a token refresh can fix.
@@ -1117,7 +1325,7 @@ data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_9\",
             {"type":"input_text","text":"What's the weather in Paris? Use the tool."}]})];
         let body = tool_request_body(&model, "You are terse. Always use tools when relevant.", &input, &tools);
         let mut deltas = 0usize;
-        let first = stream_tool_turn(&tokens.access_token, &tokens.account_id, &body, &mut |_| deltas += 1)
+        let first = stream_tool_turn(&tokens.access_token, &tokens.account_id, &body, &TurnBudget::default(), &mut |_| deltas += 1)
             .expect("first round failed");
         eprintln!("round1: model={model} calls={:?} text_chars={} deltas={deltas}",
             first.calls.iter().map(|c| (&c.name, &c.arguments)).collect::<Vec<_>>(), first.text.len());
@@ -1126,7 +1334,7 @@ data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_9\",
         input.push(json!({"type":"function_call_output","call_id":call.call_id,"output":"{\"temp_c\":18,\"sky\":\"clear\"}"}));
         let body = tool_request_body(&model, "You are terse. Always use tools when relevant.", &input, &tools);
         let mut deltas2 = 0usize;
-        let second = stream_tool_turn(&tokens.access_token, &tokens.account_id, &body, &mut |_| deltas2 += 1)
+        let second = stream_tool_turn(&tokens.access_token, &tokens.account_id, &body, &TurnBudget::default(), &mut |_| deltas2 += 1)
             .expect("function_call_output follow-up rejected");
         eprintln!("round2: calls={} deltas={deltas2} text={:?}", second.calls.len(), second.text);
         assert!(!second.text.trim().is_empty());
@@ -1147,5 +1355,203 @@ data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_9\",
             parse_models_payload(&payload),
             vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-4.1"]
         );
+    }
+
+    // ---------------------------------------------------------- stalls
+
+    /// Small limits so a stalled provider is detected in tests within a second.
+    const TEST_LIMITS: StreamLimits = StreamLimits {
+        connect: Duration::from_millis(500),
+        first_response: Duration::from_millis(400),
+        idle: Duration::from_millis(400),
+        turn: Duration::from_millis(1500),
+    };
+
+    const SSE_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+    const DONE_EVENTS: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi.\"}\n\n\
+        data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n";
+
+    /// A local HTTP server: each accepted connection runs the next script.
+    /// Returns its URL and a counter of connections served.
+    fn stalled_server(
+        scripts: Vec<Box<dyn FnOnce(std::net::TcpStream) + Send>>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/responses", listener.local_addr().unwrap());
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = hits.clone();
+        std::thread::spawn(move || {
+            for script in scripts {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Swallow the whole request (headers + Content-Length body) so
+                // closing doesn't reset the connection mid-send: one read can
+                // return just the headers, and unread bytes make close send RST.
+                let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let Ok(n) = sock.read(&mut buf) else { break };
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req);
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .unwrap_or(0);
+                        if req.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                std::thread::spawn(move || script(sock));
+            }
+        });
+        (url, hits)
+    }
+
+    fn run(url: &str, budget: &TurnBudget) -> (anyhow::Result<ToolTurn>, std::time::Duration, String) {
+        let start = std::time::Instant::now();
+        let mut live = String::new();
+        let out = stream_responses_turn(url, &[], &json!({}), "Test", budget, &mut |d| live.push_str(d));
+        (out, start.elapsed(), live)
+    }
+
+    fn hang_up() -> Box<dyn FnOnce(std::net::TcpStream) + Send> {
+        Box::new(|s: std::net::TcpStream| drop(s))
+    }
+
+    fn sleep_ms(ms: u64) {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+
+    fn served(hits: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> usize {
+        hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn delayed_headers_time_out_and_retry_once() {
+        let stall = || -> Box<dyn FnOnce(std::net::TcpStream) + Send> { Box::new(|_s: std::net::TcpStream| sleep_ms(3000)) };
+        let (url, hits) = stalled_server(vec![stall(), stall(), stall()]);
+        let budget = TurnBudget::new(TEST_LIMITS);
+        let (out, took, _) = run(&url, &budget);
+        let e = out.unwrap_err();
+        assert!(matches!(stream_failure(&e), Some(StreamFailure::Timeout(_))), "{e}");
+        assert_eq!(served(&hits), 2, "one retry, no more");
+        assert!(took < Duration::from_millis(1400), "{took:?}");
+        // The retry is spent for the rest of the turn.
+        let (out, _, _) = run(&url, &budget);
+        assert!(out.is_err());
+        sleep_ms(100);
+        assert_eq!(served(&hits), 3);
+    }
+
+    #[test]
+    fn a_silent_body_hits_the_idle_limit() {
+        let silent = || -> Box<dyn FnOnce(std::net::TcpStream) + Send> {
+            Box::new(|mut s: std::net::TcpStream| {
+                use std::io::Write;
+                s.write_all(SSE_HEADERS).unwrap();
+                sleep_ms(3000);
+            })
+        };
+        let (url, hits) = stalled_server(vec![silent(), silent()]);
+        let (out, took, _) = run(&url, &TurnBudget::new(TEST_LIMITS));
+        assert!(matches!(stream_failure(&out.unwrap_err()), Some(StreamFailure::Timeout(_))));
+        assert_eq!(served(&hits), 2, "nothing was accepted, so it retried");
+        assert!(took < Duration::from_millis(1400), "{took:?}");
+    }
+
+    #[test]
+    fn a_partial_stream_that_stalls_is_never_retried() {
+        let partial: Box<dyn FnOnce(std::net::TcpStream) + Send> = Box::new(|mut s: std::net::TcpStream| {
+            use std::io::Write;
+            s.write_all(SSE_HEADERS).unwrap();
+            s.write_all(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Half an\"}\n\n").unwrap();
+            s.flush().unwrap();
+            sleep_ms(3000);
+        });
+        let (url, hits) = stalled_server(vec![partial, hang_up()]);
+        let (out, _, live) = run(&url, &TurnBudget::new(TEST_LIMITS));
+        assert!(matches!(stream_failure(&out.unwrap_err()), Some(StreamFailure::Timeout(_))));
+        assert_eq!(live, "Half an");
+        sleep_ms(100);
+        assert_eq!(served(&hits), 1, "a request that already spoke is not replayed");
+    }
+
+    #[test]
+    fn keepalives_cannot_stretch_the_turn_budget() {
+        let chatty: Box<dyn FnOnce(std::net::TcpStream) + Send> = Box::new(|mut s: std::net::TcpStream| {
+            use std::io::Write;
+            s.write_all(SSE_HEADERS).unwrap();
+            for _ in 0..60 {
+                if s.write_all(b": keepalive\n\n").is_err() {
+                    return;
+                }
+                sleep_ms(100);
+            }
+        });
+        let (url, _) = stalled_server(vec![chatty]);
+        let (out, took, _) = run(&url, &TurnBudget::new(TEST_LIMITS));
+        let e = out.unwrap_err();
+        assert!(matches!(stream_failure(&e), Some(StreamFailure::Timeout(w)) if w.contains("ran out of time")), "{e}");
+        assert!(took >= Duration::from_millis(1400) && took < Duration::from_millis(2500), "{took:?}");
+    }
+
+    #[test]
+    fn a_dropped_connection_retries_once_then_succeeds() {
+        let ok: Box<dyn FnOnce(std::net::TcpStream) + Send> = Box::new(|mut s: std::net::TcpStream| {
+            use std::io::Write;
+            s.write_all(SSE_HEADERS).unwrap();
+            s.write_all(DONE_EVENTS.as_bytes()).unwrap();
+        });
+        let (url, hits) = stalled_server(vec![hang_up(), ok]);
+        let (out, _, live) = run(&url, &TurnBudget::new(TEST_LIMITS));
+        assert_eq!(out.unwrap().text, "Hi.");
+        assert_eq!(live, "Hi.");
+        assert_eq!(served(&hits), 2);
+        // Dropped twice: a network failure, after exactly one retry.
+        let (url, hits) = stalled_server(vec![hang_up(), hang_up(), hang_up()]);
+        let (out, _, _) = run(&url, &TurnBudget::new(TEST_LIMITS));
+        assert!(matches!(stream_failure(&out.unwrap_err()), Some(StreamFailure::Network(_))));
+        sleep_ms(100);
+        assert_eq!(served(&hits), 2);
+    }
+
+    #[test]
+    fn a_stream_cut_off_mid_answer_is_an_error_not_an_answer() {
+        let cut: Box<dyn FnOnce(std::net::TcpStream) + Send> = Box::new(|mut s: std::net::TcpStream| {
+            use std::io::Write;
+            s.write_all(SSE_HEADERS).unwrap();
+            s.write_all(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Half\"}\n\n").unwrap();
+        });
+        let (url, hits) = stalled_server(vec![cut, hang_up()]);
+        let (out, _, _) = run(&url, &TurnBudget::new(TEST_LIMITS));
+        assert_eq!(stream_failure(&out.unwrap_err()), Some(&StreamFailure::CutOff));
+        sleep_ms(100);
+        assert_eq!(served(&hits), 1);
+    }
+
+    #[test]
+    fn http_errors_are_reported_not_retried_and_a_spent_budget_never_connects() {
+        let refuse: Box<dyn FnOnce(std::net::TcpStream) + Send> = Box::new(|mut s: std::net::TcpStream| {
+            use std::io::Write;
+            s.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: 40\r\nConnection: close\r\n\r\n{\"error\":{\"message\":\"slow down please\"}}").unwrap();
+        });
+        let (url, hits) = stalled_server(vec![refuse, hang_up()]);
+        let (out, _, _) = run(&url, &TurnBudget::new(TEST_LIMITS));
+        let e = out.unwrap_err();
+        assert!(stream_failure(&e).is_none());
+        assert!(e.to_string().starts_with("HTTP 429"), "{e}");
+        sleep_ms(100);
+        assert_eq!(served(&hits), 1);
+        let spent = TurnBudget::new(StreamLimits { turn: Duration::ZERO, ..TEST_LIMITS });
+        let (url, hits) = stalled_server(vec![]);
+        assert!(matches!(stream_failure(&run(&url, &spent).0.unwrap_err()), Some(StreamFailure::Timeout(_))));
+        assert_eq!(served(&hits), 0);
     }
 }

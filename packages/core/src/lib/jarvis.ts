@@ -1,6 +1,6 @@
 /* Jarvis mode client: the Agora assistant's streaming turn endpoint
-   (POST /api/jarvis/turn, Server-Sent Events) and the draft confirm/cancel
-   calls. Shapes mirror crates/agora-core/src/jarvis.rs. */
+   (POST /api/jarvis/turn, Server-Sent Events) and the draft edit/confirm/
+   cancel calls. Shapes mirror crates/agora-core/src/jarvis.rs. */
 
 import { ApiClient, authHeaders, parseError, type Session } from "../api/client";
 import type { Message } from "../api/types";
@@ -58,6 +58,8 @@ export type JarvisCard =
       mentions: JarvisMention[];
       /** Seconds until the server forgets the draft. */
       expires_in: number;
+      /** Bumped by every saved edit; a send quotes the revision it shows. */
+      revision: number;
     };
 
 export type JarvisEvent =
@@ -66,6 +68,10 @@ export type JarvisEvent =
   | { type: "tool"; name: string; summary: string }
   | { type: "delta"; text: string }
   | { type: "card"; card: JarvisCard }
+  /** The user approved the offered draft in their own words; it was posted. */
+  | { type: "draft_sent"; draft_id: string; message: Message; already_sent?: boolean }
+  /** Cancelled by a spoken "no", or replaced by a newer draft (`superseded_by`). */
+  | { type: "draft_cancelled"; draft_id: string; superseded_by: string | null }
   | { type: "done"; conversation_id: string; text: string }
   | { type: "error"; message: string };
 
@@ -73,6 +79,10 @@ export interface JarvisTurnRequest {
   text: string;
   conversation_id?: string | null;
   context?: { channel_id?: string | null; thread_id?: number | null };
+  /** Drafts whose card edit couldn't be saved: not approvable this turn. */
+  unsaved_drafts?: string[];
+  /** IANA timezone, carried by a reply-approved send like the card's Send. */
+  timezone?: string;
 }
 
 /** Incremental SSE parser: feed arbitrary chunks, get whole events out.
@@ -147,8 +157,14 @@ export async function jarvisTurn(
   parser.end();
 }
 
+export interface JarvisTranscript {
+  text: string;
+  /** The recording held no speech (breath, rustle): keep listening. */
+  noSpeech: boolean;
+}
+
 /** Transcribe one spoken turn for the assistant (nothing is posted). */
-export async function jarvisTranscribe(session: Session, audio: Blob, signal?: AbortSignal): Promise<string> {
+export async function jarvisTranscribe(session: Session, audio: Blob, signal?: AbortSignal): Promise<JarvisTranscript> {
   const type = (audio.type || "audio/webm").toLowerCase();
   // The transcription APIs infer the codec from the file extension.
   const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : type.includes("wav") ? "wav" : "webm";
@@ -158,7 +174,9 @@ export async function jarvisTranscribe(session: Session, audio: Blob, signal?: A
     method: "POST", headers: authHeaders(session), body: form, signal,
   });
   if (!res.ok) throw await parseError(res);
-  return String(((await res.json()) as { text?: string }).text || "").trim();
+  const body = (await res.json()) as { text?: string; no_speech?: boolean };
+  const text = String(body.text || "").trim();
+  return { text, noSpeech: body.no_speech === true || !text };
 }
 
 /** Synthesize one sentence of the assistant's answer with the instance's TTS. */
@@ -173,12 +191,20 @@ export async function jarvisSpeech(session: Session, text: string, signal?: Abor
   return res.blob();
 }
 
-/** Confirm a draft: the server posts it as the signed-in user. `text`
-    replaces the drafted body (missing @mentions are re-added). */
-export function sendJarvisDraft(api: ApiClient, draftId: string, text?: string) {
-  return api.post<{ ok: true; message: Message }>(
+/** Confirm a draft at the revision the user sees: the server posts it as
+    the signed-in user (409 if it was edited since; a repeat returns the
+    message already posted, with `already_sent`). */
+export function sendJarvisDraft(api: ApiClient, draftId: string, revision: number) {
+  return api.post<{ ok: true; message: Message; already_sent: boolean }>(
     `/api/jarvis/drafts/${encodeURIComponent(draftId)}/send`,
-    { ...(text === undefined ? {} : { text }), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+    { revision, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+  );
+}
+
+/** Save a card edit; returns the new revision (missing @mentions are re-added). */
+export function updateJarvisDraft(api: ApiClient, draftId: string, text: string, revision: number) {
+  return api.put<{ ok: true; draft_id: string; revision: number; text: string; final_text: string }>(
+    `/api/jarvis/drafts/${encodeURIComponent(draftId)}`, { text, revision },
   );
 }
 
@@ -186,6 +212,7 @@ export function cancelJarvisDraft(api: ApiClient, draftId: string) {
   return api.delete<{ ok: true; cancelled: boolean }>(`/api/jarvis/drafts/${encodeURIComponent(draftId)}`);
 }
 
+/** Forget a conversation; drafts it left pending are cancelled (their ids). */
 export function resetJarvisConversation(api: ApiClient, conversationId: string) {
-  return api.delete<{ ok: true }>(`/api/jarvis/conversations/${encodeURIComponent(conversationId)}`);
+  return api.delete<{ ok: true; cancelled?: string[] }>(`/api/jarvis/conversations/${encodeURIComponent(conversationId)}`);
 }

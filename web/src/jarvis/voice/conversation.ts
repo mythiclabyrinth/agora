@@ -13,6 +13,11 @@
    mic (`micOwned`) and live voice, which owns the mic in a channel, always
    wins. Typed turns go through the same `runTurn`.
 
+   Replies to a draft ("yes", "haan bhej do", "only if Priya agrees") are
+   plain turns too: the server judges whether one approves the draft it just
+   offered and posts it itself, streaming `draft_sent` / `draft_cancelled`
+   and a short spoken acknowledgement. Nothing here guesses at intent.
+
    A module singleton (timers, recorder, audio), like live voice; the store
    (state/jarvis.ts) carries everything the panel renders. */
 
@@ -23,13 +28,12 @@ import { sessionToken } from "../../lib/auth";
 import { armChimeNow, playChime } from "../../lib/chime";
 import { recMime, voiceSupported } from "../../lib/voice";
 import { toast } from "../../lib/toast";
-import { useJarvis, type JarvisCardEntry } from "../../state/jarvis";
+import { isLiveDraft, useJarvis } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
 import { useUiState } from "../../state/ui";
-import { cancelDraftEntry, sendDraftEntry, type JarvisDraftCard } from "../panel/JarvisCards";
+import { announceSent, saveDraftEdit, type JarvisDraftCard } from "../panel/JarvisCards";
 import { jarvisLevel } from "../panel/level";
 import { createEndpointer, frameRms } from "./endpointer";
-import { asksToSend, draftIntent } from "./intent";
 import { createSentenceChunker, type Sentence } from "./sentences";
 
 const TICK_MS = 50;
@@ -242,11 +246,12 @@ function finishRecording(m: Mic, keep: boolean): void {
 async function transcribe(blob: Blob): Promise<void> {
   let text = "";
   try {
-    text = await jarvisTranscribe(session(), blob);
+    // Breath and rustle come back as `noSpeech` (empty text): routine
+    // hands-free, so it just keeps listening without an error.
+    const heard = await jarvisTranscribe(session(), blob);
+    text = heard.noSpeech ? "" : heard.text;
   } catch (e) {
-    const message = (e as Error).message || "Transcription failed";
-    // Breath and rustle are routine hands-free: just keep listening.
-    if (!/couldn't hear/i.test(message)) useJarvis.setState({ error: message });
+    useJarvis.setState({ error: (e as Error).message || "Transcription failed" });
   }
   if (!mic) return;
   if (!text) {
@@ -265,37 +270,35 @@ let turnAbort: AbortController | null = null;
 /** Barge-in silences the rest of the answer being spoken. */
 let turnSilenced = false;
 
-function pendingDraft(): { entry: JarvisCardEntry; card: JarvisDraftCard } | null {
-  const pending = useJarvis.getState().cards.filter(c => c.card.kind === "draft" && (c.status ?? "pending") === "pending");
-  return pending.length === 1 ? { entry: pending[0], card: pending[0].card as JarvisDraftCard } : null;
+/** A spoken or typed turn. Everything goes to the server, replies to a
+    draft included: it alone decides whether one approves the draft. */
+export async function handleUtterance(text: string): Promise<void> {
+  await runTurn(text);
 }
 
-/** A spoken or typed turn: "send it" / "cancel" (or a bare yes/no to the
-    read-back's "Send it?") with exactly one pending draft is handled here
-    through the card's own endpoints; anything else goes to the assistant. */
-export async function handleUtterance(text: string): Promise<void> {
-  const draft = pendingDraft();
-  const lastSaid = useJarvis.getState().log.filter(e => e.role === "assistant").at(-1)?.text;
-  const intent = draft && caps.api ? draftIntent(text, { answersSendIt: asksToSend(lastSaid) }) : null;
-  if (!draft || !intent || !caps.api) {
-    await runTurn(text);
-    return;
-  }
-  const st = useJarvis.getState();
-  st.heard(text);
-  let reply: string;
-  if (intent === "confirm") {
-    reply = await sendDraftEntry(caps.api, draft.entry, draft.card)
-      ? `Sent to ${draft.card.destination}.`
-      : "That didn't send. Check the draft card.";
-  } else {
-    cancelDraftEntry(caps.api, draft.entry, draft.card);
-    reply = "Cancelled. Nothing was sent.";
-  }
-  const id = useJarvis.getState().say(reply);
-  turnSilenced = false;
-  speakText(id, reply);
-  afterTurn();
+/** The server posted a draft the user approved: the card's Undo toast —
+    unless the card's Send got there first and already showed one. */
+function onDraftSent(draftId: string, messageId: number, alreadySent: boolean): void {
+  const entry = useJarvis.getState().cards.find(c => c.card.kind === "draft" && c.card.draft_id === draftId);
+  if (entry && caps.api && !alreadySent) announceSent(caps.api, entry.id, entry.card as JarvisDraftCard, messageId);
+}
+
+/** Card edits still waiting for their debounce are saved before the turn,
+    so a spoken yes is judged against the text the card shows. Resolves the
+    drafts whose edit could not be saved: the server won't let this turn
+    approve those, since its copy is not what the card shows. */
+async function flushDraftEdits(): Promise<string[]> {
+  const api = caps.api;
+  if (!api) return [];
+  const edited = useJarvis.getState().cards.filter(c => isLiveDraft(c) && c.text !== undefined);
+  const saved = await Promise.all(edited.map(c => saveDraftEdit(api, c.id)));
+  return edited.filter((_, i) => !saved[i]).map(c => (c.card as JarvisDraftCard).draft_id);
+}
+
+/** A dropped connection reads as a browser error ("Failed to fetch"); say it plainly, once. */
+function turnFailure(e: unknown): string {
+  if (e instanceof TypeError) return "Couldn't reach Agora — check the connection and try again.";
+  return (e as Error).message || "The assistant is unavailable";
 }
 
 /** Run one assistant turn (typed or spoken), speaking the answer as it streams. */
@@ -316,6 +319,8 @@ export async function runTurn(raw: string): Promise<void> {
   turnAbort = ctl;
   const store = useJarvis.getState();
   store.beginTurn(ask);
+  const unsaved = await flushDraftEdits();
+  if (ctl.signal.aborted) return;
   const answerId = useJarvis.getState().log.at(-1)?.id ?? "";
   const chunker = createSentenceChunker();
   let streamed = false;
@@ -325,14 +330,18 @@ export async function runTurn(raw: string): Promise<void> {
       session(),
       {
         text: ask,
-        conversation_id: store.conversationId,
+        // Re-read after the save's await: the store is not the snapshot's.
+        conversation_id: useJarvis.getState().conversationId,
         context: ui.view.kind === "channel" && ui.sel.c ? { channel_id: ui.sel.c, thread_id: ui.threadRoot } : undefined,
+        unsaved_drafts: unsaved.length ? unsaved : undefined,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
       event => {
         if (ctl.signal.aborted) return;
         if (event.type === "delta") jarvisLevel.bump();
         else if (event.type === "status" && event.phase !== "speaking") jarvisLevel.bump(0.12);
         useJarvis.getState().applyEvent(event);
+        if (event.type === "draft_sent") onDraftSent(event.draft_id, event.message.id, event.already_sent === true);
         // The answer is still being spoken: no flash of "armed" in between.
         if (event.type === "done" && (speech.playing || speech.queue.length)) useJarvis.getState().setVoicePhase("speaking");
         if (event.type === "delta") {
@@ -349,7 +358,7 @@ export async function runTurn(raw: string): Promise<void> {
     useJarvis.getState().endTurn();
   } catch (e) {
     if (ctl.signal.aborted) return;
-    useJarvis.getState().failTurn((e as Error).message || "The assistant is unavailable");
+    useJarvis.getState().failTurn(turnFailure(e));
   } finally {
     if (turnAbort === ctl) turnAbort = null;
   }

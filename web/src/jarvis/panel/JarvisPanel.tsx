@@ -173,7 +173,7 @@ function OpenPanel() {
     if (s.busy) return;
     const ask = text;
     setText("");
-    // Typed "send it" / "yes" approves the pending draft, as when spoken.
+    // A typed reply to a draft is judged by the server, as a spoken one is.
     void handleUtterance(ask);
   };
 
