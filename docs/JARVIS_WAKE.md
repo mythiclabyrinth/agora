@@ -58,9 +58,9 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   approval check (a separate call that sees only the reply and that draft)
   decides: an unconditional yes in any language ("yes go ahead", "haan bhej
   do", "sí, envíalo") posts it, a clear no cancels it, and anything
-  conditional or hedged ("only if Priya agrees", "हाँ लेकिन पहले पूछो") goes
-  to the assistant, which may ask or redraft (a redraft replaces the old
-  draft only once the new one exists). The loop applies the streamed
+  conditional, hedged, or unrelated ("only if Priya agrees", "हाँ लेकिन पहले
+  पूछो") ends the offer and goes to the assistant, which can draft again to
+  re-offer it; the card's Send still works meanwhile. The loop applies the streamed
   `draft_sent` / `draft_cancelled` events to the card (Undo toast via the
   normal message delete) and speaks the short acknowledgement. Card edits
   are saved (debounced, on blur, and before Send or the next turn), so a

@@ -2017,15 +2017,11 @@ pub(crate) fn run_jarvis_turn(
     use crate::jarvis::{ev_delta, ev_done, ev_error, ev_status, Approval};
     let cid = turn.conversation_id.as_str();
     let username = user.username.as_str();
-    // A hedged reply leaves the draft on offer, so the user can still
-    // approve it after the assistant's follow-up.
-    let mut keep_offered: Vec<String> = vec![];
     if let Some(draft) = state.jarvis.offered_draft(turn, username) {
         if !emit(ev_status("thinking", "Checking your reply")) {
             return;
         }
-        let asked = crate::jarvis::last_assistant_text(&turn.prior);
-        let (decision, ack) = match brain.classify(&crate::jarvis::approval_input(&draft, text, &asked)) {
+        let (decision, ack) = match brain.classify(&crate::jarvis::approval_input(&draft, text)) {
             Ok(raw) => crate::jarvis::parse_approval(&raw),
             Err(e) => {
                 tracing::warn!(user = %username, provider = brain.provider(), model = brain.model(),
@@ -2059,15 +2055,13 @@ pub(crate) fn run_jarvis_turn(
                 }
                 Some((if ack.is_empty() { "Cancelled. Nothing was sent.".to_string() } else { ack }, vec![]))
             }
-            // A hedge or a garbled check answer (parsed as clarify) leaves it
-            // approvable. An aside or a change request ends the offer unless
-            // the assistant offers a draft again: a later "yes" may answer
-            // whatever it asked meanwhile, not the draft.
-            Approval::Clarify => {
-                keep_offered = vec![draft.id.clone()];
+            // Anything else ends the offer now (it lasts one reply), even if
+            // the rest of the turn fails; the assistant answers and can draft
+            // again, and the card's Send still works.
+            Approval::Clarify | Approval::Revise | Approval::Unrelated => {
+                state.jarvis.end_offer(cid, username, turn.generation);
                 None
             }
-            Approval::Revise | Approval::Unrelated => None,
         };
         if let Some((reply, offered)) = handled {
             emit(ev_status("speaking", "Answering"));
@@ -2083,11 +2077,7 @@ pub(crate) fn run_jarvis_turn(
     let ctx = crate::jarvis::ToolCtx::new(state, user).in_turn(turn);
     match crate::jarvis::run_turn(&ctx, brain, turn.prior.clone(), text, hint, emit) {
         Ok((items, answer)) => {
-            let mut offered = ctx.offered_drafts();
-            if offered.is_empty() {
-                offered = keep_offered;
-            }
-            state.jarvis.commit_turn(cid, username, turn.generation, items, offered);
+            state.jarvis.commit_turn(cid, username, turn.generation, items, ctx.offered_drafts());
             emit(ev_done(cid, &answer));
         }
         // Superseded by a barge-in (or the client left): routine, not a failure.
@@ -2095,17 +2085,7 @@ pub(crate) fn run_jarvis_turn(
         Err(e) => {
             tracing::warn!(user = %username, provider = brain.provider(), model = brain.model(),
                 "jarvis turn failed: {}", truncate_err(&format!("{e:#}"), 300));
-            let failure = jarvis_failure_message(brain.provider(), &e);
-            // A draft made before the failure is on the user's screen: record
-            // the offer, so a reply can still approve it.
-            let offered = ctx.offered_drafts();
-            if !offered.is_empty() {
-                let mut items = turn.prior.clone();
-                items.push(crate::jarvis::user_item(text));
-                items.push(crate::jarvis::assistant_item(&format!("I drafted a message, then: {failure}")));
-                state.jarvis.commit_turn(cid, username, turn.generation, items, offered);
-            }
-            emit(ev_error(&failure));
+            emit(ev_error(&jarvis_failure_message(brain.provider(), &e)));
         }
     }
 }
@@ -10523,19 +10503,21 @@ mod tests {
     }
 
     #[test]
-    fn jarvis_hedged_reply_keeps_the_draft_approvable_after_the_follow_up() {
+    fn jarvis_an_offer_lasts_one_reply() {
         let f = jarvis_fixture();
         let id = offer(&f, "jc_hedge", "ship the fix");
-        // "only if Priya agrees" → clarify: the assistant asks, nothing is sent.
-        let mut brain = scripted(vec![decide("clarify", ""), say("Should I ask Priya first, or send it now?")]);
+        // "only if Priya agrees" → clarify: the assistant answers, nothing is sent.
+        let mut brain = scripted(vec![decide("clarify", ""), say("Okay, I'll wait for Priya.")]);
         let events = jarvis_turn_events(&f, "ana", "jc_hedge", &mut brain, "only if Priya agrees");
         assert!(of_type(&events, "draft_sent").is_empty());
+        // The offer is over: a later "yes" (to whatever was said) runs no check and posts nothing.
+        let mut brain = scripted(vec![say("Press Send on the card when you're ready.")]);
+        let events = jarvis_turn_events(&f, "ana", "jc_hedge", &mut brain, "yes");
+        assert!(brain.prompts.iter().all(|p| p != crate::jarvis::APPROVAL_INSTRUCTIONS));
+        assert!(of_type(&events, "draft_sent").is_empty());
         assert_eq!(posted(&f, "ship the fix"), 0);
-        // The same draft is still on offer: "just send it" now goes out once.
-        let mut brain = scripted(vec![decide("confirm", "Sent.")]);
-        let events = jarvis_turn_events(&f, "ana", "jc_hedge", &mut brain, "no, just send it");
-        assert_eq!(of_type(&events, "draft_sent")[0]["draft_id"], id.as_str());
-        assert_eq!(posted(&f, "ship the fix"), 1);
+        // The card's Send still works: the draft itself is untouched.
+        assert!(f.state.jarvis.peek_draft(&id, "ana").unwrap().is_live());
     }
 
     #[test]
@@ -10574,7 +10556,7 @@ mod tests {
         let draft = f.state.jarvis.peek_draft(&id, "ana").unwrap();
         assert_eq!(brain.prompts, vec![crate::jarvis::APPROVAL_INSTRUCTIONS.to_string()]);
         assert_eq!(brain.seen[0].len(), 1);
-        assert_eq!(brain.seen[0][0]["content"][0]["text"], crate::jarvis::approval_input(&draft, "sí, envíalo", &format!("Drafted it for #general: \"deploy at 5\". Send it?")));
+        assert_eq!(brain.seen[0][0]["content"][0]["text"], crate::jarvis::approval_input(&draft, "sí, envíalo"));
         // The exchange is remembered, and the next "yes" has nothing to approve.
         let mut brain = scripted(vec![say("There's nothing waiting to send.")]);
         let events = jarvis_turn_events(&f, "ana", "jc_yes", &mut brain, "yes");
@@ -10750,7 +10732,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0]["message"], "ChatGPT didn't respond — try again.");
         assert_eq!(posted(&f, "wait for it"), 0);
-        // Still on offer: the user can just say it again.
+        // The check never decided, so the offer stands: "try again" works.
         let turn = f.state.jarvis.begin_turn_in("jc_stall", "ana").unwrap();
         assert_eq!(f.state.jarvis.offered_draft(&turn, "ana").unwrap().id, id);
         // Same message when the main turn stalls.
@@ -10760,31 +10742,24 @@ mod tests {
     }
 
     #[test]
-    fn jarvis_a_draft_made_before_a_stall_can_still_be_approved() {
+    fn jarvis_the_reply_a_yes_answers_is_agoras_own_send_it() {
         let f = jarvis_fixture();
-        let mut brain = scripted(vec![call("c1", "draft_message", json!({"channel_id": f.team, "text": "ship it at 5"}))]);
-        let events = jarvis_turn_events(&f, "ana", "jc_late", &mut brain, "tell general we ship at 5");
+        // The model tries to add another question after drafting: it never gets the chance.
+        let mut brain = scripted(vec![
+            call("c1", "draft_message", json!({"channel_id": f.team, "text": "ship it at 5"})),
+            say("Drafted it. Send it? Also, want me to list the agents in #general?"),
+        ]);
+        let events = jarvis_turn_events(&f, "ana", "jc_ask", &mut brain, "tell general we ship at 5");
         let id = of_type(&events, "card")[0]["card"]["draft_id"].as_str().unwrap().to_string();
-        assert_eq!(of_type(&events, "error").len(), 1, "the final round stalled");
-        // The card is on screen, so a yes still sends it, once.
+        assert_eq!(brain.rounds.len(), 1, "no model round after the draft");
+        let done = of_type(&events, "done")[0]["text"].as_str().unwrap().to_string();
+        assert_eq!(done, "Drafted for #general: “ship it at 5”. Send it?");
+        assert!(!events.iter().any(|e| e["type"] == "delta" && e["text"].as_str().unwrap_or("").contains("list the agents")));
+        // So the next "yes" answers that question, and sends it once.
         let mut brain = scripted(vec![decide("confirm", "Sent.")]);
-        let events = jarvis_turn_events(&f, "ana", "jc_late", &mut brain, "yes");
+        let events = jarvis_turn_events(&f, "ana", "jc_ask", &mut brain, "yes");
         assert_eq!(of_type(&events, "draft_sent")[0]["draft_id"], id.as_str());
         assert_eq!(posted(&f, "ship it at 5"), 1);
-    }
-
-    #[test]
-    fn jarvis_a_garbled_check_answer_leaves_the_draft_approvable() {
-        let f = jarvis_fixture();
-        let id = offer(&f, "jc_garble", "garbled then yes");
-        let mut brain = scripted(vec![say("Sure, sending it now!"), say("Sorry, should I send it?")]);
-        let events = jarvis_turn_events(&f, "ana", "jc_garble", &mut brain, "yes");
-        assert!(of_type(&events, "draft_sent").is_empty());
-        assert_eq!(posted(&f, "garbled then yes"), 0);
-        let mut brain = scripted(vec![decide("confirm", "Sent.")]);
-        let events = jarvis_turn_events(&f, "ana", "jc_garble", &mut brain, "yes");
-        assert_eq!(of_type(&events, "draft_sent")[0]["draft_id"], id.as_str());
-        assert_eq!(posted(&f, "garbled then yes"), 1);
     }
 
     #[test]
@@ -10800,20 +10775,15 @@ mod tests {
         assert!(brain.prompts.iter().all(|p| p != crate::jarvis::APPROVAL_INSTRUCTIONS));
         assert!(of_type(&events, "draft_sent").is_empty());
         assert_eq!(posted(&f, "we ship at 5"), 0);
-    }
-
-    #[test]
-    fn jarvis_approval_check_sees_what_the_assistant_last_asked() {
-        let f = jarvis_fixture();
-        let id = offer(&f, "jc_asked", "ask priya");
-        let mut brain = scripted(vec![decide("clarify", ""), say("Should I ask Priya first, or send it now?")]);
-        jarvis_turn_events(&f, "ana", "jc_asked", &mut brain, "only if Priya agrees");
-        let mut brain = scripted(vec![decide("clarify", ""), say("Okay — ask Priya, or send it?")]);
-        jarvis_turn_events(&f, "ana", "jc_asked", &mut brain, "yes");
-        let seen: Value = serde_json::from_str(brain.seen[0][0]["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(seen["asked"], "Should I ask Priya first, or send it now?");
-        assert_eq!(posted(&f, "ask priya"), 0);
-        assert!(f.state.jarvis.peek_draft(&id, "ana").unwrap().is_live());
+        // Same when the aside's answer fails: the offer ended with the check's verdict.
+        offer(&f, "jc_aside_stall", "we ship at 6");
+        let mut brain = scripted(vec![decide("unrelated", "")]);
+        let events = jarvis_turn_events(&f, "ana", "jc_aside_stall", &mut brain, "wait, who's in #release?");
+        assert_eq!(of_type(&events, "error").len(), 1);
+        let mut brain = scripted(vec![say("Okay.")]);
+        jarvis_turn_events(&f, "ana", "jc_aside_stall", &mut brain, "yes");
+        assert!(brain.prompts.iter().all(|p| p != crate::jarvis::APPROVAL_INSTRUCTIONS));
+        assert_eq!(posted(&f, "we ship at 6"), 0);
     }
 
     /// A provider that never answers.
@@ -10838,7 +10808,8 @@ mod tests {
         let events = jarvis_turn_events(&f, "ana", "jc_mock", &mut brain, "only if it's green");
         assert_eq!(posted(&f, "@helper rerun the deploy"), 0);
         assert!(of_type(&events, "draft_sent").is_empty());
-        // The hedge kept the draft on offer: a plain yes now sends it once.
+        // The hedge ended that offer; redraft, then approve.
+        jarvis_turn_events(&f, "ana", "jc_mock", &mut brain, "tell helper in general to rerun the deploy");
         let events = jarvis_turn_events(&f, "ana", "jc_mock", &mut brain, "yes, send it");
         assert_eq!(of_type(&events, "draft_sent").len(), 1);
         assert_eq!(posted(&f, "@helper rerun the deploy"), 1);
