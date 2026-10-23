@@ -684,5 +684,17 @@ describe("speed, background speech and Stop", () => {
     await voice.handleUtterance("and now?");
     expect(useJarvis.getState().speechStopped).toBe(false);
   });
+
+  it("a soft start near the restart boundary isn't thrown away", async () => {
+    await voice.listen("open");
+    await pass(2_900);
+    env.rms = 0.01; // below the speech threshold: a quiet first syllable
+    await pass(300);
+    expect(FakeRecorder.instances).toHaveLength(1); // no restart over it
+    env.rms = 0.05;
+    await pass(300);
+    expect(voice.voiceDebugState().capture).toBe("recording");
+    expect(FakeRecorder.instances).toHaveLength(1);
+  });
 });
 

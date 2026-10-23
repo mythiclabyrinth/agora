@@ -11111,7 +11111,10 @@ mod tests {
         assert!(words.find("Helper Bot").unwrap() < words.find("#general").unwrap(), "agents and DMs first: {words}");
         assert!(crate::jarvis::is_vocabulary_echo(&words, &words));
         assert!(crate::jarvis::is_vocabulary_echo(" \"agora workspace names: #general", &words));
-        assert!(crate::jarvis::is_vocabulary_echo("Helper Bot, #general.", &words), "just the names: {words}");
+        // Only the hint's own list, in order, counts: a few names as a request don't.
+        assert!(!crate::jarvis::is_vocabulary_echo("Helper Bot, #general.", &words), "{words}");
+        assert!(crate::jarvis::is_vocabulary_echo("A, B, C.", "Agora workspace names: A, B, C, D."));
+        assert!(!crate::jarvis::is_vocabulary_echo("B, A, C", "Agora workspace names: A, B, C, D."));
         assert!(!crate::jarvis::is_vocabulary_echo("open the general channel", &words));
         assert!(!crate::jarvis::is_vocabulary_echo("Helper Bot", &words), "one name can be a real request");
         // Names that read like instructions are left out.

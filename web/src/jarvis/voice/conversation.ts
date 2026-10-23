@@ -44,7 +44,7 @@ import { useUiState } from "../../state/ui";
 import { announceSent, saveDraftEdit, type JarvisDraftCard } from "../panel/JarvisCards";
 import { jumpTo } from "../navigate";
 import { jarvisLevel } from "../panel/level";
-import { createEndpointer, frameRms } from "./endpointer";
+import { createEndpointer, ENDPOINT_DEFAULTS, frameRms } from "./endpointer";
 import { createSentenceChunker, type Sentence } from "./sentences";
 
 const TICK_MS = 50;
@@ -80,9 +80,15 @@ type Capture = "off" | "waiting" | "recording" | "transcribing";
     text on long silence). */
 const MAX_LEAD_MS = 3_000;
 
+/** Sound this recent (even below the speech threshold) holds off a
+    restart: it may be a soft first syllable. */
+const ONSET_GUARD_MS = 400;
+
 interface Mic {
   stream: MediaStream;
   recorderStarted: number;
+  /** Last tick with sound near the speech threshold. */
+  lastSound: number;
   ac: AudioContext;
   analyser: AnalyserNode;
   buf: Float32Array<ArrayBuffer>;
@@ -133,7 +139,7 @@ async function openMic(): Promise<Mic | null> {
     ac.createMediaStreamSource(stream).connect(analyser);
     mic = {
       stream, ac, analyser, buf: new Float32Array(analyser.fftSize),
-      timer: setInterval(tick, TICK_MS), recorder: null, chunks: [], level: 0, recorderStarted: 0,
+      timer: setInterval(tick, TICK_MS), recorder: null, chunks: [], level: 0, recorderStarted: 0, lastSound: 0,
     };
     useJarvis.getState().setMicOwned(true);
     return mic;
@@ -202,6 +208,7 @@ function tick(): void {
   const rms = frameRms(m.buf);
   m.level = Math.min(1, rms * 14);
   const now = performance.now();
+  if (rms >= ENDPOINT_DEFAULTS.threshold * 0.5) m.lastSound = now;
   const playing = speech.playing;
   if (!playing && capture !== "waiting" && capture !== "recording") return;
   const event = endpointer.step(rms, now, playing);
@@ -222,7 +229,8 @@ function tick(): void {
     finishRecording(m, event === "end");
   } else if (capture === "waiting" && listenUntil != null && now > listenUntil && !playing) {
     stopListening();
-  } else if (capture === "waiting" && m.recorder && !endpointer.speaking && now - m.recorderStarted > MAX_LEAD_MS) {
+  } else if (capture === "waiting" && m.recorder && !endpointer.speaking && now - m.recorderStarted > MAX_LEAD_MS
+    && now - m.lastSound > ONSET_GUARD_MS) {
     restartRecorder(m);
   }
 }

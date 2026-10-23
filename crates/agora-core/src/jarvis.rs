@@ -153,8 +153,9 @@ pub fn ev_draft_sent(draft_id: &str, message: &Value, already_sent: bool) -> Val
 pub const VOCABULARY_PREFIX: &str = "Agora workspace names: ";
 
 /// The transcript is the vocabulary hint (or just its names) echoed back,
-/// not speech: it starts with the hint's prefix, or every comma-separated
-/// part of it is one of the hint's names.
+/// not speech: it starts with the hint's prefix, or it is the hint's own
+/// list from the start (three or more names, in order). A request that only
+/// names a few things ("Codex, Scout") is kept.
 pub fn is_vocabulary_echo(text: &str, vocabulary: &str) -> bool {
     let norm = |s: &str| s.trim().trim_matches(|c: char| c.is_ascii_punctuation() && c != '#').trim().to_lowercase();
     let t = text.trim().trim_start_matches(['"', '\'', ' ']);
@@ -170,7 +171,7 @@ pub fn is_vocabulary_echo(text: &str, vocabulary: &str) -> bool {
         .filter(|n| !n.is_empty())
         .collect();
     let parts: Vec<String> = t.split(',').map(norm).filter(|p| !p.is_empty()).collect();
-    parts.len() >= 2 && parts.iter().all(|p| names.contains(p))
+    parts.len() >= 3 && parts.len() <= names.len() && parts.iter().zip(&names).all(|(p, n)| p == n)
 }
 
 /// Show the user a channel (and optionally a thread) in the app. Only ever

@@ -15,7 +15,9 @@ export function JarvisVoiceHost() {
   const available = me?.jarvis === true;
   const stt = me?.jarvis_stt === true;
   const tts = me?.jarvis_tts === true;
-  const rate = typeof me?.jarvis_speech_rate === "number" && me.jarvis_speech_rate > 0 ? me.jarvis_speech_rate : 1;
+  // The offered range only, whatever the server says (browsers reject some rates).
+  const raw = me?.jarvis_speech_rate;
+  const rate = typeof raw === "number" && Number.isFinite(raw) ? Math.min(2, Math.max(1, raw)) : 1;
   const enabled = useJarvis(s => s.enabled);
   const speakerOff = useJarvis(s => s.speakerOff);
 
