@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterAndSortThreads, resolveThreadGroupSelection, threadActivityTs, threadGroupOptions, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
+import { matchesThreadSearch, filterAndSortThreads, resolveThreadGroupSelection, threadActivityTs, threadGroupOptions, type ThreadFilter, type ThreadRow, type ThreadSort } from "../src";
 
 function thread(
   id: number,
@@ -143,5 +143,23 @@ describe("resolveThreadGroupSelection", () => {
     const orphan = thread(2, "Orphan thread", 2, { groupId: "old", groupName: "" });
     expect(resolveThreadGroupSelection({ threads: [orphan], groups: [], groupsLoaded: true, selectedGroupId: "old" }))
       .toEqual({ groupId: "old", shouldClear: false, options: [{ id: "old", name: "Unknown group" }] });
+  });
+});
+
+describe("matchesThreadSearch", () => {
+  const item = { ...rows[0], channel_name: "engineering", group_name: "Product",
+    root: { ...rows[0].root, author_name: "Alice", author_id: "alice-id" } };
+  it.each([" ZULU ", "engineering", "product", "alice", "", "   "])("matches %j", query => {
+    expect(matchesThreadSearch(item, query, "Zulu planning")).toBe(true);
+  });
+  it.each(["missing", "Fallback", "alice-id"])("does not match hidden text %j", query => {
+    expect(matchesThreadSearch(item, query, "Zulu planning")).toBe(false);
+  });
+  it("searches the supplied display snippet instead of raw message text", () => {
+    const markdown = { ...item, root: { ...item.root, text: "**Deploy** plan\nfor Friday", author_name: null } };
+    expect(matchesThreadSearch(markdown, "deploy plan", "Deploy plan for Friday")).toBe(true);
+    expect(matchesThreadSearch(markdown, "friday", "Deploy plan for Friday")).toBe(true);
+    expect(matchesThreadSearch(markdown, "**deploy**", "Deploy plan for Friday")).toBe(false);
+    expect(matchesThreadSearch(markdown, "alice-id", "Deploy plan for Friday")).toBe(true);
   });
 });

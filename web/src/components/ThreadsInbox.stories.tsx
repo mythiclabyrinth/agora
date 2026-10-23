@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { useLive, type TypingEvent } from "@agora/core";
 import {
   fixtureGroups,
@@ -7,6 +7,9 @@ import {
   fixtureThreads,
 } from "@agora/core/testing/fixtures";
 import { normalizeSelection, useUiState } from "../state/ui";
+import { useShortcuts } from "../hooks/useShortcuts";
+import { useShortcutState } from "../state/shortcuts";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import { ThreadsInbox } from "./ThreadsInbox";
 
 const root = fixtureThreads[0].root;
@@ -431,5 +434,95 @@ export const SearchConversations: Story = {
     await expect(canvas.queryByText("Zulu planning")).not.toBeInTheDocument();
     await userEvent.clear(search);
     await expect(canvas.findByText("Zulu planning")).resolves.toBeVisible();
+  },
+};
+
+function PhoneThreadsWithShortcuts() {
+  useShortcuts();
+  return <><ThreadsInbox embedded /><ShortcutsDialog /></>;
+}
+
+export const PhoneSearchAndSheet: Story = {
+  render: () => <PhoneThreadsWithShortcuts />,
+  args: { embedded: true },
+  globals: { viewport: { value: "smallPhone", isRotated: false } },
+  parameters: { viewport: { defaultViewport: "smallPhone" }, apiRoutes: { "GET /api/unreads": { items: [], total: 0 } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const body = within(document.body);
+    await canvas.findByText("Can we validate the responsive component layout?");
+    const search = canvas.getByRole("searchbox", { name: "Search threads" });
+    await userEvent.type(search, "no such conversation");
+    expect(canvas.getByText("No matching threads")).toBeVisible();
+    await userEvent.clear(search);
+    expect(canvas.getByText("Can we validate the responsive component layout?")).toBeVisible();
+    expect(canvas.getByText("1 found")).not.toBeVisible();
+    const trigger = canvas.getByRole("button", { name: "Thread filters" });
+    // Safari leaves focus on the previous control when a button is tapped.
+    search.focus();
+    const preventMouseFocus = (event: MouseEvent) => event.preventDefault();
+    trigger.addEventListener("mousedown", preventMouseFocus);
+    await userEvent.click(trigger);
+    trigger.removeEventListener("mousedown", preventMouseFocus);
+    const sheet = body.getByRole("dialog", { name: "Thread view" });
+    expect(sheet).toBeVisible();
+    expect(sheet.contains(document.activeElement)).toBe(true);
+    await userEvent.keyboard("?");
+    expect(useShortcutState.getState().sheetOpen).toBe(false);
+    expect(body.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Control>}k{/Control}{Meta>}k{/Meta}gi");
+    expect(useUiState.getState().searchOpen).toBe(false);
+    expect(sheet).toBeVisible();
+    await userEvent.tab({ shift: true });
+    expect(within(sheet).getByRole("button", { name: "Done" })).toHaveFocus();
+    await userEvent.tab();
+    expect(within(sheet).getByLabelText("Sort threads")).toHaveFocus();
+    const selectWidth = within(sheet).getByLabelText("Sort threads").getBoundingClientRect().width;
+    expect(selectWidth).toBeGreaterThan(sheet.getBoundingClientRect().width - 50);
+    await userEvent.selectOptions(within(sheet).getByLabelText("Sort threads"), "az");
+    await userEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    expect(body.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAccessibleName("Thread filters, filters active");
+    await userEvent.click(trigger);
+    await userEvent.keyboard("{Escape}");
+    expect(body.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    await userEvent.click(trigger);
+    const reopened = body.getByRole("dialog");
+    fireEvent.pointerDown(within(reopened).getByText("Thread view"));
+    fireEvent.click(reopened);
+    expect(reopened).toBeVisible();
+    // Backdrop clicks are retargeted to the native dialog element.
+    await userEvent.click(body.getByRole("dialog"));
+    expect(body.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    await userEvent.keyboard("?");
+    expect(useShortcutState.getState().sheetOpen).toBe(true);
+    await userEvent.keyboard("{Escape}");
+  },
+};
+
+export const TabletInlineOptions: Story = {
+  args: { embedded: true },
+  globals: { viewport: { value: "tabletComposer", isRotated: false } },
+  parameters: { viewport: { defaultViewport: "tabletComposer" } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Can we validate the responsive component layout?");
+    const trigger = canvas.getByRole("button", { name: "Thread filters" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(canvas.getByLabelText("Sort threads")).not.toBeVisible();
+    await userEvent.click(trigger);
+    expect(canvas.getByLabelText("Sort threads")).toBeVisible();
+    expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
+    expect(canvas.getByText("1 found")).toBeVisible();
+    await userEvent.selectOptions(canvas.getByLabelText("Sort threads"), "az");
+    expect(trigger).toHaveAccessibleName("Thread filters, filters active");
+    expect(trigger).toHaveClass("active");
+    await userEvent.click(trigger);
+    expect(canvas.getByLabelText("Sort threads")).not.toBeVisible();
   },
 };

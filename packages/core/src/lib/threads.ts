@@ -86,3 +86,10 @@ export function filterAndSortThreads(
     return compareAlphabetically(a, b, sort === "az" ? 1 : -1);
   });
 }
+
+/** Search each client's displayed snippet alongside the shared thread metadata. */
+export function matchesThreadSearch(thread: ThreadRow, search: string, snippet: string): boolean {
+  const root = thread.root;
+  return `${snippet} ${thread.channel_name} ${thread.group_name} ${root.author_name || root.author_id}`
+    .toLowerCase().includes(search.trim().toLowerCase());
+}

@@ -19,6 +19,7 @@ const groups = [...fixtureGroups, { ...fixtureGroups[0], id: "design", name: "De
 const meta = {
   title: "Native/Screens/Threads inbox",
   component: ThreadsScreen,
+  args: { embedded: true },
   parameters: {
     apiRoutes: { "GET /api/threads?limit=100": { threads: fixtureThreads }, "GET /api/groups": { groups } },
   },
@@ -29,7 +30,7 @@ type Story = StoryObj<typeof meta>;
 
 export const UnreadThread: Story = {};
 export const ThreadsAtRest: Story = {
-  render: () => <GestureHandlerRootView style={{ flex: 1 }}><ThreadsScreen /></GestureHandlerRootView>,
+  render: () => <GestureHandlerRootView style={{ flex: 1 }}><ThreadsScreen embedded /></GestureHandlerRootView>,
 };
 /* Dialog opens prefilled with the thread's current alias. */
 export const RenameDialog: Story = {
@@ -52,12 +53,12 @@ export const Populated: Story = {
 };
 export const ThreadsSwipeLeftRemove: Story = {
   render: () => <GestureHandlerRootView style={{ flex: 1 }}>
-    <ThreadsScreen initialSwipe="left" />
+    <ThreadsScreen embedded initialSwipe="left" />
   </GestureHandlerRootView>,
 };
 export const ThreadsSwipeRightRename: Story = {
   render: () => <GestureHandlerRootView style={{ flex: 1 }}>
-    <ThreadsScreen initialSwipe="right" />
+    <ThreadsScreen embedded initialSwipe="right" />
   </GestureHandlerRootView>,
 };
 

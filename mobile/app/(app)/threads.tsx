@@ -7,11 +7,12 @@ import { ResponsiveText as Text } from "../../src/components/ResponsiveText";
    long-pressing renames it or removes the row from your inbox. */
 
 import React from "react";
-import { ActivityIndicator, Alert, FlatList, Modal, Pressable, RefreshControl, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, Modal, Pressable, RefreshControl, View, TextInput as NativeTextInput } from "react-native";
 import { Redirect, Stack, router } from "expo-router";
-import { ListFilter, MessagesSquare, Pencil, Trash2, X } from "lucide-react-native";
+import { ListFilter, Search, MessagesSquare, Pencil, Trash2, X } from "lucide-react-native";
 import {
   filterAndSortThreads,
+  matchesThreadSearch,
   threadActivityTs,
   resolveThreadGroupSelection,
   useGroups,
@@ -303,12 +304,13 @@ export function ThreadViewSheet({
 export function ThreadsScreen({ embedded = false, initialSwipe }: {
   embedded?: boolean; initialSwipe?: "left" | "right";
 }) {
-  const { colors } = useAppTheme();
+  const { colors, mode } = useAppTheme();
   const styles = useStyles();
   const threads = useThreads();
   const swipeRows = useSwipeRows();
   const groups = useGroups();
   const [renaming, setRenaming] = React.useState<ThreadRow | null>(null);
+  const [search, setSearch] = React.useState("");
   const [viewOptionsOpen, setViewOptionsOpen] = React.useState(false);
   const sort = usePrefs((state) => state.threadSort);
   const filter = usePrefs((state) => state.threadFilter);
@@ -324,8 +326,8 @@ export function ThreadsScreen({ embedded = false, initialSwipe }: {
     if (groupSelection.shouldClear) setGroup(null);
   }, [groupSelection.shouldClear, setGroup]);
   const displayedThreads = React.useMemo(
-    () => filterAndSortThreads(threads.data ?? [], sort, filter, effectiveGroupId),
-    [threads.data, sort, filter, effectiveGroupId],
+    () => filterAndSortThreads(threads.data ?? [], sort, filter, effectiveGroupId).filter(thread => matchesThreadSearch(thread, search, snippet(thread))),
+    [threads.data, sort, filter, effectiveGroupId, search],
   );
   const optionsActive = sort !== "recent" || filter !== "all" || effectiveGroupId !== null;
   return (
@@ -345,12 +347,19 @@ export function ThreadsScreen({ embedded = false, initialSwipe }: {
           </Pressable>,
         ),
       }} />}
-      {embedded && <Pressable accessibilityRole="button" accessibilityLabel="Thread view options"
-        style={[styles.embeddedFilters, optionsActive && styles.headerButtonActive]}
-        onPress={() => { swipeRows.close(); setViewOptionsOpen(true); }}>
-        <Icon icon={ListFilter} size={18} color={colors.a1} />
-        <Text style={styles.embeddedFiltersText}>Thread view</Text>
-      </Pressable>}
+      {embedded && <View style={styles.searchBar}>
+        <Icon icon={Search} size={18} color={colors.dim} />
+        <NativeTextInput accessibilityLabel="Search threads" placeholder="Find a conversation…"
+          placeholderTextColor={colors.faint} selectionColor={colors.a1} keyboardAppearance={mode} style={styles.searchInput}
+          value={search} onChangeText={setSearch} clearButtonMode="while-editing"
+          autoCapitalize="none" autoCorrect={false} returnKeyType="search" />
+        <Pressable accessibilityRole="button"
+          accessibilityLabel={`Thread view options${optionsActive ? ", filters active" : ""}`}
+          style={[styles.searchFilter, optionsActive && styles.headerButtonActive]}
+          onPress={() => { swipeRows.close(); setViewOptionsOpen(true); }}>
+          <Icon icon={ListFilter} size={20} color={optionsActive ? colors.a1 : colors.dim} />
+        </Pressable>
+      </View>}
       <RenameModal thread={renaming} onClose={() => setRenaming(null)} />
       {viewOptionsOpen ? (
         <ThreadViewSheet sort={sort} filter={filter} groupId={effectiveGroupId} groupOptions={groupSelection.options}
@@ -358,6 +367,8 @@ export function ThreadsScreen({ embedded = false, initialSwipe }: {
           onClose={() => setViewOptionsOpen(false)} />
       ) : null}
       <FlatList
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         style={styles.root}
         onScrollBeginDrag={swipeRows.close}
         contentContainerStyle={styles.content}
@@ -377,7 +388,7 @@ export function ThreadsScreen({ embedded = false, initialSwipe }: {
         ListEmptyComponent={
           threads.isLoading ? (
             <ActivityIndicator color={colors.dim} style={{ paddingVertical: 40 }} />
-          ) : (threads.data?.length ?? 0) > 0 || effectiveGroupId ? (
+          ) : (threads.data?.length ?? 0) > 0 || effectiveGroupId || search.trim() ? (
             <View style={styles.empty}>
               <Icon icon={MessagesSquare} size={34} color={colors.faint} />
               <Text style={styles.emptyText}>No matching threads</Text>
@@ -405,8 +416,9 @@ export default function ThreadsRedirect() {
 
 const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
-  embeddedFilters: { minHeight: 44, alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 12, marginVertical: 0, padding: 8, borderRadius: 9 },
-  embeddedFiltersText: { color: colors.a1, fontWeight: weight.bold },
+  searchBar: { flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 12, marginTop: 12, marginBottom: 4, paddingLeft: 12, paddingRight: 4, borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.panel },
+  searchInput: { flex: 1, minWidth: 0, minHeight: 44, color: colors.text, fontSize: 16 },
+  searchFilter: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 9 },
   headerButton: { padding: 6, borderRadius: 9 },
   headerButtonActive: { backgroundColor: colors.accentSoft },
   content: { paddingHorizontal: layout.gutter, paddingTop: space.sm, gap: space.md, paddingBottom: layout.contentBottom },
