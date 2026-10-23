@@ -10226,6 +10226,61 @@ mod tests {
     }
 
     #[test]
+    fn jarvis_opens_only_the_callers_conversations() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let gid = store.channel(&f.team).unwrap()["group_id"].as_str().unwrap().to_string();
+        // A channel: the group comes from the server, whatever the model says.
+        let (out, events) = run_tool(&f.state, &ana, "open_conversation", json!({"channel_id": f.team, "group_id": "nope"}));
+        assert_eq!(out["opened"], "#general");
+        assert_eq!(events, vec![crate::jarvis::ev_navigate(&gid, &f.team, None, "#general")]);
+        let (_, by_name) = run_tool(&f.state, &ana, "open_conversation", json!({"channel_id": "#general"}));
+        assert_eq!(by_name, events, "a name resolves to the same checked target");
+        let (out, events) = run_tool(&f.state, &ana, "open_conversation", json!({"channel_id": "secret"}));
+        assert!(out["error"].is_string() && events.is_empty(), "a channel she can't see, by name: {out}");
+        // A reply opens its thread; a thread from another channel opens nothing.
+        let root = store.messages(&f.team, None, None, 1)[0]["id"].as_i64().unwrap();
+        let reply = store.add_message(&f.team, "on it", "user", "ana", Some("Ana"), Some(root), &[])["id"].as_i64().unwrap();
+        let (_, events) = run_tool(&f.state, &ana, "open_conversation", json!({"channel_id": f.team, "thread_id": reply}));
+        assert_eq!(events[0]["thread_id"], root);
+        assert_eq!(events[0]["label"], "a thread in #general");
+        let secret_root = store.messages(&f.secret, None, None, 1)[0]["id"].as_i64().unwrap();
+        let (out, events) = run_tool(&f.state, &ana, "open_conversation", json!({"channel_id": f.team, "thread_id": secret_root}));
+        assert!(out["error"].is_string() && events.is_empty(), "{out}");
+        // Not a member, someone else's DM, or nothing at all: no navigation.
+        let bob_dm = store.agent_dms_for_user("bob")[0]["channel_id"].as_str().unwrap().to_string();
+        for target in [f.secret.clone(), bob_dm, "missing".to_string()] {
+            let (out, events) = run_tool(&f.state, &ana, "open_conversation", json!({"channel_id": target}));
+            assert!(out["error"].is_string() && events.is_empty(), "{target}: {out}");
+        }
+        // Her own DM opens under the DM group.
+        let (out, events) = run_tool(&f.state, &ana, "open_conversation", json!({"channel_id": f.ana_dm}));
+        assert_eq!(out["opened"], "your DM with Helper Bot");
+        assert_eq!(events[0]["group_id"], crate::store::DM_GROUP_ID);
+    }
+
+    #[test]
+    fn jarvis_can_hide_its_panel_but_never_switch_jarvis_mode_off() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let (out, events) = run_tool(&f.state, &ana, "hide_panel", json!({}));
+        assert_eq!(out["hidden"], true);
+        assert_eq!(events, vec![crate::jarvis::ev_hide()]);
+        // No tool can turn the mode (or any setting) off: that stays a manual switch.
+        let names: Vec<String> = crate::jarvis::tool_specs().iter()
+            .map(|t| t["name"].as_str().or_else(|| t["function"]["name"].as_str()).unwrap_or_default().to_string()).collect();
+        assert!(names.contains(&"hide_panel".to_string()) && names.contains(&"open_conversation".to_string()), "{names:?}");
+        for n in &names {
+            assert!(!["enable", "disable", "toggle", "switch", "turn_off", "setting", "mode"].iter().any(|w| n.contains(w)), "{n}");
+        }
+        assert!(crate::jarvis::INSTRUCTIONS.contains("You cannot turn Jarvis mode off"));
+        let (out, events) = run_tool(&f.state, &ana, "new_conversation", json!({}));
+        assert_eq!(out["started"], true);
+        assert_eq!(events, vec![crate::jarvis::ev_new_conversation()]);
+    }
+
+    #[test]
     fn jarvis_tools_only_see_the_callers_channels() {
         let f = jarvis_fixture();
         let ana = jarvis_user(&f.state, "ana");

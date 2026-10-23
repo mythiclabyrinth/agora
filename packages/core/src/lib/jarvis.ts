@@ -72,6 +72,12 @@ export type JarvisEvent =
   | { type: "draft_sent"; draft_id: string; message: Message; already_sent?: boolean }
   /** Cancelled by a spoken "no", or replaced by a newer draft (`superseded_by`). */
   | { type: "draft_cancelled"; draft_id: string; superseded_by: string | null }
+  /** Show this channel (and thread) in the app; checked against the caller server-side. */
+  | { type: "navigate"; group_id: string; channel_id: string; thread_id: number | null; label: string }
+  /** Hide the panel once the answer is spoken. Jarvis mode stays on. */
+  | { type: "hide" }
+  /** Start a new conversation once the answer is spoken (the panel's "New"). */
+  | { type: "new_conversation" }
   | { type: "done"; conversation_id: string; text: string }
   | { type: "error"; message: string };
 

@@ -16,11 +16,13 @@ const core = vi.hoisted(() => ({
 const cards = vi.hoisted(() => ({ announceSent: vi.fn(), saveDraftEdit: vi.fn() }));
 const chime = vi.hoisted(() => ({ armChimeNow: vi.fn(), playChime: vi.fn() }));
 const toasts = vi.hoisted(() => ({ toast: vi.fn() }));
+const nav = vi.hoisted(() => ({ jumpTo: vi.fn() }));
 
 vi.mock("@agora/core", () => core);
 vi.mock("../panel/JarvisCards", () => cards);
 vi.mock("../../lib/chime", () => chime);
 vi.mock("../../lib/toast", () => toasts);
+vi.mock("../navigate", () => nav);
 vi.mock("../../lib/auth", () => ({ sessionToken: () => "tok" }));
 vi.mock("../../lib/voice", () => ({ recMime: () => "audio/webm", voiceSupported: () => true }));
 vi.mock("../../state/ui", () => ({
@@ -408,5 +410,106 @@ describe("newConversation", () => {
     expect(useJarvis.getState().conversationId).toBeNull();
     voice.newConversation(api);
     expect(core.resetJarvisConversation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("navigating and hiding by voice", () => {
+  const hideEvent = { type: "hide" } as JarvisEvent;
+
+  it("opens the conversation the server resolved", async () => {
+    const target = { type: "navigate", group_id: "g1", channel_id: "c1", thread_id: 7, label: "a thread in #release" } as JarvisEvent;
+    answerWith([target], "Opening it.");
+    await voice.handleUtterance("open the deploy thread");
+    expect(nav.jumpTo).toHaveBeenCalledWith(target);
+  });
+
+  it("hides the panel once the answer is spoken, without listening again or touching Jarvis mode", async () => {
+    useJarvis.getState().setEnabled(true);
+    useJarvis.getState().open();
+    answerWith([hideEvent], "Hiding. Say Hey Jarvis when you need me.");
+    await speak("hide jarvis");
+    expect(useJarvis.getState().isOpen).toBe(true); // still speaking
+    FakeAudio.instances[0].end(); // "Hiding."
+    await pass(0);
+    expect(useJarvis.getState().isOpen).toBe(true); // the rest is still to come
+    FakeAudio.instances[1].end();
+    await pass(0);
+    const st = useJarvis.getState();
+    expect(st.isOpen).toBe(false);
+    expect(st.enabled).toBe(true);
+    expect(st.micMuted).toBe(false);
+    expect(st.micOwned).toBe(false); // the wake word can have the mic back
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
+    await pass(voice.FOLLOW_UP_MS * 2);
+    expect(env.getUserMedia).toHaveBeenCalledTimes(1); // no follow-up capture
+  });
+
+  it("hides at once when nothing is spoken (speaker off or no voice)", async () => {
+    voice.configureVoice({ tts: false });
+    useJarvis.getState().open();
+    answerWith([hideEvent], "Hiding.");
+    await voice.handleUtterance("go away");
+    await pass(0);
+    expect(useJarvis.getState().isOpen).toBe(false);
+  });
+
+  it("stays open when the same answer offered a draft, or the turn failed", async () => {
+    voice.configureVoice({ tts: false });
+    useJarvis.getState().open();
+    answerWith([{ type: "card", card: draft("a").card } as JarvisEvent, hideEvent], "Drafted for #release: “rerun it”. Send it?");
+    await voice.handleUtterance("draft rerun it to release and hide");
+    await pass(0);
+    expect(useJarvis.getState().isOpen).toBe(true);
+    core.jarvisTurn.mockImplementationOnce(async (_s: unknown, _r: unknown, onEvent: OnEvent) => {
+      onEvent(hideEvent);
+      throw new Error("ChatGPT didn't respond — try again.");
+    });
+    await voice.handleUtterance("hide");
+    await pass(0);
+    expect(useJarvis.getState().isOpen).toBe(true);
+    expect(useJarvis.getState().error).toBe("ChatGPT didn't respond — try again.");
+    // A failure the server streams (rather than throws) keeps it up too, and doesn't reset.
+    answerWith([hideEvent, { type: "new_conversation" } as JarvisEvent, { type: "error", message: "ChatGPT didn't respond — try again." } as JarvisEvent]);
+    await voice.handleUtterance("start over and hide");
+    await pass(0);
+    expect(useJarvis.getState().isOpen).toBe(true);
+    expect(core.resetJarvisConversation).not.toHaveBeenCalled();
+  });
+
+  it("a newer turn cancels a pending hide", async () => {
+    useJarvis.getState().open();
+    answerWith([hideEvent], "Hiding.");
+    await speak("hide");
+    answer("Here is what's new.");
+    await voice.handleUtterance("actually, what's new?");
+    FakeAudio.instances.at(-1)?.end();
+    await pass(0);
+    expect(useJarvis.getState().isOpen).toBe(true);
+  });
+
+  it("starts a new conversation once the answer is spoken, and keeps listening", async () => {
+    useJarvis.getState().open();
+    answerWith([{ type: "new_conversation" } as JarvisEvent], "Starting fresh.");
+    await speak("let's start over");
+    expect(core.resetJarvisConversation).not.toHaveBeenCalled(); // still speaking
+    expect(useJarvis.getState().log.length).toBeGreaterThan(0);
+    FakeAudio.instances[0].end();
+    await pass(0);
+    expect(core.resetJarvisConversation).toHaveBeenCalledWith(api, "jc1");
+    expect(useJarvis.getState().log).toEqual([]);
+    expect(useJarvis.getState().conversationId).toBeNull();
+    expect(useJarvis.getState().isOpen).toBe(true);
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "waiting" });
+  });
+
+  it("never switches Jarvis mode, even when it was already off", async () => {
+    useJarvis.getState().setEnabled(false);
+    useJarvis.getState().open();
+    answerWith([hideEvent], "Hiding.");
+    voice.configureVoice({ tts: false });
+    await voice.handleUtterance("turn off jarvis mode");
+    await pass(0);
+    expect(useJarvis.getState().enabled).toBe(false);
+    expect(useJarvis.getState().isOpen).toBe(false);
   });
 });

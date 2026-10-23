@@ -7,13 +7,14 @@ const sendJarvisDraft = vi.fn();
 const toast = vi.fn();
 vi.mock("@agora/core", async (orig) => ({ ...(await orig<object>()), cancelJarvisDraft, updateJarvisDraft, sendJarvisDraft }));
 vi.mock("../../lib/toast", () => ({ toast }));
-vi.mock("../../state/ui", () => ({ useUiState: { getState: () => ({}) } }));
+const ui = vi.hoisted(() => ({ selectChannel: vi.fn(), openThread: vi.fn() }));
+vi.mock("../../state/ui", () => ({ useUiState: { getState: () => ui } }));
 vi.mock("../../state/jump", () => ({ useJump: { getState: () => ({}) } }));
 vi.mock("../../lib/icons", () => ({ Icon: () => null }));
 
 const { ApiError } = await import("@agora/core");
 const { isLiveDraft, useJarvis } = await import("../../state/jarvis");
-const { dismissCardEntry, saveDraftEdit, scheduleDraftSave, sendDraftEntry, SAVE_DEBOUNCE_MS } = await import("./JarvisCards");
+const { dismissCardEntry, openFromCard, saveDraftEdit, scheduleDraftSave, sendDraftEntry, SAVE_DEBOUNCE_MS } = await import("./JarvisCards");
 const { splitCards } = await import("./derive");
 const api = {} as never;
 
@@ -173,5 +174,16 @@ describe("expired drafts", () => {
     const digest = { id: "d", card: { kind: "digest", items: [] } } as Entry;
     const { primary } = splitCards([digest, card({ id: "old", expiresAt: now - 1 }), card({ id: "live", expiresAt: now + 60_000 })]);
     expect(primary.map(c => c.id)).toEqual(["d", "live"]);
+  });
+});
+
+describe("a card's Open buttons", () => {
+  it("go to the conversation and close the panel, leaving Jarvis mode on", () => {
+    useJarvis.setState({ isOpen: true, enabled: true });
+    openFromCard({ group_id: "g", channel_id: "c", thread_id: 7 });
+    expect(ui.selectChannel).toHaveBeenCalledWith("g", "c");
+    expect(ui.openThread).toHaveBeenCalledWith(7, "replace");
+    expect(useJarvis.getState().isOpen).toBe(false);
+    expect(useJarvis.getState().enabled).toBe(true);
   });
 });
