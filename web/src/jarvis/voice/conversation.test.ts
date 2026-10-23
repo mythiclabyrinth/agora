@@ -128,7 +128,7 @@ async function speak(transcript: string | Error) {
   env.rms = 0.05;
   await pass(500);
   env.rms = 0.001;
-  await pass(900);
+  await pass(voice.END_OF_SPEECH_MS + 100);
 }
 
 type OnEvent = (event: JarvisEvent) => void;
@@ -513,3 +513,283 @@ describe("navigating and hiding by voice", () => {
     expect(useJarvis.getState().isOpen).toBe(false);
   });
 });
+
+describe("speed, background speech and Stop", () => {
+  it("plays replies at the configured speed, pitch kept", async () => {
+    voice.configureVoice({ rate: 1.5 });
+    answer("All good.");
+    await voice.handleUtterance("status?");
+    await pass(0);
+    const clip = FakeAudio.instances[0] as unknown as { playbackRate: number; preservesPitch: boolean };
+    expect(clip.playbackRate).toBe(1.5);
+    expect(clip.preservesPitch).toBe(true);
+    voice.configureVoice({ rate: 1 });
+  });
+
+  it("records from the moment it listens, and drops a window with no speech", async () => {
+    await voice.listen("open");
+    expect(FakeRecorder.instances).toHaveLength(1);
+    expect(FakeRecorder.instances[0].state).toBe("recording"); // before any speech
+    await pass(voice.OPEN_WINDOW_MS + 500);
+    expect(FakeRecorder.instances[0].state).toBe("inactive");
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+  });
+
+  it("keeps speaking after the panel closes, without listening again", async () => {
+    answer("Here is the summary.");
+    await speak("summarize the deploy thread");
+    expect(useJarvis.getState().micOwned).toBe(true);
+    voice.panelClosed();
+    expect(useJarvis.getState().micOwned).toBe(false); // the wake word can have the mic
+    expect(FakeAudio.instances[0].paused).toBe(false); // still talking
+    FakeAudio.instances[0].end();
+    await pass(voice.FOLLOW_UP_MS * 2);
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
+    expect(env.getUserMedia).toHaveBeenCalledTimes(1);
+    voice.configureVoice({ open: true });
+  });
+
+  it("drops a transcription that finishes after the panel closed", async () => {
+    let finish: (v: { text: string; noSpeech: boolean }) => void = () => {};
+    core.jarvisTranscribe.mockImplementationOnce(() => new Promise(r => { finish = r; }));
+    await voice.listen("open");
+    env.rms = 0.05;
+    await pass(500);
+    env.rms = 0.001;
+    await pass(voice.END_OF_SPEECH_MS + 100);
+    expect(core.jarvisTranscribe).toHaveBeenCalledTimes(1);
+    voice.panelClosed();
+    voice.configureVoice({ open: true });
+    await voice.listen("open"); // reopened meanwhile
+    finish({ text: "open release", noSpeech: false });
+    await pass(0);
+    expect(core.jarvisTurn).not.toHaveBeenCalled();
+  });
+
+  it("reopening while it still speaks neither chimes nor records over the answer", async () => {
+    answer("Here is the summary.");
+    await speak("summarize it");
+    voice.panelClosed();
+    voice.configureVoice({ open: true });
+    chime.playChime.mockClear();
+    await voice.listen("open");
+    expect(chime.playChime).not.toHaveBeenCalled();
+    expect(voice.voiceDebugState().capture).toBe("off");
+    FakeAudio.instances[0].end();
+    await pass(0);
+    expect(voice.voiceDebugState().capture).toBe("waiting"); // the follow-up, once spoken
+  });
+
+  it("Stop speaking silences the rest while the text keeps coming, then waits quietly", async () => {
+    const seen = hangingAnswer("First part. ");
+    void voice.handleUtterance("catch me up");
+    await pass(0);
+    expect(core.jarvisSpeech).toHaveBeenCalledTimes(1);
+    voice.stopSpeaking();
+    expect(FakeAudio.instances[0]?.paused ?? true).toBe(true);
+    expect(seen.signal?.aborted).toBe(false); // the answer keeps streaming
+    expect(useJarvis.getState().busy).toBe(true);
+    expect(core.jarvisSpeech).toHaveBeenCalledTimes(1); // nothing more is synthesized
+  });
+
+  it("after Stop, the finished answer is not followed by listening", async () => {
+    answerWith([], "One. ", "Two.");
+    await speak("tell me");
+    voice.stopSpeaking();
+    await pass(voice.FOLLOW_UP_MS);
+    expect(voice.voiceDebugState().capture).not.toBe("waiting");
+    // The next request speaks again.
+    answer("Back.");
+    await voice.handleUtterance("and now?");
+    await pass(0);
+    expect(spokenTexts().at(-1)).toBe("Back.");
+  });
+
+  it("Stop releases the mic and still carries out a hide the answer asked for", async () => {
+    useJarvis.getState().open();
+    answerWith([{ type: "hide" } as JarvisEvent], "Hiding. Say Hey Jarvis when you need me.");
+    await speak("hide jarvis");
+    expect(useJarvis.getState().audioActive).toBe(true);
+    voice.stopSpeaking();
+    await pass(0);
+    expect(useJarvis.getState().isOpen).toBe(false);
+    expect(useJarvis.getState().micOwned).toBe(false);
+    expect(useJarvis.getState().audioActive).toBe(false);
+  });
+
+  it("a typed turn while a spoken one is transcribing isn't taken over by it", async () => {
+    let finish: (v: { text: string; noSpeech: boolean }) => void = () => {};
+    core.jarvisTranscribe.mockImplementationOnce(() => new Promise(r => { finish = r; }));
+    await voice.listen("open");
+    env.rms = 0.05;
+    await pass(500);
+    env.rms = 0.001;
+    await pass(voice.END_OF_SPEECH_MS + 100);
+    const seen = hangingAnswer("Working on it.");
+    void voice.runTurn("typed question");
+    await pass(0);
+    finish({ text: "spoken question", noSpeech: false });
+    await pass(0);
+    expect(core.jarvisTurn).toHaveBeenCalledTimes(1);
+    expect(seen.signal?.aborted).toBe(false);
+  });
+
+  it("a one-second pause stays in one request; a longer one ends it", async () => {
+    core.jarvisTranscribe.mockResolvedValueOnce({ text: "open release and summarize it", noSpeech: false });
+    answer("Okay.");
+    await voice.listen("open");
+    env.rms = 0.05; await pass(500);
+    env.rms = 0.001; await pass(1000); // a natural pause
+    expect(voice.voiceDebugState().capture).toBe("recording");
+    env.rms = 0.05; await pass(500);
+    env.rms = 0.001; await pass(voice.END_OF_SPEECH_MS + 100);
+    expect(core.jarvisTranscribe).toHaveBeenCalledTimes(1); // one clip, both halves
+    expect(FakeRecorder.instances).toHaveLength(1);
+  });
+
+  it("New drops what was recorded while waiting for speech", async () => {
+    await voice.listen("open");
+    const before = FakeRecorder.instances[0];
+    voice.newConversation(api);
+    expect(before.state).toBe("inactive");
+    expect(FakeRecorder.instances).toHaveLength(2); // a fresh recorder for what comes next
+    expect(FakeRecorder.instances[1].state).toBe("recording");
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+  });
+
+  it("an answer finishing after the panel closed doesn't navigate the user", async () => {
+    const target = { type: "navigate", group_id: "g1", channel_id: "c1", thread_id: null, label: "#release" } as JarvisEvent;
+    voice.panelClosed();
+    answerWith([target], "Opening it.");
+    await voice.runTurn("open release");
+    expect(nav.jumpTo).not.toHaveBeenCalled();
+    voice.configureVoice({ open: true });
+  });
+
+  it("restarts the recording while waiting, so a clip carries at most a few seconds of silence", async () => {
+    await voice.listen("open");
+    await pass(7_000);
+    expect(FakeRecorder.instances.length).toBeGreaterThanOrEqual(3);
+    expect(FakeRecorder.instances.filter(r => r.state === "recording")).toHaveLength(1);
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+  });
+
+  it("Stop speaking is marked for the turn, and cleared by the next", async () => {
+    hangingAnswer("First part. ");
+    void voice.handleUtterance("catch me up");
+    await pass(0);
+    voice.stopSpeaking();
+    expect(useJarvis.getState().speechStopped).toBe(true);
+    answer("Back.");
+    await voice.handleUtterance("and now?");
+    expect(useJarvis.getState().speechStopped).toBe(false);
+  });
+
+  it("a soft start near the restart boundary isn't thrown away", async () => {
+    await voice.listen("open");
+    await pass(2_900);
+    env.rms = 0.01; // below the speech threshold: a quiet first syllable
+    await pass(300);
+    expect(FakeRecorder.instances).toHaveLength(1); // no restart over it
+    env.rms = 0.05;
+    await pass(300);
+    expect(voice.voiceDebugState().capture).toBe("recording");
+    expect(FakeRecorder.instances).toHaveLength(1);
+  });
+
+  it("New drops a recording or transcription in progress, so it can't start a turn", async () => {
+    // Mid-sentence.
+    await voice.listen("open");
+    env.rms = 0.05;
+    await pass(500);
+    expect(voice.voiceDebugState().capture).toBe("recording");
+    voice.newConversation(api);
+    expect(useJarvis.getState().phase).toBe("listening"); // and it says so
+    env.rms = 0.001;
+    await pass(voice.END_OF_SPEECH_MS + 100);
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+    // Mid-transcription.
+    let finish: (v: { text: string; noSpeech: boolean }) => void = () => {};
+    core.jarvisTranscribe.mockImplementationOnce(() => new Promise(r => { finish = r; }));
+    env.rms = 0.05;
+    await pass(500);
+    env.rms = 0.001;
+    await pass(voice.END_OF_SPEECH_MS + 100);
+    expect(voice.voiceDebugState().capture).toBe("transcribing");
+    voice.newConversation(api);
+    finish({ text: "the old question", noSpeech: false });
+    await pass(0);
+    expect(core.jarvisTurn).not.toHaveBeenCalled();
+  });
+
+  it("steady room noise can't keep the recording from restarting", async () => {
+    await voice.listen("open");
+    env.rms = 0.01; // below the speech threshold, all the time
+    await pass(7_000);
+    expect(FakeRecorder.instances.length).toBeGreaterThanOrEqual(2);
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+  });
+
+  it("plays clips through Web Audio: silence trimmed, sped up, pitch kept, no element", async () => {
+    const sr = 24_000;
+    const sound = Float32Array.from({ length: sr }, (_, i) => 0.3 * Math.sin((2 * Math.PI * 220 * i) / sr));
+    const padded = new Float32Array(sr * 2);
+    padded.set(sound, sr / 2); // half a second of silence in front, as Orpheus sends it
+    const started: { buffer: { length: number } }[] = [];
+    const proto = FakeAudioContext.prototype as unknown as Record<string, unknown>;
+    proto.decodeAudioData = async () => ({ sampleRate: sr, numberOfChannels: 1, getChannelData: () => padded });
+    proto.createBuffer = (_c: number, length: number, rate: number) => ({ length, sampleRate: rate, duration: length / rate, copyToChannel() {} });
+    proto.createBufferSource = () => {
+      const node = { buffer: null as unknown, onended: null as null | (() => void), connect() {}, disconnect() {}, stop() {},
+        start() { started.push(node as never); } };
+      return node;
+    };
+    try {
+      voice.configureVoice({ rate: 1.5 });
+      answer("All good.");
+      await voice.handleUtterance("status?");
+      await pass(0);
+      expect(started).toHaveLength(1);
+      expect(FakeAudio.instances).toHaveLength(0);
+      // ~1 s of sound (+ pads), at 1.5×: about two thirds of a second, not two.
+      expect(started[0].buffer.length / sr).toBeGreaterThan(0.6);
+      expect(started[0].buffer.length / sr).toBeLessThan(0.8);
+      expect(useJarvis.getState().audioActive).toBe(true);
+      (started[0] as unknown as { onended: () => void }).onended();
+      await pass(0);
+      expect(useJarvis.getState().audioActive).toBe(false);
+    } finally {
+      delete proto.decodeAudioData;
+      delete proto.createBuffer;
+      delete proto.createBufferSource;
+      voice.configureVoice({ rate: 1 });
+    }
+  });
+
+  it("a Web Audio setup that throws moves on instead of leaving Jarvis stuck speaking", async () => {
+    const proto = FakeAudioContext.prototype as unknown as Record<string, unknown>;
+    proto.decodeAudioData = async () => ({ sampleRate: 24_000, numberOfChannels: 1, getChannelData: () => new Float32Array(24_000).fill(0.2) });
+    proto.createBuffer = (_c: number, length: number, rate: number) => ({ length, sampleRate: rate, duration: length / rate, copyToChannel() {} });
+    proto.createBufferSource = () => { throw new DOMException("context closed", "InvalidStateError"); };
+    try {
+      answer("One. ", "Two.");
+      await voice.handleUtterance("status?");
+      await pass(0);
+      // Both sentences were attempted and the queue drained: nothing is stuck.
+      expect(voice.voiceDebugState()).toMatchObject({ speaking: false, queued: 0 });
+      expect(useJarvis.getState().audioActive).toBe(false); // the wake word can arm again
+      // The next answer still plays.
+      delete proto.createBufferSource;
+      delete proto.decodeAudioData;
+      answer("Back.");
+      await voice.handleUtterance("again?");
+      await pass(0);
+      expect(spokenTexts().at(-1)).toBe("Back.");
+    } finally {
+      delete proto.decodeAudioData;
+      delete proto.createBuffer;
+      delete proto.createBufferSource;
+    }
+  });
+});
+

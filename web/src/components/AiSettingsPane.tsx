@@ -379,6 +379,19 @@ function JarvisFeatures({ data }: { data: InstanceAiJarvis }) {
         disabled={update.isPending}
         onChange={model => save({ model, model_provider: provider })}
       />
+      <div className="ai-row">
+        <label>Speaking speed</label>
+        <select
+          aria-label="Jarvis speaking speed"
+          value={String(data.speech_rate ?? 1)}
+          disabled={update.isPending}
+          onChange={e => save({ speech_rate: Number(e.target.value) })}
+        >
+          {(data.speech_rates?.length ? data.speech_rates : [1, 1.25, 1.5, 1.75, 2]).map(r => (
+            <option key={r} value={String(r)}>{r === 1 ? "1× (normal)" : `${r}×`}</option>
+          ))}
+        </select>
+      </div>
       {missing && (
         <p className="conn-hint jarvis-credential-missing">
           {JARVIS_CREDENTIAL[key] || "This provider has no credential yet."}{data.enabled ? " Jarvis stays off until it has one." : ""}{" "}

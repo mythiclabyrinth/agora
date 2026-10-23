@@ -35,6 +35,8 @@ export interface Me {
   jarvis_stt?: boolean;
   /** The assistant panel can speak replies (/api/jarvis/speech). */
   jarvis_tts?: boolean;
+  /** Playback speed for the assistant's spoken replies; absent (older servers) = 1. */
+  jarvis_speech_rate?: number;
   /** Operator-configured MapLibre style URL for map artifacts; empty/absent
       means clients fall back to the coordinate-only SVG map. */
   map_style_url?: string;
@@ -878,6 +880,9 @@ export interface InstanceAiJarvis {
   models: Record<JarvisProvider, AiValueField>;
   suggested_models_by_provider: Record<string, string[]>;
   credentials: Record<JarvisProvider, boolean>;
+  /** Spoken replies' playback speed, and the speeds offered (absent on older servers). */
+  speech_rate?: number;
+  speech_rates?: number[];
 }
 
 /** GET /api/instance/ai — instance-admin voice, Ask-AI and Jarvis settings. */
@@ -923,6 +928,7 @@ export type InstanceAiUpdate = {
     model?: string;
     model_provider?: string;
     models?: Partial<Record<JarvisProvider, string>>;
+    speech_rate?: number;
   };
   credentials?: {
     openai?: { api_key?: string; clear_key?: boolean };

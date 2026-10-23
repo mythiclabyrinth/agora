@@ -72,6 +72,11 @@ export interface JarvisState {
   log: JarvisLogEntry[];
   /** The part of a log entry being spoken right now. */
   spoken: { id: string; start: number; end: number } | null;
+  /** A reply is queued or playing (set by the voice loop): the wake word
+      stays disarmed so the reply can't wake itself through the speakers. */
+  audioActive: boolean;
+  /** "Stop speaking" was pressed for the current turn. */
+  speechStopped: boolean;
   cards: JarvisCardEntry[];
   conversationId: string | null;
   error: string | null;
@@ -140,6 +145,8 @@ export const useJarvis = create<JarvisState>((set, get) => ({
   caption: "",
   log: [],
   spoken: null,
+  audioActive: false,
+  speechStopped: false,
   cards: [],
   conversationId: null,
   error: null,

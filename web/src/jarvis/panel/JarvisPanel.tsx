@@ -15,7 +15,7 @@ import { useAppearance } from "../../state/appearance";
 import { useJarvis, type JarvisLogEntry } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
 import {
-  closeVoice, configureVoice, handleUtterance, listen, newConversation, runTurn, silenceSpeech, stopListening,
+  configureVoice, handleUtterance, listen, newConversation, panelClosed, runTurn, stopListening, stopSpeaking,
 } from "../voice/conversation";
 import { JarvisCardView } from "./JarvisCards";
 import { jarvisLevel } from "./level";
@@ -100,13 +100,16 @@ function OpenPanel() {
   const stt = me?.jarvis_stt === true;
   const tts = me?.jarvis_tts === true;
 
-  // The voice loop follows the panel: open while mounted, closed on unmount
-  // (StrictMode's dev remount included). Effects run in order, so this is
-  // configured before the listen effects below fire.
+  // Listening follows the panel: open while mounted; closing stops
+  // listening but lets the answer finish speaking (StrictMode's dev remount
+  // included). The rest of the voice configuration lives in JarvisVoiceHost.
+  // Effects run in order, so this is set before the listen effects below.
+  // Also set here (not only by the host), so a panel that mounts with the
+  // first /api/me listens and speaks at once.
   useEffect(() => { configureVoice({ api, stt, tts }); }, [api, stt, tts]);
   useEffect(() => {
     configureVoice({ open: true });
-    return () => { configureVoice({ open: false }); closeVoice(); };
+    return () => panelClosed();
   }, []);
 
   // open() (chip, shortcut, wake word) asks to listen; open(text) queues a typed turn.
@@ -127,7 +130,6 @@ function OpenPanel() {
     if (s.micMuted) stopListening();
     else void listen("open");
   }, [s.micMuted]);
-  useEffect(() => { if (s.speakerOff) silenceSpeech(); }, [s.speakerOff]);
 
   useEffect(() => {
     // Reopening a completed exchange starts at its beginning. Only a new,
@@ -212,6 +214,13 @@ function OpenPanel() {
           <span className="jv-brand">Agora<span className="jv-eyebrow">Your workspace assistant</span></span>
         </div>
         <div className="jv-head-actions">
+          {(s.busy || s.phase === "speaking") && tts && !s.speakerOff && !s.speechStopped && (
+            <button type="button" className="jv-stop" data-testid="jarvis-stop"
+              title="Stop speaking — the text keeps coming" aria-label="Stop speaking"
+              onClick={() => stopSpeaking()}>
+              <Icon name="square" /><span>Stop speaking</span>
+            </button>
+          )}
           {(s.conversationId || s.cards.length > 0 || hasConversation) && (
             <button type="button" className="jv-new" title="Start a new conversation" onClick={() => newConversation(api)}>
               <Icon name="plus" /><span>New</span>

@@ -25,6 +25,10 @@ export function JarvisWakeHost() {
   const liveActive = useLiveVoice(s => s.scope !== null);
   // The panel's voice loop holds its own capture while a conversation runs.
   const micOwned = useJarvis(s => s.micOwned);
+  // A reply in the background (panel closed) must not wake itself through
+  // the speakers ("say Hey Jarvis to bring me back"): disarmed for the whole
+  // answer, the gaps between sentences included.
+  const speaking = useJarvis(s => s.busy || s.audioActive);
   const on = available && enabled;
   const wakeRef = useRef<WakeDetector | null>(null);
   const voiceInRef = useRef(false);
@@ -39,7 +43,7 @@ export function JarvisWakeHost() {
       model: JARVIS_WAKE_MODEL,
       onWake: () => {
         const st = useJarvis.getState();
-        if (!st.enabled) return;
+        if (!st.enabled || st.busy || st.audioActive) return;
         // The voice loop chimes when it starts listening; without it (mic
         // muted, no STT) the chime still confirms the wake was heard.
         if (st.micMuted || !voiceInRef.current) playChime(0.5);
@@ -54,7 +58,8 @@ export function JarvisWakeHost() {
     detector.start().then(
       () => {
         if (disposed) return;
-        detector.setArmed(!useLiveVoice.getState().scope && !useJarvis.getState().micOwned);
+        const st = useJarvis.getState();
+        detector.setArmed(!useLiveVoice.getState().scope && !st.micOwned && !st.busy && !st.audioActive);
         // Keep an error raised during start (e.g. audio paused) on the chip.
         if (useJarvis.getState().wake === "starting") useJarvis.getState().setWake("listening");
       },
@@ -76,7 +81,7 @@ export function JarvisWakeHost() {
   }, [on]);
 
   useEffect(() => { voiceInRef.current = voiceIn; }, [voiceIn]);
-  useEffect(() => { wakeRef.current?.setArmed(!liveActive && !micOwned); }, [liveActive, micOwned]);
+  useEffect(() => { wakeRef.current?.setArmed(!liveActive && !micOwned && !speaking); }, [liveActive, micOwned, speaking]);
 
   return null;
 }

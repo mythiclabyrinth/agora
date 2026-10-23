@@ -85,7 +85,12 @@ One Rust core, three clients (see the repo layout table in the
   derived server-side) streams `navigate`, `hide_panel` streams `hide`,
   which closes the panel after the answer is spoken, and `new_conversation`
   streams `new_conversation` (the panel's New, after the answer); no tool
-  can switch Jarvis mode off. A card's Open buttons also close the panel. A draft is
+  can switch Jarvis mode off. A card's Open buttons also close the panel.
+  Spoken replies outlive the panel (closing stops listening only; an
+  always-mounted `JarvisVoiceHost` owns their configuration and teardown),
+  play at `ai.jarvis.speech_rate` (`/api/me` `jarvis_speech_rate`), and can
+  be silenced with Stop speaking; `/api/jarvis/transcribe` passes the
+  caller's visible names to the STT provider as a vocabulary prompt. A draft is
   a revisioned, owner- and conversation-bound record (pending → sending →
   sent | cancelled, or expired); card edits save through
   `PUT /api/jarvis/drafts/{id}` (bumping the revision) and the card's Send

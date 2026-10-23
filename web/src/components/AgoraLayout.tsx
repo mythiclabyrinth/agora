@@ -30,6 +30,7 @@ import { useShortcuts } from "../hooks/useShortcuts";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { JarvisPanel } from "../jarvis/panel/JarvisPanel";
 import { JarvisWakeHost } from "../jarvis/wake/JarvisWakeHost";
+import { JarvisVoiceHost } from "../jarvis/voice/JarvisVoiceHost";
 
 function ShortcutsHost() {
   useShortcuts();
@@ -181,6 +182,7 @@ export function AgoraLayout() {
       <ShortcutsDialog />
       <JarvisPanel />
       <JarvisWakeHost />
+      <JarvisVoiceHost />
       <PeoplePane />
       <AiSettingsPane />
       <ConnectionsPane />

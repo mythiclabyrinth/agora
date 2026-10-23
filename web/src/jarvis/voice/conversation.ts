@@ -1,7 +1,7 @@
 /* The assistant's voice loop: hear a turn, run it, speak the answer while it
    streams, then keep listening for a follow-up.
 
-     listen() ─ chime ─ "listening" ─ speech ─ "recording" ─ ~800 ms quiet
+     listen() ─ chime ─ "listening" ─ speech ─ "recording" ─ ~1.4 s quiet
        ─ "transcribing" ─ /api/jarvis/transcribe ─ turn (thinking … ) ─
        answer streams; each finished sentence ─ /api/jarvis/speech ─ played
        in order ("speaking") ─ follow-up window (8 s "listening") ─ silence ─
@@ -17,6 +17,16 @@
    plain turns too: the server judges whether one approves the draft it just
    offered and posts it itself, streaming `draft_sent` / `draft_cancelled`
    and a short spoken acknowledgement. Nothing here guesses at intent.
+
+   Recording starts when listening does (not when speech is first heard),
+   so the first word isn't clipped; a window with no speech is dropped.
+
+   The answer outlives the panel: closing it stops listening (and drops any
+   recording), but the reply keeps streaming and speaking, so it can be
+   heard while reading the thread it pointed at. "Stop speaking" silences
+   the rest of an answer while its text and cards keep coming. Settings and
+   teardown that must hold while the panel is closed live in
+   JarvisVoiceHost, which is always mounted.
 
    A module singleton (timers, recorder, audio), like live voice; the store
    (state/jarvis.ts) carries everything the panel renders. */
@@ -34,8 +44,9 @@ import { useUiState } from "../../state/ui";
 import { announceSent, saveDraftEdit, type JarvisDraftCard } from "../panel/JarvisCards";
 import { jumpTo } from "../navigate";
 import { jarvisLevel } from "../panel/level";
-import { createEndpointer, frameRms } from "./endpointer";
+import { createEndpointer, ENDPOINT_DEFAULTS, frameRms } from "./endpointer";
 import { createSentenceChunker, type Sentence } from "./sentences";
+import { timeStretch, trimSilence } from "./stretch";
 
 const TICK_MS = 50;
 /** How long the loop waits for speech after opening, or after an answer. */
@@ -45,7 +56,7 @@ export const FOLLOW_UP_MS = 8_000;
 const session = () => ({ baseUrl: "", token: sessionToken() });
 
 /** What the panel knows: the API client and what the server can do. */
-const caps = { api: null as ApiClient | null, stt: false, tts: false, open: false };
+const caps = { api: null as ApiClient | null, stt: false, tts: false, open: false, rate: 1 };
 
 export function configureVoice(next: Partial<typeof caps>): void {
   Object.assign(caps, next);
@@ -65,8 +76,20 @@ function canSpeak(): boolean {
 
 type Capture = "off" | "waiting" | "recording" | "transcribing";
 
+/** While waiting for speech the recording restarts this often, so a clip
+    carries at most this much silence before the words (Whisper invents
+    text on long silence). */
+const MAX_LEAD_MS = 3_000;
+
+/** Sound this recent (even below the speech threshold) holds off a
+    restart: it may be a soft first syllable. */
+const ONSET_GUARD_MS = 400;
+
 interface Mic {
   stream: MediaStream;
+  recorderStarted: number;
+  /** Last tick with sound near the speech threshold. */
+  lastSound: number;
   ac: AudioContext;
   analyser: AnalyserNode;
   buf: Float32Array<ArrayBuffer>;
@@ -82,7 +105,13 @@ let wantMic = false;
 let capture: Capture = "off";
 /** performance.now() deadline for speech to start, or null to wait indefinitely. */
 let listenUntil: number | null = null;
-const endpointer = createEndpointer();
+/** Bumped whenever capture is torn down: a transcription that finishes
+    after that (the panel closed, or reopened since) is dropped. */
+let captureGen = 0;
+/** Quiet this long ends an utterance: a natural pause mid-request isn't
+    the end of it (0.8 s split requests in two). */
+export const END_OF_SPEECH_MS = 1400;
+const endpointer = createEndpointer({ silenceMs: END_OF_SPEECH_MS });
 
 async function openMic(): Promise<Mic | null> {
   if (mic) return mic;
@@ -111,7 +140,7 @@ async function openMic(): Promise<Mic | null> {
     ac.createMediaStreamSource(stream).connect(analyser);
     mic = {
       stream, ac, analyser, buf: new Float32Array(analyser.fftSize),
-      timer: setInterval(tick, TICK_MS), recorder: null, chunks: [], level: 0,
+      timer: setInterval(tick, TICK_MS), recorder: null, chunks: [], level: 0, recorderStarted: 0, lastSound: 0,
     };
     useJarvis.getState().setMicOwned(true);
     return mic;
@@ -124,6 +153,7 @@ async function openMic(): Promise<Mic | null> {
 }
 
 function closeMic(): void {
+  captureGen++;
   wantMic = false;
   capture = "off";
   listenUntil = null;
@@ -146,23 +176,23 @@ function closeMic(): void {
     window and skips the chime: the conversation is already going. */
 export async function listen(reason: "open" | "followUp" = "open"): Promise<void> {
   if (!canListen()) return;
-  // Mid-turn (a wake or an unmute while it answers): no chime, since the
-  // capture waits for the follow-up, but the mic still opens so talking
-  // over the answer interrupts it.
-  const busy = useJarvis.getState().busy;
+  // Mid-answer (a wake, an unmute, or reopening while it still talks): no
+  // chime and no capture, which follows once the answer is spoken, but the
+  // mic still opens so talking over the answer interrupts it.
+  const answering = () => useJarvis.getState().busy || speech.playing || speech.queue.length > 0;
   wantMic = true;
-  if (reason === "open" && !busy) {
+  if (reason === "open" && !answering()) {
     armChimeNow();
     playChime(0.5);
   }
   const m = await openMic();
   if (!m || !wantMic || !canListen()) return;
   if (capture === "recording" || capture === "transcribing") return;
-  if (useJarvis.getState().busy) return; // a turn started while the mic opened
+  if (answering()) return; // a turn started (or is still speaking) while the mic opened
   capture = "waiting";
   endpointer.reset();
   listenUntil = performance.now() + (reason === "followUp" ? FOLLOW_UP_MS : OPEN_WINDOW_MS);
-  useJarvis.getState().setVoicePhase("listening");
+  if (startRecorder(m)) useJarvis.getState().setVoicePhase("listening");
 }
 
 /** Release the mic and go back to resting (the wake word re-arms). */
@@ -179,6 +209,7 @@ function tick(): void {
   const rms = frameRms(m.buf);
   m.level = Math.min(1, rms * 14);
   const now = performance.now();
+  if (rms >= ENDPOINT_DEFAULTS.threshold * 0.5) m.lastSound = now;
   const playing = speech.playing;
   if (!playing && capture !== "waiting" && capture !== "recording") return;
   const event = endpointer.step(rms, now, playing);
@@ -194,16 +225,22 @@ function tick(): void {
     }
     beginRecording(m);
   } else if (event === "start" && capture === "waiting") {
-    beginRecording(m);
+    beginRecording(m); // already recording since listening began: marks it
   } else if ((event === "end" || event === "discard") && capture === "recording") {
     finishRecording(m, event === "end");
   } else if (capture === "waiting" && listenUntil != null && now > listenUntil && !playing) {
     stopListening();
+  } else if (capture === "waiting" && m.recorder && !endpointer.speaking && now - m.recorderStarted > MAX_LEAD_MS
+    // A soft onset can postpone the restart once, not cancel it (steady
+    // room noise near the threshold would otherwise keep it forever).
+    && (now - m.lastSound > ONSET_GUARD_MS || now - m.recorderStarted > MAX_LEAD_MS + ONSET_GUARD_MS)) {
+    restartRecorder(m);
   }
 }
 
-function beginRecording(m: Mic): void {
-  if (m.recorder) return;
+/** Start the recorder (no-op if running). False when it can't start. */
+function startRecorder(m: Mic): boolean {
+  if (m.recorder) return true;
   const mime = recMime();
   let recorder: MediaRecorder;
   try {
@@ -211,14 +248,47 @@ function beginRecording(m: Mic): void {
   } catch (e) {
     useJarvis.getState().failTurn("Recording failed: " + (e as Error).message);
     stopListening();
-    return;
+    return false;
   }
   m.chunks = [];
   recorder.ondataavailable = e => { if (e.data?.size) m.chunks.push(e.data); };
   m.recorder = recorder;
+  m.recorderStarted = performance.now();
+  recorder.start();
+  return true;
+}
+
+/** Drop what the recorder holds and start again (still waiting for speech). */
+function restartRecorder(m: Mic): void {
+  if (m.recorder) {
+    m.recorder.ondataavailable = null;
+    m.recorder.onstop = null;
+    try { m.recorder.stop(); } catch { /* already stopped */ }
+    m.recorder = null;
+  }
+  m.chunks = [];
+  startRecorder(m);
+}
+
+/** New: nothing heard before it belongs in the next request. Whatever was
+    being recorded or transcribed is dropped (a late transcription can't
+    start a turn), and listening carries on with a fresh recording. */
+function discardWaitingAudio(): void {
+  captureGen++;
+  const m = mic;
+  if (!m || capture === "off") return;
+  endpointer.reset();
+  capture = "waiting";
+  listenUntil = performance.now() + FOLLOW_UP_MS;
+  restartRecorder(m);
+  useJarvis.getState().setVoicePhase("listening");
+}
+
+/** Talking over the answer: record the interruption now. */
+function beginRecording(m: Mic): void {
+  if (!startRecorder(m)) return;
   capture = "recording";
   listenUntil = null;
-  recorder.start();
   useJarvis.getState().setVoicePhase("recording");
 }
 
@@ -231,20 +301,20 @@ function finishRecording(m: Mic, keep: boolean): void {
     m.chunks = [];
     if (mic !== m) return;
     if (!keep || !chunks.length) {
-      // A cough or a click: never send it, keep listening.
+      // A cough or a click: never send it, keep listening (and recording).
       capture = "waiting";
       listenUntil = performance.now() + FOLLOW_UP_MS;
-      useJarvis.getState().setVoicePhase("listening");
+      if (startRecorder(m)) useJarvis.getState().setVoicePhase("listening");
       return;
     }
-    void transcribe(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+    void transcribe(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }), captureGen);
   };
   capture = "transcribing";
   useJarvis.getState().setVoicePhase("transcribing");
   try { recorder.stop(); } catch { recorder.onstop?.(new Event("stop")); }
 }
 
-async function transcribe(blob: Blob): Promise<void> {
+async function transcribe(blob: Blob, gen: number): Promise<void> {
   let text = "";
   try {
     // Breath and rustle come back as `noSpeech` (empty text): routine
@@ -252,13 +322,15 @@ async function transcribe(blob: Blob): Promise<void> {
     const heard = await jarvisTranscribe(session(), blob);
     text = heard.noSpeech ? "" : heard.text;
   } catch (e) {
-    useJarvis.setState({ error: (e as Error).message || "Transcription failed" });
+    if (gen === captureGen) useJarvis.setState({ error: (e as Error).message || "Transcription failed" });
   }
-  if (!mic) return;
+  // Capture was torn down meanwhile (panel closed, or reopened since): a
+  // late result must not start a turn nobody asked for.
+  if (!mic || gen !== captureGen) return;
   if (!text) {
     capture = "waiting";
     listenUntil = performance.now() + FOLLOW_UP_MS;
-    useJarvis.getState().setVoicePhase("listening");
+    if (startRecorder(mic)) useJarvis.getState().setVoicePhase("listening");
     return;
   }
   capture = "off";
@@ -270,6 +342,8 @@ async function transcribe(blob: Blob): Promise<void> {
 let turnAbort: AbortController | null = null;
 /** Barge-in silences the rest of the answer being spoken. */
 let turnSilenced = false;
+/** "Stop speaking": silent for the rest of this turn, and no follow-up capture. */
+let turnQuiet = false;
 
 /** A spoken or typed turn. Everything goes to the server, replies to a
     draft included: it alone decides whether one approves the draft. */
@@ -315,7 +389,10 @@ export async function runTurn(raw: string): Promise<void> {
   }
   capture = "off";
   listenUntil = null;
+  captureGen++; // a transcription still in flight must not take over this turn
   turnSilenced = false;
+  turnQuiet = false;
+  useJarvis.setState({ speechStopped: false });
   const ctl = new AbortController();
   turnAbort = ctl;
   const store = useJarvis.getState();
@@ -349,7 +426,9 @@ export async function runTurn(raw: string): Promise<void> {
         else if (event.type === "status" && event.phase !== "speaking") jarvisLevel.bump(0.12);
         useJarvis.getState().applyEvent(event);
         if (event.type === "draft_sent") onDraftSent(event.draft_id, event.message.id, event.already_sent === true);
-        if (event.type === "navigate") jumpTo(event);
+        // Closed meanwhile: the answer may finish speaking, but it doesn't
+        // move the user somewhere else while they're doing something.
+        if (event.type === "navigate" && caps.open) jumpTo(event);
         if (event.type === "hide") hide = true;
         if (event.type === "new_conversation") fresh = true;
         // The server reported a failure: keep the panel (and the error) up.
@@ -395,7 +474,8 @@ function afterTurn(hide = false, fresh = false): void {
       useJarvis.getState().close();
       return;
     }
-    if (canListen() && caps.open) {
+    // After "Stop speaking" the user is reading: no follow-up capture.
+    if (canListen() && caps.open && !turnQuiet) {
       if (useJarvis.getState().phase === "speaking") useJarvis.getState().setVoicePhase(null);
       void listen("followUp");
     } else {
@@ -405,7 +485,30 @@ function afterTurn(hide = false, fresh = false): void {
   });
 }
 
-/** Stop everything: the panel closed. */
+/** The panel closed: stop listening (dropping any recording, and any
+    transcription still in flight) but let the answer finish streaming and
+    speaking. Jarvis mode and the wake word are untouched. */
+export function panelClosed(): void {
+  caps.open = false;
+  stopListening();
+}
+
+/** "Stop speaking": silence the rest of this answer now, including clips
+    still being synthesized, while its text and cards keep streaming; no
+    follow-up capture. The next turn speaks again. Not the Sound setting. */
+export function stopSpeaking(): void {
+  turnQuiet = true;
+  turnSilenced = true;
+  useJarvis.setState({ speechStopped: true });
+  // Run what waited on the speech (rest, hide, or start over) now, as the
+  // Sound toggle does; mid-stream, the turn's own end runs it instead.
+  const then = speech.drained;
+  stopSpeech();
+  if (then) then();
+  else if (useJarvis.getState().phase === "speaking") useJarvis.getState().setVoicePhase(null);
+}
+
+/** Stop everything (sign-out, lost access, Jarvis mode switched off). */
 export function closeVoice(): void {
   turnAbort?.abort();
   turnAbort = null;
@@ -431,6 +534,8 @@ export function newConversation(api: ApiClient): void {
   const id = useJarvis.getState().conversationId;
   if (id) void resetJarvisConversation(api, id).catch(() => {});
   useJarvis.getState().reset();
+  // After reset, which rests the phase: listening shows as listening.
+  discardWaitingAudio();
 }
 
 // ------------------------------------------------------------------ speech
@@ -439,6 +544,9 @@ interface Clip {
   entryId: string;
   sentence: Sentence;
   audio: Promise<Blob | null>;
+  /** Decoded, trimmed and stretched as soon as the audio arrives, while the
+      clip before it plays, so sentences follow each other without a gap. */
+  shaped: Promise<AudioBuffer | null>;
 }
 
 const speech = {
@@ -446,6 +554,8 @@ const speech = {
   playing: false,
   el: null as HTMLAudioElement | null,
   source: null as MediaElementAudioSourceNode | null,
+  /** The clip playing through Web Audio (the usual path; `el` is the fallback). */
+  node: null as AudioBufferSourceNode | null,
   url: "",
   gen: 0,
   abort: null as AbortController | null,
@@ -467,7 +577,9 @@ function enqueueSpeech(entryId: string, sentence: Sentence): void {
     }
     return null;
   });
-  speech.queue.push({ entryId, sentence, audio });
+  const shaped = audio.then(blob => (blob ? shapeClip(blob) : null));
+  speech.queue.push({ entryId, sentence, audio, shaped });
+  syncAudio();
   if (!speech.playing) void playNext(speech.gen);
 }
 
@@ -476,8 +588,22 @@ function speakText(entryId: string, text: string): void {
   [...chunker.push(text), ...chunker.flush()].forEach(s => enqueueSpeech(entryId, s));
 }
 
-function routeThroughAnalyser(el: HTMLAudioElement): void {
-  playbackRouted = false;
+/** The playback graph (context → analyser → speakers), created once. */
+function ensurePlayback(): typeof playback {
+  ensurePlaybackGraph();
+  return playback;
+}
+
+/** Wake a suspended context (WebKit suspends it when idle) before using it,
+    briefly: if it won't run, the clip plays through an element instead. */
+async function runningPlayback(): Promise<typeof playback> {
+  const pb = ensurePlayback();
+  if (!pb || pb.ac.state === "running") return pb;
+  await Promise.race([pb.ac.resume().catch(() => {}), new Promise(r => setTimeout(r, 300))]);
+  return pb;
+}
+
+function ensurePlaybackGraph(): void {
   try {
     if (!playback) {
       const ac = new AudioContext();
@@ -487,8 +613,40 @@ function routeThroughAnalyser(el: HTMLAudioElement): void {
       playback = { ac, analyser, buf: new Float32Array(analyser.fftSize) };
     }
     if (playback.ac.state === "suspended") void playback.ac.resume().catch(() => {});
+  } catch { /* no Web Audio: element playback */ }
+}
+
+/** A clip ready for Web Audio: decoded, its silence trimmed (TTS pads both
+    ends, so sentences sounded stitched together), and sped up to the
+    Jarvis speaking speed with the pitch kept (stretch.ts). Null when Web
+    Audio can't take it; the clip then plays through an element. */
+async function shapeClip(blob: Blob): Promise<AudioBuffer | null> {
+  const pb = ensurePlayback();
+  if (!pb || typeof pb.ac.decodeAudioData !== "function") return null;
+  try {
+    const decoded = await pb.ac.decodeAudioData(await blob.arrayBuffer());
+    const sr = decoded.sampleRate;
+    let mono = decoded.getChannelData(0);
+    if (decoded.numberOfChannels > 1) {
+      const other = decoded.getChannelData(1);
+      mono = mono.map((v, i) => (v + other[i]) / 2);
+    }
+    const [start, end] = trimSilence(mono, sr);
+    const shaped = timeStretch(mono.subarray(start, end), caps.rate, sr);
+    const buf = pb.ac.createBuffer(1, Math.max(1, shaped.length), sr);
+    buf.copyToChannel(Float32Array.from(shaped), 0);
+    return buf;
+  } catch {
+    return null;
+  }
+}
+
+function routeThroughAnalyser(el: HTMLAudioElement): void {
+  playbackRouted = false;
+  try {
+    ensurePlayback();
     // A suspended context would swallow the audio: only route when running.
-    if (playback.ac.state !== "running") return;
+    if (!playback || playback.ac.state !== "running") return;
     speech.source = playback.ac.createMediaElementSource(el);
     speech.source.connect(playback.analyser);
     playbackRouted = true;
@@ -500,6 +658,7 @@ async function playNext(gen: number): Promise<void> {
   const clip = speech.queue.shift();
   if (!clip) {
     useJarvis.getState().setSpoken(null);
+    syncAudio();
     const done = speech.drained;
     speech.drained = null;
     done?.();
@@ -513,15 +672,61 @@ async function playNext(gen: number): Promise<void> {
     void playNext(gen);
     return;
   }
+  const shaped = await clip.shaped;
+  const pb = shaped ? await runningPlayback() : null;
+  if (gen !== speech.gen) return;
+  const st = useJarvis.getState();
+  if (shaped && pb && pb.ac.state === "running") {
+    let node: AudioBufferSourceNode | null = null;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    // Ends this clip once, however it ends (played out, watchdog, or a
+    // setup that threw before the node was even live), so the queue and
+    // the wake word can't be left waiting. A stop or a new turn bumps the
+    // generation, and then this is no longer the clip to finish.
+    const done = () => {
+      if (watchdog) clearTimeout(watchdog);
+      if (settled || gen !== speech.gen) return;
+      settled = true;
+      releaseClip();
+      speech.playing = false;
+      void playNext(gen);
+    };
+    try {
+      node = pb.ac.createBufferSource();
+      node.buffer = shaped;
+      node.connect(pb.analyser);
+      speech.node = node;
+      playbackRouted = true;
+      endpointer.reset();
+      st.setSpoken({ id: clip.entryId, start: clip.sentence.start, end: clip.sentence.end });
+      st.setVoicePhase("speaking");
+      node.onended = done;
+      node.start();
+      // If the context stalls (device change, sleep), move on rather than
+      // leave the queue, and the wake word, waiting forever.
+      const seconds = Number.isFinite(shaped.duration) ? shaped.duration : 30;
+      watchdog = setTimeout(done, seconds * 1000 + 2_000);
+    } catch {
+      done();
+    }
+    return;
+  }
+  // Fallback (no running Web Audio): the browser's own rate change.
   const url = URL.createObjectURL(blob);
   const el = new Audio();
   el.setAttribute("playsinline", "");
   el.src = url;
+  // Features → Jarvis speaking speed, read per clip: a change applies from
+  // the next sentence. Pitch is kept so faster isn't squeakier.
+  el.preservesPitch = true;
+  (el as HTMLAudioElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch = true;
+  el.defaultPlaybackRate = caps.rate;
+  el.playbackRate = caps.rate;
   routeThroughAnalyser(el);
   speech.el = el;
   speech.url = url;
   endpointer.reset();
-  const st = useJarvis.getState();
   st.setSpoken({ id: clip.entryId, start: clip.sentence.start, end: clip.sentence.end });
   st.setVoicePhase("speaking");
   const finished = () => {
@@ -545,6 +750,13 @@ async function playNext(gen: number): Promise<void> {
 }
 
 function releaseClip(): void {
+  const node = speech.node;
+  if (node) {
+    node.onended = null;
+    try { node.stop(); } catch { /* already ended */ }
+    try { node.disconnect(); } catch { /* already disconnected */ }
+    speech.node = null;
+  }
   const el = speech.el;
   if (el) {
     el.onended = null;
@@ -570,6 +782,12 @@ export function stopSpeech(): void {
   speech.drained = null;
   speech.warned = false;
   useJarvis.getState().setSpoken(null);
+  syncAudio();
+}
+
+function syncAudio(): void {
+  const active = speech.playing || speech.queue.length > 0;
+  if (useJarvis.getState().audioActive !== active) useJarvis.setState({ audioActive: active });
 }
 
 function whenSpeechDrained(then: () => void): void {

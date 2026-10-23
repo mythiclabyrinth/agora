@@ -59,7 +59,9 @@ to:
   messages you record are transcribed by the selected speech-to-text
   provider (OpenAI or Groq), and agent replies can be spoken aloud by the
   selected text-to-speech provider (OpenAI or Groq Orpheus). Audio is sent
-  by **your server** to that provider for this processing. If no key is
+  by **your server** to that provider for this processing. For Jarvis mode,
+  the request also carries a short list of the channel, DM, and agent names
+  you can see, as a spelling hint for the recognizer. If no key is
   configured, these features are unavailable and no audio leaves your
   server.
 - **Search answers.** If Ask AI is configured (instance AI settings or an

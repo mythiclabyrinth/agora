@@ -3503,6 +3503,11 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .jv-close .ico { width: 17px; height: 17px; }
 .jv-new .ico { width: 13px; height: 13px; }
 .jv-close:hover, .jv-new:hover { color: var(--text); background: var(--panel-strong); }
+/* "Stop speaking": present only while an answer is generated or spoken. */
+.jv-stop { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel-strong); color: var(--text); cursor: pointer; font: inherit; font-size: 12px; font-weight: 550; }
+.jv-stop .ico { width: 11px; height: 11px; }
+.jv-stop:hover { border-color: var(--accent); }
+.jv-stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .jv-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 0 26px 24px; }
 .jv-stage { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; padding: 8px 0 22px; }
 .jv-stage::before { content: ""; position: absolute; top: -20px; width: min(100%, 440px); height: 240px; pointer-events: none; z-index: -1; background: radial-gradient(ellipse, rgba(var(--jv-tone),.085), transparent 68%); }
