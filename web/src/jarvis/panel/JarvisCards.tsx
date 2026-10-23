@@ -88,8 +88,8 @@ function draftFailed(entryId: string, e: unknown, prefix: string): void {
   toast(prefix + ((e as Error).message || "request failed"), { variant: status === 409 ? "warn" : "error" });
 }
 
-/** A save the server refused as stale (409): the draft changed or was sent
-    elsewhere, so this card can't catch up. It is closed — never retried,
+/** A save or send the server refused as stale (409): the draft changed or
+    was sent elsewhere, so this card can't catch up. It is closed — never retried,
     never approvable — and a fresh draft is the way on. */
 function draftConflict(api: ApiClient, entryId: string, draftId: string, e: unknown): void {
   // "Already sent" is a 409 too: a spoken yes posted it while this save
@@ -183,7 +183,10 @@ export async function sendDraftEntry(api: ApiClient, entry: JarvisCardEntry, car
     if (!res.already_sent) announceSent(api, entry.id, card, res.message.id);
     return true;
   } catch (e) {
-    draftFailed(entry.id, e, "Couldn't send: ");
+    // A stale revision can't be retried into success (the card has no newer
+    // one): close it like a stale save, rather than leave a dead Send.
+    if (e instanceof ApiError && e.status === 409) draftConflict(api, entry.id, card.draft_id, e);
+    else draftFailed(entry.id, e, "Couldn't send: ");
     return false;
   }
 }

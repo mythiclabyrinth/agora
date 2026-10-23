@@ -87,11 +87,14 @@ One Rust core, three clients (see the repo layout table in the
   (`POST …/send {revision}`) posts it as the user. A reply in the
   conversation can also approve it: when the previous turn offered exactly
   one live draft, the server first runs a separate, tool-free **approval
-  check** on the same provider that sees only the reply and where the draft
-  goes (never its body, channel content, or history) and must answer strict JSON
+  check** on the same provider that sees only the reply, the assistant's
+  last message (so a "yes" to some other question isn't an approval), and
+  where the draft goes, with names cleaned and clipped (never its body,
+  channel content, or history). It must answer strict JSON
   (`confirm|cancel|revise|clarify|unrelated`; anything else counts as
-  unrelated). Only confirm, cancel, or a redraft end the offer; a hedge, an
-  aside, or a turn that fails after drafting leaves the draft approvable.
+  clarify). A hedge, a garbled answer, or a turn that fails after drafting
+  leaves the draft approvable; an aside or a change request ends the offer
+  unless the assistant offers a draft again.
   Only `confirm` posts, through the same send path, bound to the
   draft's revision; a repeat or racing send returns the message already
   posted. A card edit that couldn't be saved is named in the turn

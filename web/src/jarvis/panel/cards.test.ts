@@ -79,12 +79,15 @@ describe("draft edits and sends", () => {
     expect(shown().status).toBe("sent");
   });
 
-  it("a stale revision keeps the draft pending and says so; a gone draft shows as expired", async () => {
+  it("a stale revision closes the card (no dead Send) and says so; a gone draft shows as expired", async () => {
     useJarvis.setState({ cards: [card()] });
+    cancelJarvisDraft.mockClear();
     sendJarvisDraft.mockRejectedValueOnce(new ApiError(409, "This draft changed since you reviewed it"));
     expect(await sendDraftEntry(api, shown(), shown().card as never)).toBe(false);
-    expect(shown().status).toBe("pending");
-    expect(toast).toHaveBeenCalledWith(expect.stringContaining("changed since you reviewed it"), { variant: "warn" });
+    expect(shown().status).toBe("cancelled");
+    expect(cancelJarvisDraft).toHaveBeenCalledWith(api, "jd_1");
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("Ask for a fresh draft"), { variant: "warn" });
+    useJarvis.setState({ cards: [card()] });
     sendJarvisDraft.mockRejectedValueOnce(new ApiError(410, "This draft expired"));
     expect(await sendDraftEntry(api, shown(), shown().card as never)).toBe(false);
     expect(shown().status).toBe("expired");
