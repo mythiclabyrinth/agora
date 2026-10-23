@@ -444,6 +444,11 @@ export const JarvisSection: Story = {
     const again = within(await canvas.findByRole("group", { name: "Jarvis settings" }));
     await userEvent.selectOptions(again.getByRole("combobox", { name: "Jarvis provider" }), "anthropic");
     await waitFor(() => expect(putAi).toHaveBeenCalledWith({ jarvis: { provider: "anthropic" } }));
+    // Speaking speed: 1× until picked; saves on its own.
+    const speed = again.getByRole("combobox", { name: "Jarvis speaking speed" });
+    expect(speed).toHaveDisplayValue("1× (normal)");
+    await userEvent.selectOptions(speed, "1.5");
+    await waitFor(() => expect(putAi).toHaveBeenCalledWith({ jarvis: { speech_rate: 1.5 } }));
     await userEvent.click(again.getByRole("checkbox", { name: "Enabled" }));
     await waitFor(() => expect(putAi).toHaveBeenCalledWith({ jarvis: { enabled: false } }));
   },

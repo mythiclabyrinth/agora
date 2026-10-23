@@ -147,6 +147,32 @@ pub fn ev_error(message: &str) -> Value {
 pub fn ev_draft_sent(draft_id: &str, message: &Value, already_sent: bool) -> Value {
     json!({"type": "draft_sent", "draft_id": draft_id, "message": message, "already_sent": already_sent})
 }
+/// How the speech-to-text vocabulary hint starts. A recognizer given only
+/// silence sometimes "transcribes" its prompt; a transcript that is the
+/// hint coming back is treated as no speech.
+pub const VOCABULARY_PREFIX: &str = "Agora workspace names: ";
+
+/// The transcript is the vocabulary hint (or just its names) echoed back,
+/// not speech: it starts with the hint's prefix, or every comma-separated
+/// part of it is one of the hint's names.
+pub fn is_vocabulary_echo(text: &str, vocabulary: &str) -> bool {
+    let norm = |s: &str| s.trim().trim_matches(|c: char| c.is_ascii_punctuation() && c != '#').trim().to_lowercase();
+    let t = text.trim().trim_start_matches(['"', '\'', ' ']);
+    if t.to_ascii_lowercase().starts_with(&VOCABULARY_PREFIX.trim().to_ascii_lowercase()) {
+        return true;
+    }
+    let names: Vec<String> = vocabulary
+        .strip_prefix(VOCABULARY_PREFIX)
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .split(", ")
+        .map(norm)
+        .filter(|n| !n.is_empty())
+        .collect();
+    let parts: Vec<String> = t.split(',').map(norm).filter(|p| !p.is_empty()).collect();
+    parts.len() >= 2 && parts.iter().all(|p| names.contains(p))
+}
+
 /// Show the user a channel (and optionally a thread) in the app. Only ever
 /// built from a target the caller was checked against.
 pub fn ev_navigate(group_id: &str, channel_id: &str, thread_id: Option<i64>, label: &str) -> Value {
@@ -1603,6 +1629,52 @@ impl<'a> ToolCtx<'a> {
         self
     }
 
+    /// Names the caller is likely to say, for the speech-to-text prompt:
+    /// the agents they can reach and their DMs first (the names recognizers
+    /// get wrong), then their channels. Only what they can already see, and
+    /// short: recognizers cap the prompt (Whisper at ~224 tokens).
+    pub fn vocabulary(&self) -> String {
+        let store = self.store();
+        let mut names: Vec<String> = Vec::new();
+        let mut push = |n: &str| {
+            let n = n.trim();
+            // Short names only, with nothing that reads as structure or an
+            // instruction (newlines, braces, quotes, colons).
+            let plain = !n.chars().any(|c| c.is_control() || matches!(c, '{' | '}' | '[' | ']' | '"' | '`' | ':' | '<' | '>'));
+            if !n.is_empty() && plain && n.chars().count() <= 40 && !names.iter().any(|x| x.eq_ignore_ascii_case(n)) {
+                names.push(n.to_string());
+            }
+        };
+        let visible = self.visible_channels();
+        for c in visible.iter().filter(|c| c["kind"] == "agent_dm") {
+            push(c["name"].as_str().unwrap_or_default());
+        }
+        for c in visible.iter().filter(|c| c["kind"] != "agent_dm").take(50) {
+            for id in store.agents_for_channel(c["id"].as_str().unwrap_or_default()) {
+                if let Some(a) = store.agent(&id) {
+                    push(a["name"].as_str().unwrap_or(&id));
+                }
+            }
+        }
+        for c in visible.iter().filter(|c| c["kind"] != "agent_dm") {
+            push(&format!("#{}", c["name"].as_str().unwrap_or_default()));
+        }
+        // Whole names only, within the budget.
+        let mut out = String::from(VOCABULARY_PREFIX);
+        let mut any = false;
+        for n in names.iter().take(40) {
+            if out.chars().count() + n.chars().count() + 2 > 320 {
+                break;
+            }
+            if any {
+                out.push_str(", ");
+            }
+            out.push_str(n);
+            any = true;
+        }
+        if any { format!("{out}.") } else { String::new() }
+    }
+
     /// Ids of the drafts this turn created that still await the user.
     pub fn offered_drafts(&self) -> Vec<String> {
         let created = self.created.borrow();
@@ -2581,6 +2653,7 @@ mod tests {
         let m = |s: &str| (s.to_string(), crate::config::AiFieldSource::Default);
         crate::config::ResolvedJarvis {
             enabled,
+            speech_rate: 1.0,
             provider: provider.into(),
             model: "m".into(),
             model_source: crate::config::AiFieldSource::Default,

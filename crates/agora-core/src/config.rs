@@ -685,11 +685,34 @@ pub struct AiJarvisSettings {
     /// own values). Empty slots resolve to the provider default.
     #[serde(default)]
     pub models: AiSearchModels,
+    /// How fast spoken replies play (1× = as synthesized). Snapped to
+    /// [`JARVIS_SPEECH_RATES`] when read.
+    #[serde(default = "default_speech_rate")]
+    pub speech_rate: f64,
+}
+
+/// Speaking speeds the Jarvis section offers.
+pub const JARVIS_SPEECH_RATES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+
+fn default_speech_rate() -> f64 {
+    1.0
+}
+
+/// The offered speed nearest to `rate` (1× for anything unusable).
+pub fn jarvis_speech_rate(rate: f64) -> f64 {
+    if !rate.is_finite() {
+        return 1.0;
+    }
+    JARVIS_SPEECH_RATES
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - rate).abs().total_cmp(&(b - rate).abs()))
+        .unwrap_or(1.0)
 }
 
 impl Default for AiJarvisSettings {
     fn default() -> Self {
-        Self { enabled: true, provider: default_jarvis_provider(), models: AiSearchModels::default() }
+        Self { enabled: true, provider: default_jarvis_provider(), models: AiSearchModels::default(), speech_rate: 1.0 }
     }
 }
 
@@ -709,6 +732,8 @@ pub struct AiSettings {
 #[derive(Clone, Debug)]
 pub struct ResolvedJarvis {
     pub enabled: bool,
+    /// Playback speed for spoken replies, one of [`JARVIS_SPEECH_RATES`].
+    pub speech_rate: f64,
     pub provider: String,
     pub model: String,
     pub model_source: AiFieldSource,
@@ -1409,6 +1434,7 @@ impl Config {
         let s = &data.ai.search;
         ResolvedJarvis {
             enabled: j.enabled,
+            speech_rate: jarvis_speech_rate(j.speech_rate),
             provider,
             model,
             model_source,
@@ -1995,6 +2021,16 @@ mod tests {
         assert!(s.available());
         assert!(s.oauth_configured);
         assert_eq!(s.account_id, "acct");
+    }
+
+    #[test]
+    fn jarvis_speech_rate_snaps_to_an_offered_speed() {
+        for (given, want) in [(1.0, 1.0), (1.1, 1.0), (1.2, 1.25), (1.6, 1.5), (0.2, 1.0), (7.0, 2.0), (f64::NAN, 1.0)] {
+            assert_eq!(jarvis_speech_rate(given), want, "{given}");
+        }
+        // Older configs have no speed: they play at 1×.
+        let old: AiJarvisSettings = serde_json::from_str(r#"{"enabled":true,"provider":"codex"}"#).unwrap();
+        assert_eq!(old.speech_rate, 1.0);
     }
 
     #[test]

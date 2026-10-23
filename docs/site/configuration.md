@@ -73,7 +73,9 @@ Models are chosen per provider in the Features tab. If a call fails (bad key, ex
 
 The assistant panel (⌘J / Ctrl+J) has its own **Jarvis** section in the
 Features tab: an Enabled switch (independent of Ask AI's; on by default),
-a provider, and a model per provider. It stores no secrets of its own: each
+a provider, a model per provider, and a **Speaking speed** for spoken
+replies (1×, 1.25×, 1.5×, 1.75×, 2×; `ai.jarvis.speech_rate`, default 1×).
+It stores no secrets of its own: each
 provider uses the credential the Credentials tab already holds, including
 the env fallbacks above.
 

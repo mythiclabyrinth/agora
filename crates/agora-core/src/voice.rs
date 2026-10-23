@@ -59,34 +59,22 @@ pub fn transcribe(
     filename: &str,
     model: &str,
 ) -> anyhow::Result<String> {
+    transcribe_with_prompt(stt_provider, key, data, filename, model, None)
+}
+
+/// [`transcribe`] with a vocabulary hint (`prompt`, which both providers
+/// accept): names the speaker is likely to say, so "Codex" isn't "codecs".
+pub fn transcribe_with_prompt(
+    stt_provider: &str,
+    key: &str,
+    data: &[u8],
+    filename: &str,
+    model: &str,
+    prompt: Option<&str>,
+) -> anyhow::Result<String> {
     let url = transcription_url(stt_provider);
     let boundary = format!("agora{}", crate::store::new_token());
-    let mut body: Vec<u8> = Vec::with_capacity(data.len() + 512);
-    let part = |body: &mut Vec<u8>, headers: &str| {
-        body.extend_from_slice(format!("--{boundary}\r\n{headers}\r\n\r\n").as_bytes());
-    };
-    part(&mut body, "Content-Disposition: form-data; name=\"model\"");
-    body.extend_from_slice(model.as_bytes());
-    body.extend_from_slice(b"\r\n");
-    let safe_name: String = filename
-        .chars()
-        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_'))
-        .take(80)
-        .collect();
-    let safe_name = if safe_name.is_empty() {
-        "voice-note.webm".into()
-    } else {
-        safe_name
-    };
-    part(
-        &mut body,
-        &format!(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"{safe_name}\"\r\n\
-             Content-Type: application/octet-stream"
-        ),
-    );
-    body.extend_from_slice(data);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let body = transcription_body(&boundary, model, prompt, data, filename);
 
     let provider_label = if stt_provider == crate::config::VOICE_PROVIDER_GROQ {
         "Groq"
@@ -108,6 +96,42 @@ pub fn transcribe(
         .unwrap_or_default()
         .trim()
         .to_string())
+}
+
+/// The multipart body for a transcription request (`prompt` only when set).
+fn transcription_body(boundary: &str, model: &str, prompt: Option<&str>, data: &[u8], filename: &str) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(data.len() + 512);
+    let part = |body: &mut Vec<u8>, headers: &str| {
+        body.extend_from_slice(format!("--{boundary}\r\n{headers}\r\n\r\n").as_bytes());
+    };
+    part(&mut body, "Content-Disposition: form-data; name=\"model\"");
+    body.extend_from_slice(model.as_bytes());
+    body.extend_from_slice(b"\r\n");
+    if let Some(prompt) = prompt.map(str::trim).filter(|p| !p.is_empty()) {
+        part(&mut body, "Content-Disposition: form-data; name=\"prompt\"");
+        body.extend_from_slice(prompt.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    let safe_name: String = filename
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .take(80)
+        .collect();
+    let safe_name = if safe_name.is_empty() {
+        "voice-note.webm".into()
+    } else {
+        safe_name
+    };
+    part(
+        &mut body,
+        &format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{safe_name}\"\r\n\
+             Content-Type: application/octet-stream"
+        ),
+    );
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
 }
 
 /// Synthesized speech plus the MIME type clients should play.
@@ -385,6 +409,19 @@ fn flatten_api_error(provider: &str, e: ureq::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vocabulary_hint_is_its_own_field_and_only_when_given() {
+        let with = String::from_utf8_lossy(&transcription_body("B", "whisper-large-v3-turbo", Some("Agora workspace names: Codex."), b"AUDIO", "a.webm")).to_string();
+        assert!(with.contains("name=\"prompt\"\r\n\r\nAgora workspace names: Codex.\r\n--B"), "{with}");
+        assert!(with.find("name=\"prompt\"").unwrap() < with.find("name=\"file\"").unwrap());
+        // Voice notes (and an empty hint) send no prompt at all.
+        for none in [None, Some("  ")] {
+            let body = String::from_utf8_lossy(&transcription_body("B", "m", none, b"AUDIO", "a.webm")).to_string();
+            assert!(!body.contains("prompt"), "{body}");
+            assert!(body.contains("name=\"model\"\r\n\r\nm\r\n") && body.ends_with("AUDIO\r\n--B--\r\n"));
+        }
+    }
 
     #[test]
     fn clip_for_tts_passes_short_text_and_cuts_long_text_at_sentences() {

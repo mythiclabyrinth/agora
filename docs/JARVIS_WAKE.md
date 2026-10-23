@@ -32,16 +32,33 @@ mic state (`off | starting | listening | error`) in the chip's tooltip.
 Input is optional: the panel listens, answers aloud, and keeps listening.
 
 - **Loop** (`web/src/jarvis/voice/conversation.ts`): wake (or opening the
-  panel with the mic on) → chime → `listening` → speech starts `recording`
-  → ~800 ms of quiet ends it (`endpointer.ts`: RMS gate 0.015, clips with
+  panel with the mic on) → chime → `listening` (already recording, so the
+  first word isn't clipped; a window with no speech is dropped) → speech
+  marks `recording` → ~1.4 s of quiet ends it, so a mid-sentence pause
+  doesn't split a request (about 600 ms longer to submit than the old 0.8 s;
+  a starting point measured on a paused test sentence, not yet tuned on real
+  recordings) (`endpointer.ts`: RMS gate 0.015, clips with
   under 300 ms of voice are dropped, 30 s cap) → `transcribing` via
-  `POST /api/jarvis/transcribe` → the normal `/api/jarvis/turn` → each
+  `POST /api/jarvis/transcribe`, which hints the caller's visible channel,
+  DM, and agent names to the recognizer (its `prompt`) → the normal
+  `/api/jarvis/turn` → each
   finished sentence of the streamed answer (`sentences.ts`) is synthesized
   with `POST /api/jarvis/speech` and played in order (`speaking`, orb
   `shaping`, the beam follows the playback analyser, the sentence being
   spoken is highlighted) → an 8 s follow-up window (`listening`) → silence
   releases the mic and returns to `armed`, where the wake word takes over
   again. The first window after a wake or open is 10 s.
+- **Speed, background, Stop**: replies play at the Features → Jarvis
+  speaking speed (1×–2×, pitch kept; a change applies from the next
+  sentence). Closing the panel stops listening and drops any recording or
+  transcription in flight, but the answer keeps streaming and speaking, so
+  it can be heard while reading; the wake word stays disarmed while it
+  speaks, so the reply can't wake itself through the speakers. Reopening
+  mid-answer neither chimes nor records over it. **Stop speaking** in the
+  panel header silences the rest of the answer (text and cards keep
+  arriving) without listening afterwards; it is one-off, not the Sound
+  setting. Signing out, losing access, or switching Jarvis mode off stops
+  everything (`JarvisVoiceHost`).
 - **Barge-in**: 150 ms of speech while the answer plays stops the audio,
   drops the rest of the answer's speech, and records the interruption.
 - **Mic**: opened with echo cancellation; the wake detector is disarmed

@@ -218,6 +218,20 @@ export const Speaking: Story = {
   },
 };
 
+export const StopSpeaking: Story = {
+  parameters: Speaking.parameters,
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement).findByRole("dialog", { name: "Agora assistant" }));
+    const stop = panel.getByRole("button", { name: "Stop speaking" });
+    expect(stop.title).toBe("Stop speaking — the text keeps coming");
+    await userEvent.click(stop);
+    expect(useJarvis.getState().phase).not.toBe("speaking");
+    // One-off: the Sound setting is untouched, and the button goes away.
+    expect(useJarvis.getState().speakerOff).toBe(false);
+    expect(panel.queryByRole("button", { name: "Stop speaking" })).toBeNull();
+  },
+};
+
 export const Muted: Story = {
   parameters: {
     apiRoutes: { "GET /api/me": voiceMe },
