@@ -1641,7 +1641,7 @@ impl<'a> ToolCtx<'a> {
             let n = n.trim();
             // Short names only, with nothing that reads as structure or an
             // instruction (newlines, braces, quotes, colons).
-            let plain = !n.chars().any(|c| c.is_control() || matches!(c, '{' | '}' | '[' | ']' | '"' | '`' | ':' | '<' | '>'));
+            let plain = !n.chars().any(|c| c.is_control() || matches!(c, '{' | '}' | '[' | ']' | '"' | '`' | ':' | '<' | '>' | ','));
             if !n.is_empty() && plain && n.chars().count() <= 40 && !names.iter().any(|x| x.eq_ignore_ascii_case(n)) {
                 names.push(n.to_string());
             }

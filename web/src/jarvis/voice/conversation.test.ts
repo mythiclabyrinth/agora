@@ -696,5 +696,37 @@ describe("speed, background speech and Stop", () => {
     expect(voice.voiceDebugState().capture).toBe("recording");
     expect(FakeRecorder.instances).toHaveLength(1);
   });
+
+  it("New drops a recording or transcription in progress, so it can't start a turn", async () => {
+    // Mid-sentence.
+    await voice.listen("open");
+    env.rms = 0.05;
+    await pass(500);
+    expect(voice.voiceDebugState().capture).toBe("recording");
+    voice.newConversation(api);
+    env.rms = 0.001;
+    await pass(voice.END_OF_SPEECH_MS + 100);
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+    // Mid-transcription.
+    let finish: (v: { text: string; noSpeech: boolean }) => void = () => {};
+    core.jarvisTranscribe.mockImplementationOnce(() => new Promise(r => { finish = r; }));
+    env.rms = 0.05;
+    await pass(500);
+    env.rms = 0.001;
+    await pass(voice.END_OF_SPEECH_MS + 100);
+    expect(voice.voiceDebugState().capture).toBe("transcribing");
+    voice.newConversation(api);
+    finish({ text: "the old question", noSpeech: false });
+    await pass(0);
+    expect(core.jarvisTurn).not.toHaveBeenCalled();
+  });
+
+  it("steady room noise can't keep the recording from restarting", async () => {
+    await voice.listen("open");
+    env.rms = 0.01; // below the speech threshold, all the time
+    await pass(7_000);
+    expect(FakeRecorder.instances.length).toBeGreaterThanOrEqual(2);
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+  });
 });
 

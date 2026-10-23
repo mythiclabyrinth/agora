@@ -230,7 +230,9 @@ function tick(): void {
   } else if (capture === "waiting" && listenUntil != null && now > listenUntil && !playing) {
     stopListening();
   } else if (capture === "waiting" && m.recorder && !endpointer.speaking && now - m.recorderStarted > MAX_LEAD_MS
-    && now - m.lastSound > ONSET_GUARD_MS) {
+    // A soft onset can postpone the restart once, not cancel it (steady
+    // room noise near the threshold would otherwise keep it forever).
+    && (now - m.lastSound > ONSET_GUARD_MS || now - m.recorderStarted > MAX_LEAD_MS + ONSET_GUARD_MS)) {
     restartRecorder(m);
   }
 }
@@ -267,10 +269,18 @@ function restartRecorder(m: Mic): void {
   startRecorder(m);
 }
 
-/** Drop what the recorder holds while still waiting for speech (New):
-    nothing from before belongs in the next request. */
+/** New: nothing heard before it belongs in the next request. Whatever was
+    being recorded or transcribed is dropped (a late transcription can't
+    start a turn), and listening carries on with a fresh recording. */
 function discardWaitingAudio(): void {
-  if (mic?.recorder && capture === "waiting") restartRecorder(mic);
+  captureGen++;
+  const m = mic;
+  if (!m || capture === "off") return;
+  endpointer.reset();
+  capture = "waiting";
+  listenUntil = performance.now() + FOLLOW_UP_MS;
+  restartRecorder(m);
+  useJarvis.getState().setVoicePhase("listening");
 }
 
 /** Talking over the answer: record the interruption now. */
