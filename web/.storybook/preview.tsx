@@ -1,4 +1,5 @@
 import "./storage";
+import { expectOpaqueSurfaces } from "../src/stories/opaqueSurfaces";
 import { useEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import {
@@ -65,6 +66,7 @@ const preview: Preview = {
     const setup = context.parameters.setup;
     if (typeof setup === "function") setup();
   },
+  afterEach: () => { expectOpaqueSurfaces(); },
   decorators: [
     (Story, context) => {
       return (

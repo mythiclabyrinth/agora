@@ -1,3 +1,4 @@
+import { expectOpaqueSurface } from "../stories/opaqueSurfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import {
@@ -77,6 +78,7 @@ export const AdminRosterAndAdd: Story = {
     await userEvent.click(canvas.getByRole("button", { name: /Dave/ }));
     await expect(canvas.findByText("Add Dave", { exact: true })).resolves.toBeVisible();
     await userEvent.click(canvas.getByLabelText("Choose access"));
+    expectOpaqueSurface(".ago-access-popover");
     await userEvent.click(canvas.getByRole("checkbox", { name: "Whole group" }));
     await userEvent.click(canvas.getByRole("button", { name: "Add" }));
     await expect(addMember).toHaveBeenCalledWith({
@@ -214,6 +216,7 @@ export const MultiChannelAccess: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "＋ Add person" }));
     await userEvent.click(canvas.getByRole("button", { name: /Dave/ }));
     await userEvent.click(canvas.getByLabelText("Choose access"));
+    expectOpaqueSurface(".ago-access-popover");
     const scopes = within(canvas.getByRole("group", { name: "Access scopes" }));
     const channels = scopes.getAllByRole("checkbox").filter(el => el !== scopes.getByRole("checkbox", { name: "Whole group" }));
     await expect(channels[0]).toBeChecked();
@@ -233,6 +236,7 @@ export const WholeGroupIsExclusive: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "＋ Add person" }));
     await userEvent.click(canvas.getByRole("button", { name: /Dave/ }));
     await userEvent.click(canvas.getByLabelText("Choose access"));
+    expectOpaqueSurface(".ago-access-popover");
     const group = within(canvas.getByRole("group", { name: "Access scopes" }));
     const whole = group.getByRole("checkbox", { name: "Whole group" });
     const channel = group.getAllByRole("checkbox")[1];
@@ -256,11 +260,13 @@ export const RetryRemainingChannels: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "＋ Add person" }));
     await userEvent.click(canvas.getByRole("button", { name: /Dave/ }));
     await userEvent.click(canvas.getByLabelText("Choose access"));
+    expectOpaqueSurface(".ago-access-popover");
     const choices = within(canvas.getByRole("group", { name: "Access scopes" })).getAllByRole("checkbox");
     await userEvent.click(choices[2]);
     await userEvent.click(canvas.getByRole("button", { name: "Add" }));
     await expect(await canvas.findByRole("alert")).toHaveTextContent("Added to 1 channel");
     await userEvent.click(canvas.getByLabelText("Choose access"));
+    expectOpaqueSurface(".ago-access-popover");
     const retryChoices = canvas.getAllByRole("checkbox");
     await expect(retryChoices[1]).not.toBeChecked();
     await expect(retryChoices[2]).toBeChecked();
@@ -301,6 +307,7 @@ export const AddAgentToMultipleChannels: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Codex" }));
     expect(canvas.queryByRole("combobox", { name: "Role" })).not.toBeInTheDocument();
     await userEvent.click(canvas.getByLabelText("Choose access"));
+    expectOpaqueSurface(".ago-access-popover");
     const choices = within(canvas.getByRole("group", { name: "Access scopes" })).getAllByRole("checkbox");
     await userEvent.click(choices[2]);
     await userEvent.keyboard("{Escape}");

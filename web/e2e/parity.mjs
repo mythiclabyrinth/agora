@@ -9,6 +9,8 @@
      PW_WS        optional Playwright server WebSocket endpoint
      PW_DIR       dir containing node_modules/playwright (default: resolve normally)
    The server must be fresh-ish; seeding is idempotent by group name. */
+import { colorAlpha } from "../src/stories/colorAlpha.mjs";
+
 
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -575,6 +577,8 @@ async function main() {
       const trigger = page.getByRole("button", { name: "Thread filters", exact: true });
       await trigger.click();
       await page.getByRole("dialog", { name: "Thread view" }).waitFor();
+      const sheetColor = await page.getByRole("dialog", { name: "Thread view" }).evaluate(el => getComputedStyle(el).backgroundColor);
+      if (colorAlpha(sheetColor) !== 1) throw new Error(`thread sheet is translucent: ${sheetColor}`);
       await page.keyboard.press("Shift+Tab");
       if (!await page.getByRole("dialog").evaluate(el => el.contains(document.activeElement))) {
         throw new Error("focus escaped the modal sheet");
