@@ -5922,7 +5922,12 @@ async fn create_pairing(
     let kind = payload["kind"]
         .as_str()
         .map(str::trim)
-        .filter(|kind| matches!(*kind, "claw" | "hermes" | "codex" | "cursor" | "claude"))
+        .filter(|kind| {
+            matches!(
+                *kind,
+                "claw" | "hermes" | "codex" | "cursor" | "claude" | "antigravity"
+            )
+        })
         .map(str::to_string);
     let token = new_token();
     state.config.update(|c| {
@@ -8881,6 +8886,36 @@ mod tests {
         assert_eq!(snapshot.pairing_tokens[0].kind.as_deref(), Some("codex"));
         assert!(snapshot.pairing_tokens[1].kind.is_none());
         assert_eq!(snapshot.pairing_tokens[2].name, "agent");
+    }
+
+    #[tokio::test]
+    async fn pairing_creation_accepts_every_coding_agent_kind() {
+        let (state, _dir) = test_state();
+        state
+            .hub
+            .store
+            .create_user("boss", "Boss", None, "admin")
+            .unwrap();
+        let headers = session_headers(&state, "boss");
+        let kinds = ["codex", "cursor", "claude", "antigravity"];
+        for kind in kinds {
+            let _ = create_pairing(
+                State(state.clone()),
+                Query(HashMap::new()),
+                headers.clone(),
+                Json(json!({"name": format!("Desk {kind}"), "kind": kind})),
+            )
+            .await
+            .unwrap();
+        }
+
+        let snapshot = state.config.snapshot();
+        let stored: Vec<_> = snapshot
+            .pairing_tokens
+            .iter()
+            .map(|t| t.kind.as_deref())
+            .collect();
+        assert_eq!(stored, kinds.map(Some).to_vec());
     }
 
     #[tokio::test]

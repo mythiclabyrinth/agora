@@ -84,6 +84,15 @@ const definitions: Definition[] = [
     image: require("../../assets/agents/claude.png"),
   },
   {
+    kind: "antigravity",
+    title: "Antigravity CLI",
+    shortTitle: "Antigravity",
+    description: "Run Google Antigravity CLI against projects on your computer.",
+    defaultLabel: "Antigravity",
+    local: true,
+    image: require("../../assets/agents/antigravity.png"),
+  },
+  {
     kind: "hermes",
     title: "Hermes",
     shortTitle: "Hermes",
@@ -336,7 +345,12 @@ export function AddAgentFlow({
             ]}
           >
             <View style={styles.logoStack}>
-              {[byKind.codex, byKind.cursor, byKind.claude].map((d) => (
+              {[
+                byKind.codex,
+                byKind.cursor,
+                byKind.claude,
+                byKind.antigravity,
+              ].map((d) => (
                 <AgentMark key={d.kind} definition={d} size={42} />
               ))}
             </View>
@@ -346,7 +360,7 @@ export function AddAgentFlow({
               <ChevronRight size={18} color={colors.dim} />
             </View>
             <Text style={styles.cardDescription}>
-              Connect Codex CLI, Cursor CLI, or Claude Code.
+              Connect Codex CLI, Cursor CLI, Claude Code, or Antigravity CLI.
             </Text>
           </Pressable>
           <Card
@@ -399,7 +413,7 @@ export function AddAgentFlow({
           </Text>
         </View>
         <View style={styles.grid}>
-          {(["codex", "cursor", "claude"] as const).map((k) => (
+          {(["codex", "cursor", "claude", "antigravity"] as const).map((k) => (
             <Card
               key={k}
               definition={byKind[k]}

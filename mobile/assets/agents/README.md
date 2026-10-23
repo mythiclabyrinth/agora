@@ -13,5 +13,8 @@ files untouched and resize/crop only the copies used by Agora.
   [openclaw/openclaw](https://github.com/openclaw/openclaw). Resized from
   512×512 to 256×256.
 
-The Codex, Cursor, and Claude images come from their corresponding connector
-directories under `bridges/*-cli/assets/`.
+The Codex, Cursor, Claude, and Antigravity images come from their
+corresponding connector directories under `bridges/*-cli/assets/`. The
+Antigravity mark is Google's own `https://antigravity.google/favicon.svg`,
+rendered on a full-bleed white square (its light-theme background) without the
+favicon's circular frame.

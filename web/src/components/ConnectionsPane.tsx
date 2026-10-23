@@ -12,6 +12,7 @@ import {
   useConnectionMutations, useConnectionsInfo, usePairingMutations, usePairingTokens,
   useAgents,
 } from "@agora/core";
+import antigravityLogo from "../assets/agents/antigravity.png";
 import claudeLogo from "../assets/agents/claude.png";
 import codexLogo from "../assets/agents/codex.png";
 import cursorLogo from "../assets/agents/cursor.png";
@@ -93,6 +94,11 @@ const ADD_DEFINITIONS: AddDefinition[] = [
     kind: "claude", logo: claudeLogo, title: "Claude Code", shortTitle: "Claude",
     desc: "Continue Claude Code sessions from any Agora channel.",
     defaultLabel: "Claude", local: true,
+  },
+  {
+    kind: "antigravity", logo: antigravityLogo, title: "Antigravity CLI", shortTitle: "Antigravity",
+    desc: "Run Google Antigravity CLI against projects on your computer.",
+    defaultLabel: "Antigravity", local: true,
   },
   {
     kind: "hermes", logo: hermesLogo, title: "Hermes", shortTitle: "Hermes",
@@ -376,11 +382,12 @@ export function ConnectionsPane() {
             <div className="conn-card-top">
               <span className="conn-logo-stack" aria-hidden>
                 <img src={codexLogo} alt="" /><img src={cursorLogo} alt="" /><img src={claudeLogo} alt="" />
+                <img src={antigravityLogo} alt="" />
               </span>
               <span className="conn-local-badge">Runs on your computer</span>
             </div>
             <div className="conn-card-title">Coding agents <Icon name="chevron-right" /></div>
-            <div className="conn-card-desc">Connect Codex CLI, Cursor CLI, or Claude Code.</div>
+            <div className="conn-card-desc">Connect Codex CLI, Cursor CLI, Claude Code, or Antigravity CLI.</div>
           </button>
         </article>
         <AgentCard definition={DEFINITION_BY_KIND.hermes} onSelect={() => goAdd("hermes")} />
@@ -397,8 +404,8 @@ export function ConnectionsPane() {
         <h3>Choose a coding agent</h3>
         <p>Continue local coding sessions and repository work from Agora.</p>
       </div>
-      <div className="conn-cards">
-        {(["codex", "cursor", "claude"] as const).map(kind => (
+      <div className="conn-cards coding">
+        {(["codex", "cursor", "claude", "antigravity"] as const).map(kind => (
           <AgentCard key={kind} definition={DEFINITION_BY_KIND[kind]} onSelect={() => goAdd(kind)} />
         ))}
       </div>

@@ -55,6 +55,22 @@ export const ConnectedAgentAndCatalog: Story = {
     await expect(canvas.findByText("What would you like to connect?")).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: /Coding agents/ }));
     await expect(canvas.findByText("Choose a coding agent")).resolves.toBeVisible();
+    for (const title of ["Codex CLI", "Cursor CLI", "Claude Code", "Antigravity CLI"]) {
+      expect(canvas.getByRole("button", { name: new RegExp(title) })).toBeVisible();
+    }
+  },
+};
+
+export const AntigravitySetupGuide: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("tab", { name: "Add agent" }));
+    await expect(canvas.findByText("Connect Codex CLI, Cursor CLI, Claude Code, or Antigravity CLI."))
+      .resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: /Coding agents/ }));
+    await userEvent.click(await canvas.findByRole("button", { name: /Antigravity CLI/ }));
+    await expect(canvas.findByRole("link", { name: "Open full setup guide" }))
+      .resolves.toHaveAttribute("href", "/docs/coding-agents/antigravity.html");
   },
 };
 

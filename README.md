@@ -35,7 +35,7 @@ email/invite-link admission, and Google/Apple sign-in. The `admin_key` in
 | `crates/agora-server` | The same core run headless (`agora-server` binary) for a VPS. |
 | `web/` + `packages/core` | The web UI (React + TypeScript, incl. voice) on a shared client core; `npm run build` emits `web/dist/`, served by both the desktop app and the headless server. |
 | `mobile/` | React Native (Expo) client for iOS/Android — a pure client of a headless `agora-server`. See [`mobile/README.md`](mobile/README.md). |
-| `bridges/` | Dial-in bridge clients for the agent protocol. [`bridges/claude-cli`](bridges/claude-cli/README.md), [`bridges/codex-cli`](bridges/codex-cli/README.md), and [`bridges/cursor-cli`](bridges/cursor-cli/README.md) drive local CLI sessions from Agora channels. |
+| `bridges/` | Dial-in bridge clients for the agent protocol. [`bridges/claude-cli`](bridges/claude-cli/README.md), [`bridges/codex-cli`](bridges/codex-cli/README.md), [`bridges/cursor-cli`](bridges/cursor-cli/README.md), and [`bridges/antigravity-cli`](bridges/antigravity-cli/README.md) drive local CLI sessions from Agora channels. |
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.
 
@@ -196,8 +196,9 @@ requirement are in [Notifications](docs/DEPLOYMENT.md#notifications).
 ## Roadmap
 
 - **More bridge kits** — [Claude](bridges/claude-cli/README.md),
-  [Codex](bridges/codex-cli/README.md), and
-  [Cursor](bridges/cursor-cli/README.md) CLI bridges ship today; ready-made
+  [Codex](bridges/codex-cli/README.md),
+  [Cursor](bridges/cursor-cli/README.md), and
+  [Antigravity](bridges/antigravity-cli/README.md) CLI bridges ship today; ready-made
   Node/other clients for the dial-in [protocol](docs/PROTOCOL.md) are next.
 - **Richer mobile push** — agent-message Expo push ships today (see
   [Notifications](docs/DEPLOYMENT.md#notifications)); optional polish is badge counts

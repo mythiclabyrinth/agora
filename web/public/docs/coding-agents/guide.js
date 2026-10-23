@@ -50,6 +50,7 @@ document.querySelector("#docs-root").innerHTML = `
         <h2>Set up ${escapeHtml(guide.short)}</h2>
         <p>${escapeHtml(guide.requirement)}</p>
         <ol class="docs-steps">
+          ${guide.install ? `<li><b>Install and sign in to ${escapeHtml(guide.name)}</b>${code(guide.install.command)}<span>${escapeHtml(guide.install.note)}</span></li>` : ""}
           <li><b>Clone Agora and enter the repository</b>${code("git clone https://github.com/tomjose92/agora.git\ncd agora")}</li>
           <li><b>Create an isolated Python environment</b>${code("python3 -m venv .venv\nsource .venv/bin/activate\npython3 -m pip install --upgrade pip websockets")}</li>
           <li><b>Create access in Agora</b><span>Open <strong>Connections → Add agent → Coding agents → ${escapeHtml(guide.name)}</strong>, choose a name, and continue. Keep the generated token private.</span></li>

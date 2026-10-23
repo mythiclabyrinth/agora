@@ -28,6 +28,7 @@ mobile/.expo/
 bridges/claude-cli/state.json
 bridges/codex-cli/state.json
 bridges/cursor-cli/state.json
+bridges/antigravity-cli/state.json
 bridges/*/bridge.log
 __pycache__/
 

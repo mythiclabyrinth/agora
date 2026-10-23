@@ -751,7 +751,14 @@ export interface AgentSource {
   agents: AgentSourceAgent[];
 }
 
-export const PAIRING_KINDS = ["claw", "hermes", "codex", "cursor", "claude"] as const;
+export const PAIRING_KINDS = [
+  "claw",
+  "hermes",
+  "codex",
+  "cursor",
+  "claude",
+  "antigravity",
+] as const;
 export type PairingKind = typeof PAIRING_KINDS[number];
 
 export interface InstanceInfo {
