@@ -32,6 +32,7 @@ import { isLiveDraft, useJarvis } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
 import { useUiState } from "../../state/ui";
 import { announceSent, saveDraftEdit, type JarvisDraftCard } from "../panel/JarvisCards";
+import { jumpTo } from "../navigate";
 import { jarvisLevel } from "../panel/level";
 import { createEndpointer, frameRms } from "./endpointer";
 import { createSentenceChunker, type Sentence } from "./sentences";
@@ -324,6 +325,12 @@ export async function runTurn(raw: string): Promise<void> {
   const answerId = useJarvis.getState().log.at(-1)?.id ?? "";
   const chunker = createSentenceChunker();
   let streamed = false;
+  // Asked to hide: done once this answer is spoken, instead of a follow-up —
+  // unless the answer offered a draft, whose "Send it?" needs the reply.
+  let hide = false;
+  let drafted = false;
+  // Asked to start over: the panel's "New", once this answer is spoken.
+  let fresh = false;
   const ui = useUiState.getState();
   try {
     await jarvisTurn(
@@ -342,6 +349,12 @@ export async function runTurn(raw: string): Promise<void> {
         else if (event.type === "status" && event.phase !== "speaking") jarvisLevel.bump(0.12);
         useJarvis.getState().applyEvent(event);
         if (event.type === "draft_sent") onDraftSent(event.draft_id, event.message.id, event.already_sent === true);
+        if (event.type === "navigate") jumpTo(event);
+        if (event.type === "hide") hide = true;
+        if (event.type === "new_conversation") fresh = true;
+        // The server reported a failure: keep the panel (and the error) up.
+        if (event.type === "error") hide = fresh = false;
+        if (event.type === "card" && event.card.kind === "draft") drafted = true;
         // The answer is still being spoken: no flash of "armed" in between.
         if (event.type === "done" && (speech.playing || speech.queue.length)) useJarvis.getState().setVoicePhase("speaking");
         if (event.type === "delta") {
@@ -358,17 +371,30 @@ export async function runTurn(raw: string): Promise<void> {
     useJarvis.getState().endTurn();
   } catch (e) {
     if (ctl.signal.aborted) return;
+    hide = false; // keep the panel up to show what went wrong
+    fresh = false;
     useJarvis.getState().failTurn(turnFailure(e));
   } finally {
     if (turnAbort === ctl) turnAbort = null;
   }
-  afterTurn();
+  afterTurn(hide && !drafted, fresh && !drafted);
 }
 
-/** Once the answer has been spoken, listen for a follow-up (or rest). */
-function afterTurn(): void {
+/** Once the answer has been spoken, listen for a follow-up (or rest) — or,
+    when the turn asked to hide, close the panel. Closing only hides it:
+    Jarvis mode (`enabled`) is never touched, so the wake word re-arms once
+    the panel releases the mic. A newer turn replaces this callback, so a
+    hide never lands after the user has moved on. */
+function afterTurn(hide = false, fresh = false): void {
   whenSpeechDrained(() => {
     if (useJarvis.getState().busy) return;
+    if (fresh && caps.api) newConversation(caps.api);
+    if (hide) {
+      stopListening();
+      if (useJarvis.getState().phase === "speaking") useJarvis.getState().setVoicePhase(null);
+      useJarvis.getState().close();
+      return;
+    }
     if (canListen() && caps.open) {
       if (useJarvis.getState().phase === "speaking") useJarvis.getState().setVoicePhase(null);
       void listen("followUp");

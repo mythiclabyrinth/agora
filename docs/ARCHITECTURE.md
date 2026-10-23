@@ -80,7 +80,12 @@ One Rust core, three clients (see the repo layout table in the
   (signed thinking) verbatim. Credentials are the Credentials tab's, shared
   with Ask AI and voice; Jarvis is available only when switched on and its
   provider has one. Every tool reads through the caller's own `require_*`
-  gates; the model can only *draft*, and has no tool that sends. A draft is
+  gates; the model can only *draft*, and has no tool that sends. Three tools act
+  on the app instead: `open_conversation` (checked like a read, the group
+  derived server-side) streams `navigate`, `hide_panel` streams `hide`,
+  which closes the panel after the answer is spoken, and `new_conversation`
+  streams `new_conversation` (the panel's New, after the answer); no tool
+  can switch Jarvis mode off. A card's Open buttons also close the panel. A draft is
   a revisioned, owner- and conversation-bound record (pending → sending →
   sent | cancelled, or expired); card edits save through
   `PUT /api/jarvis/drafts/{id}` (bumping the revision) and the card's Send

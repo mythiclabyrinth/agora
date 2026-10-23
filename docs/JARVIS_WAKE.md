@@ -52,6 +52,12 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   conversational listening and no capture after a wake (typed input only);
   speaker off keeps replies text-only. Without STT / TTS (`/api/me`
   `jarvis_stt` / `jarvis_tts`) they show as unavailable with a hint.
+- **Opening and hiding by voice**: "open #release" or "go to the deploy
+  thread" navigates (the server checks the target is yours); "hide Jarvis"
+  closes the panel once the answer is spoken and releases the mic, so the
+  wake word re-arms. "Start a new conversation" does what New does once the
+  answer is spoken. A card's Open buttons close the panel too. Jarvis mode
+  itself stays on: only its switch turns it off.
 - **Answering a draft in your own words**: every utterance goes to the
   server as a normal turn; the client never guesses intent. When the
   previous answer offered exactly one draft that is still live, the server's

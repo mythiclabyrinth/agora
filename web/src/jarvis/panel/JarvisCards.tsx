@@ -8,8 +8,7 @@ import {
 } from "@agora/core";
 import { Icon } from "../../lib/icons";
 import { toast } from "../../lib/toast";
-import { useJump } from "../../state/jump";
-import { useUiState } from "../../state/ui";
+import { jumpTo, type JarvisTarget } from "../navigate";
 import { isLiveDraft, useJarvis, type JarvisCardEntry } from "../../state/jarvis";
 
 const UNDO_MS = 5000;
@@ -18,16 +17,11 @@ export const SAVE_DEBOUNCE_MS = 700;
 
 export type JarvisDraftCard = Extract<JarvisCard, { kind: "draft" }>;
 
-/** Navigate in-app to a channel, thread, or message. */
-function jumpTo(target: { group_id: string; channel_id: string; thread_id?: number | null; message_id?: number }) {
-  const ui = useUiState.getState();
-  ui.selectChannel(target.group_id, target.channel_id);
-  if (target.thread_id != null) {
-    ui.openThread(target.thread_id, "replace");
-    if (target.message_id != null) useJump.getState().request({ mid: target.message_id, container: "thread" });
-  } else if (target.message_id != null) {
-    useJump.getState().request({ mid: target.message_id, container: "log" });
-  }
+/** A card's "Open" buttons: go there and get the panel out of the way
+    (Jarvis mode stays on; the wake word brings the panel back). */
+export function openFromCard(target: JarvisTarget): void {
+  jumpTo(target);
+  useJarvis.getState().close();
 }
 
 const where = (i: { channel_name: string; group_id: string }) => i.group_id === "__dms" ? i.channel_name : `#${i.channel_name}`;
@@ -36,7 +30,7 @@ function DigestRow({ item }: { item: JarvisDigestItem }) {
   const gistId = useId();
   return (
     <li className={`jv-digest-row${item.needs_you ? " needs-you" : ""}`}>
-      <button className="jv-digest-target" onClick={() => jumpTo(item)}
+      <button className="jv-digest-target" onClick={() => openFromCard(item)}
         aria-describedby={gistId}
         aria-label={`Open ${item.thread_id != null ? "thread" : "channel"}: ${where(item)}${item.thread_title ? `, ${item.thread_title}` : ""}${item.needs_you ? ", needs your attention" : ""}`}>
         <span className="jv-source">{item.group_name}</span>
@@ -56,7 +50,7 @@ function DigestRow({ item }: { item: JarvisDigestItem }) {
 function MessageRow({ hit }: { hit: JarvisMessageHit }) {
   return (
     <li className="jv-msg-row">
-      <button className="jv-msg" onClick={() => jumpTo({ ...hit, message_id: hit.id })}>
+      <button className="jv-msg" onClick={() => openFromCard({ ...hit, message_id: hit.id })}>
         <span className="jv-msg-meta"><b>{hit.author || "someone"}</b><span className="jv-where">{hit.group_name} / {where(hit)}</span></span>
         <span className="jv-msg-text">{hit.text}</span>
         <span className="jv-msg-open">Open message <Icon name="chevron-right" /></span>
@@ -261,7 +255,7 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
             panel?.querySelector<HTMLInputElement>('[aria-label="Ask Agora"]')?.focus();
           }}><Icon name="trash-2" />Discard draft</button>
         </>}
-        {status === "sent" && <button className="btn sm" onClick={() => jumpTo(card)}>Open conversation <Icon name="chevron-right" /></button>}
+        {status === "sent" && <button className="btn sm" onClick={() => openFromCard(card)}>Open conversation <Icon name="chevron-right" /></button>}
       </div>
     </div>
   );

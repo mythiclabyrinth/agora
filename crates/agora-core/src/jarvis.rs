@@ -79,6 +79,12 @@ call draft_message again with the new text; it replaces the earlier draft for th
 user wants to send a draft that was not just read back, draft it again so they can approve it. \
 To address an agent or person, pass their id in mentions; do not invent @handles.\n\
 \n\
+Navigating: when the user asks to open, go to, or show a channel, thread, or DM, find it and call \
+open_conversation, then confirm in a few words. When they ask you to close, hide, or go away, call \
+hide_panel and say in one short sentence that they can say the wake word to bring you back. You cannot \
+turn Jarvis mode off; if they ask, hide the panel and tell them the switch is in the header. When \
+they ask to start over or begin a new conversation, call new_conversation.\n\
+\n\
 Language: reply in the language the user is speaking or writing, even when the workspace is in \
 another one; keep names, channel names, and quoted message text as they are.\n\
 \n\
@@ -140,6 +146,21 @@ pub fn ev_error(message: &str) -> Value {
 /// own confirmation.
 pub fn ev_draft_sent(draft_id: &str, message: &Value, already_sent: bool) -> Value {
     json!({"type": "draft_sent", "draft_id": draft_id, "message": message, "already_sent": already_sent})
+}
+/// Show the user a channel (and optionally a thread) in the app. Only ever
+/// built from a target the caller was checked against.
+pub fn ev_navigate(group_id: &str, channel_id: &str, thread_id: Option<i64>, label: &str) -> Value {
+    json!({"type": "navigate", "group_id": group_id, "channel_id": channel_id, "thread_id": thread_id, "label": label})
+}
+/// Hide the assistant panel once the answer has been spoken. Jarvis mode
+/// itself stays on: the wake word brings the panel back.
+pub fn ev_hide() -> Value {
+    json!({"type": "hide"})
+}
+/// Start a fresh conversation once the answer has been spoken (the panel's
+/// "New"): the client forgets this one, which cancels its pending drafts.
+pub fn ev_new_conversation() -> Value {
+    json!({"type": "new_conversation"})
 }
 /// A draft was cancelled: by a spoken "no", or replaced by a newer draft
 /// (`superseded_by`).
@@ -1486,6 +1507,13 @@ pub fn tool_specs() -> Vec<Value> {
                    "thread_id": {"type": "integer", "description": "Reply in this thread (root message id)"},
                    "text": {"type": "string"},
                    "mentions": {"type": "array", "items": {"type": "string"}}}), &["channel_id", "text"]),
+        tool("open_conversation", "Open a channel (or a thread in it) in the user's app, when they ask to go to, open, or show it. Find ids with resolve_target, read_channel, or search_messages first.",
+            json!({"channel_id": {"type": "string"},
+                   "thread_id": {"type": "integer", "description": "Open this thread (root message id)"}}), &["channel_id"]),
+        tool("hide_panel", "Hide the assistant's panel when the user asks to close, hide, or dismiss you. Jarvis mode stays on; the wake word brings you back.",
+            json!({}), &[]),
+        tool("new_conversation", "Start a new, empty conversation when the user asks to start over, begin a new chat, or clear the conversation. Pending drafts from this one are discarded.",
+            json!({}), &[]),
         tool("show_digest", "Show digest cards: one per channel or thread you summarized, with a one-sentence gist.",
             json!({"items": {"type": "array", "items": {"type": "object", "properties": {
                 "channel_id": {"type": "string"}, "thread_id": {"type": "integer"},
@@ -1506,6 +1534,9 @@ pub fn tool_status(name: &str, args: &Value) -> (&'static str, String) {
         "list_agents" => ("searching", "Checking who's online".into()),
         "resolve_target" => ("searching", format!("Finding “{}”", s("name"))),
         "draft_message" => ("composing", "Drafting your message".into()),
+        "open_conversation" => ("thinking", "Opening it".into()),
+        "hide_panel" => ("thinking", "Hiding".into()),
+        "new_conversation" => ("thinking", "Starting fresh".into()),
         "show_digest" => {
             let n = args["items"].as_array().map_or(0, Vec::len);
             ("weaving", format!("Summarizing {n} conversation{}", if n == 1 { "" } else { "s" }))
@@ -1675,6 +1706,15 @@ impl ToolCtx<'_> {
             "resolve_target" => Ok(self.resolve_target(args)),
             "draft_message" => self.draft_message(args, emit),
             "show_digest" => self.show_digest(args, emit),
+            "open_conversation" => self.open_conversation(args, emit),
+            "hide_panel" => {
+                emit(ev_hide());
+                Ok(json!({"hidden": true, "note": "The panel hides after your reply. Jarvis mode stays on; the user says the wake word to bring you back. Say so in one short sentence."}))
+            }
+            "new_conversation" => {
+                emit(ev_new_conversation());
+                Ok(json!({"started": true, "note": "A new conversation starts after your reply; say so in a few words."}))
+            }
             other => Err(format!("unknown tool {other}")),
         };
         result.unwrap_or_else(|e| json!({"error": e}))
@@ -2011,6 +2051,25 @@ impl ToolCtx<'_> {
         Ok(json!({"draft_id": draft.id, "status": "awaiting_user_confirmation", "destination": destination,
             "text": draft.final_text(None), "expires_in_seconds": DRAFT_TTL.as_secs(),
             "note": "Not sent. Agora reads it back and asks the user whether to send it; the user presses Send or approves it, which is checked separately."}))
+    }
+
+    /// Navigation goes through the same gates as reading: the channel (or
+    /// DM) must be the caller's, and a thread must belong to it (a reply
+    /// opens its thread). The group comes from the server, never the model.
+    fn open_conversation(&self, args: &Value, emit: &mut dyn FnMut(Value)) -> Result<Value, String> {
+        // By id or name, like read_channel: only channels the caller can see.
+        let c = self.channel_arg(args["channel_id"].as_str().unwrap_or_default())?;
+        let cid = c["id"].as_str().unwrap_or_default();
+        crate::server::require_channel_member(self.state, self.user, cid).map_err(detail)?;
+        let thread_id = crate::server::resolve_thread(self.state, cid, args["thread_id"].as_i64()).map_err(detail)?;
+        let (name, gid, _) = self.channel_label(cid);
+        let label = match (gid == DM_GROUP_ID, thread_id) {
+            (true, _) => format!("your DM with {name}"),
+            (false, Some(_)) => format!("a thread in #{name}"),
+            (false, None) => format!("#{name}"),
+        };
+        emit(ev_navigate(&gid, cid, thread_id, &label));
+        Ok(json!({"opened": label}))
     }
 
     fn show_digest(&self, args: &Value, emit: &mut dyn FnMut(Value)) -> Result<Value, String> {
