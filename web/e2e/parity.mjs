@@ -568,6 +568,37 @@ async function main() {
     await page.waitForSelector(".ago-inbox-list .ago-inbox-row", { timeout: 5000 });
   });
 
+  await check("threads: phone sheet closes at tablet boundary without opening inline tools", async () => {
+    await openThreads();
+    try {
+      await page.setViewportSize({ width: 640, height: 800 });
+      const trigger = page.getByRole("button", { name: "Thread filters", exact: true });
+      await trigger.click();
+      await page.getByRole("dialog", { name: "Thread view" }).waitFor();
+      await page.keyboard.press("Shift+Tab");
+      if (!await page.getByRole("dialog").evaluate(el => el.contains(document.activeElement))) {
+        throw new Error("focus escaped the modal sheet");
+      }
+      await page.setViewportSize({ width: 641, height: 800 });
+      await page.getByRole("dialog").waitFor({ state: "detached" });
+      if (await trigger.getAttribute("aria-expanded") !== "false") throw new Error("tablet toggle inherited sheet state");
+      if (await page.getByLabel("Sort threads", { exact: true }).isVisible()) throw new Error("tablet options opened on resize");
+      await trigger.click();
+      await page.getByLabel("Sort threads", { exact: true }).waitFor({ state: "visible" });
+      await trigger.click();
+      await page.setViewportSize({ width: 390, height: 800 });
+      await trigger.click();
+      await page.getByRole("dialog").waitFor();
+      await page.mouse.click(10, 10);
+      await page.getByRole("dialog").waitFor({ state: "detached" });
+      if (!await trigger.evaluate(el => el === document.activeElement)) throw new Error("focus was not restored");
+      await page.setViewportSize({ width: 1400, height: 800 });
+    } finally {
+      await page.keyboard.press("Escape");
+      await page.setViewportSize({ width: 1400, height: 800 });
+    }
+  });
+
   await check("navigation: live updates do not close the narrow sidebar", async () => {
     await page.setViewportSize({ width: 500, height: 800 });
     await page.locator(".agora-main .ago-back").click();

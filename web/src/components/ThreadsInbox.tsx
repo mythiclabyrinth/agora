@@ -4,7 +4,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys, resolveThreadGroupSelection, threadActivityTs,
+  matchesThreadSearch, filterAndSortThreads, fmtLastReply, fmtLastReplyFull, fmtRelative, fmtTs, keys, resolveThreadGroupSelection, threadActivityTs,
   useGroups, useHideThread, useMe, useRenameThread, useThreadReplying, useThreads, validLastReplyTs,
   type ThreadFilter, type ThreadRow, type ThreadSort,
 } from "@agora/core";
@@ -14,6 +14,7 @@ import { Icon } from "../lib/icons";
 import { toast } from "../lib/toast";
 import { useConfirm } from "../state/confirm";
 import { useUiState } from "../state/ui";
+import { ThreadViewDialog } from "./ThreadViewDialog";
 import { PromptDialog } from "./PromptDialog";
 import { ReplyingIndicator } from "./ReplyingIndicator";
 
@@ -159,6 +160,20 @@ export function ThreadsInbox({ embedded = false }: { embedded?: boolean }) {
   const setGroup = useUiState(state => state.setThreadsGroup);
   const [search, setSearch] = useState("");
   const [toolsOpen, setToolsOpen] = useState(false);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [phone, setPhone] = useState(() => window.matchMedia("(max-width: 640px)").matches);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 640px)");
+    const update = () => {
+      setPhone(media.matches);
+      setSheetOpen(false);
+      setToolsOpen(false);
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  const toggleTools = () => phone ? setSheetOpen(open => !open) : setToolsOpen(open => !open);
   const groupSelection = useMemo(() => resolveThreadGroupSelection({
     threads, groups, groupsLoaded: groupsQuery.isSuccess, selectedGroupId: groupId,
   }), [threads, groups, groupsQuery.isSuccess, groupId]);
@@ -168,9 +183,44 @@ export function ThreadsInbox({ embedded = false }: { embedded?: boolean }) {
   }, [groupSelection.shouldClear, setGroup]);
   const displayedThreads = useMemo(
     () => filterAndSortThreads(threads, sort, filter, effectiveGroupId).filter(t =>
-      `${snippet(t.root)} ${t.channel_name} ${t.group_name} ${t.root.author_name || t.root.author_id}`.toLowerCase().includes(search.trim().toLowerCase())),
+      matchesThreadSearch(t, search, snippet(t.root))),
     [threads, sort, filter, effectiveGroupId, search],
   );
+
+  const optionsActive = sort !== "recent" || filter !== "all" || effectiveGroupId !== null;
+  const controls = <>
+    <label className="ago-inbox-control">
+      <span>Sort by</span>
+      <select className="ago-search-scope" aria-label="Sort threads"
+        value={sort} onChange={event => setSort(event.target.value as ThreadSort)}>
+        <option value="recent">Recent</option>
+        <option value="oldest">Oldest</option>
+        <option value="az">A–Z</option>
+        <option value="za">Z–A</option>
+      </select>
+    </label>
+    <label className="ago-inbox-control">
+      <span>Show</span>
+      <select className="ago-search-scope" aria-label="Filter threads"
+        value={filter} onChange={event => setFilter(event.target.value as ThreadFilter)}>
+        <option value="all">All Threads</option>
+        <option value="saved">Saved Threads</option>
+        <option value="unset">Unset Threads</option>
+      </select>
+    </label>
+    <label className="ago-inbox-control">
+      <span>Group</span>
+      <select className="ago-search-scope" aria-label="Filter threads by group"
+        value={effectiveGroupId ?? ""} onChange={event => setGroup(event.target.value || null)}>
+        <option value="">All groups</option>
+        {groupSelection.options.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+      </select>
+    </label>
+    <button className="btn sm" title="Refresh"
+      onClick={() => void qc.invalidateQueries({ queryKey: keys.threads })}>
+      <Icon name="refresh-cw" /><span className="ago-thread-refresh-label">Refresh</span>
+    </button>
+  </>;
 
   return (
     <div className={embedded ? "ago-inbox-content" : "agora-main"} id={embedded ? undefined : "agora-main"}>
@@ -182,49 +232,20 @@ export function ThreadsInbox({ embedded = false }: { embedded?: boolean }) {
           <span className="ago-chan-name"><Icon name="messages-square" /> Threads</span>
           <span className="dim">conversations you're part of</span>
         </div>}
-        {!embedded && <button className="btn sm ago-pane-tools-toggle" aria-label="Thread filters" aria-expanded={toolsOpen}
-          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>}
+        {!embedded && <button ref={filterTriggerRef} className={`btn sm ago-pane-tools-toggle${optionsActive ? " active" : ""}`} aria-label={optionsActive ? "Thread filters, filters active" : "Thread filters"} aria-expanded={phone ? sheetOpen : toolsOpen}
+          onClick={toggleTools}><Icon name="sliders" /></button>}
         <div className={`ago-head-actions ago-inbox-tools ${toolsOpen ? "open" : ""}`}>
-          <label className="ago-inbox-control">
-            <span>Sort by</span>
-            <select className="ago-search-scope" aria-label="Sort threads"
-              value={sort} onChange={event => setSort(event.target.value as ThreadSort)}>
-              <option value="recent">Recent</option>
-              <option value="oldest">Oldest</option>
-              <option value="az">A–Z</option>
-              <option value="za">Z–A</option>
-            </select>
-          </label>
-          <label className="ago-inbox-control">
-            <span>Show</span>
-            <select className="ago-search-scope" aria-label="Filter threads"
-              value={filter} onChange={event => setFilter(event.target.value as ThreadFilter)}>
-              <option value="all">All Threads</option>
-              <option value="saved">Saved Threads</option>
-              <option value="unset">Unset Threads</option>
-            </select>
-          </label>
-          <label className="ago-inbox-control">
-            <span>Group</span>
-            <select className="ago-search-scope" aria-label="Filter threads by group"
-              value={effectiveGroupId ?? ""} onChange={event => setGroup(event.target.value || null)}>
-              <option value="">All groups</option>
-              {groupSelection.options.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
-            </select>
-          </label>
-          <button className="btn sm" title="Refresh"
-            onClick={() => void qc.invalidateQueries({ queryKey: keys.threads })}>
-            <Icon name="refresh-cw" />
-          </button>
+          {controls}
         </div>
       </div>
       <div className="ago-inbox-search"><Icon name="search" />
         <input type="search" aria-label="Search threads" placeholder="Find a conversation…"
           value={search} onChange={event => setSearch(event.target.value)} />
         <span>{displayedThreads.length} found</span>
-        {embedded && <button className="btn sm ago-pane-tools-toggle" aria-label="Thread filters" aria-expanded={toolsOpen}
-          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="sliders" /></button>}
+        {embedded && <button ref={filterTriggerRef} className={`btn sm ago-pane-tools-toggle${optionsActive ? " active" : ""}`} aria-label={optionsActive ? "Thread filters, filters active" : "Thread filters"} aria-expanded={phone ? sheetOpen : toolsOpen}
+          onClick={toggleTools}><Icon name="sliders" /></button>}
       </div>
+      {sheetOpen && phone && <ThreadViewDialog triggerRef={filterTriggerRef} onClose={() => setSheetOpen(false)}>{controls}</ThreadViewDialog>}
       <div className="ago-log ago-inbox-list">
         {displayedThreads.length
           ? displayedThreads.map(t => <InboxRow key={t.root.id} t={t} />)
