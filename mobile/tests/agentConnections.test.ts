@@ -240,6 +240,49 @@ test("catalog creates typed Codex access and renders the issued credential", asy
   act(() => tree.unmount());
 });
 
+test.each([
+  ["Codex CLI", "Codex", "codex"],
+  ["Cursor CLI", "Cursor", "cursor"],
+  ["Claude Code", "Claude", "claude"],
+  ["Antigravity CLI", "Antigravity", "antigravity"],
+] as const)(
+  "coding picker creates typed %s access",
+  async (title, placeholder, kind) => {
+    const api = new RecordingApi();
+    const tree = renderFlow(api);
+
+    act(() => labelled(tree.root, "Connect a coding agent").props.onPress());
+    act(() => labelled(tree.root, `Connect ${title}`).props.onPress());
+    const input = tree.root.findByProps({ placeholder });
+    act(() => input.props.onChangeText(`Desk ${placeholder}`));
+    await act(async () => pressText(tree.root, "Create access"));
+
+    expect(api.calls).toEqual([
+      { path: "/api/pairing", body: { name: `Desk ${placeholder}`, kind } },
+    ]);
+    act(() => tree.unmount());
+  },
+);
+
+test("Antigravity success opens its coding-agent guide", async () => {
+  const open = jest.spyOn(WebBrowser, "openBrowserAsync").mockResolvedValue({
+    type: WebBrowser.WebBrowserResultType.OPENED,
+  });
+  const tree = renderFlow(
+    new RecordingApi(),
+    React.createElement(AddAgentFlow, {
+      initialKind: "antigravity",
+      initialIssued: "agy-token",
+    }),
+  );
+  await act(async () => pressText(tree.root, "Open setup guide"));
+  expect(open).toHaveBeenCalledWith(
+    "https://agora.example/docs/coding-agents/antigravity.html",
+  );
+  open.mockRestore();
+  act(() => tree.unmount());
+});
+
 test("Another agent deliberately creates generic access without kind", async () => {
   const api = new RecordingApi();
   const tree = renderFlow(api);

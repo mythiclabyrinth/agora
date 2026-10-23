@@ -7,6 +7,7 @@ const agents = {
   "codex-cli": "codex",
   "cursor-cli": "cursor",
   "claude-cli": "claude",
+  "antigravity-cli": "antigravity",
 };
 const sharedVariables = sharedEnv.map(([name]) => name);
 // These checks intentionally mirror the connectors' current configuration

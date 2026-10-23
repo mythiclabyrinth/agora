@@ -116,7 +116,7 @@ async function review(theme, width, height) {
       await page.getByRole("button", { name: new RegExp(kind) }).first().click();
       await capture(`add-${kind.toLowerCase().replaceAll(" ", "-")}`);
       if (kind === "Coding agents") {
-        for (const name of ["Codex CLI", "Cursor CLI", "Claude Code"]) {
+        for (const name of ["Codex CLI", "Cursor CLI", "Claude Code", "Antigravity CLI"]) {
           await page.getByRole("button", { name: new RegExp(name) }).first().click();
           await capture(`setup-${name.toLowerCase().replaceAll(" ", "-")}`);
           await page.getByRole("tab", { name: "Add agent", exact: true }).click();

@@ -711,8 +711,8 @@ async function main() {
     await page.locator('#conn-panel a[href="/docs/coding-agents/codex.html"]')
       .waitFor({ timeout: 5000 });
     const codingCards = page.locator("#conn-panel .conn-card");
-    if (await codingCards.count() !== 3) throw new Error("coding-agent picker should show three CLIs");
-    for (const kind of ["codex", "cursor", "claude"]) {
+    if (await codingCards.count() !== 4) throw new Error("coding-agent picker should show four CLIs");
+    for (const kind of ["codex", "cursor", "claude", "antigravity"]) {
       const href = await page.locator(`#conn-panel a[href="/docs/coding-agents/${kind}.html"]`).getAttribute("href");
       if (!href) throw new Error(`missing ${kind} setup guide link`);
     }

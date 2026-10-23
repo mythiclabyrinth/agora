@@ -23,12 +23,12 @@ class RosterPromptTests(unittest.TestCase):
     def test_standalone_bridge_helpers_stay_identical(self):
         bridge_root = Path(__file__).parents[1]
         helpers = []
-        for name in ("claude-cli", "codex-cli", "cursor-cli"):
+        for name in ("claude-cli", "codex-cli", "cursor-cli", "antigravity-cli"):
             module = ast.parse((bridge_root / name / "bridge.py").read_text())
             helper = next(node for node in module.body
                           if isinstance(node, ast.FunctionDef) and node.name == "roster_prompt")
             helpers.append(ast.dump(helper, include_attributes=False))
-        self.assertEqual(helpers, [helpers[0]] * 3)
+        self.assertEqual(helpers, [helpers[0]] * 4)
 
     def setUp(self):
         self.frame = {

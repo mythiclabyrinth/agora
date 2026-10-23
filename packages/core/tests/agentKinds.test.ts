@@ -3,11 +3,12 @@ import { agentWsUrl } from "../src/api/client";
 import { inferPairingKind } from "../src/lib/agentKinds";
 
 describe("inferPairingKind", () => {
-  it("prefers explicit metadata", () => {
-    expect(inferPairingKind({ name: "anything", kind: "cursor" })).toBe(
-      "cursor",
-    );
-  });
+  it.each(["codex", "cursor", "claude", "antigravity", "claw", "hermes"] as const)(
+    "prefers explicit %s metadata",
+    (kind) => {
+      expect(inferPairingKind({ name: "anything", kind })).toBe(kind);
+    },
+  );
 
   it("rejects unknown explicit metadata", () => {
     expect(
@@ -20,6 +21,10 @@ describe("inferPairingKind", () => {
     ["codex-macbook", "codex"],
     ["cursor_work", "cursor"],
     ["Claude-home", "claude"],
+    ["antigravity-cli", "antigravity"],
+    ["Antigravity_laptop", "antigravity"],
+    ["agy", "antigravity"],
+    ["agy-work", "antigravity"],
     ["OpenClaw_server", "claw"],
     ["hermes", "hermes"],
   ] as const)("infers legacy name %s", (name, expected) => {
@@ -28,6 +33,7 @@ describe("inferPairingKind", () => {
 
   it("does not infer from incidental substrings", () => {
     expect(inferPairingKind({ name: "my-codex" })).toBeNull();
+    expect(inferPairingKind({ name: "agyle" })).toBeNull();
     expect(inferPairingKind({ name: "custom integration" })).toBeNull();
   });
 });

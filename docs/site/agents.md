@@ -24,7 +24,7 @@ The connection can be disabled, re-enabled, or removed from the same pane.
 Anything else connects the other way around, with a **pairing token**:
 
 1. **Connections → Add agent**, pick the kind (Codex CLI, Cursor CLI,
-   Claude Code, Hermes, OpenClaw…), give it a name, and click
+   Claude Code, Antigravity CLI, Hermes, OpenClaw…), give it a name, and click
    **Create access**.
 2. Copy the token (and, for remote agents, the connection address shown
    with it).
