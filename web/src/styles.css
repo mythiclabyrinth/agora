@@ -3695,7 +3695,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .ago-thread-view-sheet .ago-thread-refresh-label { display: inline; }
 
 /* Phone thread options stay in a modal sheet so the list keeps its space. */
-.ago-thread-view-sheet { position: fixed; inset: auto 0 0; margin: 0; width: 100%; max-width: none; max-height: 85dvh; padding: 0; border: 1px solid var(--border); border-radius: 18px 18px 0 0; background: var(--panel); color: var(--text); }
+.ago-thread-view-sheet { position: fixed; inset: auto 0 0; margin: 0; width: 100%; max-width: none; max-height: 85dvh; padding: 0; border: 1px solid var(--border); border-radius: 18px 18px 0 0; background: var(--surface-raised); box-shadow: var(--elevation-panel); color: var(--text); }
 .ago-thread-view-sheet::backdrop { background: rgba(0, 0, 0, .55); }
 .ago-thread-view-body { outline: none; padding: 20px 18px max(20px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 16px; }
 .ago-thread-view-body h2 { margin: 0; font-size: 20px; }

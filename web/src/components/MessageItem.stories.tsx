@@ -1,3 +1,4 @@
+import { expectOpaqueSurface } from "../stories/opaqueSurfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import type { Message } from "@agora/core";
@@ -111,6 +112,7 @@ export const CurrentUser: Story = {
     expect(canvas.queryByText(/· agent/)).not.toBeInTheDocument();
     await userEvent.hover(canvasElement.querySelector(".ago-msg-row")!);
     await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
+    expectOpaqueSurface(".ago-message-secondary:popover-open");
     await userEvent.click(canvas.getByTitle("Edit this message"));
     const editor = canvas.getByRole("textbox", { name: "Edit message" });
     await expect(editor).toHaveValue("This is how a message from the signed-in user is presented.");
@@ -425,6 +427,7 @@ export const DetailsFromMore: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "More message actions" }));
+    expectOpaqueSurface(".ago-message-secondary:popover-open");
     await expect(canvas.getByRole("button", { name: /^Pin$/ })).toBeVisible();
     await expect(canvas.getByRole("button", { name: /^Edit$/ })).toBeVisible();
     await expect(canvas.getByRole("button", { name: /^Delete$/ })).toBeVisible();

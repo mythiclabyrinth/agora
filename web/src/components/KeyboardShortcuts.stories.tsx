@@ -77,7 +77,7 @@ export const EscapeOutsideChannelDoesNotMarkRead: Story = {
 };
 
 export const OverlayEscapeDoesNotMarkRead: Story = {
-  render: () => <><Harness /><div role="dialog" aria-label="Popup"><button>Popup control</button></div></>,
+  render: () => <><Harness /><div className="conn-panel" role="dialog" aria-label="Popup"><button>Popup control</button></div></>,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "Popup control" }));

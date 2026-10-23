@@ -1,3 +1,4 @@
+import { expectOpaqueSurface } from "../stories/opaqueSurfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { fn, userEvent, within, expect } from "storybook/test";
 import { Reactions } from "./Reactions";
@@ -19,6 +20,7 @@ async function openAndCheckViewport(canvasElement: HTMLElement) {
   await userEvent.hover(chip);
   const tooltip = await within(document.body).findByRole("tooltip");
   await expectInViewport(tooltip);
+  expectOpaqueSurface(".ago-react-pop-body");
   return { chip, tooltip };
 }
 

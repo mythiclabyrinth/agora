@@ -1,3 +1,4 @@
+import { expectOpaqueSurface } from "../stories/opaqueSurfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { useLive, type TypingEvent } from "@agora/core";
@@ -157,6 +158,7 @@ export const ThreadLinkMenu: Story = {
     await userEvent.click(canvas.getAllByRole("button", { name: "Thread options" })[0]);
     const copyButton = await canvas.findByRole("button", { name: "Copy link" });
     await expect(copyButton).toBeVisible();
+    expectOpaqueSurface(".ago-inbox-menu:popover-open");
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     const writeText = fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -525,4 +527,37 @@ export const TabletInlineOptions: Story = {
     await userEvent.click(trigger);
     expect(canvas.getByLabelText("Sort threads")).not.toBeVisible();
   },
+};
+
+const fullInbox = Array.from({ length: 16 }, (_, index) => ({
+  ...fixtureThreads[0], root: { ...fixtureThreads[0].root, id: 900 + index, alias: `Conversation ${index + 1}: launch planning and review` },
+}));
+
+export const OpaqueSheetDark: Story = {
+  args: { embedded: true },
+  globals: { viewport: { value: "phone", isRotated: false } },
+  parameters: {
+    appearance: "dark",
+    apiRoutes: { "GET /api/threads?limit=100": { threads: fullInbox } },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fullInbox[15].root.alias!);
+    expect(canvasElement.querySelectorAll(".ago-inbox-row")).toHaveLength(16);
+    await userEvent.click(canvas.getByRole("button", { name: "Thread filters" }));
+    const sheet = within(document.body).getByRole("dialog", { name: "Thread view" });
+    expect(sheet).toBeVisible();
+    expectOpaqueSurface(".ago-thread-view-sheet");
+    expect(getComputedStyle(sheet).boxShadow).not.toBe("none");
+    const bounds = sheet.getBoundingClientRect();
+    expect([...canvasElement.querySelectorAll(".ago-inbox-row")].some(row => {
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > bounds.top && rect.top < bounds.bottom;
+    })).toBe(true);
+  },
+};
+
+export const OpaqueSheetLight: Story = {
+  ...OpaqueSheetDark,
+  parameters: { ...OpaqueSheetDark.parameters, appearance: "light" },
 };

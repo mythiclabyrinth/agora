@@ -1,3 +1,4 @@
+import { expectOpaqueSurface } from "../stories/opaqueSurfaces";
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
@@ -149,7 +150,7 @@ export const TemplatesPickerOpen: Story = {
     const picker = await canvas.findByText("Daily standup");
     const popover = picker.closest(".ago-template-pop");
     expect(popover).not.toBeNull();
-    expect(getComputedStyle(popover as Element).backgroundColor).toMatch(/^rgb\(/);
+    expectOpaqueSurface(".ago-template-pop");
   },
 };
 
