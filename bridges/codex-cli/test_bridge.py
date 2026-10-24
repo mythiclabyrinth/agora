@@ -2981,6 +2981,27 @@ class RosterDeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("[Where you are", await run())
 
 
+class ScheduleListPagingTests(unittest.TestCase):
+    def test_list_pages_say_how_to_fetch_more(self):
+        row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+               "channel_name": "kite", "text": "x"}
+        first = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row] * 20, "total": 27, "offset": 0, "has_more": True, "next_offset": 20})
+        self.assertIn("Showing 1-20 of 27", first)
+        self.assertIn('"offset": 20', first)
+        last = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row] * 7, "total": 27, "offset": 20, "has_more": False, "next_offset": None})
+        self.assertIn("Showing 21-27 of 27; that is all", last)
+        past = bridge.format_schedule_result({"op": "list", "status": "paused"}, {
+            "ok": True, "items": [], "total": 3, "offset": 40, "has_more": False})
+        self.assertIn("No more schedules past offset 40", past)
+        none = bridge.format_schedule_result({"op": "list"}, {"ok": True, "items": [], "total": 0})
+        self.assertIn("has no schedules", none)
+        self.assertIn("status", bridge.SCHEDULE_FIELDS)
+        self.assertIn("offset", bridge.SCHEDULE_FIELDS)
+        self.assertIn("keep paging", bridge.SCHEDULE_SYSTEM_PROMPT)
+
+
 class ScheduleConfigTextTests(unittest.TestCase):
     def test_no_unfilled_placeholder_reaches_any_prompt(self):
         import re
@@ -3045,6 +3066,28 @@ class AgentWrittenScheduledCommandTests(unittest.TestCase):
         instance = self._bridge()
         asyncio.run(instance.handle_inbound(self._frame("@codex /new ~/X", writer=None)))
         instance._cmd_new.assert_called_once_with("c1", "~/X")
+
+
+class ScheduleListPrivacyTests(unittest.TestCase):
+    ROW = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+           "channel_name": "kite", "text": "public words", "manageable_here": True}
+
+    def test_hidden_and_elsewhere_rows_say_so(self):
+        hidden = dict(self.ROW, id="b", text=None, text_hidden=True, manageable_here=False,
+                      channel_name="private")
+        out = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [self.ROW, hidden], "total": 2, "offset": 0, "has_more": False})
+        self.assertIn('text: "public words"', out)
+        self.assertIn("(text hidden: open that conversation to see it)", out)
+        self.assertIn("manage it in that conversation", out)
+        self.assertEqual(out.count("manage it in that conversation"), 1)
+
+    def test_list_limit_is_clamped_to_one_rendered_page(self):
+        for asked, sent in ((50, bridge.SCHEDULE_LIST_MAX), (5, 5), (0, 1), ("x", bridge.SCHEDULE_LIST_MAX)):
+            frame = bridge.schedule_request_frame({"op": "list", "limit": asked}, "AGENT", "t-1", "r1")
+            self.assertEqual(frame["limit"], sent, asked)
+        frame = bridge.schedule_request_frame({"op": "list"}, "AGENT", "t-1", "r1")
+        self.assertNotIn("limit", frame)
 
 
 if __name__ == "__main__":

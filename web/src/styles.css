@@ -3844,3 +3844,11 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 @media (min-width: 1101px) and (hover: none) and (pointer: coarse) {
   .agora-thread .ago-head .ago-head-menu > .ago-thread-expand { display: none; }
 }
+
+/* Schedule status switcher stays above the scrolling list on every surface. */
+.ago-sched-filters { display: flex; flex-shrink: 0; gap: 4px; margin: 12px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+.ago-sched-filters [role="tab"] { flex: 1; min-width: 0; min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--dim); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.ago-sched-filters [aria-selected="true"] { background: rgba(var(--accent-rgb),.14); color: var(--a1); }
+.ago-sched-filters [role="tab"]:focus-visible { outline: 2px solid var(--a1); outline-offset: 1px; }
+.ago-sched-count { font-size: 11px; font-variant-numeric: tabular-nums; padding: 1px 5px; border-radius: 5px; background: rgba(var(--ink-rgb),.06); }
+.ago-sched-inbox > .ago-sched-filters { width: calc(100% - 32px); max-width: 760px; box-sizing: border-box; align-self: center; }

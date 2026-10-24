@@ -239,6 +239,12 @@ test("inbox Schedules tab lists every visible schedule grouped by channel", asyn
   expect(tab.props.accessibilityState.selected).toBe(true);
   const headers = tree!.root.findAll(node => node.props.accessibilityRole === "header" && node.type === Text).map(node => node.props.children);
   expect(headers).toEqual(["# alpha", "# storybook"]);
+  await act(async () => byLabel("Paused, 1")[0].props.onPress());
+  expect(byLabel("Paused, 1")[0].props.accessibilityState.selected).toBe(true);
+  expect(texts().join("\n")).not.toContain("Every 6 hours");
+  await act(async () => byLabel("Active, 3")[0].props.onPress());
+  expect(texts().join("\n")).not.toContain("@cursor weekly dependency report");
+
   expect(groupSchedulesByChannel([...fixtureSchedules, other]).map(item => item.id))
     .toEqual(["sch-other", "sch-watchdog", "sch-loop", "sch-paused"]);
 });
@@ -337,4 +343,29 @@ test("a capped list says so under the rows; an uncapped one doesn't", async () =
   await act(async () => { tree = TestRenderer.create(wrap(full, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
   await flush();
   expect(texts().some(t => t.startsWith("Showing the 1,000"))).toBe(false);
+});
+
+test("schedule status tabs expose counts and selection, filter rows, and return to All", async () => {
+  const api = new TestApi(fixtureSchedules);
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  expect(byLabel("All, 3")[0].props.accessibilityState.selected).toBe(true);
+  await act(async () => byLabel("Active, 2")[0].props.onPress());
+  expect(byLabel("Active, 2")[0].props.accessibilityState.selected).toBe(true);
+  expect(texts().join("\n")).not.toContain("@cursor weekly dependency report");
+  await act(async () => byLabel("Paused, 1")[0].props.onPress());
+  expect(texts().join("\n")).toContain("@cursor weekly dependency report");
+  expect(texts().join("\n")).not.toContain("Every 6 hours");
+  await act(async () => byLabel("All, 3")[0].props.onPress());
+  expect(texts().join("\n")).toContain("Every 6 hours");
+});
+
+test("empty schedule tabs have distinct copy and no zero badge", async () => {
+  await act(async () => { tree = TestRenderer.create(wrap(new TestApi([]), React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  expect(byLabel("All")).toHaveLength(1);
+  await act(async () => byLabel("Active")[0].props.onPress());
+  expect(texts().join("\n")).toContain("No active schedules");
+  await act(async () => byLabel("Paused")[0].props.onPress());
+  expect(texts().join("\n")).toContain("No paused schedules");
 });

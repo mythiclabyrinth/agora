@@ -86,7 +86,7 @@ export const Schedules: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByRole("tab", { name: "Schedules" })).resolves.toHaveAttribute("aria-selected", "true");
     await expect(canvas.findByText("Weekdays at 07:00 UTC")).resolves.toBeVisible();
-    await expect(canvas.findByRole("region", { name: "Schedules in storybook" })).resolves.toBeVisible();
+    await expect(canvas.findByRole("region", { name: "Active schedules in storybook" })).resolves.toBeVisible();
   },
 };
 // Agent DMs come back with group_id "" — opening one must still navigate,
@@ -157,5 +157,19 @@ export const ReloadResetRules: Story = {
     expect(inboxPathAfterReload("/inbox/threads", "reload", null)).toBeNull();
     expect(inboxPathAfterReload("/inbox/threads", "navigate", {})).toBeNull();
     expect(inboxPathAfterReload("/inbox/unreads", "reload", {})).toBeNull();
+  },
+};
+
+export const ScheduleStatusFilters: Story = {
+  parameters: Schedules.parameters,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const filters = within(await canvas.findByRole("tablist", { name: "Schedule status" }));
+    await userEvent.click(filters.getByRole("tab", { name: "Paused 1" }));
+    await expect(canvas.findByText("@cursor weekly dependency report")).resolves.toBeVisible();
+    expect(canvas.queryByText("Every 6 hours")).toBeNull();
+    await userEvent.click(filters.getByRole("tab", { name: "Active 2" }));
+    await expect(canvas.findByText("Every 6 hours")).resolves.toBeVisible();
+    expect(canvas.queryByText("@cursor weekly dependency report")).toBeNull();
   },
 };

@@ -69,6 +69,13 @@ pub(crate) struct TurnGrant {
 /// lower; this stops a modified or misbehaving client from spinning on one
 /// grant (each cron write costs a month-long scan).
 pub(crate) const MAX_OPS_PER_GRANT: u32 = 10;
+/// Agent `list` pages: default and largest page size.
+pub(crate) const LIST_PAGE_DEFAULT: usize = 20;
+pub(crate) const LIST_PAGE_MAX: usize = 50;
+/// Shown on a schedule whose post @mentioned an agent that wasn't connected
+/// when it fired. Deliberately generic: it never names the agent(s).
+pub(crate) const OFFLINE_AGENT_ERROR: &str =
+    "An agent this message mentions wasn't connected when it posted, so it may not have received it.";
 
 fn thread_title(store: &Store, thread_id: Option<i64>) -> Value {
     let Some(root) = thread_id.and_then(|tid| store.message(tid)) else { return Value::Null };
@@ -791,6 +798,39 @@ impl Hub {
         self.fan_out(message, false, None, false, false, None);
     }
 
+    /// Whether a scheduled post addresses a member agent that has no live
+    /// connection right now: one it @mentions (by id or by name), or the
+    /// agent of an agent DM. Mirrors fan-out's matching, but resolves names
+    /// from the stored agent rows so an offline agent's name still counts.
+    fn mentioned_agent_offline(&self, message: &Value) -> bool {
+        let channel_id = message["channel_id"].as_str().unwrap_or_default();
+        let Some(channel) = self.store.channel(channel_id) else { return false };
+        let agent_ids = self.store.agents_for_channel(channel_id);
+        if channel["kind"] == "agent_dm" {
+            return agent_ids.iter().any(|id| self.agent_handle(id).is_none());
+        }
+        let text = message["text"].as_str().unwrap_or_default();
+        if super::mention_raw_tokens(text).is_empty() {
+            return false;
+        }
+        let names: Vec<(String, String, String)> = agent_ids
+            .iter()
+            .map(|id| {
+                let name = self.store.agent(id).and_then(|a| a["name"].as_str().map(str::to_string)).unwrap_or_default();
+                (id.clone(), id.to_lowercase(), crate::store::slugify(&name))
+            })
+            .collect();
+        let known: std::collections::HashSet<String> = names
+            .iter()
+            .flat_map(|(_, id, slug)| [id.clone(), slug.clone()])
+            .filter(|t| !t.is_empty())
+            .collect();
+        let tokens = super::resolved_mention_tokens(text, &known);
+        names.iter().any(|(id, id_lc, slug)| {
+            (tokens.contains(id_lc) || (!slug.is_empty() && tokens.contains(slug))) && self.agent_handle(id).is_none()
+        })
+    }
+
     /// One scheduler pass: post every due schedule whose owner may still post
     /// there; park the rest with the reason. Returns how many posted.
     pub fn fire_due_schedules(&self, now_s: f64) -> usize {
@@ -827,8 +867,14 @@ impl Hub {
             if now_s - due_at > 60.0 {
                 tracing::info!(schedule = id, late_secs = now_s - due_at, "scheduled post fired late");
             }
+            // Checked before delivery: fan-out silently skips agents with no
+            // live socket, so this is the only place the miss is visible.
+            let missed = self.mentioned_agent_offline(&message);
             self.deliver_scheduled(&message);
             self.store.mark_fire_delivered(&id, due_at);
+            // A successful fire clears last_error; flag the miss on the row so
+            // the owner sees it rather than a loop that silently stopped.
+            let updated = if missed { self.store.set_schedule_error(&id, OFFLINE_AGENT_ERROR).or(updated) } else { updated };
             if let Some(updated) = &updated {
                 self.publish_for(updated);
             }
@@ -1001,7 +1047,8 @@ impl Hub {
                 }
                 // A paused schedule stays paused; a finished one-off with a
                 // new time comes back (the loop re-arm).
-                let change = plan_change(&self.store, &current, &req, now_s).map_err(PlanError::message)?;
+                let mut change = plan_change(&self.store, &current, &req, now_s).map_err(PlanError::message)?;
+                change.rearm_own = scheduled_turn;
                 let updated = self
                     .store
                     .update_schedule_if(id, &current, &change, &grant.owner, Some(&handle.agent_id))
@@ -1050,21 +1097,81 @@ impl Hub {
                 if scheduled_turn {
                     return Err("a scheduled run may only re-arm or cancel its own schedule".into());
                 }
-                // The person's schedules in this conversation only: listing
-                // their private channels and DMs would leak them to an agent
-                // that can't see those.
-                if frame["channel_id"].as_str().is_some_and(|c| c != grant.channel_id) {
-                    return Err("schedules can only be listed for the channel this request came from".into());
+                // The person's schedules in conversations this agent is part
+                // of (any age, any status they ask for), a page at a time.
+                // Channels and DMs the agent isn't in stay out of reach, so
+                // listing can't leak schedules the agent couldn't see.
+                let status = match frame["status"].as_str().unwrap_or("all") {
+                    "all" => None,
+                    s @ ("active" | "paused" | "done" | "cancelled") => Some(s),
+                    other => return Err(format!("unknown status '{other}' (all, active, paused, done, cancelled)")),
+                };
+                let only_channel = frame["channel_id"].as_str().filter(|c| !c.is_empty());
+                if let Some(c) = only_channel {
+                    if !agent_still_in(&self.store, &handle.agent_id, c) {
+                        return Err("this agent isn't in that channel".into());
+                    }
                 }
-                let decorator = ScheduleDecorator::new(&self.store, None, now_s);
-                let items: Vec<Value> = self
+                let offset = frame["offset"].as_u64().unwrap_or(0) as usize;
+                let limit = (frame["limit"].as_u64().unwrap_or(LIST_PAGE_DEFAULT as u64) as usize)
+                    .clamp(1, LIST_PAGE_MAX);
+                let mut reachable = std::collections::HashMap::<String, bool>::new();
+                let rows: Vec<Value> = self
                     .store
-                    .list_owner_schedules(&grant.owner)
-                    .iter()
-                    .filter(|s| s["channel_id"] == grant.channel_id.as_str())
-                    .map(|s| decorator.decorate(s))
+                    .list_owner_schedules_by_status(&grant.owner, status)
+                    .into_iter()
+                    .filter(|s| {
+                        let cid = s["channel_id"].as_str().unwrap_or_default();
+                        if only_channel.is_some_and(|c| c != cid) {
+                            return false;
+                        }
+                        *reachable
+                            .entry(cid.to_string())
+                            .or_insert_with(|| agent_still_in(&self.store, &handle.agent_id, cid))
+                    })
                     .collect();
-                Ok(json!({"items": items}))
+                let total = rows.len();
+                let decorator = ScheduleDecorator::new(&self.store, None, now_s);
+                // The answer lands in the grant's conversation, so a schedule
+                // from elsewhere only shows its words when that conversation
+                // is a public channel; private channels and DMs keep the text
+                // (and thread title) out of a reply others may read.
+                let mut public_channel = std::collections::HashMap::<String, bool>::new();
+                let items: Vec<Value> = rows
+                    .iter()
+                    .skip(offset)
+                    .take(limit)
+                    .map(|s| {
+                        let mut item = decorator.decorate(s);
+                        let cid = s["channel_id"].as_str().unwrap_or_default();
+                        let here = cid == grant.channel_id;
+                        item["manageable_here"] = json!(here);
+                        let public = here
+                            || *public_channel.entry(cid.to_string()).or_insert_with(|| {
+                                self.store.channel(cid).is_some_and(|c| {
+                                    c["kind"] == "channel"
+                                        && c["group_id"]
+                                            .as_str()
+                                            .and_then(|g| self.store.group(g))
+                                            .is_some_and(|g| g["is_public"] == true)
+                                })
+                            });
+                        if !public {
+                            item["text"] = Value::Null;
+                            item["thread_title"] = Value::Null;
+                            item["text_hidden"] = json!(true);
+                        }
+                        item
+                    })
+                    .collect();
+                let has_more = offset + items.len() < total;
+                Ok(json!({
+                    "items": items,
+                    "total": total,
+                    "offset": offset,
+                    "has_more": has_more,
+                    "next_offset": if has_more { json!(offset + items.len()) } else { Value::Null },
+                }))
             }
             other => Err(format!("unknown op '{other}' (create, update, pause, resume, cancel, list)")),
         }
@@ -1990,6 +2097,11 @@ mod tests {
         let req = ChangeRequest { schedule: Some(&rule), ..Default::default() };
         let err = plan_change(&h.store, &current, &req, now_s).err().expect("no-op").message();
         assert!(err.contains("nothing to change"), "{err}");
+        // Extra spacing is the same rule, not a cadence change.
+        let spaced = json!({"kind": "cron", "expr": "0  7 *  * *"});
+        let req = ChangeRequest { schedule: Some(&spaced), ..Default::default() };
+        let err = plan_change(&h.store, &current, &req, now_s).err().expect("no-op").message();
+        assert!(err.contains("nothing to change"), "{err}");
         // An actually different rule still applies.
         let other = json!({"kind": "cron", "expr": "30 8 * * *"});
         let req = ChangeRequest { schedule: Some(&other), ..Default::default() };
@@ -2183,6 +2295,153 @@ mod tests {
         let minute = json!(ahead - 30.0);
         let req = ChangeRequest { run_at: Some(&minute), ..Default::default() };
         assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, None, "kept as is");
+    }
+
+    fn once_at(h: &Hub, owner: &str, cid: &str, text: &str, at: f64) -> String {
+        h.store.create_schedule(owner, cid, None, text, at, &json!({"kind": "once", "at": at}), owner, None)
+            ["id"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn agent_list_pages_filters_and_spans_the_agents_channels() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let cid = setup_channel(&h, &["claude"]);
+        let also = setup_channel(&h, &["claude"]);
+        let hidden = setup_channel(&h, &[]);
+        let done = ScheduleChange { status: Some("done".into()), ..Default::default() };
+        let paused = ScheduleChange { status: Some("paused".into()), ..Default::default() };
+        for i in 0..25 {
+            once_at(&h, "tom", &cid, &format!("active {i}"), now() + 600.0 + i as f64);
+        }
+        let p = once_at(&h, "tom", &also, "paused one", now() + 900.0);
+        h.store.update_schedule(&p, &paused, "tom", None).unwrap();
+        // Finished long ago: past the 7-day window people's lists use.
+        let old = once_at(&h, "tom", &cid, "ancient report", now() + 700.0);
+        h.store.update_schedule(&old, &done, "tom", None).unwrap();
+        h.store.backdate_schedule_for_test(&old, now() - 30.0 * 86_400.0);
+        once_at(&h, "tom", &hidden, "elsewhere", now() + 600.0);
+        once_at(&h, "bob", &cid, "not tom's", now() + 600.0);
+        h.post_user_message(&cid, "what's scheduled?", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+
+        let first = ask(&h, &mut claude, req("claude", &turn, "list", json!({})));
+        assert_eq!(first["ok"], true, "{first}");
+        assert_eq!(first["total"], 27, "25 active + paused + the old finished one, not the hidden channel or bob's");
+        assert_eq!(first["items"].as_array().unwrap().len(), LIST_PAGE_DEFAULT);
+        assert_eq!(first["has_more"], true);
+        assert_eq!(first["next_offset"], LIST_PAGE_DEFAULT);
+        assert_eq!(first["items"][0]["status"], "active", "live first");
+        let second = ask(&h, &mut claude, req("claude", &turn, "list", json!({"offset": first["next_offset"]})));
+        assert_eq!(second["items"].as_array().unwrap().len(), 7);
+        assert_eq!(second["has_more"], false);
+        assert!(second["next_offset"].is_null());
+        let finished = ask(&h, &mut claude, req("claude", &turn, "list", json!({"status": "done"})));
+        assert_eq!(finished["total"], 1);
+        assert_eq!(finished["items"][0]["text"], "ancient report");
+        let only_paused = ask(&h, &mut claude, req("claude", &turn, "list", json!({"status": "paused", "channel_id": also})));
+        assert_eq!(only_paused["total"], 1);
+        // Another private conversation: listed, but its words stay there.
+        assert!(only_paused["items"][0]["text"].is_null());
+        assert_eq!(only_paused["items"][0]["text_hidden"], true);
+        assert_eq!(only_paused["items"][0]["manageable_here"], false);
+        assert_eq!(first["items"][0]["manageable_here"], true);
+        let big = ask(&h, &mut claude, req("claude", &turn, "list", json!({"limit": 500})));
+        assert_eq!(big["items"].as_array().unwrap().len(), LIST_PAGE_MAX.min(27));
+        let peek = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel_id": hidden})));
+        assert!(peek["error"].as_str().unwrap().contains("isn't in that channel"), "{peek}");
+        let bad = ask(&h, &mut claude, req("claude", &turn, "list", json!({"status": "nope"})));
+        assert!(bad["error"].as_str().unwrap().contains("unknown status"), "{bad}");
+    }
+
+    #[test]
+    fn a_loop_re_arming_itself_does_not_spend_the_hourly_create_budget() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let cid = setup_channel(&h, &["claude"]);
+        let id = once_at(&h, "tom", &cid, "@claude LOOP demo", now() - 1.0);
+        // More re-arms than the hourly create/revive limit allows.
+        for run in 0..(crate::store::MAX_CREATES_PER_HOUR + 10) {
+            if run > 0 {
+                // Fast-forward: the re-armed run comes due.
+                h.store.update_schedule(&id, &ScheduleChange { run_at: Some(now() - 1.0), ..Default::default() }, "tom", None);
+            }
+            assert_eq!(h.fire_due_schedules(now()), 1, "run {run} fired");
+            let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+            let r = ask(&h, &mut claude, req("claude", &turn, "update", json!({"id": id, "run_at": now() + 600.0})));
+            assert_eq!(r["ok"], true, "re-arm {run}: {r}");
+        }
+        // The person's own budget is untouched: a fresh request still works.
+        h.post_user_message(&cid, "also remind me", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let made = ask(&h, &mut claude, req("claude", &turn, "create", json!({
+            "text": "reminder", "schedule": {"kind": "once", "at": now() + 900.0}})));
+        assert_eq!(made["ok"], true, "{made}");
+    }
+
+    #[test]
+    fn listing_from_one_conversation_hides_the_words_of_private_ones() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let here = setup_channel(&h, &["claude"]);
+        let open = setup_channel(&h, &["claude"]);
+        let open_gid = h.store.channel(&open).unwrap()["group_id"].as_str().unwrap().to_string();
+        h.store.set_group_public(&open_gid, true);
+        let private = setup_channel(&h, &["claude"]);
+        h.store.set_agent_dm_policy("claude", true, &[]);
+        let dm = h.store.open_agent_dm("tom", "claude", "Claude")["id"].as_str().unwrap().to_string();
+        once_at(&h, "tom", &here, "here text", now() + 600.0);
+        once_at(&h, "tom", &open, "public text", now() + 610.0);
+        once_at(&h, "tom", &private, "private text", now() + 620.0);
+        once_at(&h, "tom", &dm, "dm secret", now() + 630.0);
+        h.post_user_message(&here, "what have I got?", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let r = ask(&h, &mut claude, req("claude", &turn, "list", json!({})));
+        let by_channel = |c: &str| r["items"].as_array().unwrap().iter().find(|i| i["channel_id"] == c).cloned().unwrap();
+        assert_eq!(by_channel(&here)["text"], "here text");
+        assert_eq!(by_channel(&here)["manageable_here"], true);
+        assert_eq!(by_channel(&open)["text"], "public text");
+        assert_eq!(by_channel(&open)["manageable_here"], false);
+        for c in [&private, &dm] {
+            let item = by_channel(c);
+            assert!(item["text"].is_null(), "{item}");
+            assert_eq!(item["text_hidden"], true);
+            assert!(item["next_runs"].as_array().is_some_and(|n| !n.is_empty()), "cadence still shown");
+        }
+        assert!(!r.to_string().contains("dm secret"));
+        assert!(!r.to_string().contains("private text"));
+    }
+
+    #[test]
+    fn a_post_that_mentions_an_offline_agent_flags_the_schedule() {
+        let h = hub();
+        people(&h);
+        let _claude = add_agent(&h, "claude", "Claude", false);
+        // Codex is a member but its bridge isn't connected.
+        h.store.upsert_agent("codex", "Codex", "test", false, false, 0);
+        let cid = setup_channel(&h, &["claude", "codex"]);
+        let every = |text: &str| {
+            let at = now() - 1.0;
+            h.store.create_schedule("tom", &cid, None, text, at, &json!({"kind": "interval", "seconds": 600}), "tom", None)
+                ["id"].as_str().unwrap().to_string()
+        };
+        let both = every("@claude @codex daily check");
+        let fine = every("@claude only");
+        let nobody = every("a note for people");
+        assert_eq!(h.fire_due_schedules(now()), 3);
+        let err = |id: &str| h.store.schedule(id).unwrap()["last_error"].clone();
+        assert_eq!(err(&both), OFFLINE_AGENT_ERROR, "one of several mentioned agents was offline");
+        assert!(!OFFLINE_AGENT_ERROR.contains("odex"), "the message never names agents");
+        assert!(err(&fine).is_null());
+        assert!(err(&nobody).is_null());
+        // Codex reconnects; the next fire clears the warning.
+        let _codex = add_agent(&h, "codex", "Codex", false);
+        h.store.update_schedule(&both, &ScheduleChange { run_at: Some(now() - 1.0), ..Default::default() }, "tom", None);
+        assert_eq!(h.fire_due_schedules(now() + 1.0), 1);
+        assert!(err(&both).is_null(), "{}", err(&both));
     }
 
     #[test]

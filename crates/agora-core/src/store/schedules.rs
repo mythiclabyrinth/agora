@@ -55,6 +55,13 @@ fn row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
 /// Finished schedules stay in the lists this long, then drop off (the
 /// rows are kept; only listing hides them).
 pub(crate) const DONE_LISTED_SECS: f64 = 7.0 * 86_400.0;
+/// List order: live schedules first (active, then paused, then finished),
+/// each soonest-due first, matching the clients' `sortSchedules`. A finished
+/// row keeps the past slot it fired on, so ordering by time alone would put
+/// every finished row ahead of every live one and a capped list could hide
+/// all live schedules.
+const LIVE_FIRST: &str = "CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END";
+const LIVE_FIRST_S: &str = "CASE s.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END";
 
 #[derive(Default, Debug, Clone)]
 pub struct ScheduleChange {
@@ -63,6 +70,10 @@ pub struct ScheduleChange {
     pub schedule: Option<Value>,
     pub status: Option<String>,
     pub clear_error: bool,
+    /// A scheduled run re-arming the very schedule that woke it (the loop
+    /// pattern): not a new schedule, so it doesn't spend the owner's hourly
+    /// create/revive budget. The live cap and posting floor still apply.
+    pub rearm_own: bool,
 }
 
 impl ScheduleChange {
@@ -321,15 +332,17 @@ impl Store {
                 if at_live_cap(&tx, &owner) {
                     return Err(UpdateRefused::Cap);
                 }
-                let now_s = now();
-                if at_hourly_limit(&tx, &owner, now_s) {
-                    return Err(UpdateRefused::Rate);
+                if !change.rearm_own {
+                    let now_s = now();
+                    if at_hourly_limit(&tx, &owner, now_s) {
+                        return Err(UpdateRefused::Rate);
+                    }
+                    tx.execute(
+                        "INSERT INTO schedule_revivals (owner, schedule_id, at) VALUES (?1, ?2, ?3)",
+                        params![owner, id, now_s],
+                    )
+                    .unwrap();
                 }
-                tx.execute(
-                    "INSERT INTO schedule_revivals (owner, schedule_id, at) VALUES (?1, ?2, ?3)",
-                    params![owner, id, now_s],
-                )
-                .unwrap();
             }
             apply_change(&tx, id, change, actor, via_agent);
             tx.commit().unwrap();
@@ -403,7 +416,7 @@ impl Store {
             .prepare(&format!(
                 "SELECT {COLS} FROM schedules WHERE channel_id = ?1 AND status != 'cancelled' \
                  AND (status != 'done' OR updated_at >= ?3) \
-                 AND (?2 IS NULL OR thread_id = ?2) ORDER BY run_at, id"
+                 AND (?2 IS NULL OR thread_id = ?2) ORDER BY {LIVE_FIRST}, run_at, id"
             ))
             .unwrap();
         stmt.query_map(params![channel_id, thread_id, now() - DONE_LISTED_SECS], row_json)
@@ -431,7 +444,7 @@ impl Store {
                    (c.kind != 'agent_dm' AND g.id IS NOT NULL AND (?2 = 1 OR g.is_public = 1 OR EXISTS ( \
                      SELECT 1 FROM memberships m WHERE m.group_id = g.id AND m.member_type = 'user' \
                        AND m.member_id = ?1 AND (m.channel_id = '' OR m.channel_id = c.id))))) \
-                 ORDER BY s.run_at, s.id"
+                 ORDER BY {LIVE_FIRST_S}, s.run_at, s.id"
             ))
             .unwrap();
         stmt.query_map(params![username, instance_admin as i64, now() - DONE_LISTED_SECS], row_json)
@@ -440,13 +453,28 @@ impl Store {
             .collect()
     }
 
+    /// Every schedule an owner has with the given status, of any age, live
+    /// first — what an agent pages through for them. `None` means everything
+    /// but cancelled ones; `Some("cancelled")` asks for those explicitly.
+    pub fn list_owner_schedules_by_status(&self, owner: &str, status: Option<&str>) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM schedules WHERE owner = ?1 \
+                 AND ((?2 IS NULL AND status != 'cancelled') OR status = ?2) \
+                 ORDER BY {LIVE_FIRST}, run_at, id"
+            ))
+            .unwrap();
+        stmt.query_map(params![owner, status], row_json).unwrap().filter_map(Result::ok).collect()
+    }
+
     /// One owner's schedules (for an agent acting on their behalf).
     pub fn list_owner_schedules(&self, owner: &str) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {COLS} FROM schedules WHERE owner = ?1 AND status != 'cancelled' \
-                 AND (status != 'done' OR updated_at >= ?2) ORDER BY run_at, id"
+                 AND (status != 'done' OR updated_at >= ?2) ORDER BY {LIVE_FIRST}, run_at, id"
             ))
             .unwrap();
         stmt.query_map(params![owner, now() - DONE_LISTED_SECS], row_json).unwrap().filter_map(Result::ok).collect()
@@ -561,6 +589,22 @@ impl Store {
             "attachments": [],
         });
         Fire::Posted(message, self.schedule(schedule_id))
+    }
+
+    /// Record a problem with a fire that still posted (the row stays as the
+    /// fire left it). Returns the updated row, or None if it is gone.
+    pub fn set_schedule_error(&self, id: &str, error: &str) -> Option<Value> {
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute("UPDATE schedules SET last_error = ?2 WHERE id = ?1", params![id, error]).unwrap();
+        }
+        self.schedule(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backdate_schedule_for_test(&self, id: &str, updated_at: f64) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE schedules SET updated_at = ?2 WHERE id = ?1", params![id, updated_at]).unwrap();
     }
 
     pub fn mark_fire_delivered(&self, schedule_id: &str, due_at: f64) {
@@ -896,7 +940,7 @@ mod tests {
         let after = store.update_schedule(id, &ScheduleChange {
             text: Some("new".into()), run_at: Some(2000.0),
             schedule: Some(json!({"kind": "interval", "seconds": 600})),
-            status: Some("paused".into()), clear_error: true }, "bob", Some("codex")).unwrap();
+            status: Some("paused".into()), clear_error: true, ..Default::default() }, "bob", Some("codex")).unwrap();
         assert_eq!(after["text"], "new");
         assert_eq!(after["run_at"], 2000.0);
         assert_eq!(after["schedule"]["seconds"], 600);

@@ -90,11 +90,14 @@ impl Spec {
                 Ok(Spec::Interval { seconds })
             }
             "cron" => {
-                let expr = value["expr"]
+                // One space between fields, so "0  7 * * *" and "0 7 * * *" are
+                // the same rule (an editor re-save isn't a cadence change).
+                let normalized = value["expr"]
                     .as_str()
-                    .map(str::trim)
+                    .map(|e| e.split_whitespace().collect::<Vec<_>>().join(" "))
                     .filter(|e| !e.is_empty())
                     .ok_or("a cron schedule needs `expr`, e.g. \"0 7 * * *\"")?;
+                let expr = normalized.as_str();
                 if expr.split_whitespace().count() != 5 {
                     return Err(format!(
                         "cron expression '{expr}' must have 5 fields (minute hour day month weekday), in UTC"
@@ -257,6 +260,11 @@ mod tests {
         assert!(Spec::parse(&json!({"kind": "cron", "expr": "* * * *"})).unwrap_err().contains("5 fields"));
         // Only the documented 5-field form: no croner `@daily`-style aliases.
         assert!(Spec::parse(&json!({"kind": "cron", "expr": "@daily"})).unwrap_err().contains("5 fields"));
+        // Spacing doesn't make a different rule.
+        let spaced = Spec::parse(&json!({"kind": "cron", "expr": "  0  7 *  * * "})).unwrap();
+        assert_eq!(spaced.to_json(), json!({"kind": "cron", "expr": "0 7 * * *"}));
+        let stored = Spec::from_stored(&json!({"kind": "cron", "expr": "0 7  * * *"})).unwrap();
+        assert_eq!(stored.to_json(), spaced.to_json());
         assert!(Spec::parse(&json!({"kind": "cron", "expr": "0 0 30 2 *"})).unwrap_err().contains("never matches"));
         assert!(Spec::parse(&json!({"kind": "once", "at": 1.7e12})).unwrap_err().contains("milliseconds"));
         assert!(Spec::parse(&json!({"kind": "weekly"})).unwrap_err().contains("unknown"));

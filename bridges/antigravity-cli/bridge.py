@@ -222,7 +222,8 @@ SCHEDULE_SENTINEL = "<<<AGORA_SCHEDULE>>>"
 SCHEDULE_MAX_OPS = 3          # requests per turn — a confused model cannot spin
 SCHEDULE_TIMEOUT = 30         # seconds to wait for a schedule_response
 SCHEDULE_OPS = ("create", "update", "pause", "resume", "cancel", "list")
-SCHEDULE_FIELDS = ("id", "text", "schedule", "run_at", "channel_id", "thread_id")
+SCHEDULE_FIELDS = ("id", "text", "schedule", "run_at", "channel_id", "thread_id",
+                   "status", "offset", "limit")
 
 SCHEDULE_LIST_MAX = 20
 SCHEDULE_SYSTEM_PROMPT = (
@@ -235,7 +236,10 @@ SCHEDULE_SYSTEM_PROMPT = (
     'daily check", "schedule": {"kind": "cron", "expr": "0 7 * * *"}}`. Ops: '
     "create (text and schedule; optional thread_id, run_at), update "
     "(id plus any of text, schedule, run_at), pause, resume and cancel (id), "
-    'list. A schedule is {"kind": "once", "at": <unix '
+    "list (optional status: all, active, paused, done or cancelled; optional "
+    "channel_id; offset and limit page through older ones, so keep paging "
+    "before saying a schedule doesn't exist). "
+    'A schedule is {"kind": "once", "at": <unix '
     'seconds>}, {"kind": "interval", "seconds": <300 or more>} or {"kind": '
     '"cron", "expr": "<5-field cron, UTC>"}. The relay runs the request and '
     "prompts you again with the result; then answer the person. Schedule only "
@@ -309,6 +313,13 @@ def schedule_request_frame(ask: dict, agent_id: str, turn_id: str,
     for field in SCHEDULE_FIELDS:
         if field in ask:
             frame[field] = ask[field]
+    # A page is at most what one result shows, so every returned row is
+    # rendered and the next offset never skips any.
+    if frame["op"] == "list" and "limit" in frame:
+        limit = frame["limit"]
+        frame["limit"] = (min(max(limit, 1), SCHEDULE_LIST_MAX)
+                          if isinstance(limit, int) and not isinstance(limit, bool)
+                          else SCHEDULE_LIST_MAX)
     return frame
 
 
@@ -352,6 +363,10 @@ def _describe_schedule(item: dict) -> str:
         line += f", next {runs}"
     if item.get("last_error"):
         line += f", last error: {item['last_error']}"
+    if item.get("manageable_here") is False:
+        line += ", manage it in that conversation"
+    if item.get("text_hidden"):
+        return line + ", (text hidden: open that conversation to see it)"
     return line + f', text: "{text}"'
 
 
@@ -449,12 +464,25 @@ def format_schedule_result(ask: dict, response: dict) -> str:
                 "plainly if it matters; do not repeat the same request this turn.]")
     if op == "list":
         items = [i for i in (response.get("items") or []) if isinstance(i, dict)]
-        if not items:
-            return "[The person has no schedules here. Now answer what was asked.]"
-        rows = [f"- {_describe_schedule(i)}" for i in items[:SCHEDULE_LIST_MAX]]
-        more = (f"\n({len(items) - SCHEDULE_LIST_MAX} more not shown.)"
-                if len(items) > SCHEDULE_LIST_MAX else "")
-        return ("[The person's schedules:]\n" + "\n".join(rows) + more
+        shown = items[:SCHEDULE_LIST_MAX]
+        total = response.get("total")
+        total = total if isinstance(total, int) else len(items)
+        offset = response.get("offset") if isinstance(response.get("offset"), int) else 0
+        if not shown:
+            scope = f" with status {ask['status']}" if ask.get("status") not in (None, "all") else ""
+            if not total:
+                return (f"[The person has no schedules{scope} in conversations you are in. "
+                        "Now answer what was asked.]")
+            return (f"[No more schedules past offset {offset} ({total} in all). "
+                    "Now answer what was asked.]")
+        rows = [f"- {_describe_schedule(i)}" for i in shown]
+        nxt = response.get("next_offset")
+        if response.get("has_more") and isinstance(nxt, int):
+            more = (f"\n(Showing {offset + 1}-{offset + len(shown)} of {total}. For the "
+                    f'next page ask again with "offset": {nxt}; filter with "status".)')
+        else:
+            more = f"\n(Showing {offset + 1}-{offset + len(shown)} of {total}; that is all.)"
+        return ("[The person's schedules, live ones first:]\n" + "\n".join(rows) + more
                 + "\n[End of schedules. Now answer what was asked.]")
     item = response.get("schedule")
     done = {"create": "created", "update": "updated", "pause": "paused",

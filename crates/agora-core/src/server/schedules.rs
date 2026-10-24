@@ -385,6 +385,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_schedules_list_first_and_survive_the_cap_behind_finished_ones() {
+        let f = fixture();
+        let store = &f.state.hub.store;
+        // More recently finished one-offs than the cap: each keeps the past
+        // slot it fired on, which sorts ahead of every live schedule by time.
+        let done = ScheduleChange { status: Some("done".into()), ..Default::default() };
+        for i in 0..=MAX_LISTED {
+            let at = now() - 3600.0 + i as f64 * 0.001;
+            let id = store.create_schedule("ana", &f.cid, None, "finished", at, &json!({"kind": "once", "at": at}), "ana", None)
+                ["id"].as_str().unwrap().to_string();
+            store.update_schedule(&id, &done, "ana", None).unwrap();
+        }
+        for v in [
+            channel_list(&f, &f.cid, session_headers(&f.state, "ana")).await.unwrap(),
+            inbox(&f, session_headers(&f.state, "ana")).await,
+        ] {
+            let items = v["items"].as_array().unwrap();
+            assert_eq!(v["truncated"], true);
+            assert!(items.iter().any(|i| i["id"] == f.sid.as_str()), "the live schedule survives the cap");
+            let first_done = items.iter().position(|i| i["status"] == "done").unwrap();
+            assert!(first_done >= 1, "live schedules lead the list");
+            assert!(items[first_done..].iter().all(|i| i["status"] == "done"), "no live row after a finished one");
+        }
+    }
+
+    #[tokio::test]
     async fn the_thread_filter_scopes_a_channel_list_to_one_thread() {
         let f = fixture();
         let s = &f.state;

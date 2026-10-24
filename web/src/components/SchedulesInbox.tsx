@@ -1,7 +1,8 @@
-import { lostChannelAccess, SCHEDULES_TRUNCATED_NOTE, sortSchedules, useAllSchedules, useGroups, type Schedule } from "@agora/core";
+import { useState } from "react";
+import { filterSchedules, type ScheduleFilter, lostChannelAccess, SCHEDULES_TRUNCATED_NOTE, sortSchedules, useAllSchedules, useGroups, type Schedule } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useUiState } from "../state/ui";
-import { ScheduleEmpty, ScheduleRow } from "./SchedulesPane";
+import { ScheduleEmpty, ScheduleFilters, ScheduleRow } from "./SchedulesPane";
 
 /** Every schedule in channels the caller can access (admins: all channels;
     DMs stay owner-only), grouped by channel. */
@@ -10,9 +11,11 @@ export function SchedulesInbox() {
   const ui = useUiState();
   const groups = useGroups().data || [];
   const groupName = (id: string | null) => groups.find(g => g.id === id)?.name ?? "";
-  const items = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
+  const [filter, setFilter] = useState<ScheduleFilter>("all");
+  const allItems = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
+  const items = filterSchedules(allItems, filter);
   const byChannel = new Map<string, Schedule[]>();
-  for (const s of items) byChannel.set(s.channel_id, [...(byChannel.get(s.channel_id) || []), s]);
+  for (const s of items) byChannel.set(`${s.status}:${s.channel_id}`, [...(byChannel.get(`${s.status}:${s.channel_id}`) || []), s]);
   const open = (s: Schedule) => {
     // Agent DMs carry group_id "" — selectChannel maps that to the DMs group.
     if (s.group_id == null) return;
@@ -23,14 +26,15 @@ export function SchedulesInbox() {
   };
   return (
     <div className="ago-inbox-content ago-sched-inbox">
+      <ScheduleFilters items={allItems} value={filter} onChange={setFilter} />
       <div className="ago-log">
         {q.isLoading && <div className="empty">Loading schedules…</div>}
         {q.isError && <div className="empty">Couldn't load schedules. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
-        {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty />}
+        {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty filter={filter} />}
         {[...byChannel.entries()].map(([channelId, rows]) => {
           const first = rows[0];
           return (
-            <section className="ago-sched-group" key={channelId} aria-label={`Schedules in ${first.channel_name ?? channelId}`}>
+            <section className="ago-sched-group" key={channelId} aria-label={`${first.status === "active" ? "Active" : first.status === "paused" ? "Paused" : "Finished"} schedules in ${first.channel_name ?? channelId}`}>
               <button className="ago-sched-group-head" disabled={lostChannelAccess(first)}
                 onClick={() => open({ ...first, thread_id: null })}>
                 <Icon name={first.channel_kind === "agent_dm" ? "bot" : "messages-square"} />

@@ -5035,6 +5035,23 @@ class ScheduleAskTests(unittest.TestCase):
         self.assertIn("no schedules", bridge.format_schedule_result({"op": "list"},
                                                                     {"ok": True, "items": []}))
 
+    def test_list_pages_say_how_to_fetch_more(self):
+        row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+               "channel_name": "kite", "text": "x"}
+        first = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row] * 20, "total": 27, "offset": 0, "has_more": True, "next_offset": 20})
+        self.assertIn("Showing 1-20 of 27", first)
+        self.assertIn('"offset": 20', first)
+        last = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row] * 7, "total": 27, "offset": 20, "has_more": False, "next_offset": None})
+        self.assertIn("Showing 21-27 of 27; that is all", last)
+        past = bridge.format_schedule_result({"op": "list", "status": "paused"}, {
+            "ok": True, "items": [], "total": 3, "offset": 40, "has_more": False})
+        self.assertIn("No more schedules past offset 40", past)
+        self.assertIn("status", bridge.SCHEDULE_FIELDS)
+        self.assertIn("offset", bridge.SCHEDULE_FIELDS)
+        self.assertIn("keep paging", bridge.SCHEDULE_SYSTEM_PROMPT)
+
     def test_requests_are_capped_per_turn_and_never_leak_the_sentinel(self):
         async def run():
             b = make_schedule_bridge()
@@ -5687,6 +5704,28 @@ class ScheduleNoteAndStripTests(unittest.TestCase):
                          "\n".join(["ok", fence, "a", fence, fence + "python", "b", fence]))
         wrapped = "\n".join([fence + "json", bridge.SCHEDULE_SENTINEL + " {}", fence, "after"])
         self.assertEqual(bridge.strip_schedule_asks(wrapped), "after")
+
+
+class ScheduleListPrivacyTests(unittest.TestCase):
+    ROW = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+           "channel_name": "kite", "text": "public words", "manageable_here": True}
+
+    def test_hidden_and_elsewhere_rows_say_so(self):
+        hidden = dict(self.ROW, id="b", text=None, text_hidden=True, manageable_here=False,
+                      channel_name="private")
+        out = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [self.ROW, hidden], "total": 2, "offset": 0, "has_more": False})
+        self.assertIn('text: "public words"', out)
+        self.assertIn("(text hidden: open that conversation to see it)", out)
+        self.assertIn("manage it in that conversation", out)
+        self.assertEqual(out.count("manage it in that conversation"), 1)
+
+    def test_list_limit_is_clamped_to_one_rendered_page(self):
+        for asked, sent in ((50, bridge.SCHEDULE_LIST_MAX), (5, 5), (0, 1), ("x", bridge.SCHEDULE_LIST_MAX)):
+            frame = bridge.schedule_request_frame({"op": "list", "limit": asked}, "AGENT", "t-1", "r1")
+            self.assertEqual(frame["limit"], sent, asked)
+        frame = bridge.schedule_request_frame({"op": "list"}, "AGENT", "t-1", "r1")
+        self.assertNotIn("limit", frame)
 
 
 if __name__ == "__main__":

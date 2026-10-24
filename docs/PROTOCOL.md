@@ -545,9 +545,10 @@ treat the post as that agent's request on the owner's behalf, not as words the
 owner typed. Posts whose text no agent wrote omit both fields and grant as
 above.
 
-With a person's grant you may create and list schedules **in the channel the
-grant came from** (any thread in it), and update, pause, resume or cancel
-**only schedules that person owns in that same channel** — there is no admin
+With a person's grant you may create schedules **in the channel the grant
+came from** (any thread in it); update, pause, resume or cancel **only
+schedules that person owns in that same channel**; and list that person's
+schedules **in any conversation your agent is a member of**, of any age — there is no admin
 override, even if they administer the instance. Times you set (`run_at`, a
 one-off's `at`) must be in the future, and an explicit `run_at` on a schedule
 that has posted must be at least 300 seconds after its last post, so a run
@@ -559,7 +560,8 @@ interval. If the schedule changed since you read it (it just fired, someone
 edited it) the request fails with `schedule changed, try again`. Only an
 active or paused schedule can be cancelled. Creating a schedule and bringing a
 finished one back with a new time both count toward a per-person limit of 30
-an hour. A grant stops working once the person it acts for is disabled or
+an hour; a scheduled run re-arming its own schedule (the loop pattern) does
+not. A grant stops working once the person it acts for is disabled or
 deleted.
 
 **Schedule spec** (same shape as Pantheo cron jobs). Cron is standard 5-field,
@@ -586,9 +588,13 @@ evaluated in UTC; intervals are at least 300 seconds.
  "turn_id": "<from the scheduled inbound>", "op": "update", "id": "<schedule id>",
  "text": "@claw-1 LOOP standup · run 2", "run_at": 1792786400}
 
-// list: the person's schedules in the grant's channel.
+// list: the person's schedules in conversations this agent is in, live first
+// (active, paused, then finished), paged. All optional: status (all | active |
+// paused | done | cancelled; default all, which leaves out cancelled),
+// channel_id (one of your conversations), offset (default 0), limit
+// (default 20, at most 50). Finished schedules of any age are included.
 {"type": "schedule_request", "request_id": "q3", "agent_id": "claw-1",
- "turn_id": "...", "op": "list"}
+ "turn_id": "...", "op": "list", "status": "active", "offset": 0, "limit": 20}
 
 // Agora → you. On failure: "ok": false and a human-readable "error".
 {"type": "schedule_response", "request_id": "q1", "agent_id": "claw-1", "ok": true,
@@ -600,12 +606,23 @@ evaluated in UTC; intervals are at least 300 seconds.
    "status": "active", "last_run_at": null, "last_error": null,
    "created_at": 1792700000, "updated_at": 1792700000,
    "created_by": "tom", "updated_by": "tom", "via_agent": "claw-1"}}
-// list answers with "items": [<schedule>, …] instead of "schedule".
+// list answers with "items": [<schedule>, …] instead of "schedule", plus
+// "total", "offset", "has_more" and "next_offset" (null on the last page).
+// Each listed item also carries "manageable_here" (true only in the grant's
+// conversation; other ops refuse schedules elsewhere). Items from another
+// private channel or an agent DM come back with "text": null,
+// "thread_title": null and "text_hidden": true, so a reply in this
+// conversation can't repeat words meant for that one; public channels keep
+// their text.
 ```
 
 `status` is `active`, `paused`, `done` (a one-off that fired) or `cancelled`.
 If the owner can no longer post where the schedule points (removed, disabled,
 DM revoked), the schedule is paused with `last_error` instead of posting.
+If a post @mentions an agent (or targets an agent DM) whose connection isn't
+live when it fires, it still posts, and the schedule's `last_error` reads
+"An agent this message mentions wasn't connected when it posted, so it may
+not have received it." until a later fire reaches every mentioned agent.
 After downtime an overdue schedule fires once, late; recurring schedules then
 continue from their next future slot.
 

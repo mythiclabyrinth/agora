@@ -129,7 +129,7 @@ export const PausedWithErrorReadOnly: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("alice can no longer post in #storybook")).resolves.toBeVisible();
-    await expect(canvas.findByText("Paused")).resolves.toBeVisible();
+    await expect(canvasElement.querySelector(".ago-sched-status.paused")).toHaveTextContent("Paused");
     // Not the owner or an admin: no controls.
     expect(canvas.queryByRole("button", { name: /Resume/ })).toBeNull();
     expect(canvas.queryByRole("button", { name: /Change time/ })).toBeNull();
@@ -233,3 +233,50 @@ export const LongMessage: Story = {
     await expect(canvasElement.querySelector("details")).toHaveAttribute("open");
   },
 };
+
+export const StatusTabs: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tabs = within(await canvas.findByRole("tablist", { name: "Schedule status" }));
+    await expect(tabs.getByRole("tab", { name: "All 3" })).toHaveAttribute("aria-selected", "true");
+    const active = tabs.getByRole("tab", { name: "Active 2" });
+    await userEvent.click(active);
+    await expect(active).toHaveAttribute("aria-selected", "true");
+    expect(canvas.queryByText("@cursor weekly dependency report")).toBeNull();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(tabs.getByRole("tab", { name: "Paused 1" })).toHaveFocus();
+    await expect(canvas.findByText("@cursor weekly dependency report")).resolves.toBeVisible();
+    expect(canvas.queryByText("Every 6 hours")).toBeNull();
+    await userEvent.keyboard("{Home}");
+    await expect(tabs.getByRole("tab", { name: "All 3" })).toHaveFocus();
+    await expect(canvas.findByText("Every 6 hours")).resolves.toBeVisible();
+  },
+};
+export const ActiveTab: Story = {
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("tab", { name: "Active 2" }));
+  },
+};
+export const PausedTab: Story = {
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("tab", { name: "Paused 1" }));
+  },
+};
+export const EmptyStatusTabs: Story = {
+  parameters: Empty.parameters,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Active" }));
+    await expect(canvas.findByText("No active schedules")).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("tab", { name: "Paused" }));
+    await expect(canvas.findByText("No paused schedules")).resolves.toBeVisible();
+  },
+};
+export const ActiveDeliveryError: Story = {
+  parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules": { items: [{ ...watchdog,
+    last_error: "An agent this message mentions wasn't connected when it posted, so it may not have received it.",
+  }] } } },
+};
+
+/** Stable overview for light/dark and narrow-width visual checks. */
+export const FilterOverview: Story = {};

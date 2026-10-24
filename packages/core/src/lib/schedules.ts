@@ -141,3 +141,19 @@ export const LOST_ACCESS_NOTE = "You no longer have access to this channel";
 
 /** Shown under a schedule list the server capped (it keeps the soonest-due). */
 export const SCHEDULES_TRUNCATED_NOTE = "Showing the 1,000 soonest schedules. Later ones are not listed here.";
+
+/** Filters apply to the loaded list; counts do not imply a server-wide total. */
+export const SCHEDULE_FILTERS = ["all", "active", "paused"] as const;
+export type ScheduleFilter = typeof SCHEDULE_FILTERS[number];
+export const scheduleFilterLabel: Record<ScheduleFilter, string> = { all: "All", active: "Active", paused: "Paused" };
+export function filterSchedules(items: Schedule[], filter: ScheduleFilter): Schedule[] {
+  return sortSchedules(items.filter(item => filter === "all" || item.status === filter));
+}
+export function scheduleFilterCount(items: Schedule[], filter: ScheduleFilter): number {
+  return items.filter(item => filter === "all" || item.status === filter).length;
+}
+
+/** The server sets this as a schedule's last_error when a post @mentioned an
+ *  agent that wasn't connected as it fired (matches hub/scheduler.rs). */
+export const SCHEDULE_OFFLINE_AGENT_ERROR =
+  "An agent this message mentions wasn't connected when it posted, so it may not have received it.";

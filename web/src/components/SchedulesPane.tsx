@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterCount, filterSchedules, type ScheduleFilter,
   describeSchedule, fmtTs, intervalParts, intervalSeconds, LOST_ACCESS_NOTE, lostChannelAccess, nextRunsLabel,
   SCHEDULES_TRUNCATED_NOTE, sortSchedules, useCancelSchedule, useGroups, useSchedules, useUpdateSchedule,
   type IntervalUnit, type Schedule, type ScheduleSpec,
@@ -281,7 +282,29 @@ export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
   );
 }
 
-export function ScheduleEmpty() {
+export function ScheduleFilters({ items, value, onChange }: {
+  items: Schedule[]; value: ScheduleFilter; onChange: (value: ScheduleFilter) => void;
+}) {
+  return <div className="ago-sched-filters" role="tablist" aria-label="Schedule status">
+    {SCHEDULE_FILTERS.map((filter, index) => {
+      const count = scheduleFilterCount(items, filter);
+      return <button key={filter} role="tab" aria-selected={value === filter}
+        tabIndex={value === filter ? 0 : -1} onClick={() => onChange(filter)}
+        onKeyDown={event => {
+          const next = event.key === "ArrowRight" ? (index + 1) % 3 : event.key === "ArrowLeft" ? (index + 2) % 3
+            : event.key === "Home" ? 0 : event.key === "End" ? 2 : null;
+          if (next == null) return;
+          event.preventDefault(); onChange(SCHEDULE_FILTERS[next]);
+          (event.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
+        }}>
+        {scheduleFilterLabel[filter]}{count > 0 && <span className="ago-sched-count">{count.toLocaleString()}</span>}
+      </button>;
+    })}
+  </div>;
+}
+
+export function ScheduleEmpty({ filter = "all" }: { filter?: ScheduleFilter }) {
+  if (filter !== "all") return <div className="empty ago-sched-empty" role="status"><Icon name="clock" /><strong>No {filter} schedules</strong><span>{filter === "active" ? "Schedules ready to run will appear here." : "Schedules you pause will appear here."}</span></div>;
   return (
     <div className="empty ago-sched-empty">
       <Icon name="clock" />
@@ -300,11 +323,14 @@ export function SchedulesPane() {
   const q = useSchedules(ui.schedulesOpen ? (channel?.id || "") : "", threadId);
   // Drop a half-armed cancel or open editor when the pane closes.
   const [epoch, setEpoch] = useState(0);
+  const [filter, setFilter] = useState<ScheduleFilter>("all");
+  useEffect(() => { setFilter("all"); }, [ui.schedulesOpen, channel?.id, threadId]);
   useEffect(() => { if (!ui.schedulesOpen) setEpoch(e => e + 1); }, [ui.schedulesOpen]);
   if (!ui.schedulesOpen || !channel) {
     return <div className="agora-files-pane" style={{ display: "none" }} />;
   }
-  const items = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
+  const allItems = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
+  const items = filterSchedules(allItems, filter);
   const open = (schedule: Schedule) => {
     if (schedule.thread_id == null) return;
     // Opening a thread normally closes side panes; here the reader is
@@ -321,13 +347,14 @@ export function SchedulesPane() {
         </div>
         <button className="btn sm" title="Close schedules" aria-label="Close schedules" onClick={() => ui.setSchedulesOpen(false)}><Icon name="x" /></button>
       </div>
+      <ScheduleFilters items={allItems} value={filter} onChange={setFilter} />
       <div className="ago-files-body">
         {items.map(s => (
           <ScheduleRow key={s.id} schedule={s} showThread={threadId == null} onOpen={threadId == null ? open : undefined} />
         ))}
         {q.isLoading && <div className="empty">Loading schedules…</div>}
         {q.isError && <div className="empty" role="alert">Couldn't load schedules. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
-        {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty />}
+        {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty filter={filter} />}
         {q.data?.truncated && <div className="ago-sched-truncated" role="status">{SCHEDULES_TRUNCATED_NOTE}</div>}
       </div>
     </aside>

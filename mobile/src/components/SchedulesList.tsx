@@ -8,6 +8,7 @@ import React, { useMemo, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { CalendarClock, Clock, MessageSquare, Pause, Play, Trash2 } from "lucide-react-native";
 import {
+  SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterCount, filterSchedules, type ScheduleFilter,
   describeSchedule,
   fmtTs,
   intervalParts,
@@ -327,6 +328,20 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
   );
 }
 
+export function ScheduleFilters({ items, value, onChange }: { items: Schedule[]; value: ScheduleFilter; onChange: (value: ScheduleFilter) => void }) {
+  const styles = useStyles();
+  return <View style={styles.filters} accessibilityRole="tablist">
+    {SCHEDULE_FILTERS.map(filter => {
+      const count = scheduleFilterCount(items, filter);
+      return <Pressable key={filter} accessibilityRole="tab" accessibilityLabel={`${scheduleFilterLabel[filter]}${count ? `, ${count}` : ""}`}
+        accessibilityState={{ selected: value === filter }} style={[styles.filter, value === filter && styles.modeActive]} onPress={() => onChange(filter)}>
+        <Text style={[styles.modeText, value === filter && styles.modeTextActive]}>{scheduleFilterLabel[filter]}</Text>
+        {count > 0 ? <Text style={[styles.filterCount, value === filter && styles.modeTextActive]}>{count.toLocaleString()}</Text> : null}
+      </Pressable>;
+    })}
+  </View>;
+}
+
 /** Rows plus the shared editor and actions, for any list of schedules. */
 export function ScheduleRows({ items, showThread, showChannel, onOpen, header, refreshing, onRefresh, empty, truncated }: {
   items: Schedule[];
@@ -344,16 +359,20 @@ export function ScheduleRows({ items, showThread, showChannel, onOpen, header, r
   const styles = useStyles();
   const actions = useScheduleActions();
   const [editing, setEditing] = useState<Schedule | null>(null);
+  const [filter, setFilter] = useState<ScheduleFilter>("all");
+  const filtered = filterSchedules(items, filter);
   return <>
+    <ScheduleFilters items={items} value={filter} onChange={setFilter} />
     <FlatList
-      data={items}
+      data={filtered}
       keyExtractor={item => item.id}
-      contentContainerStyle={items.length ? styles.list : styles.emptyList}
+      contentContainerStyle={filtered.length ? styles.list : styles.emptyList}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.a1} />}
-      ListEmptyComponent={empty}
+      ListEmptyComponent={filter === "all" ? empty : <EmptyState icon={CalendarClock} title={`No ${filter} schedules`}
+        description={filter === "active" ? "Schedules ready to run will appear here." : "Schedules you pause will appear here."} />}
       ListFooterComponent={truncated ? <Text accessibilityRole="text" style={styles.truncated}>{SCHEDULES_TRUNCATED_NOTE}</Text> : null}
       renderItem={({ item, index }) => {
-        const title = header?.(item, index, items) ?? null;
+        const title = header?.(item, index, filtered) ?? null;
         return <View style={styles.group}>
           {title ? <Text accessibilityRole="header" style={styles.groupTitle}>{title}</Text> : null}
           <ScheduleRow item={item} showThread={showThread} showChannel={showChannel} onOpen={onOpen} onEdit={setEditing} actions={actions} />
@@ -378,7 +397,7 @@ export function SchedulesList({ channelId, threadId, onOpen }: {
     <EmptyState icon={CalendarClock} title="Couldn’t load schedules."
       action={{ label: "Retry", accessibilityLabel: "Retry schedules", onPress: () => void query.refetch() }} />
   );
-  return <ScheduleRows items={items} showThread={threadId == null} onOpen={onOpen} truncated={!!query.data?.truncated}
+  return <ScheduleRows key={`${channelId}:${threadId}`} items={items} showThread={threadId == null} onOpen={onOpen} truncated={!!query.data?.truncated}
     refreshing={query.isRefetching} onRefresh={() => void query.refetch()}
     empty={<EmptyState icon={CalendarClock} title={EMPTY_TITLE} description={EMPTY_DESCRIPTION} />} />;
 }
@@ -386,6 +405,9 @@ export function SchedulesList({ channelId, threadId, onOpen }: {
 export const schedulesEmptyCopy = { title: EMPTY_TITLE, description: EMPTY_DESCRIPTION };
 
 const useStyles = createThemedStyles(({ colors, surfaces }) => ({
+  filters: { flexDirection: "row", gap: 4, margin: 14, marginBottom: 0, padding: 4, borderRadius: radii.lg, backgroundColor: colors.panel, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong },
+  filter: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: radii.md },
+  filterCount: { ...typography.caption, color: colors.dim, fontWeight: weight.semibold },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   list: { padding: 14, gap: 10 },
   emptyList: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 24 },
