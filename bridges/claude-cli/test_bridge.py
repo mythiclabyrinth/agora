@@ -305,6 +305,10 @@ def make_bridge(peer_agents="", peer_commands=""):
     instance.async_followups = True
     instance.history_enabled = True
     instance.pending_history = {}
+    # Off by default so the exact-prompt tests stay about their feature;
+    # ScheduleAskTests turns it on.
+    instance.schedules_enabled = False
+    instance.pending_schedule = {}
     instance.followup_idle_timeout = bridge.FOLLOWUP_IDLE_TIMEOUT
     instance.followup_task_idle_timeout = bridge.FOLLOWUP_TASK_IDLE_TIMEOUT
     instance.followup_max_wait = bridge.FOLLOWUP_MAX_WAIT
@@ -4792,6 +4796,339 @@ class HistoryAskTests(unittest.TestCase):
         asyncio.run(run())
 
 
+SCHEDULE_HELPERS = (
+    "parse_schedule_ask", "strip_schedule_asks", "schedule_request_frame",
+    "_schedule_when", "_describe_schedule_spec", "_describe_schedule",
+    "format_schedule_result", "scheduled_post_note", "schedules_enabled",
+    "agent_written", "batch_turn_id", "agent_scheduled", "scheduled_relay_text",
+)
+SCHEDULE_CONSTANTS = (
+    "SCHEDULE_SENTINEL", "SCHEDULE_MAX_OPS", "SCHEDULE_TIMEOUT", "SCHEDULE_OPS",
+    "SCHEDULE_FIELDS", "SCHEDULE_LIST_MAX", "SCHEDULE_SYSTEM_PROMPT",
+)
+
+
+def make_schedule_bridge():
+    instance = make_bridge()
+    instance.schedules_enabled = True
+    return instance
+
+
+class ScheduleAskTests(unittest.TestCase):
+    def test_hello_opts_in_to_schedule_grants_only_when_enabled(self):
+        b = make_bridge()
+        for attr, default in (("avatar", None), ("bot_loop_limit", None), ("context_buffer_limit", 0)):
+            if not hasattr(b, attr):
+                setattr(b, attr, default)
+        b.schedules_enabled = False
+        self.assertIs(b.hello_agent()["schedules"], False)
+        b.schedules_enabled = True
+        self.assertIs(b.hello_agent()["schedules"], True)
+        self.assertEqual(b.hello_agent()["id"], b.agent_id)
+
+    CREATE = (bridge.SCHEDULE_SENTINEL + ' {"op": "create", "text": "@claude check", '
+              '"schedule": {"kind": "cron", "expr": "0 7 * * *"}, "bogus": 1}')
+
+    def test_a_scheduled_post_names_the_schedule_its_turn_may_rearm(self):
+        note = bridge.scheduled_post_note([
+            {"author": {"type": "user", "id": "tom"}, "scheduled": True, "schedule_id": "s-9", "turn_id": "g"}])
+        self.assertIn("scheduled post s-9", note)
+        self.assertIn('"update"', note)
+        # Ordinary person messages and agent posts carry no note.
+        self.assertIsNone(bridge.scheduled_post_note([{"author": {"type": "user", "id": "tom"}, "turn_id": "g"}]))
+        self.assertIsNone(bridge.scheduled_post_note([
+            {"author": {"type": "agent", "id": "x"}, "scheduled": True, "schedule_id": "s-9"}]))
+
+    def test_a_scheduled_post_another_agent_wrote_is_flagged_as_its_request(self):
+        frame = {"author": {"type": "user", "id": "tom", "name": "Tom"}, "scheduled": True,
+                 "schedule_id": "s-9", "written_by_agent": "claude", "written_by_agent_name": "Claude"}
+        note = bridge.scheduled_post_note([frame], "codex", False)
+        self.assertIn("written by Claude on behalf of Tom", note)
+        self.assertIn("not typed by Tom", note)
+        self.assertNotIn('"update"', note)
+        # The writer itself gets the re-arm note, and only when it can schedule.
+        self.assertIn("scheduled post s-9", bridge.scheduled_post_note([dict(frame, turn_id="g")], "claude", True))
+        # A delivery without a grant gets no re-arm offer (it would be refused).
+        self.assertIsNone(bridge.scheduled_post_note([frame], "claude", True))
+        self.assertIsNone(bridge.scheduled_post_note([frame], "claude", False))
+
+    def test_history_asked_after_a_schedule_result_is_still_served(self):
+        async def run():
+            b = make_schedule_bridge()
+            b.history_enabled = True
+            frame = {"channel_id": "c1", "thread_id": 7, "turn_id": "grant-1",
+                     "author": {"type": "user", "id": "tom"}}
+
+            def answer(request):
+                b.handle_schedule_response({
+                    "type": "schedule_response", "request_id": request["request_id"],
+                    "ok": True, "items": []})
+
+            b.send = Mock(side_effect=answer)
+            b.fetch_history = AsyncMock(return_value={"messages": [], "has_more": False})
+            b._format_history = Mock(return_value="[earlier messages]")
+            history_ask = bridge.HISTORY_SENTINEL + ' {"scope": "thread", "limit": 10}'
+            b.run_claude = AsyncMock(side_effect=[history_ask, "Here is the answer."])
+            reply = await b._serve_asks(
+                "c1:7", frame, {}, bridge.SCHEDULE_SENTINEL + ' {"op": "list"}', [frame])
+            self.assertEqual(reply, "Here is the answer.")
+            b.fetch_history.assert_awaited_once()
+            self.assertEqual(b.run_claude.await_count, 2)
+
+        asyncio.run(run())
+
+    def test_schedule_helpers_stay_identical_across_bridges(self):
+        bridge_root = Path(__file__).parents[1]
+        dumps = []
+        for name in ("claude-cli", "codex-cli", "cursor-cli", "antigravity-cli"):
+            module = ast.parse((bridge_root / name / "bridge.py").read_text())
+            nodes = []
+            for node in module.body:
+                if isinstance(node, ast.FunctionDef) and node.name in SCHEDULE_HELPERS:
+                    nodes.append(node)
+                elif (isinstance(node, ast.Assign) and len(node.targets) == 1
+                      and isinstance(node.targets[0], ast.Name)
+                      and node.targets[0].id in SCHEDULE_CONSTANTS):
+                    nodes.append(node)
+            self.assertEqual(len(nodes), len(SCHEDULE_HELPERS) + len(SCHEDULE_CONSTANTS), name)
+            dumps.append([ast.dump(n, include_attributes=False) for n in nodes])
+        self.assertEqual(dumps, [dumps[0]] * 4)
+
+    def test_sentinel_line_is_served_even_with_prose_and_unknown_fields_drop(self):
+        parse = bridge.parse_schedule_ask
+        ask = parse(self.CREATE)
+        self.assertEqual(ask["op"], "create")
+        self.assertEqual(ask["schedule"], {"kind": "cron", "expr": "0 7 * * *"})
+        self.assertNotIn("bogus", ask)
+        self.assertIsNotNone(parse("```json\n" + self.CREATE + "\n```"))
+        self.assertIsNotNone(parse(self.CREATE + "\n" + bridge.TLDR_SENTINEL + " x"))
+        # Mixed with prose the ask is still served, never silently dropped.
+        self.assertEqual(parse("Done, scheduled.\n" + self.CREATE)["op"], "create")
+        self.assertIsNone(parse("plain reply"))
+        # Malformed asks are still claimed so the sentinel never posts.
+        self.assertTrue(parse(bridge.SCHEDULE_SENTINEL + " {oops")["error"])
+        self.assertTrue(parse(bridge.SCHEDULE_SENTINEL + ' {"op": "drop"}')["error"])
+
+    def test_request_frame_carries_the_inbound_turn_id_and_known_fields_only(self):
+        ask = bridge.parse_schedule_ask(self.CREATE)
+        frame = bridge.schedule_request_frame(ask, "claude-cli", "t-123", "r1")
+        self.assertEqual(frame, {
+            "type": "schedule_request", "request_id": "r1", "agent_id": "claude-cli",
+            "turn_id": "t-123", "op": "create", "text": "@claude check",
+            "schedule": {"kind": "cron", "expr": "0 7 * * *"},
+        })
+
+    def test_ask_is_sent_with_turn_id_and_the_result_is_fed_back(self):
+        async def run():
+            b = make_schedule_bridge()
+            frame = {"channel_id": "c1", "thread_id": 7, "turn_id": "grant-1", "author": {"type": "user", "id": "tom"},
+                     "attachments": [{"id": "f1"}]}
+            sent = []
+
+            def answer(request):
+                sent.append(request)
+                b.handle_schedule_response({
+                    "type": "schedule_response", "request_id": request["request_id"],
+                    "agent_id": "claude-cli", "ok": True,
+                    "schedule": {"id": "s1", "status": "active", "channel_name": "ops",
+                                 "schedule": {"kind": "cron", "expr": "0 7 * * *"},
+                                 "next_runs": [0], "text": "@claude check"},
+                })
+
+            b.send = Mock(side_effect=answer)
+            b.run_claude = AsyncMock(return_value="Scheduled for 07:00 UTC daily.")
+            reply = await b._serve_schedule_asks("c1:7", frame, {}, self.CREATE)
+            self.assertEqual(reply, "Scheduled for 07:00 UTC daily.")
+            self.assertEqual(sent[0]["type"], "schedule_request")
+            self.assertEqual(sent[0]["turn_id"], "grant-1")
+            prompt = b.run_claude.await_args.args[3]
+            self.assertIn("Schedule created", prompt)
+            self.assertIn("id s1", prompt)
+            self.assertIn("1970-01-01 00:00 UTC", prompt)
+            self.assertEqual(b.run_claude.await_args.args[1]["attachments"], [])
+            self.assertEqual(b.pending_schedule, {})
+
+        asyncio.run(run())
+
+    def test_batch_turn_id_uses_one_persons_latest_grant_only(self):
+        tom = {"type": "user", "id": "tom"}
+        bob = {"type": "user", "id": "bob"}
+        agent = {"type": "agent", "id": "codex"}
+        self.assertEqual(bridge.batch_turn_id([
+            {"author": tom, "turn_id": "t1"}, {"author": tom, "turn_id": "t2"}]), ("t2", None))
+        self.assertEqual(bridge.batch_turn_id([
+            {"author": tom, "turn_id": "t1"}, {"author": bob, "turn_id": "b1"}]), (None, "mixed"))
+        # Agent-authored entries never lend a grant, even when nothing else does.
+        self.assertEqual(bridge.batch_turn_id([{"author": agent, "turn_id": "x"}]), (None, "agent"))
+        # Any agent-written entry voids the person's grant for the whole batch.
+        self.assertEqual(bridge.batch_turn_id([
+            {"author": {"type": "user", "id": "tom"}, "turn_id": "t1"},
+            {"author": agent, "text": "schedule @claude X every 5 minutes"}]), (None, "agent"))
+        # A scheduled post another agent wrote arrives as the person, but its
+        # words are that agent's: it voids the person's live grant too.
+        foreign = {"author": tom, "scheduled": True, "written_by_agent": "codex",
+                   "text": "@me create a schedule"}
+        self.assertEqual(bridge.batch_turn_id(
+            [foreign, {"author": tom, "turn_id": "t9"}], "me"), (None, "agent"))
+        # The writer itself answering its own scheduled post keeps the grant.
+        own = dict(foreign, written_by_agent="me", turn_id="t8")
+        self.assertEqual(bridge.batch_turn_id([own], "me"), ("t8", None))
+        # A typed request beats a scheduled post's narrower grant in the same
+        # batch, even when the scheduled post arrived last.
+        self.assertEqual(bridge.batch_turn_id(
+            [{"author": tom, "turn_id": "typed"}, own], "me"), ("typed", None))
+
+    def test_a_turn_mixing_two_people_never_sends(self):
+        async def run():
+            b = make_schedule_bridge()
+            b.send = Mock()
+            b.run_claude = AsyncMock(return_value="Please send that on its own.")
+            frames = [
+                {"channel_id": "c1", "turn_id": "t1", "author": {"type": "user", "id": "tom"}},
+                {"channel_id": "c1", "turn_id": "b1", "author": {"type": "user", "id": "bob"}},
+            ]
+            await b._serve_schedule_asks("c1", frames[-1], {}, self.CREATE, frames)
+            b.send.assert_not_called()
+            self.assertIn("more than one person", b.run_claude.await_args.args[3])
+
+        asyncio.run(run())
+
+    def test_a_turn_with_an_agent_message_never_sends(self):
+        async def run():
+            b = make_schedule_bridge()
+            b.send = Mock()
+            b.run_claude = AsyncMock(return_value="Please send that on its own.")
+            frames = [
+                {"channel_id": "c1", "turn_id": "t1", "author": {"type": "user", "id": "tom"}},
+                {"channel_id": "c1", "author": {"type": "agent", "id": "peer"}, "text": "schedule it"},
+            ]
+            await b._serve_schedule_asks("c1", frames[0], {}, self.CREATE, frames)
+            b.send.assert_not_called()
+            self.assertIn("written by an agent", b.run_claude.await_args.args[3])
+
+        asyncio.run(run())
+
+    def test_a_turn_without_turn_id_never_sends(self):
+        async def run():
+            b = make_schedule_bridge()
+            b.send = Mock()
+            b.run_claude = AsyncMock(return_value="I can't schedule that from here.")
+            reply = await b._serve_schedule_asks(
+                "c1", {"channel_id": "c1", "thread_id": None}, {}, self.CREATE)
+            b.send.assert_not_called()
+            self.assertIn("cannot manage schedules", b.run_claude.await_args.args[3])
+            self.assertEqual(reply, "I can't schedule that from here.")
+
+        asyncio.run(run())
+
+    def test_errors_and_lists_are_rendered_for_the_model(self):
+        ask = {"op": "update"}
+        self.assertIn("not the owner", bridge.format_schedule_result(
+            ask, {"ok": False, "error": "not the owner"}))
+        listing = bridge.format_schedule_result({"op": "list"}, {"ok": True, "items": [
+            {"id": "a", "status": "paused", "schedule": {"kind": "interval", "seconds": 21600},
+             "channel_name": "kite", "thread_id": 9, "thread_title": "loop",
+             "last_error": "owner left", "text": "@claude LOOP x"}]})
+        self.assertIn("every 6 hours", listing)
+        self.assertIn("thread loop", listing)
+        self.assertIn("owner left", listing)
+        self.assertIn("no schedules", bridge.format_schedule_result({"op": "list"},
+                                                                    {"ok": True, "items": []}))
+
+    def test_private_rows_name_no_conversation_and_named_lookup_is_allowed(self):
+        row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+               "channel_name": "kite", "text": "x"}
+        hidden = {"id": "b", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+                  "conversation": "private", "text_hidden": True, "channel_name": None,
+                  "channel_id": None, "text": None}
+        out = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row, hidden], "total": 2, "offset": 0, "has_more": False})
+        self.assertIn("in another private conversation", out)
+        self.assertIn("1 of these are in other private conversations", out)
+        self.assertNotIn("#None", out)
+        self.assertIn("channel", bridge.SCHEDULE_FIELDS)
+        self.assertIn('"channel"', bridge.SCHEDULE_SYSTEM_PROMPT)
+
+    def test_a_capped_list_says_older_ones_are_not_shown(self):
+        row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+               "channel_name": "kite", "text": "x"}
+        capped = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row], "total": 1000, "offset": 0, "has_more": True,
+            "next_offset": 20, "truncated": True})
+        self.assertIn("more schedules than could be scanned", capped)
+        plain = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row], "total": 1, "offset": 0, "has_more": False})
+        self.assertNotIn("could be scanned", plain)
+
+    def test_list_pages_say_how_to_fetch_more(self):
+        row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+               "channel_name": "kite", "text": "x"}
+        first = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row] * 20, "total": 27, "offset": 0, "has_more": True, "next_offset": 20})
+        self.assertIn("Showing 1-20 of 27", first)
+        self.assertIn('"offset": 20', first)
+        last = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row] * 7, "total": 27, "offset": 20, "has_more": False, "next_offset": None})
+        self.assertIn("Showing 21-27 of 27; that is all", last)
+        past = bridge.format_schedule_result({"op": "list", "status": "paused"}, {
+            "ok": True, "items": [], "total": 3, "offset": 40, "has_more": False})
+        self.assertIn("No more schedules past offset 40", past)
+        self.assertIn("status", bridge.SCHEDULE_FIELDS)
+        self.assertIn("offset", bridge.SCHEDULE_FIELDS)
+        self.assertIn("keep paging", bridge.SCHEDULE_SYSTEM_PROMPT)
+
+    def test_requests_are_capped_per_turn_and_never_leak_the_sentinel(self):
+        async def run():
+            b = make_schedule_bridge()
+            b.send = Mock(side_effect=lambda request: b.handle_schedule_response({
+                "request_id": request["request_id"], "ok": True, "items": []}))
+            b.run_claude = AsyncMock(return_value=self.CREATE)
+            reply = await b._serve_schedule_asks(
+                "c1", {"channel_id": "c1", "turn_id": "g", "author": {"type": "user", "id": "tom"}}, {}, self.CREATE)
+            self.assertEqual(b.send.call_count, bridge.SCHEDULE_MAX_OPS)
+            self.assertNotIn(bridge.SCHEDULE_SENTINEL, reply)
+
+        asyncio.run(run())
+
+    def test_disabled_capability_never_sends(self):
+        async def run():
+            b = make_schedule_bridge()
+            b.schedules_enabled = False
+            b.send = Mock()
+            b.run_claude = AsyncMock()
+            reply = await b._serve_schedule_asks(
+                "c1", {"channel_id": "c1", "turn_id": "g", "author": {"type": "user", "id": "tom"}}, {}, self.CREATE)
+            b.send.assert_not_called()
+            b.run_claude.assert_not_awaited()
+            self.assertNotIn(bridge.SCHEDULE_SENTINEL, reply)
+
+        asyncio.run(run())
+
+    def test_an_unserved_mixed_ask_is_reported_not_silently_dropped(self):
+        # Reaching the post path means the ask could not be served (a
+        # backgrounded follow-up, or caps spent): say so rather than post
+        # prose that claims a schedule exists.
+        instance = make_schedule_bridge()
+        instance.tldr_default = False
+        instance.tldr_min_chars = 1500
+        instance.allowed_roots = []
+        instance.max_attachment_bytes = 1
+        instance.post = Mock()
+        instance._post_reply({"channel_id": "c1"}, {"cwd": "/tmp"},
+                             "Setting that up.\n```json\n" + self.CREATE + "\n```")
+        body = instance.post.call_args.args[1]
+        self.assertNotIn(bridge.SCHEDULE_SENTINEL, body)
+        self.assertIn("cannot from here", body)
+
+    def test_schedule_block_rides_only_when_enabled(self):
+        instance = make_schedule_bridge()
+        instance.tldr_default = False
+        self.assertIn(bridge.SCHEDULE_SYSTEM_PROMPT, instance._append_system_args({})[1])
+        instance.schedules_enabled = False
+        self.assertNotIn(bridge.SCHEDULE_SYSTEM_PROMPT,
+                         "".join(instance._append_system_args({})))
+
+
 class ThreadForkTests(unittest.TestCase):
     def test_first_thread_slash_command_is_not_wrapped(self):
         b = make_bridge()
@@ -5302,6 +5639,130 @@ class LiveRosterDeliveryTests(unittest.TestCase):
         sent = b._send_to_claude.call_args.args[1]["message"]["content"][0]["text"]
         self.assertIn("[Context update from the relay]", sent)
         self.assertNotIn("roster_note", b.bindings["k"])
+
+
+class ScheduleConfigTextTests(unittest.TestCase):
+    def test_no_unfilled_placeholder_reaches_any_prompt(self):
+        import re
+        texts = {name: value for name, value in vars(bridge).items()
+                 if name.isupper() and isinstance(value, str)}
+        texts.update({f"DEVELOPER_NOTES[{i}]": v for i, v in
+                      enumerate(getattr(bridge, "DEVELOPER_NOTES", ())) if isinstance(v, str)})
+        for name, text in texts.items():
+            self.assertIsNone(re.search(r"\{[A-Z][A-Z0-9_]*\}", text), f"{name} has an unfilled placeholder")
+        self.assertIn(f"At most {bridge.SCHEDULE_MAX_OPS} requests per turn", bridge.SCHEDULE_SYSTEM_PROMPT)
+
+    def test_schedules_switch_reads_off_words_in_any_case(self):
+        for raw in (None, "", "1", "true", "yes", "On"):
+            self.assertTrue(bridge.schedules_enabled(raw), raw)
+        for raw in ("0", "false", "False", "NO", " off ", "Off"):
+            self.assertFalse(bridge.schedules_enabled(raw), raw)
+
+
+class AgentWrittenScheduledCommandTests(unittest.TestCase):
+    """A scheduled post an agent wrote posts as the person, but its slash
+    commands get only the peer allowlist, never the person's command table."""
+
+    def _bridge(self, peer_commands=""):
+        instance = make_bridge(peer_commands=peer_commands)
+        instance._cmd_new = Mock(return_value="bound to ~/X")
+        instance._cmd_sandbox = Mock(return_value="sandbox set")
+        if hasattr(instance, "_retire_if_stale"):
+            instance._retire_if_stale = AsyncMock()
+        return instance
+
+    def _frame(self, text, writer="other-agent"):
+        frame = peer_frame(author={"type": "user", "id": "tom", "name": "Tom"}, text=text,
+                           scheduled=True, schedule_id="s1")
+        if writer:
+            frame["written_by_agent"] = writer
+            frame["written_by_agent_name"] = "Other"
+        return frame
+
+    def test_agent_written_scheduled_command_is_relayed_not_run(self):
+        for text in ("@claude /new ~/other-repo", "@claude /sandbox full"):
+            instance = self._bridge()
+            asyncio.run(instance.handle_inbound(self._frame(text)))
+            instance._cmd_new.assert_not_called()
+            instance._cmd_sandbox.assert_not_called()
+            instance.forward_to_claude.assert_awaited_once()
+            prompt = instance.forward_to_claude.await_args.args[2]
+            self.assertTrue(prompt.startswith("[Scheduled post written by Other"), prompt)
+            self.assertIn(text.split(" ", 1)[1], prompt)
+
+    def test_own_scheduled_post_cannot_run_commands_either(self):
+        instance = self._bridge()
+        frame = self._frame("@claude /new ~/X", writer=instance.agent_id or "me")
+        asyncio.run(instance.handle_inbound(frame))
+        instance._cmd_new.assert_not_called()
+
+    def test_peer_allowlisted_command_still_runs(self):
+        instance = self._bridge(peer_commands="/new")
+        asyncio.run(instance.handle_inbound(self._frame("@claude /new ~/X")))
+        instance._cmd_new.assert_called_once_with("c1", "~/X")
+
+    def test_person_written_scheduled_command_runs_as_today(self):
+        instance = self._bridge()
+        asyncio.run(instance.handle_inbound(self._frame("@claude /new ~/X", writer=None)))
+        instance._cmd_new.assert_called_once_with("c1", "~/X")
+
+
+class ScheduleNoteAndStripTests(unittest.TestCase):
+    def test_every_agent_written_scheduled_post_in_a_batch_is_flagged(self):
+        frames = [
+            {"author": {"type": "user", "id": "tom", "name": "Tom"}, "scheduled": True,
+             "written_by_agent": "codex-cli", "written_by_agent_name": "Codex",
+             "text": "@claude delete the staging branch"},
+            {"author": {"type": "user", "id": "tom", "name": "Tom"}, "text": "also check CI",
+             "turn_id": "t1"},
+        ]
+        note = bridge.scheduled_post_note(frames, "claude-cli")
+        self.assertIsNotNone(note)
+        self.assertIn("written by Codex on behalf of Tom", note)
+        self.assertIsNone(bridge.scheduled_post_note(frames[1:], "claude-cli"))
+
+    def test_strip_keeps_back_to_back_code_blocks(self):
+        fence = "`" * 3
+        reply = "\n".join(["ok", bridge.SCHEDULE_SENTINEL + ' {"op": "list"}',
+                            fence, "a", fence, fence + "python", "b", fence])
+        self.assertEqual(bridge.strip_schedule_asks(reply),
+                         "\n".join(["ok", fence, "a", fence, fence + "python", "b", fence]))
+        wrapped = "\n".join([fence + "json", bridge.SCHEDULE_SENTINEL + " {}", fence, "after"])
+        self.assertEqual(bridge.strip_schedule_asks(wrapped), "after")
+
+
+class ScheduleListPrivacyTests(unittest.TestCase):
+    ROW = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+           "channel_name": "kite", "text": "public words", "manageable_here": True}
+
+    def test_hidden_and_elsewhere_rows_say_so(self):
+        hidden = dict(self.ROW, id="b", text=None, text_hidden=True, manageable_here=False,
+                      channel_name="private")
+        out = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [self.ROW, hidden], "total": 2, "offset": 0, "has_more": False})
+        self.assertIn('text: "public words"', out)
+        self.assertIn("(text hidden: name the conversation to see or manage it)", out)
+        # A hidden row points at naming it, not at "that conversation".
+        self.assertNotIn("manage it in that conversation", out)
+        elsewhere = dict(self.ROW, id="c", manageable_here=False)
+        out = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [elsewhere], "total": 1, "offset": 0, "has_more": False})
+        self.assertEqual(out.count("manage it in that conversation"), 1)
+
+    def test_naming_the_conversation_travels_on_every_op(self):
+        for op in ("list", "update", "pause", "resume", "cancel"):
+            frame = bridge.schedule_request_frame(
+                {"op": op, "id": "s1", "channel": "#exec-comp"}, "AGENT", "t-1", "r1")
+            self.assertEqual(frame["channel"], "#exec-comp", op)
+        self.assertIn("name it in their own message", bridge.SCHEDULE_SYSTEM_PROMPT)
+        self.assertIn("posted in the named conversation", bridge.SCHEDULE_SYSTEM_PROMPT)
+
+    def test_list_limit_is_clamped_to_one_rendered_page(self):
+        for asked, sent in ((50, bridge.SCHEDULE_LIST_MAX), (5, 5), (0, 1), ("x", bridge.SCHEDULE_LIST_MAX)):
+            frame = bridge.schedule_request_frame({"op": "list", "limit": asked}, "AGENT", "t-1", "r1")
+            self.assertEqual(frame["limit"], sent, asked)
+        frame = bridge.schedule_request_frame({"op": "list"}, "AGENT", "t-1", "r1")
+        self.assertNotIn("limit", frame)
 
 
 if __name__ == "__main__":

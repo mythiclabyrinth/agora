@@ -256,6 +256,41 @@ export const EditedMessage: Story = {
   },
 };
 
+export const ScheduledByAnAgent: Story = {
+  args: {
+    message: {
+      ...message,
+      author_type: "user",
+      author_id: "tom",
+      author_name: "Tom",
+      meta: { scheduled: true, schedule_id: "s-1", written_by_agent: "claude", written_by_agent_name: "Claude" },
+      text: "@codex daily dependency check",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const tag = await within(canvasElement).findByText(/Scheduled · written by Claude/);
+    await expect(tag.closest(".ago-scheduled-mark")).toHaveAttribute(
+      "title", "Posted by a schedule on the author's behalf; Claude wrote the message");
+  },
+};
+
+export const ScheduledByThePerson: Story = {
+  args: {
+    message: {
+      ...message,
+      author_type: "user",
+      author_id: "tom",
+      author_name: "Tom",
+      meta: { scheduled: true, schedule_id: "s-2" },
+      text: "Weekly standup reminder",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText(/^\s*Scheduled\s*$/)).resolves.toBeInTheDocument();
+    await expect(within(canvasElement).queryByText(/written by/)).toBeNull();
+  },
+};
+
 export const NonAdminOtherUser: Story = {
   args: {
     isAdmin: false,

@@ -234,6 +234,23 @@ async function main() {
     }
   });
 
+  await check("schedules: Inbox tab and channel pane open (empty-safe)", async () => {
+    await page.goto(BASE + "/inbox/schedules");
+    await page.getByRole("tab", { name: "Schedules" }).waitFor();
+    if (await page.getByRole("tab", { name: "Schedules" }).getAttribute("aria-selected") !== "true") {
+      throw new Error("direct Inbox Schedules URL did not select the Schedules tab");
+    }
+    await page.locator(".ago-sched-inbox").waitFor({ timeout: 5000 });
+    await page.goto(BASE + `/g/${SEED.group}/c/${SEED.channel}`);
+    await page.locator("#ago-msg").waitFor();
+    await page.locator(".ago-channel-tools").getByRole("button", { name: /Schedules/ }).click();
+    const pane = page.getByRole("complementary", { name: "Schedules" });
+    await pane.waitFor({ timeout: 5000 });
+    await pane.locator(".ago-sched-row, .ago-sched-empty").first().waitFor({ timeout: 5000 });
+    await pane.getByTitle("Close schedules").click();
+    await pane.waitFor({ state: "detached", timeout: 5000 });
+  });
+
   await check("sidebar: group renders, expands, channel selects", async () => {
     await page.waitForSelector(".ago-group-head", { timeout: 10000 });
     const group = page.locator(".ago-group", { hasText: "Parity" }).first();
@@ -426,7 +443,7 @@ async function main() {
       firstPage, { timeout: 8000 });
     await page.locator("#ago-thread-log .bubble", { hasText: "deep reply 1" }).first()
       .waitFor({ timeout: 10000 });
-    await page.locator(".agora-thread .ago-head-actions button").last().click();
+    await page.locator(".agora-thread .ago-thread-close").click();
     await page.locator(".ago-chan", { hasText: "general" }).first().click();
     await page.waitForSelector("#ago-log .bubble");
   });
@@ -629,7 +646,9 @@ async function main() {
     await openThreads();
     await page.locator(".ago-inbox-row", { hasText: "seed thread root alpha" }).first().click();
     await page.waitForSelector("#ago-thread-log .bubble", { timeout: 5000 });
-    await page.locator('.agora-thread .ago-head-actions button[title="Pin this thread for quick access"]').click();
+    // Docked beside the channel, the thread tools sit behind ⋯.
+    await page.locator(".agora-thread").getByRole("button", { name: "Thread actions", exact: true }).click();
+    await page.locator('.agora-thread .ago-thread-tools button[title="Pin this thread for quick access"]').click();
     await page.locator('.ago-pinbar .ago-pin-count', { hasText: "pinned" }).waitFor({ timeout: 8000 })
       .catch(async () => {
         // pin bar lives in the channel pane — navigate back to the channel
@@ -684,7 +703,8 @@ async function main() {
     await page.locator(".ago-chan", { hasText: "general" }).first().click();
     await page.locator(".ago-head-actions button", { hasText: "Members" }).click();
     await page.waitForSelector("#agora-members-pane .ago-member", { timeout: 5000 });
-    await page.locator(".ago-head-actions button", { hasText: "Members" }).click();
+    // With the pane open the header may fold its tools into ⋯; close from the pane.
+    await page.locator("#agora-members-pane").getByTitle("Close members").click();
   });
 
   await check("people: invite create + revoke", async () => {

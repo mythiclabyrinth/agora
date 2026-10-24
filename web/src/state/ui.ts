@@ -22,7 +22,7 @@ export type MainView =
 
 export type Panel = "people" | "connections" | "settings" | null;
 export type SettingsTab = "appearance" | "keyboard" | "notifications" | "workspace" | "features" | "credentials";
-export type InboxTab = "unreads" | "threads" | "approvals" | "drafts";
+export type InboxTab = "unreads" | "threads" | "approvals" | "drafts" | "schedules";
 
 export interface Selection { g?: string | null; c?: string | null; }
 
@@ -95,6 +95,9 @@ interface UiState {
   membersOpen: boolean;
   filesOpen: boolean;
   filesThread: number | null;
+  /* Side panes share one slot: files, schedules and members are exclusive. */
+  schedulesOpen: boolean;
+  schedulesThread: number | null;
   searchOpen: boolean;
   selectChannel: (g: string, c: string, history?: "push" | "replace" | "none") => void;
   openInbox: (history?: "push" | "replace" | "none") => void;
@@ -121,6 +124,7 @@ interface UiState {
   toggleThreadSize: () => void;
   setMembersOpen: (on: boolean) => void;
   setFilesOpen: (on: boolean, threadId?: number | null) => void;
+  setSchedulesOpen: (on: boolean, threadId?: number | null) => void;
   setSearchOpen: (on: boolean) => void;
   openPanel: (p: Panel) => void;
   setSettingsTab: (tab: SettingsTab) => void;
@@ -149,6 +153,8 @@ export const useUiState = create<UiState>((set, get) => ({
   threadExpanded: localStorage.getItem("agora_thread") === "expanded",
   membersOpen: false,
   filesOpen: false,
+  schedulesOpen: false,
+  schedulesThread: null,
   filesThread: null,
   searchOpen: false,
 
@@ -164,7 +170,7 @@ export const useUiState = create<UiState>((set, get) => ({
     localStorage.setItem("agora_sel", JSON.stringify({ g: normalizedGroupId, c }));
     writeHistory(deepLinkPath({ kind: "channel", groupId: normalizedGroupId, channelId: c }), history);
     return { sel: { g: normalizedGroupId, c }, view: { kind: "channel" }, threadRoot: null,
-      filesOpen: false, filesThread: null, mobileView: "main" as const };
+      filesOpen: false, filesThread: null, schedulesOpen: false, schedulesThread: null, mobileView: "main" as const };
   }),
   openInbox: (history = "push") => get().goInbox(undefined, history),
   goInbox: (tab, history = "push") => {
@@ -245,7 +251,7 @@ export const useUiState = create<UiState>((set, get) => ({
         kind: "thread", groupId: s.sel.g, channelId: s.sel.c, threadId: rootId,
       }), history);
     }
-    return { threadRoot: rootId, filesOpen: false, filesThread: null, mobileView: "thread" as const };
+    return { threadRoot: rootId, filesOpen: false, filesThread: null, schedulesOpen: false, schedulesThread: null, mobileView: "thread" as const };
   }),
   closeThread: (history = "replace") => set((s) => {
     const scope = useLiveVoice.getState().scope;
@@ -255,16 +261,27 @@ export const useUiState = create<UiState>((set, get) => ({
         kind: "channel", groupId: s.sel.g, channelId: s.sel.c,
       }), history);
     }
-    return { threadRoot: null, filesOpen: false, filesThread: null, mobileView: "main" as const };
+    return { threadRoot: null, filesOpen: false, filesThread: null, schedulesOpen: false, schedulesThread: null, mobileView: "main" as const };
   }),
   toggleThreadSize: () => set((s) => {
     const next = !s.threadExpanded;
     localStorage.setItem("agora_thread", next ? "expanded" : "open");
     return { threadExpanded: next };
   }),
-  setMembersOpen: (on) => set({ membersOpen: on, filesOpen: on ? false : get().filesOpen }),
+  setMembersOpen: (on) => set({
+    membersOpen: on,
+    filesOpen: on ? false : get().filesOpen,
+    schedulesOpen: on ? false : get().schedulesOpen,
+  }),
   setFilesOpen: (on, threadId = null) => set({
-    filesOpen: on, filesThread: threadId, membersOpen: on ? false : get().membersOpen,
+    filesOpen: on, filesThread: threadId,
+    membersOpen: on ? false : get().membersOpen,
+    schedulesOpen: on ? false : get().schedulesOpen,
+  }),
+  setSchedulesOpen: (on, threadId = null) => set({
+    schedulesOpen: on, schedulesThread: threadId,
+    membersOpen: on ? false : get().membersOpen,
+    filesOpen: on ? false : get().filesOpen,
   }),
   setSearchOpen: (on) => set({ searchOpen: on }),
   openPanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),

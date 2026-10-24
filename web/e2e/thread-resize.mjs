@@ -45,7 +45,7 @@ for (const engine of [chromium, webkit]) {
       assert.equal(Math.round((await pane.boundingBox()).width), 320);
       const head = pane.locator(".ago-head");
       const title = await head.locator(".ago-head-text").boundingBox();
-      const actions = await head.locator(".ago-head-actions").boundingBox();
+      const actions = await head.getByRole("button", { name: "Thread actions", exact: true }).boundingBox();
       assert.ok(actions.y < title.y + title.height && title.y < actions.y + actions.height, "Header actions wrapped below title");
       assert.equal(await head.evaluate(node => node.scrollWidth > node.clientWidth + 1), false, "Minimum-width header overflows");
       await page.screenshot({ path: join(output, `${engine.name()}-${color}-minimum.png`) });

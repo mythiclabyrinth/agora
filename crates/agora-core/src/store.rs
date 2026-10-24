@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 pub const DM_GROUP_ID: &str = "__dms";
 pub const DM_GROUP_NAME: &str = "Direct messages";
 
+mod schedules;
+pub use schedules::{Fire, ScheduleChange, UpdateRefused, MAX_CREATES_PER_HOUR, MAX_LIVE_PER_OWNER};
+
 #[derive(Clone, Copy)]
 enum DeleteScope { Channel, Message, ThreadReplies }
 
@@ -268,6 +271,52 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(username, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_drafts_channel ON drafts(channel_id, thread_id);
+-- Scheduled messages (see store/schedules.rs): post into a channel/thread
+-- as `owner` at `run_at` (the next due time); `schedule` is the JSON spec
+-- (once / interval / cron, see schedule_spec.rs). thread_id 0 = top level. Fires are recorded per (schedule, due time) so a crash or repeated
+-- tick can never post twice, and undelivered side effects replay on boot.
+CREATE TABLE IF NOT EXISTS schedules (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    thread_id INTEGER NOT NULL DEFAULT 0,
+    text TEXT NOT NULL,
+    run_at REAL NOT NULL,
+    schedule TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    last_run_at REAL,
+    last_error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    created_by TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    via_agent TEXT,
+    text_agent TEXT,
+    last_due_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(status, run_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_channel ON schedules(channel_id, thread_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_owner ON schedules(owner);
+CREATE TABLE IF NOT EXISTS schedule_fires (
+    schedule_id TEXT NOT NULL,
+    due_at REAL NOT NULL,
+    message_id INTEGER,
+    delivered INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    late_by REAL NOT NULL DEFAULT 0,
+    UNIQUE (schedule_id, due_at)
+);
+-- Boot redelivery and hourly maintenance filter on these, not the unique key.
+CREATE INDEX IF NOT EXISTS idx_schedule_fires_pending ON schedule_fires(delivered, created_at);
+-- One row per finished schedule brought back to life (a re-armed one-off).
+-- Revivals count toward the hourly creation limit alongside new schedules,
+-- so a runaway turn can't recycle finished one-offs to post every tick.
+CREATE TABLE IF NOT EXISTS schedule_revivals (
+    owner TEXT NOT NULL,
+    schedule_id TEXT NOT NULL,
+    at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schedule_revivals_owner ON schedule_revivals(owner, at);
 -- Fetched link-preview metadata (see unfurl.rs), keyed by exact URL: one
 -- fetch per URL across all messages. Failures are cached too (ok = 0) so a
 -- dead link is not retried per message; rows expire by fetched_at against
@@ -333,6 +382,15 @@ fn migrate(conn: &Connection) {
             )
             .unwrap();
         }
+    }
+    // The agent that last wrote a schedule's text (None = no agent did).
+    if !has_column("schedules", "text_agent") {
+        conn.execute("ALTER TABLE schedules ADD COLUMN text_agent TEXT", []).unwrap();
+    }
+    // The due slot of the last post, so the posting floor can count from the
+    // slot rather than from a fire that ran a tick late.
+    if !has_column("schedules", "last_due_at") {
+        conn.execute("ALTER TABLE schedules ADD COLUMN last_due_at REAL", []).unwrap();
     }
     if !has_column("channels", "kind") {
         conn.execute("ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'channel'", []).unwrap();
@@ -621,6 +679,10 @@ pub struct NewAttachment {
 pub struct Store {
     conn: Mutex<Connection>,
     pub files_dir: PathBuf,
+    /// (channel_id, thread_id, owner) of schedules removed as a side effect
+    /// of deleting a channel, group, thread or user; the hub drains this to
+    /// tell open schedule lists (see `Hub::flush_schedule_cascades`).
+    schedule_cascades: Mutex<Vec<(String, i64, String)>>,
 }
 
 impl Store {
@@ -640,6 +702,7 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             files_dir: path.parent().unwrap_or(Path::new(".")).join("agora_files"),
+            schedule_cascades: Mutex::new(Vec::new()),
         })
     }
 
@@ -650,6 +713,7 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             files_dir: std::env::temp_dir().join("agora_files_test"),
+            schedule_cascades: Mutex::new(Vec::new()),
         })
     }
 
@@ -795,6 +859,7 @@ impl Store {
                 .unwrap()
                 > 0;
             conn.execute("DELETE FROM drafts WHERE channel_id IN (SELECT id FROM channels WHERE group_id = ?1)", params![group_id]).unwrap();
+            self.note_schedule_cascade(schedules::delete_schedules_where(&conn, "channel_id IN (SELECT id FROM channels WHERE group_id = ?1)", params![group_id]));
             conn.execute("DELETE FROM channels WHERE group_id = ?1", params![group_id]).unwrap();
             conn.execute("DELETE FROM memberships WHERE group_id = ?1", params![group_id]).unwrap();
             conn.execute("DELETE FROM message_templates WHERE group_id = ?1", params![group_id]).unwrap();
@@ -1290,6 +1355,7 @@ impl Store {
                 .unwrap()
                 > 0;
             conn.execute("DELETE FROM drafts WHERE channel_id = ?1", params![channel_id]).unwrap();
+            self.note_schedule_cascade(schedules::delete_schedules_where(&conn, "channel_id = ?1", params![channel_id]));
             delete_thread_reads_for_channel(&conn, channel_id);
             for table in
                 ["messages", "memberships", "pins", "stars", "reactions", "files", "reads", "mentions"]
@@ -1379,6 +1445,14 @@ impl Store {
             )
             .unwrap();
             conn.execute("DELETE FROM agent_dm_grants WHERE username = ?1", params![username]).unwrap();
+            // Their schedules go too, wherever they post, plus schedules
+            // inside threads they started (those threads are deleted above).
+            self.note_schedule_cascade(schedules::delete_schedules_where(&conn, "owner = ?1", params![username]));
+            if !message_ids.is_empty() {
+                let placeholders = vec!["?"; message_ids.len()].join(",");
+                self.note_schedule_cascade(schedules::delete_schedules_where(&conn, &format!("thread_id IN ({placeholders})"),
+                    params_from_iter(message_ids.iter())));
+            }
             conn.execute(
                 "UPDATE groups SET created_by = NULL WHERE created_by = ?1",
                 params![username],
@@ -2521,6 +2595,16 @@ impl Store {
                     tx.execute("DELETE FROM drafts WHERE channel_id=?1 AND thread_id<>0", params![channel_id]).unwrap();
                 }
                 DeleteScope::Message => { tx.execute("DELETE FROM drafts WHERE channel_id=?1 AND thread_id=?2", params![channel_id,target_id]).unwrap(); }
+                DeleteScope::ThreadReplies => {}
+            }
+            // A schedule into a thread that no longer exists could only fail.
+            match scope {
+                DeleteScope::Channel => {
+                    self.note_schedule_cascade(schedules::delete_schedules_where(&tx, "channel_id=?1 AND thread_id<>0", params![channel_id]));
+                }
+                DeleteScope::Message => {
+                    self.note_schedule_cascade(schedules::delete_schedules_where(&tx, "channel_id=?1 AND thread_id=?2", params![channel_id, target_id]));
+                }
                 DeleteScope::ThreadReplies => {}
             }
             tx.execute(&format!("DELETE FROM messages WHERE {predicate}"),

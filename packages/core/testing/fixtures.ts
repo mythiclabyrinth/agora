@@ -9,6 +9,7 @@ import type {
   Member,
   Message,
   MessageTemplate,
+  Schedule,
   ThreadRow,
   UserInfo,
 } from "../src/api/types";
@@ -307,3 +308,69 @@ export const fixtureDenseTrendMessage = [
   "",
   ...fixtureDenseTrendCharts.flatMap(source => ["```echarts", source, "```", ""]),
 ].join("\n");
+
+/* Schedules: a daily loop post in a thread, a 6-hourly channel watchdog, and
+   a paused one whose owner lost access — the three states the panes show.
+   Times are fixed so stories render deterministically. */
+const scheduleBase = {
+  owner: "tom",
+  owner_name: "Tom",
+  channel_id: "general",
+  channel_name: "storybook",
+  channel_kind: "normal",
+  group_id: "product",
+  last_error: null,
+  created_at: 1_750_000_000,
+  updated_at: 1_750_000_000,
+  created_by: "tom",
+  updated_by: "tom",
+  can_manage: true,
+  is_owner: true,
+} satisfies Partial<Schedule>;
+
+export const fixtureSchedules: Schedule[] = [
+  {
+    ...scheduleBase,
+    id: "sch-loop",
+    thread_id: 42,
+    thread_title: "Responsive layout loop",
+    text: "@claude LOOP responsive-review · run 12 · check the layout matrix and re-arm.",
+    schedule: { kind: "cron", expr: "0 7 * * 1-5" },
+    run_at: 1_750_057_200,
+    next_runs: [1_750_057_200, 1_750_143_600, 1_750_230_000],
+    status: "active",
+    last_run_at: 1_749_970_800,
+    via_agent: "claude-cli",
+  },
+  {
+    ...scheduleBase,
+    id: "sch-watchdog",
+    thread_id: null,
+    thread_title: null,
+    text: "@claude watchdog: list loops that are not armed and not done.",
+    schedule: { kind: "interval", seconds: 21_600 },
+    run_at: 1_750_021_200,
+    next_runs: [1_750_021_200, 1_750_042_800, 1_750_064_400],
+    status: "active",
+    last_run_at: 1_749_999_600,
+    via_agent: "codex-cli",
+  },
+  {
+    ...scheduleBase,
+    id: "sch-paused",
+    owner: "alice",
+    owner_name: "Alice",
+    thread_id: null,
+    thread_title: null,
+    text: "@cursor weekly dependency report",
+    schedule: { kind: "once", at: 1_750_100_000 },
+    run_at: 1_750_100_000,
+    next_runs: [1_750_100_000],
+    status: "paused",
+    last_run_at: null,
+    last_error: "alice can no longer post in #storybook",
+    via_agent: null,
+    can_manage: false,
+    is_owner: false,
+  },
+];

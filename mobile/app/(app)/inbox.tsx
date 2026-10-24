@@ -11,6 +11,7 @@ import { createThemedStyles, useAppTheme } from "../../src/lib/useTheme";
 import { toast, toastErr } from "../../src/components/Toast";
 import { SwipeRow, useSwipeRows, type SwipeAction, type SwipeRowController } from "../../src/components/SwipeRow";
 import { ThreadsScreen } from "./threads";
+import { SchedulesInbox } from "../../src/components/SchedulesInbox";
 import { Icon } from "../../src/components/Icon";
 import { MessageOptions } from "../../src/components/MessageOptions";
 import { layout } from "../../src/lib/theme";
@@ -64,7 +65,7 @@ export function UnreadRow({ item, onRead, controller, initialSwipe }: {
 }
 
 export function inboxTabFromParam(value: string | undefined): InboxTab | null {
-  return value === "threads" || value === "unreads" || value === "approvals" || value === "drafts" ? value : null;
+  return value === "threads" || value === "unreads" || value === "approvals" || value === "drafts" || value === "schedules" ? value : null;
 }
 
 export function DraftInboxRow({ item, controller }: { item: DraftRow; controller: SwipeRowController }) {
@@ -160,13 +161,13 @@ export default function InboxScreen({ initialSwipe }: {
   return <View style={styles.root}>
     <Stack.Screen options={{ title: "Inbox", headerShown: true }} />
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroller} contentContainerStyle={styles.tabs} accessibilityRole="tablist">
-      {(["unreads", "threads", "approvals", ...(draftsEnabled ? ["drafts"] as const : [])] as const).map(option => <Pressable key={option}
+      {(["unreads", "threads", "approvals", ...(draftsEnabled ? ["drafts"] as const : []), "schedules"] as const).map(option => <Pressable key={option}
         accessibilityRole="tab" accessibilityState={{ selected: tab === option }}
-        accessibilityLabel={option === "threads" ? "Threads" : option === "drafts" ? `Drafts${drafts.length ? `, ${drafts.length}` : ""}` : option === "approvals" ? `Approvals${approvals.total ? `, ${approvals.total} pending` : ""}` : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
+        accessibilityLabel={option === "threads" ? "Threads" : option === "schedules" ? "Schedules" : option === "drafts" ? `Drafts${drafts.length ? `, ${drafts.length}` : ""}` : option === "approvals" ? `Approvals${approvals.total ? `, ${approvals.total} pending` : ""}` : `Unreads${showTabCount && unreadTotal ? `, ${unreadTotal} unread messages` : ""}`}
         style={[styles.tab, tab === option && styles.tabActive]}
         onPress={() => { swipeRows.close(); setRememberedTab(option); }}>
         <Text style={[styles.tabText, tab === option && styles.tabTextActive]}>
-          {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : option === "approvals" ? `Approvals${approvals.total ? ` (${approvals.total})` : ""}` : option === "drafts" ? `Drafts${drafts.length ? ` (${drafts.length})` : ""}` : "Threads"}
+          {option === "unreads" ? `Unreads${showTabCount && unreadTotal ? ` (${unreadTotal})` : ""}` : option === "approvals" ? `Approvals${approvals.total ? ` (${approvals.total})` : ""}` : option === "drafts" ? `Drafts${drafts.length ? ` (${drafts.length})` : ""}` : option === "schedules" ? "Schedules" : "Threads"}
         </Text>
       </Pressable>)}
     </ScrollView>
@@ -177,7 +178,7 @@ export default function InboxScreen({ initialSwipe }: {
         <View style={styles.empty}><Text style={styles.error}>Couldn't load drafts</Text>
           <Pressable accessibilityRole="button" onPress={() => void draftSync.hydrate().catch(() => {})}><Text style={styles.markAll}>Retry</Text></Pressable>
         </View> : <EmptyState icon={MessageSquare} title="No drafts" description="Messages you start writing will appear here." />}
-    /> : tab === "threads" ? <ThreadsScreen embedded /> : tab === "approvals" ?
+    /> : tab === "schedules" ? <SchedulesInbox /> : tab === "threads" ? <ThreadsScreen embedded /> : tab === "approvals" ?
       <FlatList style={styles.list} contentContainerStyle={styles.listContent}
         data={approvals.data ?? []}
         keyExtractor={item => `${item.channel_id}:${item.thread_id ?? "channel"}`}

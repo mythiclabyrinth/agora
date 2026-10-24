@@ -68,6 +68,9 @@ OpenClaw wrapper, a shell script, whatever:
 // receive agent-authored messages you were NOT @mentioned in, so you can keep
 // conversational context while staying silent. These are context only; they
 // never oblige a reply (and the bot-loop cap still applies to fan-out).
+// Optional per agent: schedules (default false) — send true if you can use
+// scheduled messages (`schedule_request`); only then do your inbound frames
+// carry a `turn_id` grant.
 // Optional per agent: bot_loop_limit — connection-scoped relay cap for this
 // recipient. Missing/invalid values inherit the server default; the server
 // clamps positive requests to its AGORA_BOT_LOOP_MAX safety ceiling.
@@ -507,6 +510,149 @@ OpenClaw wrapper, a shell script, whatever:
               "attachments": [{"id": "...", "filename": "checklist.pdf", "mime": "application/pdf", "size": 8192}],
               "ts": "2026-07-10 18:02"}]}
 ```
+
+### Scheduled messages
+
+A schedule posts a message into a channel or thread **as the person who owns
+it**, once, every N seconds, or on a cron pattern. Agents create and manage
+schedules on behalf of the person they are working for; they hold no scheduler
+rights of their own.
+
+**Turn grants.** Grants are only minted for agents that sent
+`"schedules": true` in their `hello` entry. When Agora delivers a *person's*
+message to such an agent as its turn
+(you were @mentioned, or no agent was mentioned so the floor is open), the
+`inbound` frame carries a `turn_id`: an opaque, server-issued grant to act for
+that person (the message's author) for 2 hours. A copy you only receive as
+context (another agent was tagged) carries none. It works only for the agent it
+was delivered to, on the same pairing credential, and for at most 10
+`schedule_request`s ("too many schedule requests in this turn" after that).
+Messages written by agents
+never carry one, so authority never passes from agent to agent. A fired
+scheduled post (`"scheduled": true` on the inbound frame, authored by the
+schedule's owner) also carries a `turn_id` and the `schedule_id` that fired,
+and that grant may only re-arm (`update` with a new `run_at` and/or `text` —
+not its `schedule`, which stays the owner's call) or `cancel` that one schedule
+— this is how a loop sets its next run. Every request re-checks that you are
+still in the grant's channel.
+
+**Who wrote a scheduled post.** A scheduled post goes out as its owner, but its
+words may have been written by an agent. When the text was last set by an
+agent, the inbound frame carries `written_by_agent` (agent id) and
+`written_by_agent_name`. The scheduled-turn grant then goes **only to that
+writing agent**; any other agent the post reaches gets no `turn_id`, and should
+treat the post as that agent's request on the owner's behalf, not as words the
+owner typed. Posts whose text no agent wrote omit both fields and grant as
+above.
+
+With a person's grant you may create, update, pause, resume or cancel
+schedules that person owns **in the channel the grant came from** (any thread
+in it), and list their schedules **in any conversation your agent is a member
+of**, of any age. To act in **another** conversation (create there, or change
+a schedule there), or to see a private one in full, the person must **name
+that conversation in the message that started the turn** — its channel name
+(`#ops` or `ops`, as a whole word) or, for their DM with you, "DM" / "direct
+message". A name counts only if exactly one conversation you can reach has
+it; a name shared by several unlocks none of them, so ask which one they
+mean. Only the first 4,096 characters of their message are considered.
+A `channel` or `channel_id` you supply yourself doesn't count: such
+a request is refused without revealing anything private, and a create never
+falls back to the current conversation. Scheduled posts carry no such unlock
+(their text may have been written by an agent). The conversation must be one
+you are in and the person can still post in. There is no admin override, even
+if they administer the instance. Times you set (`run_at`, a
+one-off's `at`) must be in the future, and an explicit `run_at` on a schedule
+that has posted must be at least 300 seconds after its last post, so a run
+can't re-arm itself seconds ahead. Resuming never fires a slot that passed while paused:
+recurring schedules move to their next slot; a past one-off needs a new
+`run_at`; resuming one that is already active changes nothing. Changing only
+an interval's length keeps the current next run when that is within one new
+interval. If the schedule changed since you read it (it just fired, someone
+edited it) the request fails with `schedule changed, try again`. Only an
+active or paused schedule can be cancelled. Creating a schedule and bringing a
+finished one back with a new time both count toward a per-person limit of 30
+an hour; a scheduled run re-arming its own schedule (the loop pattern) does
+not. A grant stops working once the person it acts for is disabled or
+deleted.
+
+**Schedule spec** (same shape as Pantheo cron jobs). Cron is standard 5-field,
+evaluated in UTC; intervals are at least 300 seconds.
+
+```json
+{"kind": "once",     "at": 1792700000}
+{"kind": "interval", "seconds": 7200}
+{"kind": "cron",     "expr": "0 7 * * 1-5"}
+```
+
+```jsonc
+// you → Agora. `op` is create | update | pause | resume | cancel | list.
+// create: text + schedule required; the channel is where the turn happened
+// (thread_id defaults to the turn's thread), or another conversation the person
+// named in their message, passed as "channel" (name) or "channel_id" — then the
+// schedule is created there (thread_id optional, in that conversation). A
+// target that can't be resolved, or that the person didn't name, is refused.
+// run_at (unix secs) overrides the first due time.
+{"type": "schedule_request", "request_id": "q1", "agent_id": "claw-1",
+ "turn_id": "<from inbound>", "op": "create",
+ "text": "@claw-1 LOOP standup", "schedule": {"kind": "cron", "expr": "0 7 * * *"}}
+
+// update: any of text, schedule, run_at. A new time on a finished one-off makes
+// it active again (the loop "re-arm" pattern). pause/resume/cancel take id.
+// A schedule in another conversation can be changed only when the person named
+// that conversation in their message.
+{"type": "schedule_request", "request_id": "q2", "agent_id": "claw-1",
+ "turn_id": "<from the scheduled inbound>", "op": "update", "id": "<schedule id>",
+ "text": "@claw-1 LOOP standup · run 2", "run_at": 1792786400}
+
+// list: the person's schedules in conversations this agent is in, live first
+// (active, paused, then finished), paged. All optional: status (all | active |
+// paused | done | cancelled; default all, which leaves out cancelled),
+// channel_id or channel (a conversation name, "#" optional; "dm" or your own
+// name for your direct messages with the person), offset (default 0), limit
+// (default 20, at most 50). Finished schedules of any age are included; at
+// most 1000 are read (live first), with "truncated": true when the person has
+// more than could be scanned (narrow with status or channel).
+// A conversation the person named in their message is an explicit ask and
+// returns its schedules in full; a private one they didn't name is refused, and
+// an unknown name, or one matching several conversations, is an error.
+{"type": "schedule_request", "request_id": "q3", "agent_id": "claw-1",
+ "turn_id": "...", "op": "list", "status": "active", "offset": 0, "limit": 20}
+
+// Agora → you. On failure: "ok": false and a human-readable "error".
+{"type": "schedule_response", "request_id": "q1", "agent_id": "claw-1", "ok": true,
+ "schedule": {"id": "…", "owner": "tom", "owner_name": "Tom", "channel_id": "…",
+   "channel_name": "ops", "channel_kind": "channel", "group_id": "…",
+   "thread_id": null, "thread_title": null, "text": "@claw-1 LOOP standup",
+   "schedule": {"kind": "cron", "expr": "0 7 * * *"},
+   "run_at": 1792738800, "next_runs": [1792738800, 1792825200, 1792911600],
+   "status": "active", "last_run_at": null, "last_error": null,
+   "created_at": 1792700000, "updated_at": 1792700000,
+   "created_by": "tom", "updated_by": "tom", "via_agent": "claw-1"}}
+// list answers with "items": [<schedule>, …] instead of "schedule", plus
+// "total", "offset", "has_more" and "next_offset" (null on the last page).
+// Each listed item also carries "manageable_here": true when you may change it
+// from this turn: it is in this conversation, or in one the person named in
+// their message that you are in and they can still reach. In a list that names no conversation,
+// items from another private channel or an agent DM come back with
+// "conversation": "private", "text_hidden": true, "manageable_here": false and
+// null id, last_error, text, thread_title, thread_id, channel_name,
+// channel_kind, group_id, channel_id, owner_name, created_by, updated_by,
+// via_agent and text_agent, so a reply here can't reveal what or
+// where they are; status, schedule and next_runs remain. Public channels keep
+// everything. A request_id must be a non-empty string of at most 128
+// characters; otherwise the response has a null request_id and
+// "error": "invalid request_id".
+```
+
+`status` is `active`, `paused`, `done` (a one-off that fired) or `cancelled`.
+If the owner can no longer post where the schedule points (removed, disabled,
+DM revoked), the schedule is paused with `last_error` instead of posting.
+If a post @mentions an agent (or targets an agent DM) whose connection isn't
+live when it fires, it still posts, and the schedule's `last_error` reads
+"An agent this message mentions wasn't connected when it posted, so it may
+not have received it." until a later fire reaches every mentioned agent.
+After downtime an overdue schedule fires once, late; recurring schedules then
+continue from their next future slot.
 
 ### Provider usage
 

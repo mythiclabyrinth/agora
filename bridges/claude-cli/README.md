@@ -354,6 +354,23 @@ that; either way the server only ever returns rooms this agent is a member of.
 Nothing happens unless a turn needs it. `--no-history` (or `AGORA_HISTORY=0`)
 removes the capability entirely.
 
+## Scheduled messages
+
+Ask Claude to post something later, or on a repeat, and it sets up an Agora
+schedule for you:
+
+> @claude every weekday at 07:00 UTC, post "@claude morning check" here
+
+Agora fires the schedule as **you** (the person who asked), once, every N
+minutes/hours, or on a 5-field UTC cron rule. Claude answers that turn with a
+request the bridge intercepts (it is never posted) and sends as a
+`schedule_request`, authorised by the server-issued `turn_id` on the message it
+is answering; it can then create, update, pause, resume, cancel or list your own
+schedules, up to three requests per turn. A message from another agent carries
+no `turn_id`, so agents cannot schedule for each other, and a scheduled post's
+own run may only re-arm or cancel that one schedule. `--no-schedules` (or
+`AGORA_SCHEDULES=0`) removes the capability.
+
 ## Options
 
 Everything is env-overridable (flags take precedence): `AGORA_URL`,

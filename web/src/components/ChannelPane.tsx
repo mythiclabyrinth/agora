@@ -3,6 +3,7 @@
    live typing/progress rows, and the composer. */
 
 import { useMemo, useState } from "react";
+import { useHeaderMenu, useHeaderOverflow, useMediaQuery } from "../hooks/useHeaderMenu";
 import {
   FEATURES, fmtTs, useAgents, useChannelAgents, useChannelLive, useClearMessages, useGroups, useMe, useMembers,
   usePinMessage, usePins, useSeedActivity, useStarMessage, useStars,
@@ -18,6 +19,7 @@ import { buildMentionIndex } from "../lib/mentions";
 import { MessageLog } from "./MessageLog";
 import { Composer } from "./Composer";
 import { LiveButton, LiveStrip, SpeakButton } from "./VoiceControls";
+import { HeaderToolLabel } from "./HeaderToolLabel";
 import { copyDeepLink } from "../lib/deepLinks";
 import { confirmStep, useConfirm } from "../state/confirm";
 
@@ -164,7 +166,6 @@ export function ChannelPane() {
   const [editName, setEditName] = useState("");
   const [editTopic, setEditTopic] = useState("");
   const [replyInThread, setReplyInThread] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
   const [starsOpen, setStarsOpen] = useState(false);
   const stars = useStars(channel?.id || "").data || [];
   const clearChat = useClearMessages(channel?.id || "", null);
@@ -175,6 +176,15 @@ export function ChannelPane() {
   const isAdmin = !!(!isDm && group && (
     group.role === "admin" || channel?.role === "admin" || me?.instance_admin
   ));
+  // A phone, or a pane squeezed by a docked thread plus a side pane, reaches
+  // the channel tools through ⋯ instead of wrapping them into a second row.
+  const compact = useMediaQuery("(max-width: 820px)");
+  // `compact` is in the key: while it's on, the tools sit in the menu and the
+  // header is measured without them, so leaving it must measure again.
+  const head = useHeaderOverflow([channel?.id, isAdmin, isDm, clearArmed, stars.length,
+    !!me?.voice_tts, !!me?.voice_stt, compact].join("|"));
+  const menuMode = compact || head.narrow;
+  const menu = useHeaderMenu(menuMode);
   const mentions = useMemo(
     () => buildMentionIndex(
       agents.map(a => ({ id: a.id, name: a.name })),
@@ -228,7 +238,7 @@ export function ChannelPane() {
 
   return (
     <div className="agora-main" id="agora-main">
-      <div className="ago-head">
+      <div ref={head.ref} className={`ago-head ${head.narrow ? "is-narrow" : ""}`}>
         <button className="btn sm ago-back" title="Back to groups" onClick={() => ui.backToGroups()}>
           <Icon name="chevron-left" />
         </button>
@@ -267,17 +277,33 @@ export function ChannelPane() {
             </span>
           </div>
         )}
-        <button className="btn sm ago-mobile-tools" aria-label="Channel actions" aria-expanded={toolsOpen}
-          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="chevron-down" /></button>
-        <div className={`ago-head-actions ago-channel-tools ${toolsOpen ? "open" : ""}`}>
+        <button className={`btn sm ago-mobile-tools ${menu.open ? "active" : ""}`} aria-label="Channel actions"
+          title="Channel actions" {...menu.triggerProps}><Icon name="ellipsis" /></button>
+        <div className={`ago-channel-tools ${menuMode ? "ago-head-menu" : "ago-head-actions"}`} {...menu.menuProps}>
+          {menuMode && <div className="ago-head-menu-title">{isDm ? "↔ " : "#"}{channel.name}</div>}
+          {menuMode && isAdmin && <button className="btn sm" style={{ order: 6 }} title={`Rename #${channel.name} / edit topic`}
+            onClick={() => { setEditing(true); setEditName(channel.name); setEditTopic(channel.topic || ""); }}>
+            <Icon name="pencil" /> Rename channel
+          </button>}
           <button className={`btn sm ${ui.filesOpen && ui.filesThread == null ? "active" : ""}`}
+            style={menuMode ? { order: 1 } : undefined}
             title={`Attachments in #${channel.name}`}
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread == null), null)}>
-            <Icon name="paperclip" /> Files
+            <Icon name="paperclip" />
+            <HeaderToolLabel menu={menuMode} label="Files" menuLabel="Channel attachments" detail="Files, images and shared media" />
+          </button>
+          <button className={`btn sm ${ui.schedulesOpen && ui.schedulesThread == null ? "active" : ""}`}
+            title={`Schedules in #${channel.name}`}
+            aria-label="Schedules" aria-expanded={ui.schedulesOpen && ui.schedulesThread == null}
+            style={menuMode ? { order: 2 } : undefined}
+            onClick={() => ui.setSchedulesOpen(!(ui.schedulesOpen && ui.schedulesThread == null), null)}>
+            <Icon name="calendar-clock" />
+            <HeaderToolLabel menu={menuMode} label="Schedules" detail="Messages set to post later" />
           </button>
           {(isDm || isAdmin) && <button
             className={`btn sm danger ${clearArmed ? "armed" : ""}`}
-            disabled={clearChat.isPending}
+            style={menuMode ? { order: 8 } : undefined}
+            disabled={clearChat.isPending} data-keep-open={clearArmed ? undefined : ""}
             title={clearArmed ? "Click again to clear all messages" : `Clear all messages in ${isDm ? "this chat" : `#${channel.name}`}`}
             onClick={() => {
               if (!confirmStep(`clear-chat:${channel.id}`)) return;
@@ -291,22 +317,29 @@ export function ChannelPane() {
             }}>
             <Icon name="trash-2" /> {clearArmed ? "Clear all?" : "Clear chat"}
           </button>}
-          {!isDm && <button className="btn sm" title="Copy link to this channel"
+          {!isDm && <button className="btn sm" style={menuMode ? { order: 7 } : undefined} title="Copy link to this channel"
             onClick={() => void copyDeepLink({
               kind: "channel", groupId: group.id, channelId: channel.id,
             }, "Channel")}>
             <Icon name="link" /> Link
           </button>}
-          {me?.voice_tts && <SpeakButton />}
-          {me?.voice_stt && me?.voice_tts && <LiveButton channelId={channel.id} threadId={null} />}
+          {me?.voice_tts && <SpeakButton style={menuMode ? { order: 5 } : undefined} />}
           {FEATURES.stars && <button className={`btn sm ago-star-toggle ${starsOpen ? "active" : ""}`}
+            style={menuMode ? { order: 3 } : undefined}
             title={`Starred messages in #${channel.name}`}
             onClick={() => setStarsOpen(!starsOpen)}>
             {stars.length ? <><Icon name="star" cls="fill" /> {stars.length}</> : <Icon name="star" />}
+            <span className="ago-menu-label">Starred messages</span>
           </button>}
           {!isDm && <button className={`btn sm ${ui.membersOpen ? "active" : ""}`}
-            onClick={() => ui.setMembersOpen(!ui.membersOpen)}>Members</button>}
+            style={menuMode ? { order: 4 } : undefined}
+            onClick={() => ui.setMembersOpen(!ui.membersOpen)}>{menuMode && <Icon name="users" />}
+            <HeaderToolLabel menu={menuMode} label="Members" menuLabel="Participants" detail="People, agents and channel access" />
+          </button>}
         </div>
+        {/* Live stays in the header at its right edge on every screen size;
+            the other tools fold into ⋯ when space runs out. */}
+        {me?.voice_stt && me?.voice_tts && <LiveButton channelId={channel.id} threadId={null} />}
       </div>
       <PinBar channelId={channel.id} />
       {FEATURES.stars && starsOpen && <StarPop channelId={channel.id} onClose={() => setStarsOpen(false)} />}

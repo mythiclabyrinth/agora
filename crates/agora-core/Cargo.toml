@@ -25,6 +25,10 @@ ureq.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true
+# Cron expressions for scheduled messages (5-field, evaluated in UTC like
+# Pantheo's croniter). croner 2.x depends only on chrono; 3.x adds proc macros.
+croner = "2.2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"

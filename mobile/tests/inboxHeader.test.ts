@@ -94,7 +94,7 @@ test("Approvals is selectable and remembers its tab", () => {
 test("Drafts is the fourth tab and shows its count", () => {
   (useSyncedDrafts as jest.Mock).mockReturnValue([{ channel_id: "general", thread_id: null, body: "hello" }]);
   render();
-  expect(tabs()).toHaveLength(4);
+  expect(tabs().map(node => node.props.accessibilityLabel)).toEqual(["Unreads, 5 unread messages", "Threads", "Approvals", "Drafts, 1", "Schedules"]);
   act(() => tabs().find((node) => node.props.accessibilityLabel === "Drafts, 1")!.props.onPress());
   expect(useInboxTab.getState().tab).toBe("drafts");
   const tabStrip = tree.root.findAllByType(ScrollView).find(node => node.props.accessibilityRole === "tablist");
@@ -115,7 +115,7 @@ test("remembered Drafts falls back to Unreads until draft sync is available", ()
   useInboxTab.setState({ tab: "drafts" });
   (useMe as jest.Mock).mockReturnValue({ data: undefined });
   render();
-  expect(tabs()).toHaveLength(3);
+  expect(tabs().map(node => node.props.accessibilityLabel)).toEqual(["Unreads, 5 unread messages", "Threads", "Approvals", "Schedules"]);
   expect(tabs()[0].props.accessibilityState.selected).toBe(true);
 });
 

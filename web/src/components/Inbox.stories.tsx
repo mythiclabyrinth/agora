@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
-import { fixtureGroups, fixtureMe, fixtureThreads } from "@agora/core/testing/fixtures";
+import { fixtureGroups, fixtureMe, fixtureSchedules, fixtureThreads } from "@agora/core/testing/fixtures";
 import { useMessageDrafts, type DraftRow, type UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
 import { useUiState } from "../state/ui";
@@ -77,6 +77,82 @@ export const Drafts: Story = { parameters: { setup: () => {
 } }, play: async ({ canvasElement }) => {
   await expect(within(canvasElement).findByRole("tab", { name: "Drafts (1)" })).resolves.toBeVisible();
 } };
+export const Schedules: Story = {
+  parameters: {
+    apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/schedules": { items: fixtureSchedules } },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole("tab", { name: "Schedules" })).resolves.toHaveAttribute("aria-selected", "true");
+    await expect(canvas.findByText("Weekdays at 07:00 UTC")).resolves.toBeVisible();
+    await expect(canvas.findByRole("region", { name: "Schedules in storybook" })).resolves.toBeVisible();
+  },
+};
+// Channels that each have an active and a paused schedule keep one heading
+// apiece on every tab (a global status sort would split them).
+const mixedRow = (id: string, channel: string, status: "active" | "paused", runAt: number) => ({
+  ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null,
+  status, run_at: runAt, can_manage: false,
+});
+export const SchedulesMixedChannelsGroupOnce: Story = {
+  parameters: {
+    apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/schedules": { items: [
+      mixedRow("a-act", "alpha", "active", 100), mixedRow("s-act", "storybook", "active", 200),
+      mixedRow("a-pau", "alpha", "paused", 300), mixedRow("s-pau", "storybook", "paused", 400),
+    ] } },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const groups = async () => (await canvas.findAllByRole("region", { name: /^Schedules in / })).map(r => r.getAttribute("aria-label"));
+    await expect(groups()).resolves.toEqual(["Schedules in alpha", "Schedules in storybook"]);
+    for (const tab of [/^Active/, /^Paused/]) {
+      await userEvent.click(await canvas.findByRole("tab", { name: tab }));
+      await expect(groups()).resolves.toEqual(["Schedules in alpha", "Schedules in storybook"]);
+    }
+  },
+};
+
+// Agent DMs come back with group_id "" — opening one must still navigate,
+// landing on the synthetic DMs group rather than silently doing nothing.
+export const SchedulesInAgentDm: Story = {
+  parameters: {
+    apiRoutes: {
+      ...meta.parameters.apiRoutes,
+      "GET /api/schedules": { items: [{
+        ...fixtureSchedules[1], id: "sch-dm", channel_id: "dm-claude", channel_name: "Claude",
+        channel_kind: "agent_dm", group_id: "", thread_id: null, thread_title: null,
+      }] },
+    },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /Claude/ }));
+    await expect(useUiState.getState().sel).toEqual({ g: "__dms", c: "dm-claude" });
+  },
+};
+export const SchedulesOwnerLostChannel: Story = {
+  parameters: {
+    apiRoutes: {
+      ...meta.parameters.apiRoutes,
+      "GET /api/schedules": { items: [{
+        ...fixtureSchedules[1], id: "sch-lost", channel_id: "ops", channel_name: "ops",
+        thread_id: 42, thread_title: "old thread", can_manage: true, is_owner: true, channel_access: false,
+      }] },
+    },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const head = await canvas.findByRole("button", { name: /#ops/ });
+    await expect(head).toBeDisabled();
+    // No "open conversation" link into a channel the owner can't load.
+    await expect(canvas.queryByTitle("Open conversation")).toBeNull();
+    await expect(canvas.findByText(/no longer have access/i)).resolves.toBeTruthy();
+  },
+};
 export const DraftsOnOlderServer: Story = {
   parameters: {
     apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/me": { ...fixtureMe, drafts_sync: false } },
@@ -102,8 +178,23 @@ export const ReloadResetRules: Story = {
   play: async () => {
     expect(inboxPathAfterReload("/inbox/threads", "reload", {})).toBe("/inbox/unreads");
     expect(inboxPathAfterReload("/inbox/approvals", "reload", {})).toBe("/inbox/unreads");
+    expect(inboxPathAfterReload("/inbox/schedules", "reload", {})).toBe("/inbox/unreads");
     expect(inboxPathAfterReload("/inbox/threads", "reload", null)).toBeNull();
     expect(inboxPathAfterReload("/inbox/threads", "navigate", {})).toBeNull();
     expect(inboxPathAfterReload("/inbox/unreads", "reload", {})).toBeNull();
+  },
+};
+
+export const ScheduleStatusFilters: Story = {
+  parameters: Schedules.parameters,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const filters = within(await canvas.findByRole("tablist", { name: "Schedule status" }));
+    await userEvent.click(filters.getByRole("tab", { name: "Paused 1" }));
+    await expect(canvas.findByText("@cursor weekly dependency report")).resolves.toBeVisible();
+    expect(canvas.queryByText("Every 6 hours")).toBeNull();
+    await userEvent.click(filters.getByRole("tab", { name: "Active 2" }));
+    await expect(canvas.findByText("Every 6 hours")).resolves.toBeVisible();
+    expect(canvas.queryByText("@cursor weekly dependency report")).toBeNull();
   },
 };

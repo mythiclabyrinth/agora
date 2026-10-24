@@ -19,6 +19,10 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc::UnboundedSender, Notify};
 
 use crate::attachments::{safe_filename, sniff_image_mime};
+
+mod scheduler;
+pub use scheduler::{scheduler_start_grace, tick_needs_wake_grace, WakeClock, SCHEDULER_TICK_SECS};
+pub(crate) use scheduler::{cancel_change, decorate_schedule, plan_change, ChangeRequest, PlanError, ScheduleDecorator};
 use crate::store::{now, slugify, NewAttachment, Store};
 
 /// Default consecutive agent-authored messages fanned out to a recipient in
@@ -508,6 +512,10 @@ pub struct AgentHandle {
     /// These frames are context only — the bridge never drives its CLI from a
     /// non-human author, so a context feed can't create bot loops.
     pub wants_context_feed: bool,
+    /// Whether this agent's bridge can use scheduled messages (it sent
+    /// `"schedules": true` in its hello). Only these get a per-turn grant, so
+    /// agents that never schedule don't fill the grant table.
+    pub schedules: bool,
     /// Whether the agent's home instance has a profile picture for it, plus
     /// a cache-busting stamp; the bytes are proxied via /api/agents/{id}/avatar.
     pub has_avatar: bool,
@@ -550,6 +558,10 @@ struct HubState {
     /// Last on-demand usage refresh sent per live agent. Profile opens may be
     /// concurrent across clients, so one request serves them all.
     last_usage_refresh: HashMap<String, Instant>,
+    /// Live per-turn scheduler grants by turn_id (see hub/scheduler.rs).
+    grants: HashMap<String, scheduler::TurnGrant>,
+    /// When the scheduler last pruned its fire records (see hub/scheduler.rs).
+    last_fire_maintenance: f64,
 }
 
 pub(crate) fn agent_usage_is_stale(usage: &Value, now_s: f64) -> bool {
@@ -2189,6 +2201,31 @@ impl Hub {
         }
         if message["meta"]["scheduled"] == true {
             frame["scheduled"] = json!(true);
+            // Agora's own schedules (posted as a person) name themselves, so
+            // the run can re-arm or cancel the one schedule its turn allows.
+            if message["author_type"] == "user" {
+                if let Some(id) = message["meta"]["schedule_id"].as_str() {
+                    frame["schedule_id"] = json!(id);
+                }
+                // The words came from an agent, not the person it posts as:
+                // recipients must weigh it as that agent's request.
+                if let Some(writer) = message["meta"]["written_by_agent"].as_str() {
+                    frame["written_by_agent"] = json!(writer);
+                    let name = message["meta"]["written_by_agent_name"].as_str().unwrap_or(writer);
+                    frame["written_by_agent_name"] = json!(name);
+                }
+            }
+        }
+        // A person's message lets the agent act for that person on the
+        // scheduler for a while (see hub/scheduler.rs); agent posts don't.
+        // Only a turn the message hands this agent counts: it was tagged, or
+        // nobody was tagged and the floor is open. An agent that just
+        // overhears a message meant for another agent gets no authority, and
+        // neither does a mention-gated agent fed the message only as context.
+        if mentioned || (!any_mention && !handle.requires_mention) {
+            if let Some(turn_id) = self.mint_turn_grant(handle, message, thread_id) {
+                frame["turn_id"] = json!(turn_id);
+            }
         }
         frame
     }
@@ -2443,6 +2480,23 @@ impl Hub {
         }
         if frame["type"].as_str() == Some("usage_request") {
             self.handle_usage_request(&agent_id, frame);
+            return;
+        }
+        // Scheduler ops are authorized by the turn grant (owner + target are
+        // checked inside), not by the frame's channel, and always answer.
+        if frame["type"].as_str() == Some("schedule_request") {
+            // Validating a cron rule scans a month of matches; on the
+            // multi-threaded server runtime, tell tokio this socket task is
+            // blocking so other tasks move off its worker meanwhile. Tests
+            // and current-thread runtimes run it inline (block_in_place would
+            // panic there).
+            let multi_thread = tokio::runtime::Handle::try_current()
+                .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+            if multi_thread {
+                tokio::task::block_in_place(|| self.handle_schedule_request(&agent_id, frame));
+            } else {
+                self.handle_schedule_request(&agent_id, frame);
+            }
             return;
         }
         if channel_id.is_empty() || self.store.channel(&channel_id).is_none() {
@@ -3048,7 +3102,7 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc::unbounded_channel;
 
-    fn hub() -> Hub {
+    pub(crate) fn hub() -> Hub {
         Hub::new(Arc::new(Store::open_in_memory().unwrap()))
     }
 
@@ -3087,7 +3141,7 @@ mod tests {
         )
     }
 
-    fn add_agent(
+    pub(crate) fn add_agent(
         h: &Hub,
         id: &str,
         name: &str,
@@ -3096,7 +3150,7 @@ mod tests {
         add_agent_full(h, id, name, requires_mention, false)
     }
 
-    fn add_agent_full(
+    pub(crate) fn add_agent_full(
         h: &Hub,
         id: &str,
         name: &str,
@@ -3111,6 +3165,7 @@ mod tests {
             requires_mention,
             bot_loop_limit: None,
             wants_context_feed,
+            schedules: true,
             has_avatar: false,
             avatar_v: 0,
             source: "test".into(),
@@ -3133,6 +3188,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: limit,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "test".into(),
@@ -3142,7 +3198,7 @@ mod tests {
         rx
     }
 
-    fn setup_channel(h: &Hub, agents: &[&str]) -> String {
+    pub(crate) fn setup_channel(h: &Hub, agents: &[&str]) -> String {
         let g = h.store.create_group("G", "", Some("tom"));
         let gid = g["id"].as_str().unwrap();
         let c = h.store.create_channel(gid, "main", "");
@@ -3154,7 +3210,7 @@ mod tests {
 
     /// Drain *rx*, returning the last frame of the given type (posts fan
     /// inbound frames to member agents, so tests skip past those).
-    fn last_frame(
+    pub(crate) fn last_frame(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
         ftype: &str,
     ) -> Option<Value> {
@@ -4402,6 +4458,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: None,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "test".into(),
@@ -6378,6 +6435,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: None,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "pairing:openclaw".into(),
@@ -6391,6 +6449,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: None,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "pairing:openclaw".into(),

@@ -17,6 +17,7 @@ import { Sidebar } from "./Sidebar";
 import { ChannelPane } from "./ChannelPane";
 import { ThreadPane } from "./ThreadPane";
 import { MembersPanel } from "./MembersPanel";
+import { expectOpaqueSurface } from "../stories/opaqueSurfaces";
 
 const namedRoot = { ...fixtureMessages[0], alias: "Responsive layout review" };
 const namedThreads = fixtureThreads.map(thread => thread.root.id === namedRoot.id
@@ -85,8 +86,23 @@ function element(canvasElement: HTMLElement, selector: string): HTMLElement {
 }
 
 function threadActionLabels(canvasElement: HTMLElement): HTMLElement[] {
-  const actions = element(canvasElement, "#agora-thread .ago-head-actions");
+  const actions = element(canvasElement, "#agora-thread .ago-thread-tools");
   return [...actions.querySelectorAll<HTMLElement>(".ago-btn-label")];
+}
+
+/* The ⋯ menu is a popover in the top layer: it must open fully inside the
+   viewport, paint an opaque surface, and offer Files/attachments + Schedules. */
+async function expectToolsMenu(menu: HTMLElement, filesLabel: RegExp): Promise<void> {
+  await waitFor(() => expect(menu.matches(":popover-open")).toBe(true));
+  expectOpaqueSurface(`#${CSS.escape(menu.id)}`);
+  const box = menu.getBoundingClientRect();
+  const doc = menu.ownerDocument.documentElement;
+  expect(box.left).toBeGreaterThanOrEqual(0);
+  expect(box.right).toBeLessThanOrEqual(doc.clientWidth);
+  expect(box.bottom).toBeLessThanOrEqual(doc.clientHeight + 1);
+  const menuCanvas = within(menu);
+  await expect(menuCanvas.findByRole("button", { name: filesLabel })).resolves.toBeVisible();
+  await expect(menuCanvas.findByRole("button", { name: /Schedules/ })).resolves.toBeVisible();
 }
 
 async function expectNoHorizontalOverflow(canvasElement: HTMLElement): Promise<void> {
@@ -167,7 +183,7 @@ export const PhoneChannelEditor: Story = {
     expect(actions).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(actions);
     expect(actions).toHaveAttribute("aria-expanded", "true");
-    await userEvent.click(canvas.getByRole("button", { name: /Rename #storybook/i }));
+    await userEvent.click(await canvas.findByRole("button", { name: "Rename channel" }));
     await expect(canvas.findByLabelText("Channel name")).resolves.toBeVisible();
     await expect(canvas.findByLabelText("Channel description")).resolves.toBeVisible();
     const name = canvasElement.querySelector<HTMLInputElement>("#ago-edit-name");
@@ -213,6 +229,61 @@ export const DesktopThreadDocked: Story = {
     expect(labels.length).toBeGreaterThan(0);
     for (const label of labels) await waitFor(() => expect(label).not.toBeVisible());
     await expectNoHorizontalOverflow(canvasElement);
+    // Docked, the tools sit behind ⋯: an anchored popover with labelled rows.
+    const thread = within(element(canvasElement, "#agora-thread"));
+    const actions = thread.getByRole("button", { name: "Thread actions" });
+    await userEvent.click(actions);
+    const menu = element(canvasElement, "#agora-thread .ago-thread-tools");
+    await expectToolsMenu(menu, /Thread attachments/);
+    for (const label of labels) await waitFor(() => expect(label).toBeVisible());
+    expect(thread.getByRole("button", { name: "Close thread" })).toBeVisible();
+    menu.querySelector<HTMLButtonElement>("button")?.focus();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(menu.matches(":popover-open")).toBe(false));
+    expect(actions).toHaveFocus();
+  },
+};
+
+/* A docked thread leaves the channel pane narrow; its tools collapse behind
+   ⋯ instead of wrapping under the title. */
+export const DesktopChannelBesideThread: Story = {
+  globals: { viewport: { value: "desktopBoundary", isRotated: false } },
+  args: { mode: "thread" },
+  parameters: {
+    viewport: { defaultViewport: "desktopBoundary" },
+    setup: () => setup("thread"),
+  },
+  play: async ({ canvasElement }) => {
+    const main = element(canvasElement, "#agora-main");
+    await waitFor(() => expect(main.querySelector(".ago-head.is-narrow")).not.toBeNull());
+    const head = element(canvasElement, "#agora-main > .ago-head");
+    expect(head.scrollWidth).toBeLessThanOrEqual(head.clientWidth + 1);
+    const actions = within(main).getByRole("button", { name: "Channel actions" });
+    await waitFor(() => expect(actions).toBeVisible());
+    await userEvent.click(actions);
+    await expectToolsMenu(element(canvasElement, "#agora-main .ago-channel-tools"), /^Channel attachments/);
+    await userEvent.click(within(element(canvasElement, "#agora-main .ago-channel-tools")).getByRole("button", { name: /Schedules/ }));
+    await waitFor(() => expect(useUiState.getState().schedulesOpen).toBe(true));
+    await waitFor(() => expect(element(canvasElement, "#agora-main .ago-channel-tools").matches(":popover-open")).toBe(false));
+  },
+};
+
+/* A phone channel reaches every tool through ⋯ as a bottom sheet. */
+export const PhoneChannelToolsSheet: Story = {
+  globals: { viewport: { value: "phone", isRotated: false } },
+  parameters: {
+    viewport: { defaultViewport: "phone" },
+    setup: () => setup("channel"),
+  },
+  play: async ({ canvasElement }) => {
+    const main = element(canvasElement, "#agora-main");
+    await waitFor(() => expect(main).toBeVisible());
+    await userEvent.click(within(main).getByRole("button", { name: "Channel actions" }));
+    const menu = element(canvasElement, "#agora-main .ago-channel-tools");
+    await expectToolsMenu(menu, /^Channel attachments/);
+    const box = menu.getBoundingClientRect();
+    expect(Math.round(box.bottom)).toBe(menu.ownerDocument.documentElement.clientHeight);
+    expect(Math.round(box.width)).toBe(menu.ownerDocument.documentElement.clientWidth);
   },
 };
 
@@ -265,8 +336,15 @@ export const PhoneThreadPane: Story = {
     expect(labels.length).toBeGreaterThan(0);
     expect(actions).toHaveAttribute("aria-expanded", "false");
     for (const label of labels) expect(label).not.toBeVisible();
+    // Only ⋯ (and back) in the header: no standalone paperclip.
+    const head = element(canvasElement, "#agora-thread > .ago-head");
+    const direct = [...head.querySelectorAll<HTMLElement>(":scope > button")].filter(b => b.checkVisibility());
+    expect(direct.some(b => b.querySelector(".ico-paperclip, [data-icon='paperclip']") || /Files|attachments/i.test(b.title))).toBe(false);
     await userEvent.click(actions);
     expect(actions).toHaveAttribute("aria-expanded", "true");
+    await expectToolsMenu(element(canvasElement, "#agora-thread .ago-thread-tools"), /Thread attachments/);
+    // A phone thread already fills the screen: no Expand row.
+    expect(element(canvasElement, "#agora-thread .ago-thread-expand")).not.toBeVisible();
     for (const label of labels) await waitFor(() => expect(label).toBeVisible());
     await expectNoHorizontalOverflow(canvasElement);
     await userEvent.click(actions);

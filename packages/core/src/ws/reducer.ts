@@ -613,6 +613,12 @@ export function applyWsEvent(
       );
       break;
     }
+    case "schedules_changed": {
+      // Prefix match refreshes the channel list and every thread list in it.
+      void qc.invalidateQueries({ queryKey: ["schedules", ev.channel_id] });
+      void qc.invalidateQueries({ queryKey: keys.allSchedules });
+      break;
+    }
     case "pin": {
       const pin = ev as PinEvent;
       // Payload carries the full pin row on pin, only the id on unpin —

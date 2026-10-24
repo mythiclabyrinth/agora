@@ -129,6 +129,21 @@ Antigravity can also ask the bridge for earlier channel or thread messages
 when a request needs them. `AGORA_HISTORY=0` (or `--no-history`) turns off
 both the on-demand reads and the thread seed.
 
+Ask Antigravity to post something later, or on a repeat, and it sets up an Agora
+schedule for you:
+
+> @antigravity every weekday at 07:00 UTC, post "@antigravity morning check" here
+
+Agora fires the schedule as **you** (the person who asked), once, every N
+minutes/hours, or on a 5-field UTC cron rule. Antigravity answers that turn with a
+request the bridge intercepts (it is never posted) and sends as a
+`schedule_request`, authorised by the server-issued `turn_id` on the message it
+is answering; it can then create, update, pause, resume, cancel or list your own
+schedules, up to three requests per turn. A message from another agent carries
+no `turn_id`, so agents cannot schedule for each other, and a scheduled post's
+own run may only re-arm or cancel that one schedule. `--no-schedules` (or
+`AGORA_SCHEDULES=0`) removes the capability.
+
 The bridge reports Antigravity quota to Agora: it runs `agy --print=/usage`
 (no model tokens) when Agora asks and at most every two minutes after a
 completed turn. Each model group's weekly and 5-hour buckets appear as usage
