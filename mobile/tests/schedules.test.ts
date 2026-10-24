@@ -337,12 +337,12 @@ test("a capped list says so under the rows; an uncapped one doesn't", async () =
   capped.truncated = true;
   await act(async () => { tree = TestRenderer.create(wrap(capped, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
   await flush();
-  expect(texts().some(t => t.startsWith("Showing the 1,000 soonest schedules"))).toBe(true);
+  expect(texts().some(t => t.startsWith("Showing the first 1,000 schedules (active first)"))).toBe(true);
   act(() => tree!.unmount());
   const full = new TestApi(fixtureSchedules);
   await act(async () => { tree = TestRenderer.create(wrap(full, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
   await flush();
-  expect(texts().some(t => t.startsWith("Showing the 1,000"))).toBe(false);
+  expect(texts().some(t => t.startsWith("Showing the first 1,000"))).toBe(false);
 });
 
 test("schedule status tabs expose counts and selection, filter rows, and return to All", async () => {

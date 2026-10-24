@@ -5741,9 +5741,20 @@ class ScheduleListPrivacyTests(unittest.TestCase):
         out = bridge.format_schedule_result({"op": "list"}, {
             "ok": True, "items": [self.ROW, hidden], "total": 2, "offset": 0, "has_more": False})
         self.assertIn('text: "public words"', out)
-        self.assertIn("(text hidden: ask about that conversation by name to see it)", out)
-        self.assertIn("manage it in that conversation", out)
+        self.assertIn("(text hidden: name the conversation to see or manage it)", out)
+        # A hidden row points at naming it, not at "that conversation".
+        self.assertNotIn("manage it in that conversation", out)
+        elsewhere = dict(self.ROW, id="c", manageable_here=False)
+        out = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [elsewhere], "total": 1, "offset": 0, "has_more": False})
         self.assertEqual(out.count("manage it in that conversation"), 1)
+
+    def test_naming_the_conversation_travels_on_every_op(self):
+        for op in ("list", "update", "pause", "resume", "cancel"):
+            frame = bridge.schedule_request_frame(
+                {"op": op, "id": "s1", "channel": "#exec-comp"}, "AGENT", "t-1", "r1")
+            self.assertEqual(frame["channel"], "#exec-comp", op)
+        self.assertIn("to see or manage it", bridge.SCHEDULE_SYSTEM_PROMPT)
 
     def test_list_limit_is_clamped_to_one_rendered_page(self):
         for asked, sent in ((50, bridge.SCHEDULE_LIST_MAX), (5, 5), (0, 1), ("x", bridge.SCHEDULE_LIST_MAX)):

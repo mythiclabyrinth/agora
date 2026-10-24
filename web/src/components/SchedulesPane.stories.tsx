@@ -141,7 +141,7 @@ export const CappedListSaysSo: Story = {
   parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules": { items: [paused], truncated: true } } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.findByRole("status")).resolves.toHaveTextContent("Showing the 1,000 soonest schedules");
+    await expect(canvas.findByRole("status")).resolves.toHaveTextContent("Showing the first 1,000 schedules (active first)");
   },
 };
 

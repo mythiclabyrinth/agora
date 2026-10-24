@@ -637,6 +637,19 @@ fn resolve_named_channel(store: &Store, handle: &AgentHandle, owner: &str, raw: 
     }
 }
 
+/// A regular channel in a public group: anyone may read it, so a reply
+/// elsewhere can mention its schedules. Private channels and DMs are not.
+fn is_public_channel(store: &Store, channel_id: &str) -> bool {
+    store.channel(channel_id).is_some_and(|c| {
+        c["kind"] == "channel"
+            && c["group_id"].as_str().and_then(|g| store.group(g)).is_some_and(|g| g["is_public"] == true)
+    })
+}
+
+/// Refusal for a private schedule elsewhere that the person didn't name. It
+/// says nothing about the schedule, so the reply can't reveal it.
+const PRIVATE_UNNAMED: &str = "that schedule is in a private conversation; ask about it by name to manage it";
+
 /// Make room in a full grant map: drop expired grants, then the oldest tenth.
 fn evict_grants(grants: &mut std::collections::HashMap<String, TurnGrant>, now_s: f64) {
     grants.retain(|_, g| g.expires_at > now_s);
@@ -978,6 +991,14 @@ impl Hub {
             "request_id": frame["request_id"],
             "agent_id": agent_id,
         });
+        // Same correlation-id rule as usage_request: echo only a sane id.
+        if frame["request_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128).is_none() {
+            response["request_id"] = Value::Null;
+            response["ok"] = json!(false);
+            response["error"] = json!("invalid request_id");
+            let _ = handle.tx.send(response);
+            return;
+        }
         match self.schedule_op(&handle, frame) {
             Ok(body) => {
                 response["ok"] = json!(true);
@@ -995,7 +1016,20 @@ impl Hub {
         let _ = handle.tx.send(response);
     }
 
-    fn owned_schedule(&self, handle: &AgentHandle, grant: &TurnGrant, id: &str) -> Result<Value, String> {
+    /// The conversation the person explicitly named in this request
+    /// (`channel` by name, or `channel_id`), among those this agent may reach.
+    fn named_conversation(&self, handle: &AgentHandle, grant: &TurnGrant, frame: &Value) -> Result<Option<String>, String> {
+        if let Some(raw) = frame["channel"].as_str().filter(|c| !c.trim().is_empty()) {
+            return resolve_named_channel(&self.store, handle, &grant.owner, raw).map(Some);
+        }
+        Ok(frame["channel_id"]
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .filter(|c| agent_may_reach(&self.store, &handle.agent_id, &grant.owner, c))
+            .map(str::to_string))
+    }
+
+    fn owned_schedule(&self, handle: &AgentHandle, grant: &TurnGrant, id: &str, frame: &Value) -> Result<Value, String> {
         let schedule = self.store.schedule(id).ok_or("unknown schedule")?;
         // Ownership, not visibility: an agent acting for an admin still only
         // reaches that admin's own schedules.
@@ -1009,6 +1043,14 @@ impl Hub {
         let cid = schedule["channel_id"].as_str().unwrap_or_default();
         if cid != grant.channel_id && !agent_may_reach(&self.store, &handle.agent_id, &grant.owner, cid) {
             return Err("that schedule is in a conversation this agent can't manage".into());
+        }
+        // A private conversation elsewhere is reachable only when the person
+        // named it in this request: the answer lands here, where others read.
+        if cid != grant.channel_id && !is_public_channel(&self.store, cid) {
+            let named = self.named_conversation(handle, grant, frame).map_err(|_| PRIVATE_UNNAMED.to_string())?;
+            if named.as_deref() != Some(cid) {
+                return Err(PRIVATE_UNNAMED.into());
+            }
         }
         if let Some(only) = &grant.schedule_id {
             if only != id {
@@ -1072,7 +1114,7 @@ impl Hub {
             }
             "update" => {
                 let id = frame["id"].as_str().ok_or("id is required")?;
-                let current = self.owned_schedule(handle, &grant, id)?;
+                let current = self.owned_schedule(handle, &grant, id, frame)?;
                 let explicit_run_at = frame.get("run_at").filter(|v| !v.is_null());
                 // A scheduled run re-arms with a new time and/or message; how
                 // often it posts stays the owner's decision.
@@ -1106,7 +1148,7 @@ impl Hub {
                     return Err("a scheduled run may only re-arm or cancel its own schedule".into());
                 }
                 let id = frame["id"].as_str().ok_or("id is required")?;
-                let current = self.owned_schedule(handle, &grant, id)?;
+                let current = self.owned_schedule(handle, &grant, id, frame)?;
                 // Resuming an active / pausing a paused schedule is a harmless
                 // no-op (same as REST).
                 if (op == "resume" && current["status"] == "active")
@@ -1129,7 +1171,7 @@ impl Hub {
             }
             "cancel" => {
                 let id = frame["id"].as_str().ok_or("id is required")?;
-                let current = self.owned_schedule(handle, &grant, id)?;
+                let current = self.owned_schedule(handle, &grant, id, frame)?;
                 let change = cancel_change(&current)?;
                 let updated = self
                     .store
@@ -1206,24 +1248,23 @@ impl Hub {
                         let mut item = decorator.decorate(s);
                         let cid = s["channel_id"].as_str().unwrap_or_default();
                         let here = cid == grant.channel_id;
-                        item["manageable_here"] = json!(
-                            here || agent_may_reach(&self.store, &handle.agent_id, &grant.owner, cid)
-                        );
                         let public = here
                             || explicit
-                            || *public_channel.entry(cid.to_string()).or_insert_with(|| {
-                                self.store.channel(cid).is_some_and(|c| {
-                                    c["kind"] == "channel"
-                                        && c["group_id"]
-                                            .as_str()
-                                            .and_then(|g| self.store.group(g))
-                                            .is_some_and(|g| g["is_public"] == true)
-                                })
-                            });
+                            || *public_channel
+                                .entry(cid.to_string())
+                                .or_insert_with(|| is_public_channel(&self.store, cid));
+                        // Manageable from here only when it is visible here: a
+                        // hidden private row needs the person to name it first.
+                        item["manageable_here"] = json!(
+                            public && (here || agent_may_reach(&self.store, &handle.agent_id, &grant.owner, cid))
+                        );
                         if !public {
                             // Nothing that identifies the conversation either:
                             // its name would tell readers here it exists.
-                            for key in ["text", "thread_title", "channel_name", "channel_kind", "group_id", "channel_id", "thread_id"] {
+                            for key in [
+                                "text", "thread_title", "channel_name", "channel_kind", "group_id", "channel_id",
+                                "thread_id", "via_agent", "text_agent", "updated_by", "created_by", "owner_name",
+                            ] {
                                 item[key] = Value::Null;
                             }
                             item["conversation"] = json!("private");
@@ -2529,6 +2570,10 @@ mod tests {
         for item in hidden {
             assert_eq!(item["text_hidden"], true);
             assert!(item["channel_id"].is_null() && item["channel_name"].is_null() && item["group_id"].is_null(), "{item}");
+            for key in ["via_agent", "text_agent", "updated_by", "created_by", "owner_name"] {
+                assert!(item[key].is_null(), "{key} identifies the hidden row: {item}");
+            }
+            assert_eq!(item["manageable_here"], false, "a hidden row has to be named first: {item}");
             assert!(item["next_runs"].as_array().is_some_and(|n| !n.is_empty()), "cadence still shown");
         }
         let body = r.to_string();
@@ -2545,11 +2590,47 @@ mod tests {
         let dm_r = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "dm"})));
         assert_eq!(dm_r["items"][0]["text"], "dm secret", "{dm_r}");
 
-        // And it can be managed from #general.
-        let moved = ask(&h, &mut claude, req("claude", &turn, "update", json!({"id": exec, "text": "private text v2"})));
-        assert_eq!(moved["ok"], true, "{moved}");
-        let gone = ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": exec})));
+        // Managing it from #general by id alone is refused, saying nothing about it.
+        for (op, extra) in [
+            ("pause", json!({"id": exec})),
+            ("update", json!({"id": exec, "text": "private text v2"})),
+            ("cancel", json!({"id": exec})),
+        ] {
+            let r = ask(&h, &mut claude, req("claude", &turn, op, extra));
+            assert_eq!(r["ok"], false, "{op} needs the conversation named: {r}");
+            assert!(r["error"].as_str().unwrap().contains("ask about it by name"), "{r}");
+            let body = r.to_string();
+            for leak in ["private text", "exec-comp", &private] {
+                assert!(!body.contains(leak), "{op} leaked {leak}: {body}");
+            }
+        }
+        assert_eq!(h.store.schedule(&exec).unwrap()["status"], "active", "nothing changed");
+        // Naming the conversation makes it manageable, with full details
+        // (a fresh turn: one turn's request budget is 10).
+        h.post_user_message(&here, "pause #exec-comp", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let named_op = |op: &str, extra: Value| {
+            let mut f = req("claude", &turn, op, extra);
+            f["channel"] = json!("#exec-comp");
+            f
+        };
+        let paused = ask(&h, &mut claude, named_op("pause", json!({"id": exec})));
+        assert_eq!(paused["schedule"]["status"], "paused", "{paused}");
+        assert_eq!(paused["schedule"]["channel_name"], "exec-comp");
+        let resumed = ask(&h, &mut claude, named_op("resume", json!({"id": exec})));
+        assert_eq!(resumed["ok"], true, "{resumed}");
+        let moved = ask(&h, &mut claude, named_op("update", json!({"id": exec, "text": "private text v2"})));
+        assert_eq!(moved["schedule"]["text"], "private text v2", "{moved}");
+        // Naming a different conversation doesn't unlock this one.
+        let mut wrong = req("claude", &turn, "cancel", json!({"id": exec}));
+        wrong["channel"] = json!("#town");
+        assert_eq!(ask(&h, &mut claude, wrong)["ok"], false);
+        let gone = ask(&h, &mut claude, named_op("cancel", json!({"id": exec})));
         assert_eq!(gone["schedule"]["status"], "cancelled");
+        // A public channel elsewhere is manageable by id, as before.
+        let town = once_at(&h, "tom", &open, "town again", now() + 900.0);
+        let t = ask(&h, &mut claude, req("claude", &turn, "pause", json!({"id": town})));
+        assert_eq!(t["schedule"]["status"], "paused", "{t}");
 
         // A conversation the agent isn't in, or an unknown name, stays out of reach.
         let refused = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "secret-room"})));
@@ -2557,6 +2638,26 @@ mod tests {
         assert!(!refused.to_string().contains("never listed"));
         let unknown = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "nope"})));
         assert!(unknown["error"].as_str().unwrap().contains("no conversation called #nope"), "{unknown}");
+    }
+
+    #[test]
+    fn a_bad_request_id_is_not_echoed_and_does_nothing() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let cid = setup_channel(&h, &["claude"]);
+        h.post_user_message(&cid, "hi", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        for bad in [json!(""), json!("x".repeat(129)), json!(42), Value::Null] {
+            let mut f = req("claude", &turn, "create", json!({
+                "text": "x", "schedule": {"kind": "interval", "seconds": 600}}));
+            f["request_id"] = bad.clone();
+            let r = ask(&h, &mut claude, f);
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+            assert!(r["request_id"].is_null());
+            assert_eq!(r["error"], "invalid request_id");
+        }
+        assert!(h.store.list_schedules_for_channel(&cid, None).is_empty(), "nothing was created");
     }
 
     #[test]

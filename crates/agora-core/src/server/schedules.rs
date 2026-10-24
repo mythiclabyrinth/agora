@@ -13,8 +13,9 @@ fn viewer(user: &AuthedUser) -> Option<(&str, bool)> {
     Some((user.username.as_str(), user.instance_admin))
 }
 
-/// Most schedules a list endpoint returns. Rows arrive soonest-due first, so
-/// a cap keeps what matters; an admin's inbox can span every channel.
+/// Most schedules a list endpoint returns. Rows arrive live-first (active,
+/// then paused, then finished, each soonest-due first), so a cap drops the
+/// least relevant ones; an admin's inbox can span every channel.
 pub(super) const MAX_LISTED: usize = 1000;
 
 /// `{items}` decorated, at most [`MAX_LISTED`], with `truncated: true` only

@@ -296,8 +296,9 @@ SCHEDULE_SYSTEM_PROMPT = (
     "limit page through older ones, so keep paging before saying a schedule "
     "doesn't exist). Schedules in the person's other private conversations "
     "are listed without their words or names; only when the person explicitly "
-    "asks about one, list again with \"channel\": \"<name or #name>\" (or "
-    "\"dm\" for your direct messages with them) to see it in full and manage it. "
+    "names that conversation, add \"channel\": \"<name or #name>\" (or "
+    "\"dm\" for your direct messages with them) to list, update, pause, resume or "
+    "cancel to see or manage it. "
     'A schedule is {"kind": "once", "at": <unix '
     'seconds>}, {"kind": "interval", "seconds": <300 or more>} or {"kind": '
     '"cron", "expr": "<5-field cron, UTC>"}. The relay runs the request and '
@@ -425,10 +426,10 @@ def _describe_schedule(item: dict) -> str:
         line += f", next {runs}"
     if item.get("last_error"):
         line += f", last error: {item['last_error']}"
+    if item.get("text_hidden"):
+        return line + ", (text hidden: name the conversation to see or manage it)"
     if item.get("manageable_here") is False:
         line += ", manage it in that conversation"
-    if item.get("text_hidden"):
-        return line + ", (text hidden: ask about that conversation by name to see it)"
     return line + f', text: "{text}"'
 
 
@@ -547,8 +548,8 @@ def format_schedule_result(ask: dict, response: dict) -> str:
         private = sum(1 for i in shown if i.get("conversation") == "private")
         if private:
             more += (f"\n({private} of these are in other private conversations; their "
-                     'words and names stay hidden unless the person asks about one by name, '
-                     'then list again with "channel".)')
+                     'words and names stay hidden unless the person names the conversation; '
+                     'then add "channel" to see or manage it.)')
         if response.get("truncated"):
             more += ("\n(Only the first 1000 schedules, live ones first, can be listed; older "
                      'finished ones beyond that are not shown. Narrow with "status".)')

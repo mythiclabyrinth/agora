@@ -139,8 +139,8 @@ export function lostChannelAccess(schedule: Schedule): boolean {
 
 export const LOST_ACCESS_NOTE = "You no longer have access to this channel";
 
-/** Shown under a schedule list the server capped (it keeps the soonest-due). */
-export const SCHEDULES_TRUNCATED_NOTE = "Showing the 1,000 soonest schedules. Later ones are not listed here.";
+/** Shown under a schedule list the server capped (it keeps active ones first). */
+export const SCHEDULES_TRUNCATED_NOTE = "Showing the first 1,000 schedules (active first). Others are not listed here.";
 
 /** Filters apply to the loaded list; counts do not imply a server-wide total. */
 export const SCHEDULE_FILTERS = ["all", "active", "paused"] as const;
