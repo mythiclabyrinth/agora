@@ -552,7 +552,10 @@ of**, of any age. To act in **another** conversation (create there, or change
 a schedule there), or to see a private one in full, the person must **name
 that conversation in the message that started the turn** — its channel name
 (`#ops` or `ops`, as a whole word) or, for their DM with you, "DM" / "direct
-message". A `channel` or `channel_id` you supply yourself doesn't count: such
+message". A name counts only if exactly one conversation you can reach has
+it; a name shared by several unlocks none of them, so ask which one they
+mean. Only the first 4,096 characters of their message are considered.
+A `channel` or `channel_id` you supply yourself doesn't count: such
 a request is refused without revealing anything private, and a create never
 falls back to the current conversation. Scheduled posts carry no such unlock
 (their text may have been written by an agent). The conversation must be one
@@ -607,7 +610,8 @@ evaluated in UTC; intervals are at least 300 seconds.
 // channel_id or channel (a conversation name, "#" optional; "dm" or your own
 // name for your direct messages with the person), offset (default 0), limit
 // (default 20, at most 50). Finished schedules of any age are included; at
-// most 1000 are read (live first), with "truncated": true when there are more.
+// most 1000 are read (live first), with "truncated": true when the person has
+// more than could be scanned (narrow with status or channel).
 // A conversation the person named in their message is an explicit ask and
 // returns its schedules in full; a private one they didn't name is refused, and
 // an unknown name, or one matching several conversations, is an error.

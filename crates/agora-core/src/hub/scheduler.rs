@@ -27,6 +27,9 @@ pub(crate) const MAX_FIRES_PER_TICK: usize = 50;
 pub(crate) const MAX_AGENT_LISTED: usize = 1000;
 /// How long an agent may act on a delivered message's behalf. Long enough
 /// for a slow multi-step turn, short enough that a leaked id goes stale.
+/// How much of the person's message a grant keeps for finding the
+/// conversations they named.
+pub(crate) const UNLOCK_TEXT_MAX_CHARS: usize = 4096;
 pub(crate) const GRANT_TTL_SECS: f64 = 2.0 * 3600.0;
 /// Upper bound on live grants between tick sweeps (one per person message
 /// per addressed agent); beyond it the oldest are evicted in a batch.
@@ -667,21 +670,63 @@ fn contains_word(text: &str, word: &str) -> bool {
     false
 }
 
+/// Whether the person named a conversation in the message that started the
+/// turn.
+#[derive(Debug, PartialEq)]
+enum Named {
+    Yes,
+    /// The spoken name fits more than one conversation in reach, so it
+    /// can't unlock any of them.
+    Ambiguous(String),
+    No,
+}
+
 /// The person named this conversation in the message that started the
 /// turn: its channel name, or for their DM with this agent, "dm" / "direct
 /// message". The grant's own conversation always counts. A channel or id an
-/// agent supplies by itself never does.
-fn person_named(store: &Store, grant: &TurnGrant, channel_id: &str) -> bool {
+/// agent supplies by itself never does. A name counts only if it picks out
+/// exactly one conversation this agent can reach for the owner, and that is
+/// this one: otherwise a public `#standup` mention would unlock a private
+/// channel that happens to share the name.
+fn named_check(store: &Store, grant: &TurnGrant, channel_id: &str) -> Named {
     if channel_id == grant.channel_id {
-        return true;
+        return Named::Yes;
     }
-    let Some(text) = grant.unlock_text.as_deref() else { return false };
-    let Some(channel) = store.channel(channel_id) else { return false };
+    let Some(text) = grant.unlock_text.as_deref() else { return Named::No };
+    let Some(channel) = store.channel(channel_id) else { return Named::No };
     if channel["kind"] == "agent_dm" {
-        return contains_word(text, "dm") || contains_word(text, "dms") || text.contains("direct message");
+        let said = contains_word(text, "dm") || contains_word(text, "dms") || text.contains("direct message");
+        return if said { Named::Yes } else { Named::No };
     }
-    let name = channel["name"].as_str().unwrap_or_default().to_lowercase();
-    contains_word(text, &name)
+    let raw_name = channel["name"].as_str().unwrap_or_default();
+    if !contains_word(text, &raw_name.to_lowercase()) {
+        return Named::No;
+    }
+    let reach: Vec<String> = store
+        .channel_ids_named(raw_name)
+        .into_iter()
+        .filter(|cid| agent_may_reach(store, &grant.agent_id, &grant.owner, cid))
+        .collect();
+    match reach.as_slice() {
+        [only] if only == channel_id => Named::Yes,
+        [_] | [] => Named::No,
+        _ => Named::Ambiguous(raw_name.to_string()),
+    }
+}
+
+fn person_named(store: &Store, grant: &TurnGrant, channel_id: &str) -> bool {
+    named_check(store, grant, channel_id) == Named::Yes
+}
+
+/// Refusal when the conversation isn't (uniquely) named by the person.
+fn not_named_error(store: &Store, grant: &TurnGrant, channel_id: &str) -> Option<String> {
+    match named_check(store, grant, channel_id) {
+        Named::Yes => None,
+        Named::Ambiguous(name) => Some(format!(
+            "#{name} matches more than one conversation; ask the person which group it's in"
+        )),
+        Named::No => Some(unnamed_elsewhere(store, channel_id)),
+    }
 }
 
 /// Refusal for acting in another conversation the person didn't name. Says
@@ -778,7 +823,12 @@ impl Hub {
                 schedule_id,
                 expires_at: now_s + GRANT_TTL_SECS,
                 ops: 0,
-                unlock_text: (!scheduled).then(|| message["text"].as_str().unwrap_or_default().to_lowercase()),
+                // Only the start of the message is kept: enough to find the
+                // conversations the person named, without holding up to
+                // MAX_GRANTS full message bodies in memory for two hours.
+                unlock_text: (!scheduled).then(|| {
+                    message["text"].as_str().unwrap_or_default().chars().take(UNLOCK_TEXT_MAX_CHARS).collect::<String>().to_lowercase()
+                }),
             },
         );
         Some(turn_id)
@@ -1110,8 +1160,8 @@ impl Hub {
         // the message that started this turn (an agent supplying a channel
         // itself doesn't count): the answer lands here, where others read,
         // and the change acts somewhere the person didn't speak.
-        if cid != grant.channel_id && !person_named(&self.store, grant, cid) {
-            return Err(unnamed_elsewhere(&self.store, cid));
+        if let Some(refusal) = not_named_error(&self.store, grant, cid) {
+            return Err(refusal);
         }
         let _ = frame; // kept for callers; the person's words decide, not the frame
         if let Some(only) = &grant.schedule_id {
@@ -1143,8 +1193,10 @@ impl Hub {
                 // to this conversation.
                 let channel_id = match self.target_conversation(handle, &grant, frame)? {
                     None => grant.channel_id.clone(),
-                    Some(c) if person_named(&self.store, &grant, &c) => c,
-                    Some(c) => return Err(unnamed_elsewhere(&self.store, &c)),
+                    Some(c) => match not_named_error(&self.store, &grant, &c) {
+                        None => c,
+                        Some(refusal) => return Err(refusal),
+                    },
                 };
                 let thread_id = match frame.get("thread_id") {
                     Some(v) if !v.is_null() => Some(v.as_i64().ok_or("thread_id must be a message id")?),
@@ -1272,7 +1324,11 @@ impl Hub {
                         return Err("this agent isn't in that channel".into());
                     }
                 }
-                let explicit = only_channel.as_deref().is_some_and(|c| person_named(&self.store, &grant, c));
+                let named = only_channel.as_deref().map(|c| named_check(&self.store, &grant, c));
+                if let Some(Named::Ambiguous(name)) = &named {
+                    return Err(format!("#{name} matches more than one conversation; ask the person which group it's in"));
+                }
+                let explicit = named == Some(Named::Yes);
                 if let Some(c) = only_channel.as_deref() {
                     if !explicit && c != grant.channel_id && !is_public_channel(&self.store, c) {
                         return Err(PRIVATE_UNNAMED.into());
@@ -2838,6 +2894,65 @@ mod tests {
         let made = ask(&h, &mut claude, req("claude", &turn, "create", json!({
             "text": "x", "schedule": {"kind": "interval", "seconds": 600}, "channel_id": b})));
         assert_eq!(made["ok"], false, "create stays in the grant's conversation: {made}");
+    }
+
+    #[test]
+    fn a_spoken_name_shared_by_two_conversations_unlocks_neither() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let group = |name: &str| {
+            let g = h.store.create_group(name, "", Some("tom"));
+            let gid = g["id"].as_str().unwrap().to_string();
+            h.store.add_member(&gid, "agent", "claude", "member", None);
+            gid
+        };
+        let (ga, gb, gc) = (group("A"), group("B"), group("C"));
+        let standup_a = h.store.create_channel(&ga, "standup", "")["id"].as_str().unwrap().to_string();
+        let standup_b = h.store.create_channel(&gb, "standup", "")["id"].as_str().unwrap().to_string();
+        let ops = h.store.create_channel(&gb, "ops", "")["id"].as_str().unwrap().to_string();
+        let general = h.store.create_channel(&gc, "general", "")["id"].as_str().unwrap().to_string();
+        let _ = standup_a;
+        let in_b = once_at(&h, "tom", &standup_b, "secret standup note", now() + 600.0);
+        let in_ops = once_at(&h, "tom", &ops, "ops note", now() + 600.0);
+        h.post_user_message(&general, "pause my standup and ops schedules", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let ambiguous = |r: &Value| {
+            assert_eq!(r["ok"], false, "{r}");
+            assert!(r["error"].as_str().unwrap().contains("more than one"), "{r}");
+            assert!(!r.to_string().contains("secret standup note"), "{r}");
+        };
+        // By bare id, by channel_id, and for create: the shared name unlocks nothing.
+        ambiguous(&ask(&h, &mut claude, req("claude", &turn, "pause", json!({"id": in_b}))));
+        ambiguous(&ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": in_b}))));
+        ambiguous(&ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel_id": standup_b}))));
+        let live_before = h.store.count_live_schedules("tom");
+        ambiguous(&ask(&h, &mut claude, req("claude", &turn, "create", json!({
+            "text": "x", "schedule": {"kind": "interval", "seconds": 600}, "channel_id": standup_b}))));
+        assert_eq!(h.store.count_live_schedules("tom"), live_before, "nothing created anywhere");
+        assert_eq!(h.store.schedule(&in_b).unwrap()["status"], "active");
+        // A name only one conversation has still works.
+        let paused = ask(&h, &mut claude, req("claude", &turn, "pause", json!({"id": in_ops})));
+        assert_eq!(paused["ok"], true, "{paused}");
+    }
+
+    #[test]
+    fn only_the_start_of_a_long_message_is_kept_for_unlocking() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let here = setup_channel(&h, &["claude"]);
+        let gid = h.store.channel(&here).unwrap()["group_id"].as_str().unwrap().to_string();
+        let ops = h.store.create_channel(&gid, "ops", "")["id"].as_str().unwrap().to_string();
+        let in_ops = once_at(&h, "tom", &ops, "ops note", now() + 600.0);
+        let long = format!("pause my ops schedule. {}", "x".repeat(UNLOCK_TEXT_MAX_CHARS * 2));
+        h.post_user_message(&here, &long, "tom", Some("Tom"), None, vec![]);
+        let inbound = last_frame(&mut claude, "inbound").unwrap();
+        let turn = inbound["turn_id"].as_str().unwrap().to_string();
+        let kept = h.state.lock().unwrap().grants.get(&turn).unwrap().unlock_text.clone().unwrap();
+        assert_eq!(kept.chars().count(), UNLOCK_TEXT_MAX_CHARS);
+        let paused = ask(&h, &mut claude, req("claude", &turn, "pause", json!({"id": in_ops})));
+        assert_eq!(paused["ok"], true, "{paused}");
     }
 
     #[test]

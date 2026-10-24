@@ -497,8 +497,8 @@ def format_schedule_result(ask: dict, response: dict) -> str:
                      'words and names stay hidden unless the person names the conversation; '
                      'then add "channel" to see or manage it.)')
         if response.get("truncated"):
-            more += ("\n(Only the first 1000 schedules, live ones first, can be listed; older "
-                     'finished ones beyond that are not shown. Narrow with "status".)')
+            more += ("\n(This person has more schedules than could be scanned; narrow with "
+                     '"status" or "channel".)')
         return ("[The person's schedules, live ones first:]\n" + "\n".join(rows) + more
                 + "\n[End of schedules. Now answer what was asked.]")
     item = response.get("schedule")

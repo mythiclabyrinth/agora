@@ -3501,10 +3501,10 @@ class ScheduleListPagingTests(unittest.TestCase):
         capped = bridge.format_schedule_result({"op": "list"}, {
             "ok": True, "items": [row], "total": 1000, "offset": 0, "has_more": True,
             "next_offset": 20, "truncated": True})
-        self.assertIn("Only the first 1000 schedules", capped)
+        self.assertIn("more schedules than could be scanned", capped)
         plain = bridge.format_schedule_result({"op": "list"}, {
             "ok": True, "items": [row], "total": 1, "offset": 0, "has_more": False})
-        self.assertNotIn("Only the first 1000", plain)
+        self.assertNotIn("could be scanned", plain)
 
     def test_list_pages_say_how_to_fetch_more(self):
         row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
