@@ -146,8 +146,10 @@ export const SCHEDULES_TRUNCATED_NOTE = "Showing the 1,000 soonest schedules. La
 export const SCHEDULE_FILTERS = ["all", "active", "paused"] as const;
 export type ScheduleFilter = typeof SCHEDULE_FILTERS[number];
 export const scheduleFilterLabel: Record<ScheduleFilter, string> = { all: "All", active: "Active", paused: "Paused" };
+/** Keep the rows of one tab, in the caller's order: callers sort (or group by
+ *  channel) first, and re-sorting here would scatter a grouped list. */
 export function filterSchedules(items: Schedule[], filter: ScheduleFilter): Schedule[] {
-  return sortSchedules(items.filter(item => filter === "all" || item.status === filter));
+  return items.filter(item => filter === "all" || item.status === filter);
 }
 export function scheduleFilterCount(items: Schedule[], filter: ScheduleFilter): number {
   return items.filter(item => filter === "all" || item.status === filter).length;

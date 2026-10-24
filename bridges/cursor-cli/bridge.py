@@ -214,7 +214,7 @@ SCHEDULE_SENTINEL = "<<<AGORA_SCHEDULE>>>"
 SCHEDULE_MAX_OPS = 3          # requests per turn — a confused model cannot spin
 SCHEDULE_TIMEOUT = 30         # seconds to wait for a schedule_response
 SCHEDULE_OPS = ("create", "update", "pause", "resume", "cancel", "list")
-SCHEDULE_FIELDS = ("id", "text", "schedule", "run_at", "channel_id", "thread_id",
+SCHEDULE_FIELDS = ("id", "text", "schedule", "run_at", "channel_id", "channel", "thread_id",
                    "status", "offset", "limit")
 
 SCHEDULE_LIST_MAX = 20
@@ -228,9 +228,12 @@ SCHEDULE_SYSTEM_PROMPT = (
     'daily check", "schedule": {"kind": "cron", "expr": "0 7 * * *"}}`. Ops: '
     "create (text and schedule; optional thread_id, run_at), update "
     "(id plus any of text, schedule, run_at), pause, resume and cancel (id), "
-    "list (optional status: all, active, paused, done or cancelled; optional "
-    "channel_id; offset and limit page through older ones, so keep paging "
-    "before saying a schedule doesn't exist). "
+    "list (optional status: all, active, paused, done or cancelled; offset and "
+    "limit page through older ones, so keep paging before saying a schedule "
+    "doesn't exist). Schedules in the person's other private conversations "
+    "are listed without their words or names; only when the person explicitly "
+    "asks about one, list again with \"channel\": \"<name or #name>\" (or "
+    "\"dm\" for your direct messages with them) to see it in full and manage it. "
     'A schedule is {"kind": "once", "at": <unix '
     'seconds>}, {"kind": "interval", "seconds": <300 or more>} or {"kind": '
     '"cron", "expr": "<5-field cron, UTC>"}. The relay runs the request and '
@@ -342,7 +345,10 @@ def _describe_schedule_spec(spec) -> str:
 
 
 def _describe_schedule(item: dict) -> str:
-    where = f"#{item.get('channel_name') or item.get('channel_id') or '?'}"
+    if item.get("conversation") == "private":
+        where = "another private conversation"
+    else:
+        where = f"#{item.get('channel_name') or item.get('channel_id') or '?'}"
     if item.get("thread_id"):
         where += f" thread {item.get('thread_title') or item.get('thread_id')}"
     runs = ", ".join(_schedule_when(t) for t in (item.get("next_runs") or [])[:3])
@@ -358,7 +364,7 @@ def _describe_schedule(item: dict) -> str:
     if item.get("manageable_here") is False:
         line += ", manage it in that conversation"
     if item.get("text_hidden"):
-        return line + ", (text hidden: open that conversation to see it)"
+        return line + ", (text hidden: ask about that conversation by name to see it)"
     return line + f', text: "{text}"'
 
 
@@ -474,6 +480,14 @@ def format_schedule_result(ask: dict, response: dict) -> str:
                     f'next page ask again with "offset": {nxt}; filter with "status".)')
         else:
             more = f"\n(Showing {offset + 1}-{offset + len(shown)} of {total}; that is all.)"
+        private = sum(1 for i in shown if i.get("conversation") == "private")
+        if private:
+            more += (f"\n({private} of these are in other private conversations; their "
+                     'words and names stay hidden unless the person asks about one by name, '
+                     'then list again with "channel".)')
+        if response.get("truncated"):
+            more += ("\n(Only the first 1000 schedules, live ones first, can be listed; older "
+                     'finished ones beyond that are not shown. Narrow with "status".)')
         return ("[The person's schedules, live ones first:]\n" + "\n".join(rows) + more
                 + "\n[End of schedules. Now answer what was asked.]")
     item = response.get("schedule")

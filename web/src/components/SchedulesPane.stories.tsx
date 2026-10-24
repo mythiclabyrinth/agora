@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
+import { SCHEDULE_OFFLINE_AGENT_ERROR } from "@agora/core";
 import { fixtureGroups, fixtureSchedules } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
 import { SchedulesPane } from "./SchedulesPane";
@@ -274,7 +275,7 @@ export const EmptyStatusTabs: Story = {
 };
 export const ActiveDeliveryError: Story = {
   parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules": { items: [{ ...watchdog,
-    last_error: "An agent this message mentions wasn't connected when it posted, so it may not have received it.",
+    last_error: SCHEDULE_OFFLINE_AGENT_ERROR,
   }] } } },
 };
 

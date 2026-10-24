@@ -86,9 +86,34 @@ export const Schedules: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByRole("tab", { name: "Schedules" })).resolves.toHaveAttribute("aria-selected", "true");
     await expect(canvas.findByText("Weekdays at 07:00 UTC")).resolves.toBeVisible();
-    await expect(canvas.findByRole("region", { name: "Active schedules in storybook" })).resolves.toBeVisible();
+    await expect(canvas.findByRole("region", { name: "Schedules in storybook" })).resolves.toBeVisible();
   },
 };
+// Channels that each have an active and a paused schedule keep one heading
+// apiece on every tab (a global status sort would split them).
+const mixedRow = (id: string, channel: string, status: "active" | "paused", runAt: number) => ({
+  ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null,
+  status, run_at: runAt, can_manage: false,
+});
+export const SchedulesMixedChannelsGroupOnce: Story = {
+  parameters: {
+    apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/schedules": { items: [
+      mixedRow("a-act", "alpha", "active", 100), mixedRow("s-act", "storybook", "active", 200),
+      mixedRow("a-pau", "alpha", "paused", 300), mixedRow("s-pau", "storybook", "paused", 400),
+    ] } },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const groups = async () => (await canvas.findAllByRole("region", { name: /^Schedules in / })).map(r => r.getAttribute("aria-label"));
+    await expect(groups()).resolves.toEqual(["Schedules in alpha", "Schedules in storybook"]);
+    for (const tab of [/^Active/, /^Paused/]) {
+      await userEvent.click(await canvas.findByRole("tab", { name: tab }));
+      await expect(groups()).resolves.toEqual(["Schedules in alpha", "Schedules in storybook"]);
+    }
+  },
+};
+
 // Agent DMs come back with group_id "" — opening one must still navigate,
 // landing on the synthetic DMs group rather than silently doing nothing.
 export const SchedulesInAgentDm: Story = {

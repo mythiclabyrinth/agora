@@ -591,8 +591,12 @@ evaluated in UTC; intervals are at least 300 seconds.
 // list: the person's schedules in conversations this agent is in, live first
 // (active, paused, then finished), paged. All optional: status (all | active |
 // paused | done | cancelled; default all, which leaves out cancelled),
-// channel_id (one of your conversations), offset (default 0), limit
-// (default 20, at most 50). Finished schedules of any age are included.
+// channel_id or channel (a conversation name, "#" optional; "dm" or your own
+// name for your direct messages with the person), offset (default 0), limit
+// (default 20, at most 50). Finished schedules of any age are included; at
+// most 1000 are read (live first), with "truncated": true when there are more.
+// Naming a conversation is an explicit ask and returns its schedules in full;
+// an unknown name, or one matching several conversations, is an error.
 {"type": "schedule_request", "request_id": "q3", "agent_id": "claw-1",
  "turn_id": "...", "op": "list", "status": "active", "offset": 0, "limit": 20}
 
@@ -608,12 +612,15 @@ evaluated in UTC; intervals are at least 300 seconds.
    "created_by": "tom", "updated_by": "tom", "via_agent": "claw-1"}}
 // list answers with "items": [<schedule>, …] instead of "schedule", plus
 // "total", "offset", "has_more" and "next_offset" (null on the last page).
-// Each listed item also carries "manageable_here" (true only in the grant's
-// conversation; other ops refuse schedules elsewhere). Items from another
-// private channel or an agent DM come back with "text": null,
-// "thread_title": null and "text_hidden": true, so a reply in this
-// conversation can't repeat words meant for that one; public channels keep
-// their text.
+// Each listed item also carries "manageable_here": true when you may update,
+// pause, resume or cancel it, i.e. it is in this conversation or in another
+// one you are in and the person can still reach (create stays in this
+// conversation). In a list that names no conversation, items from another
+// private channel or an agent DM come back with "conversation": "private",
+// "text_hidden": true and null text, thread_title, thread_id, channel_name,
+// channel_kind, group_id and channel_id, so a reply here can't reveal what or
+// where they are; status, schedule and next_runs remain. Public channels keep
+// everything.
 ```
 
 `status` is `active`, `paused`, `done` (a one-off that fired) or `cancelled`.

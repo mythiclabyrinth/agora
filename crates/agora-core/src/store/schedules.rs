@@ -456,19 +456,37 @@ impl Store {
     /// Every schedule an owner has with the given status, of any age, live
     /// first — what an agent pages through for them. `None` means everything
     /// but cancelled ones; `Some("cancelled")` asks for those explicitly.
-    pub fn list_owner_schedules_by_status(&self, owner: &str, status: Option<&str>) -> Vec<Value> {
+    /// At most `limit` rows, live-first: an agent pages within this window
+    /// rather than the store materialising every row an owner ever had.
+    pub fn list_owner_schedules_by_status(&self, owner: &str, status: Option<&str>, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {COLS} FROM schedules WHERE owner = ?1 \
                  AND ((?2 IS NULL AND status != 'cancelled') OR status = ?2) \
-                 ORDER BY {LIVE_FIRST}, run_at, id"
+                 ORDER BY {LIVE_FIRST}, run_at, id LIMIT ?3"
             ))
             .unwrap();
-        stmt.query_map(params![owner, status], row_json).unwrap().filter_map(Result::ok).collect()
+        stmt.query_map(params![owner, status, limit as i64], row_json).unwrap().filter_map(Result::ok).collect()
     }
 
-    /// One owner's schedules (for an agent acting on their behalf).
+    /// Ids of channels with this name (case-insensitive).
+    pub fn channel_ids_named(&self, name: &str) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id FROM channels WHERE lower(name) = lower(?1) ORDER BY id").unwrap();
+        stmt.query_map(params![name], |r| r.get::<_, String>(0)).unwrap().filter_map(Result::ok).collect()
+    }
+
+    /// The agent DM between a person and an agent, if one exists.
+    pub fn agent_dm_between(&self, username: &str, agent_id: &str) -> Option<String> {
+        self.conn.lock().unwrap().query_row(
+            "SELECT id FROM channels WHERE kind = 'agent_dm' AND dm_user_id = ?1 AND dm_agent_id = ?2 LIMIT 1",
+            params![username, agent_id], |r| r.get(0)).ok()
+    }
+
+    /// One owner's schedules (tests only; agents page via
+    /// [`Store::list_owner_schedules_by_status`]).
+    #[cfg(test)]
     pub fn list_owner_schedules(&self, owner: &str) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn

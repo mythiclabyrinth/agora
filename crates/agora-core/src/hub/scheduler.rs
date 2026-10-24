@@ -22,6 +22,9 @@ use crate::store::{now, Fire, ScheduleChange, Store};
 /// fires once) drains over successive 15 s ticks instead of posting and
 /// fanning out hundreds of messages in a single blocking pass.
 pub(crate) const MAX_FIRES_PER_TICK: usize = 50;
+/// Most schedules an agent `list` reads (live-first) before paging; the
+/// response says `truncated` when the owner has more.
+pub(crate) const MAX_AGENT_LISTED: usize = 1000;
 /// How long an agent may act on a delivered message's behalf. Long enough
 /// for a slow multi-step turn, short enough that a leaked id goes stale.
 pub(crate) const GRANT_TTL_SECS: f64 = 2.0 * 3600.0;
@@ -593,6 +596,47 @@ fn agent_still_in(store: &Store, agent_id: &str, channel_id: &str) -> bool {
     store.agent_in_channel(agent_id, channel_id) && store.agent_dm_route_allowed(channel_id, agent_id)
 }
 
+/// The agent is in that conversation and the owner can still post there: the
+/// reach an agent has over an owner's schedules outside the grant's channel.
+fn agent_may_reach(store: &Store, agent_id: &str, owner: &str, channel_id: &str) -> bool {
+    agent_still_in(store, agent_id, channel_id) && store.schedule_owner_can_post(owner, channel_id).is_ok()
+}
+
+/// Resolve a channel the person named ("exec-comp", "#exec-comp", or "dm" /
+/// "direct message" / this agent's name for their DM with it) among the
+/// conversations this agent is in and the owner can reach. Unknown or
+/// ambiguous names fail without naming anything private.
+fn resolve_named_channel(store: &Store, handle: &AgentHandle, owner: &str, raw: &str) -> Result<String, String> {
+    let name = raw.trim().trim_start_matches('#').trim();
+    if name.is_empty() {
+        return Err("channel must be a channel name".into());
+    }
+    let lower = name.to_lowercase();
+    if matches!(lower.as_str(), "dm" | "direct message" | "direct messages")
+        || lower == handle.agent_name.to_lowercase()
+        || lower == handle.agent_id.to_lowercase()
+    {
+        if let Some(dm) = store.agent_dm_between(owner, &handle.agent_id) {
+            if agent_may_reach(store, &handle.agent_id, owner, &dm) {
+                return Ok(dm);
+            }
+        }
+        if matches!(lower.as_str(), "dm" | "direct message" | "direct messages") {
+            return Err("there are no direct messages between this person and this agent".into());
+        }
+    }
+    let found: Vec<String> = store
+        .channel_ids_named(name)
+        .into_iter()
+        .filter(|cid| agent_may_reach(store, &handle.agent_id, owner, cid))
+        .collect();
+    match found.len() {
+        1 => Ok(found.into_iter().next().unwrap()),
+        0 => Err(format!("no conversation called #{name} that this agent is in")),
+        _ => Err(format!("#{name} matches more than one conversation; ask the person which group it's in")),
+    }
+}
+
 /// Make room in a full grant map: drop expired grants, then the oldest tenth.
 fn evict_grants(grants: &mut std::collections::HashMap<String, TurnGrant>, now_s: f64) {
     grants.retain(|_, g| g.expires_at > now_s);
@@ -951,19 +995,20 @@ impl Hub {
         let _ = handle.tx.send(response);
     }
 
-    fn owned_schedule(&self, grant: &TurnGrant, id: &str) -> Result<Value, String> {
+    fn owned_schedule(&self, handle: &AgentHandle, grant: &TurnGrant, id: &str) -> Result<Value, String> {
         let schedule = self.store.schedule(id).ok_or("unknown schedule")?;
         // Ownership, not visibility: an agent acting for an admin still only
         // reaches that admin's own schedules.
         if schedule["owner"].as_str() != Some(grant.owner.as_str()) {
             return Err("that schedule belongs to someone else".into());
         }
-        // Channel scope: any thread in the grant's channel is in reach (a
-        // loop's turn may manage the thread it lives in from the channel), but
-        // a schedule in another channel or a private DM with another agent is
-        // not.
-        if schedule["channel_id"].as_str() != Some(grant.channel_id.as_str()) {
-            return Err("that schedule is in another conversation".into());
+        // Channel scope: the grant's channel (any thread in it), or another
+        // conversation this agent is in and the owner can still reach. A
+        // private DM with another agent, or a channel the agent isn't in,
+        // stays out of reach.
+        let cid = schedule["channel_id"].as_str().unwrap_or_default();
+        if cid != grant.channel_id && !agent_may_reach(&self.store, &handle.agent_id, &grant.owner, cid) {
+            return Err("that schedule is in a conversation this agent can't manage".into());
         }
         if let Some(only) = &grant.schedule_id {
             if only != id {
@@ -1027,7 +1072,7 @@ impl Hub {
             }
             "update" => {
                 let id = frame["id"].as_str().ok_or("id is required")?;
-                let current = self.owned_schedule(&grant, id)?;
+                let current = self.owned_schedule(handle, &grant, id)?;
                 let explicit_run_at = frame.get("run_at").filter(|v| !v.is_null());
                 // A scheduled run re-arms with a new time and/or message; how
                 // often it posts stays the owner's decision.
@@ -1061,7 +1106,7 @@ impl Hub {
                     return Err("a scheduled run may only re-arm or cancel its own schedule".into());
                 }
                 let id = frame["id"].as_str().ok_or("id is required")?;
-                let current = self.owned_schedule(&grant, id)?;
+                let current = self.owned_schedule(handle, &grant, id)?;
                 // Resuming an active / pausing a paused schedule is a harmless
                 // no-op (same as REST).
                 if (op == "resume" && current["status"] == "active")
@@ -1084,7 +1129,7 @@ impl Hub {
             }
             "cancel" => {
                 let id = frame["id"].as_str().ok_or("id is required")?;
-                let current = self.owned_schedule(&grant, id)?;
+                let current = self.owned_schedule(handle, &grant, id)?;
                 let change = cancel_change(&current)?;
                 let updated = self
                     .store
@@ -1106,20 +1151,36 @@ impl Hub {
                     s @ ("active" | "paused" | "done" | "cancelled") => Some(s),
                     other => return Err(format!("unknown status '{other}' (all, active, paused, done, cancelled)")),
                 };
-                let only_channel = frame["channel_id"].as_str().filter(|c| !c.is_empty());
-                if let Some(c) = only_channel {
+                // Naming a conversation (by id or by name) is an explicit ask:
+                // its schedules come back in full, private or not.
+                let named = match frame["channel"].as_str().filter(|c| !c.trim().is_empty()) {
+                    Some(raw) => Some(resolve_named_channel(&self.store, handle, &grant.owner, raw)?),
+                    None => None,
+                };
+                let only_channel: Option<String> = match named {
+                    Some(c) => Some(c),
+                    None => frame["channel_id"].as_str().filter(|c| !c.is_empty()).map(str::to_string),
+                };
+                if let Some(c) = only_channel.as_deref() {
                     if !agent_still_in(&self.store, &handle.agent_id, c) {
                         return Err("this agent isn't in that channel".into());
                     }
                 }
+                let explicit = only_channel.is_some();
+                let only_channel = only_channel.as_deref();
                 let offset = frame["offset"].as_u64().unwrap_or(0) as usize;
                 let limit = (frame["limit"].as_u64().unwrap_or(LIST_PAGE_DEFAULT as u64) as usize)
                     .clamp(1, LIST_PAGE_MAX);
                 let mut reachable = std::collections::HashMap::<String, bool>::new();
-                let rows: Vec<Value> = self
+                // Read at most MAX_AGENT_LISTED rows (one extra tells us there
+                // were more); the agent pages within that window.
+                let raw = self
                     .store
-                    .list_owner_schedules_by_status(&grant.owner, status)
+                    .list_owner_schedules_by_status(&grant.owner, status, MAX_AGENT_LISTED + 1);
+                let truncated = raw.len() > MAX_AGENT_LISTED;
+                let rows: Vec<Value> = raw
                     .into_iter()
+                    .take(MAX_AGENT_LISTED)
                     .filter(|s| {
                         let cid = s["channel_id"].as_str().unwrap_or_default();
                         if only_channel.is_some_and(|c| c != cid) {
@@ -1145,8 +1206,11 @@ impl Hub {
                         let mut item = decorator.decorate(s);
                         let cid = s["channel_id"].as_str().unwrap_or_default();
                         let here = cid == grant.channel_id;
-                        item["manageable_here"] = json!(here);
+                        item["manageable_here"] = json!(
+                            here || agent_may_reach(&self.store, &handle.agent_id, &grant.owner, cid)
+                        );
                         let public = here
+                            || explicit
                             || *public_channel.entry(cid.to_string()).or_insert_with(|| {
                                 self.store.channel(cid).is_some_and(|c| {
                                     c["kind"] == "channel"
@@ -1157,21 +1221,29 @@ impl Hub {
                                 })
                             });
                         if !public {
-                            item["text"] = Value::Null;
-                            item["thread_title"] = Value::Null;
+                            // Nothing that identifies the conversation either:
+                            // its name would tell readers here it exists.
+                            for key in ["text", "thread_title", "channel_name", "channel_kind", "group_id", "channel_id", "thread_id"] {
+                                item[key] = Value::Null;
+                            }
+                            item["conversation"] = json!("private");
                             item["text_hidden"] = json!(true);
                         }
                         item
                     })
                     .collect();
                 let has_more = offset + items.len() < total;
-                Ok(json!({
+                let mut out = json!({
                     "items": items,
                     "total": total,
                     "offset": offset,
                     "has_more": has_more,
                     "next_offset": if has_more { json!(offset + items.len()) } else { Value::Null },
-                }))
+                });
+                if truncated {
+                    out["truncated"] = json!(true);
+                }
+                Ok(out)
             }
             other => Err(format!("unknown op '{other}' (create, update, pause, resume, cancel, list)")),
         }
@@ -1656,7 +1728,8 @@ mod tests {
             ("pause", json!({"id": theirs["id"]})),
         ] {
             let r = ask(&h, &mut claude, req("claude", &turn, op, extra));
-            assert!(r["error"].as_str().unwrap().contains("another conversation"), "{op}: {r}");
+            // The agent isn't in that channel: out of reach.
+            assert!(r["error"].as_str().unwrap().contains("can't manage"), "{op}: {r}");
         }
         assert_eq!(h.store.schedule(theirs["id"].as_str().unwrap()).unwrap()["text"], "private");
     }
@@ -2303,6 +2376,37 @@ mod tests {
     }
 
     #[test]
+    fn agent_list_reads_at_most_the_cap_and_says_so() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let cid = setup_channel(&h, &["claude"]);
+        let done = ScheduleChange { status: Some("done".into()), ..Default::default() };
+        for i in 0..=MAX_AGENT_LISTED {
+            let id = once_at(&h, "tom", &cid, &format!("old {i}"), now() + 600.0 + i as f64);
+            h.store.update_schedule(&id, &done, "tom", None).unwrap();
+        }
+        let live = once_at(&h, "tom", &cid, "still live", now() + 5_000.0);
+        h.post_user_message(&cid, "what's scheduled?", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let r = ask(&h, &mut claude, req("claude", &turn, "list", json!({})));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["total"], MAX_AGENT_LISTED, "the read stops at the cap");
+        assert_eq!(r["truncated"], true);
+        assert_eq!(r["items"][0]["id"], live.as_str(), "live-first, so the cap never hides a live one");
+        // Under the cap there's no flag.
+        let small = hub();
+        people(&small);
+        let mut c2 = add_agent(&small, "claude", "Claude", false);
+        let cid2 = setup_channel(&small, &["claude"]);
+        once_at(&small, "tom", &cid2, "one", now() + 600.0);
+        small.post_user_message(&cid2, "list", "tom", Some("Tom"), None, vec![]);
+        let t2 = last_frame(&mut c2, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let r2 = ask(&small, &mut c2, req("claude", &t2, "list", json!({})));
+        assert!(r2.get("truncated").is_none(), "{r2}");
+    }
+
+    #[test]
     fn agent_list_pages_filters_and_spans_the_agents_channels() {
         let h = hub();
         people(&h);
@@ -2342,10 +2446,11 @@ mod tests {
         assert_eq!(finished["items"][0]["text"], "ancient report");
         let only_paused = ask(&h, &mut claude, req("claude", &turn, "list", json!({"status": "paused", "channel_id": also})));
         assert_eq!(only_paused["total"], 1);
-        // Another private conversation: listed, but its words stay there.
-        assert!(only_paused["items"][0]["text"].is_null());
-        assert_eq!(only_paused["items"][0]["text_hidden"], true);
-        assert_eq!(only_paused["items"][0]["manageable_here"], false);
+        // Naming that conversation is an explicit ask: full details, and the
+        // agent may manage it from here (it's in that channel too).
+        assert_eq!(only_paused["items"][0]["text"], "paused one");
+        assert!(only_paused["items"][0].get("text_hidden").is_none());
+        assert_eq!(only_paused["items"][0]["manageable_here"], true);
         assert_eq!(first["items"][0]["manageable_here"], true);
         let big = ask(&h, &mut claude, req("claude", &turn, "list", json!({"limit": 500})));
         assert_eq!(big["items"].as_array().unwrap().len(), LIST_PAGE_MAX.min(27));
@@ -2386,33 +2491,96 @@ mod tests {
         let h = hub();
         people(&h);
         let mut claude = add_agent(&h, "claude", "Claude", false);
-        let here = setup_channel(&h, &["claude"]);
-        let open = setup_channel(&h, &["claude"]);
-        let open_gid = h.store.channel(&open).unwrap()["group_id"].as_str().unwrap().to_string();
-        h.store.set_group_public(&open_gid, true);
-        let private = setup_channel(&h, &["claude"]);
+        let named = |name: &str, public: bool| {
+            let g = h.store.create_group(&format!("G-{name}"), "", Some("tom"));
+            let gid = g["id"].as_str().unwrap().to_string();
+            if public {
+                h.store.set_group_public(&gid, true);
+            }
+            h.store.add_member(&gid, "agent", "claude", "member", None);
+            h.store.create_channel(&gid, name, "")["id"].as_str().unwrap().to_string()
+        };
+        let here = named("general", true);
+        let open = named("town", true);
+        let private = named("exec-comp", false);
+        let elsewhere_g = h.store.create_group("G-other", "", Some("tom"));
+        let not_in = h.store.create_channel(elsewhere_g["id"].as_str().unwrap(), "secret-room", "")["id"]
+            .as_str().unwrap().to_string();
         h.store.set_agent_dm_policy("claude", true, &[]);
         let dm = h.store.open_agent_dm("tom", "claude", "Claude")["id"].as_str().unwrap().to_string();
         once_at(&h, "tom", &here, "here text", now() + 600.0);
         once_at(&h, "tom", &open, "public text", now() + 610.0);
-        once_at(&h, "tom", &private, "private text", now() + 620.0);
+        let exec = once_at(&h, "tom", &private, "private text", now() + 620.0);
         once_at(&h, "tom", &dm, "dm secret", now() + 630.0);
+        once_at(&h, "tom", &not_in, "never listed", now() + 640.0);
         h.post_user_message(&here, "what have I got?", "tom", Some("Tom"), None, vec![]);
         let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+
+        // Default list from public #general: private rows say nothing about where they are.
         let r = ask(&h, &mut claude, req("claude", &turn, "list", json!({})));
-        let by_channel = |c: &str| r["items"].as_array().unwrap().iter().find(|i| i["channel_id"] == c).cloned().unwrap();
+        assert_eq!(r["total"], 4, "the channel the agent isn't in is never listed: {r}");
+        let items = r["items"].as_array().unwrap();
+        let by_channel = |c: &str| items.iter().find(|i| i["channel_id"] == c).cloned().unwrap();
         assert_eq!(by_channel(&here)["text"], "here text");
         assert_eq!(by_channel(&here)["manageable_here"], true);
         assert_eq!(by_channel(&open)["text"], "public text");
-        assert_eq!(by_channel(&open)["manageable_here"], false);
-        for c in [&private, &dm] {
-            let item = by_channel(c);
-            assert!(item["text"].is_null(), "{item}");
+        let hidden: Vec<&Value> = items.iter().filter(|i| i["conversation"] == "private").collect();
+        assert_eq!(hidden.len(), 2, "the private channel and the DM");
+        for item in hidden {
             assert_eq!(item["text_hidden"], true);
+            assert!(item["channel_id"].is_null() && item["channel_name"].is_null() && item["group_id"].is_null(), "{item}");
             assert!(item["next_runs"].as_array().is_some_and(|n| !n.is_empty()), "cadence still shown");
         }
-        assert!(!r.to_string().contains("dm secret"));
-        assert!(!r.to_string().contains("private text"));
+        let body = r.to_string();
+        for leak in ["dm secret", "private text", "exec-comp", &private, &dm, "never listed"] {
+            assert!(!body.contains(leak), "leaked {leak}: {body}");
+        }
+
+        // Asking about it by name returns it in full.
+        let named_r = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "#exec-comp"})));
+        assert_eq!(named_r["ok"], true, "{named_r}");
+        assert_eq!(named_r["items"][0]["text"], "private text");
+        assert_eq!(named_r["items"][0]["channel_name"], "exec-comp");
+        assert_eq!(named_r["items"][0]["manageable_here"], true);
+        let dm_r = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "dm"})));
+        assert_eq!(dm_r["items"][0]["text"], "dm secret", "{dm_r}");
+
+        // And it can be managed from #general.
+        let moved = ask(&h, &mut claude, req("claude", &turn, "update", json!({"id": exec, "text": "private text v2"})));
+        assert_eq!(moved["ok"], true, "{moved}");
+        let gone = ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": exec})));
+        assert_eq!(gone["schedule"]["status"], "cancelled");
+
+        // A conversation the agent isn't in, or an unknown name, stays out of reach.
+        let refused = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "secret-room"})));
+        assert_eq!(refused["ok"], false);
+        assert!(!refused.to_string().contains("never listed"));
+        let unknown = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "nope"})));
+        assert!(unknown["error"].as_str().unwrap().contains("no conversation called #nope"), "{unknown}");
+    }
+
+    #[test]
+    fn an_ambiguous_channel_name_is_refused_and_create_stays_in_this_conversation() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let mk = |group: &str| {
+            let g = h.store.create_group(group, "", Some("tom"));
+            let gid = g["id"].as_str().unwrap().to_string();
+            h.store.add_member(&gid, "agent", "claude", "member", None);
+            h.store.create_channel(&gid, "standup", "")["id"].as_str().unwrap().to_string()
+        };
+        let a = mk("A");
+        let b = mk("B");
+        once_at(&h, "tom", &b, "in b", now() + 600.0);
+        h.post_user_message(&a, "hi", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let r = ask(&h, &mut claude, req("claude", &turn, "list", json!({"channel": "standup"})));
+        assert!(r["error"].as_str().unwrap().contains("more than one"), "{r}");
+        assert!(!r.to_string().contains("in b"));
+        let made = ask(&h, &mut claude, req("claude", &turn, "create", json!({
+            "text": "x", "schedule": {"kind": "interval", "seconds": 600}, "channel_id": b})));
+        assert_eq!(made["ok"], false, "create stays in the grant's conversation: {made}");
     }
 
     #[test]

@@ -369,3 +369,30 @@ test("empty schedule tabs have distinct copy and no zero badge", async () => {
   await act(async () => byLabel("Paused")[0].props.onPress());
   expect(texts().join("\n")).toContain("No paused schedules");
 });
+
+test("inbox keeps one heading per channel on every tab when channels mix active and paused", async () => {
+  useInboxTab.setState({ tab: "unreads", filter: "all" });
+  const list = { data: [], total: 0, isLoading: false, isError: false, refetch: jest.fn() };
+  (useUnreads as jest.Mock).mockReturnValue(list);
+  (useApprovals as jest.Mock).mockReturnValue(list);
+  (useMarkUnreadsRead as jest.Mock).mockReturnValue({ mutate: jest.fn(), isPending: false });
+  (useMe as jest.Mock).mockReturnValue({ data: { drafts_sync: false } });
+  (useSyncedDrafts as jest.Mock).mockReturnValue([]);
+  (useLocalSearchParams as jest.Mock).mockReturnValue({ tab: "schedules" });
+  const base = fixtureSchedules[1];
+  const row = (id: string, channel: string, status: Schedule["status"], runAt: number): Schedule =>
+    ({ ...base, id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null, status, run_at: runAt, can_manage: false });
+  // Interleaved due times: a global live-first sort would split the channels.
+  const items = [
+    row("a-act", "alpha", "active", 100), row("s-act", "storybook", "active", 200),
+    row("a-pau", "alpha", "paused", 300), row("s-pau", "storybook", "paused", 400),
+  ];
+  (useAllSchedules as jest.Mock).mockReturnValue({ data: { items }, isLoading: false, isError: false, isRefetching: false, refetch: jest.fn() });
+  await act(async () => { tree = TestRenderer.create(wrap(new TestApi([]), React.createElement(InboxScreen))); });
+  const headers = () => tree!.root.findAll(node => node.props.accessibilityRole === "header" && node.type === Text).map(node => node.props.children);
+  expect(headers()).toEqual(["# alpha", "# storybook"]);
+  await act(async () => byLabel("Active, 2")[0].props.onPress());
+  expect(headers()).toEqual(["# alpha", "# storybook"]);
+  await act(async () => byLabel("Paused, 2")[0].props.onPress());
+  expect(headers()).toEqual(["# alpha", "# storybook"]);
+});

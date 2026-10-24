@@ -14,8 +14,12 @@ export function SchedulesInbox() {
   const [filter, setFilter] = useState<ScheduleFilter>("all");
   const allItems = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
   const items = filterSchedules(allItems, filter);
+  // One group per channel (in name order), rows inside it live-first, so a
+  // channel never shows up twice when it has both active and paused rows.
   const byChannel = new Map<string, Schedule[]>();
-  for (const s of items) byChannel.set(`${s.status}:${s.channel_id}`, [...(byChannel.get(`${s.status}:${s.channel_id}`) || []), s]);
+  for (const s of items) byChannel.set(s.channel_id, [...(byChannel.get(s.channel_id) || []), s]);
+  const groupLabel = (s: Schedule) => s.channel_kind === "agent_dm" ? s.channel_name ?? s.channel_id : `#${s.channel_name ?? s.channel_id}`;
+  const groupsInOrder = [...byChannel.entries()].sort(([, a], [, b]) => groupLabel(a[0]).localeCompare(groupLabel(b[0])));
   const open = (s: Schedule) => {
     // Agent DMs carry group_id "" — selectChannel maps that to the DMs group.
     if (s.group_id == null) return;
@@ -31,10 +35,10 @@ export function SchedulesInbox() {
         {q.isLoading && <div className="empty">Loading schedules…</div>}
         {q.isError && <div className="empty">Couldn't load schedules. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
         {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty filter={filter} />}
-        {[...byChannel.entries()].map(([channelId, rows]) => {
+        {groupsInOrder.map(([channelId, rows]) => {
           const first = rows[0];
           return (
-            <section className="ago-sched-group" key={channelId} aria-label={`${first.status === "active" ? "Active" : first.status === "paused" ? "Paused" : "Finished"} schedules in ${first.channel_name ?? channelId}`}>
+            <section className="ago-sched-group" key={channelId} aria-label={`Schedules in ${first.channel_name ?? channelId}`}>
               <button className="ago-sched-group-head" disabled={lostChannelAccess(first)}
                 onClick={() => open({ ...first, thread_id: null })}>
                 <Icon name={first.channel_kind === "agent_dm" ? "bot" : "messages-square"} />

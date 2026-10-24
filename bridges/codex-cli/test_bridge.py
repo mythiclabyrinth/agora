@@ -2982,6 +2982,31 @@ class RosterDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ScheduleListPagingTests(unittest.TestCase):
+    def test_private_rows_name_no_conversation_and_named_lookup_is_allowed(self):
+        row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+               "channel_name": "kite", "text": "x"}
+        hidden = {"id": "b", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+                  "conversation": "private", "text_hidden": True, "channel_name": None,
+                  "channel_id": None, "text": None}
+        out = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row, hidden], "total": 2, "offset": 0, "has_more": False})
+        self.assertIn("in another private conversation", out)
+        self.assertIn("1 of these are in other private conversations", out)
+        self.assertNotIn("#None", out)
+        self.assertIn("channel", bridge.SCHEDULE_FIELDS)
+        self.assertIn('"channel"', bridge.SCHEDULE_SYSTEM_PROMPT)
+
+    def test_a_capped_list_says_older_ones_are_not_shown(self):
+        row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
+               "channel_name": "kite", "text": "x"}
+        capped = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row], "total": 1000, "offset": 0, "has_more": True,
+            "next_offset": 20, "truncated": True})
+        self.assertIn("Only the first 1000 schedules", capped)
+        plain = bridge.format_schedule_result({"op": "list"}, {
+            "ok": True, "items": [row], "total": 1, "offset": 0, "has_more": False})
+        self.assertNotIn("Only the first 1000", plain)
+
     def test_list_pages_say_how_to_fetch_more(self):
         row = {"id": "a", "status": "active", "schedule": {"kind": "interval", "seconds": 600},
                "channel_name": "kite", "text": "x"}
@@ -3078,7 +3103,7 @@ class ScheduleListPrivacyTests(unittest.TestCase):
         out = bridge.format_schedule_result({"op": "list"}, {
             "ok": True, "items": [self.ROW, hidden], "total": 2, "offset": 0, "has_more": False})
         self.assertIn('text: "public words"', out)
-        self.assertIn("(text hidden: open that conversation to see it)", out)
+        self.assertIn("(text hidden: ask about that conversation by name to see it)", out)
         self.assertIn("manage it in that conversation", out)
         self.assertEqual(out.count("manage it in that conversation"), 1)
 
