@@ -223,7 +223,7 @@ SCHEDULE_SYSTEM_PROMPT = (
     "text reaches that agent when it fires. "
     "To create, update, pause, resume, cancel or list schedules, reply with a "
     f"line that is exactly `{SCHEDULE_SENTINEL} " + "{...}` and nothing else, "
-    f'for example `{SCHEDULE_SENTINEL} ' + '{"op": "create", "text": "@agent '
+    f'for example `{SCHEDULE_SENTINEL} ' + '{"op": "create", "text": "@<your-handle> '
     'daily check", "schedule": {"kind": "cron", "expr": "0 7 * * *"}}`. Ops: '
     "create (text and schedule; optional thread_id, run_at), update "
     "(id plus any of text, schedule, run_at), pause, resume and cancel (id), "

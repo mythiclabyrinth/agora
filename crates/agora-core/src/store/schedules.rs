@@ -457,14 +457,16 @@ impl Store {
         live_count(&self.conn.lock().unwrap(), owner)
     }
 
-    pub fn due_schedules(&self, now_s: f64) -> Vec<Value> {
+    /// At most `limit` due schedules, oldest first, so a backlog after
+    /// downtime drains over successive ticks instead of in one burst.
+    pub fn due_schedules(&self, now_s: f64, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {COLS} FROM schedules WHERE status = 'active' AND run_at <= ?1 ORDER BY run_at, id"
+                "SELECT {COLS} FROM schedules WHERE status = 'active' AND run_at <= ?1 ORDER BY run_at, id LIMIT ?2"
             ))
             .unwrap();
-        stmt.query_map(params![now_s], row_json).unwrap().filter_map(Result::ok).collect()
+        stmt.query_map(params![now_s, limit as i64], row_json).unwrap().filter_map(Result::ok).collect()
     }
 
     /// Commit one fire atomically: the owner-authored message, the fire record
@@ -716,8 +718,8 @@ mod tests {
         let (store, cid) = setup();
         let s = interval(&store, &cid, None, 1000.0);
         let id = s["id"].as_str().unwrap();
-        assert_eq!(store.due_schedules(999.0).len(), 0);
-        assert_eq!(store.due_schedules(1000.0).len(), 1);
+        assert_eq!(store.due_schedules(999.0, 100).len(), 0);
+        assert_eq!(store.due_schedules(1000.0, 100).len(), 1);
         // Ten hours late (downtime): one post, next slot keeps the phase.
         let now_s = 1000.0 + 36_000.0 + 5.0;
         let (msg, after) = store.record_fire(id, 1000.0, "Ana", now_s).posted().unwrap();
@@ -874,7 +876,7 @@ mod tests {
         assert_eq!(after["status"], "done", "not left active in the past");
         assert!(after["last_error"].as_str().unwrap().contains("already fired"));
         assert_eq!(after["last_run_at"], 51.0, "no new run recorded");
-        assert!(store.due_schedules(100.0).is_empty());
+        assert!(store.due_schedules(100.0, 100).is_empty());
         // A recurring one moves to its next slot instead.
         let iv = interval(&store, &cid, None, 1000.0);
         let iid = iv["id"].as_str().unwrap();

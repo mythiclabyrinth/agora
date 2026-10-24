@@ -18,6 +18,10 @@ use super::{AgentHandle, Hub};
 use crate::schedule_spec::Spec;
 use crate::store::{now, Fire, ScheduleChange, Store};
 
+/// Fires handled per tick. A backlog after downtime (every overdue schedule
+/// fires once) drains over successive 15 s ticks instead of posting and
+/// fanning out hundreds of messages in a single blocking pass.
+pub(crate) const MAX_FIRES_PER_TICK: usize = 50;
 /// How long an agent may act on a delivered message's behalf. Long enough
 /// for a slow multi-step turn, short enough that a leaked id goes stale.
 pub(crate) const GRANT_TTL_SECS: f64 = 2.0 * 3600.0;
@@ -791,7 +795,7 @@ impl Hub {
     /// there; park the rest with the reason. Returns how many posted.
     pub fn fire_due_schedules(&self, now_s: f64) -> usize {
         let mut posted = 0;
-        for schedule in self.store.due_schedules(now_s) {
+        for schedule in self.store.due_schedules(now_s, MAX_FIRES_PER_TICK) {
             let id = schedule["id"].as_str().unwrap_or_default().to_string();
             let owner = schedule["owner"].as_str().unwrap_or_default().to_string();
             let channel_id = schedule["channel_id"].as_str().unwrap_or_default().to_string();
@@ -1095,6 +1099,24 @@ mod tests {
     }
 
     #[test]
+    fn a_backlog_drains_over_ticks_not_in_one_burst() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let gid = h.store.channel(&cid).unwrap()["group_id"].as_str().unwrap().to_string();
+        h.store.add_member(&gid, "user", "tom", "member", None);
+        let backlog = MAX_FIRES_PER_TICK + 7;
+        for i in 0..backlog {
+            let at = now() - 100.0 + i as f64 * 0.01;
+            h.store.create_schedule("tom", &cid, None, &format!("catch-up {i}"), at,
+                &json!({"kind": "once", "at": at}), "tom", None);
+        }
+        assert_eq!(h.fire_due_schedules(now()), MAX_FIRES_PER_TICK);
+        assert_eq!(h.fire_due_schedules(now()), 7, "the rest drain on the next tick");
+        assert_eq!(h.fire_due_schedules(now()), 0);
+    }
+
+    #[test]
     fn schedule_changes_reach_admins_outside_the_channel() {
         let h = hub();
         people(&h);
@@ -1306,7 +1328,7 @@ mod tests {
         let after = h.store.schedule(s["id"].as_str().unwrap()).unwrap();
         assert_eq!(after["status"], "paused");
         assert!(after["last_error"].as_str().unwrap().contains("no longer a member"));
-        assert!(h.store.due_schedules(now()).is_empty(), "parked, not retried every tick");
+        assert!(h.store.due_schedules(now(), 100).is_empty(), "parked, not retried every tick");
     }
 
     #[test]

@@ -74,7 +74,9 @@ test("lists a channel's schedules with cadence, thread label, owner and agent; r
   expect(byLabel("Cancel schedule: Every 6 hours")).toHaveLength(1);
   expect(byLabel("Change time: Every 6 hours")).toHaveLength(1);
   expect(tree!.root.findAll(node => typeof node.props.accessibilityLabel === "string" && node.props.accessibilityLabel.startsWith("Resume schedule"))).toHaveLength(0);
-});
+  // The first render pays the cold module transform, which on a loaded CI
+  // runner can exceed jest's 5 s default (same as templates.test.ts).
+}, 20_000);
 
 test("thread view asks for that thread only and hides the thread label", async () => {
   const api = new TestApi([fixtureSchedules[0]]);

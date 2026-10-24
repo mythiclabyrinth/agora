@@ -306,6 +306,8 @@ CREATE TABLE IF NOT EXISTS schedule_fires (
     late_by REAL NOT NULL DEFAULT 0,
     UNIQUE (schedule_id, due_at)
 );
+-- Boot redelivery and hourly maintenance filter on these, not the unique key.
+CREATE INDEX IF NOT EXISTS idx_schedule_fires_pending ON schedule_fires(delivered, created_at);
 -- One row per finished schedule brought back to life (a re-armed one-off).
 -- Revivals count toward the hourly creation limit alongside new schedules,
 -- so a runaway turn can't recycle finished one-offs to post every tick.

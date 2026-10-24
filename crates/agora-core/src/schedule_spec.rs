@@ -95,7 +95,7 @@ impl Spec {
                     .map(str::trim)
                     .filter(|e| !e.is_empty())
                     .ok_or("a cron schedule needs `expr`, e.g. \"0 7 * * *\"")?;
-                if expr.split_whitespace().count() != 5 && !expr.starts_with('@') {
+                if expr.split_whitespace().count() != 5 {
                     return Err(format!(
                         "cron expression '{expr}' must have 5 fields (minute hour day month weekday), in UTC"
                     ));
@@ -255,6 +255,8 @@ mod tests {
         assert!(Spec::parse(&json!({"kind": "interval", "seconds": 60})).unwrap_err().contains("300"));
         assert!(Spec::parse(&json!({"kind": "cron", "expr": "61 * * * *"})).unwrap_err().contains("invalid cron"));
         assert!(Spec::parse(&json!({"kind": "cron", "expr": "* * * *"})).unwrap_err().contains("5 fields"));
+        // Only the documented 5-field form: no croner `@daily`-style aliases.
+        assert!(Spec::parse(&json!({"kind": "cron", "expr": "@daily"})).unwrap_err().contains("5 fields"));
         assert!(Spec::parse(&json!({"kind": "cron", "expr": "0 0 30 2 *"})).unwrap_err().contains("never matches"));
         assert!(Spec::parse(&json!({"kind": "once", "at": 1.7e12})).unwrap_err().contains("milliseconds"));
         assert!(Spec::parse(&json!({"kind": "weekly"})).unwrap_err().contains("unknown"));

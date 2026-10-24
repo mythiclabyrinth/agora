@@ -13,6 +13,21 @@ fn viewer(user: &AuthedUser) -> Option<(&str, bool)> {
     Some((user.username.as_str(), user.instance_admin))
 }
 
+/// Most schedules a list endpoint returns. Rows arrive soonest-due first, so
+/// a cap keeps what matters; an admin's inbox can span every channel.
+pub(super) const MAX_LISTED: usize = 1000;
+
+/// `{items}` decorated, at most [`MAX_LISTED`], with `truncated: true` only
+/// when rows were left out.
+fn capped_list(rows: &[Value], decorate: impl Fn(&Value) -> Value) -> Value {
+    let items: Vec<Value> = rows.iter().take(MAX_LISTED).map(decorate).collect();
+    if rows.len() > MAX_LISTED {
+        json!({"items": items, "truncated": true})
+    } else {
+        json!({"items": items})
+    }
+}
+
 /// GET /api/channels/{channel_id}/schedules[?thread_id=] — the channel's
 /// schedules, thread ones included and labelled, or just one thread's.
 pub(super) async fn list_channel_schedules(
@@ -30,14 +45,15 @@ pub(super) async fn list_channel_schedules(
         }
         None => None,
     };
-    let store = &state.hub.store;
-    let decorator = ScheduleDecorator::new(store, viewer(&user), now());
-    let items: Vec<Value> = store
-        .list_schedules_for_channel(&channel_id, thread_id)
-        .iter()
-        .map(|s| decorator.decorate(s))
-        .collect();
-    Ok(Json(json!({"items": items})))
+    let items = tokio::task::spawn_blocking(move || {
+        let store = &state.hub.store;
+        let decorator = ScheduleDecorator::new(store, viewer(&user), now());
+        let rows = store.list_schedules_for_channel(&channel_id, thread_id);
+        capped_list(&rows, |s| decorator.decorate(s))
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Schedule query failed"))?;
+    Ok(Json(items))
 }
 
 /// GET /api/schedules — every schedule in channels the caller can access
@@ -51,14 +67,15 @@ pub(super) async fn list_schedules(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
-    let store = &state.hub.store;
-    let decorator = ScheduleDecorator::new(store, viewer(&user), now());
-    let items: Vec<Value> = store
-        .list_visible_schedules(&user.username, user.instance_admin)
-        .iter()
-        .map(|s| decorator.decorate(s))
-        .collect();
-    Ok(Json(json!({"items": items})))
+    let items = tokio::task::spawn_blocking(move || {
+        let store = &state.hub.store;
+        let decorator = ScheduleDecorator::new(store, viewer(&user), now());
+        let rows = store.list_visible_schedules(&user.username, user.instance_admin);
+        capped_list(&rows, |s| decorator.decorate(s))
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Schedule query failed"))?;
+    Ok(Json(items))
 }
 
 /// The schedule, if the caller may manage it, and whether they can still see
@@ -345,6 +362,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lists_are_capped_soonest_first_and_say_so() {
+        let f = fixture();
+        let store = &f.state.hub.store;
+        let base = now() + 60.0;
+        for i in 0..MAX_LISTED {
+            let at = base + i as f64;
+            store.create_schedule("ana", &f.cid, None, "bulk", at, &json!({"kind": "once", "at": at}), "ana", None);
+        }
+        // The fixture's own schedule (due in an hour) is now past the cap.
+        let v = channel_list(&f, &f.cid, session_headers(&f.state, "ana")).await.unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), MAX_LISTED);
+        assert_eq!(v["truncated"], true);
+        assert!(v["items"].as_array().unwrap().iter().all(|i| i["id"] != f.sid.as_str()), "latest due is dropped");
+        let inbox_v = inbox(&f, session_headers(&f.state, "ana")).await;
+        assert_eq!(inbox_v["items"].as_array().unwrap().len(), MAX_LISTED);
+        assert_eq!(inbox_v["truncated"], true);
+        // Uncapped lists carry no flag.
+        let small = fixture();
+        let v = channel_list(&small, &small.cid, session_headers(&small.state, "ana")).await.unwrap();
+        assert!(v.get("truncated").is_none(), "{v}");
+    }
+
+    #[tokio::test]
     async fn the_thread_filter_scopes_a_channel_list_to_one_thread() {
         let f = fixture();
         let s = &f.state;
@@ -545,7 +585,7 @@ mod tests {
             &json!({"kind": "interval", "seconds": 600}), "ana", None)["id"].as_str().unwrap().to_string();
         let r = patch(&f, &sid, session_headers(s, "ana"), json!({"status": "active"})).await.unwrap();
         assert_eq!(r["schedule"]["run_at"], due, "the overdue slot must still post on the next tick");
-        assert_eq!(s.hub.store.due_schedules(now()).len(), 1);
+        assert_eq!(s.hub.store.due_schedules(now(), 100).len(), 1);
     }
 
     #[tokio::test]
