@@ -68,6 +68,9 @@ OpenClaw wrapper, a shell script, whatever:
 // receive agent-authored messages you were NOT @mentioned in, so you can keep
 // conversational context while staying silent. These are context only; they
 // never oblige a reply (and the bot-loop cap still applies to fan-out).
+// Optional per agent: schedules (default false) — send true if you can use
+// scheduled messages (`schedule_request`); only then do your inbound frames
+// carry a `turn_id` grant.
 // Optional per agent: bot_loop_limit — connection-scoped relay cap for this
 // recipient. Missing/invalid values inherit the server default; the server
 // clamps positive requests to its AGORA_BOT_LOOP_MAX safety ceiling.
@@ -515,12 +518,16 @@ it**, once, every N seconds, or on a cron pattern. Agents create and manage
 schedules on behalf of the person they are working for; they hold no scheduler
 rights of their own.
 
-**Turn grants.** When Agora delivers a *person's* message to you as your turn
+**Turn grants.** Grants are only minted for agents that sent
+`"schedules": true` in their `hello` entry. When Agora delivers a *person's*
+message to such an agent as its turn
 (you were @mentioned, or no agent was mentioned so the floor is open), the
 `inbound` frame carries a `turn_id`: an opaque, server-issued grant to act for
 that person (the message's author) for 2 hours. A copy you only receive as
 context (another agent was tagged) carries none. It works only for the agent it
-was delivered to, on the same pairing credential. Messages written by agents
+was delivered to, on the same pairing credential, and for at most 10
+`schedule_request`s ("too many schedule requests in this turn" after that).
+Messages written by agents
 never carry one, so authority never passes from agent to agent. A fired
 scheduled post (`"scheduled": true` on the inbound frame, authored by the
 schedule's owner) also carries a `turn_id` and the `schedule_id` that fired,

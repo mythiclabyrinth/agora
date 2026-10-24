@@ -5,7 +5,7 @@
    split, so this screen simply never offers a create or text-edit path. */
 
 import React, { useMemo, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, Modal, Pressable, RefreshControl, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { CalendarClock, Clock, MessageSquare, Pause, Play, Trash2 } from "lucide-react-native";
 import {
   describeSchedule,
@@ -91,59 +91,77 @@ export function ScheduleRow({ item, showThread, showChannel = false, onOpen, onE
   const styles = useStyles();
   const busy = actions.isBusy(item.id);
   const manageable = item.can_manage === true && (item.status === "active" || item.status === "paused");
-  // The owner lost the channel: keep only Cancel, nothing that would post
-  // into a conversation they can no longer see.
+  // The owner lost the channel: keep Pause and Cancel (as the server allows),
+  // nothing that would post into a conversation they can no longer see.
   const lostAccess = lostChannelAccess(item);
   const cadence = describeSchedule(item.schedule);
+  const [expanded, setExpanded] = useState(false);
+  const [showLater, setShowLater] = useState(false);
   const where = [showChannel && item.channel_name ? `# ${item.channel_name}` : null, showThread ? item.thread_title : null]
     .filter(Boolean).join(" · ");
   return (
     <View style={styles.row}>
       <Pressable accessibilityRole="button" accessibilityLabel={`Open scheduled message: ${cadence}`}
-        disabled={!onOpen} style={styles.main} onPress={() => onOpen?.(item)}>
+        disabled={!onOpen || lostAccess} style={styles.main} onPress={() => { if (!lostAccess) onOpen?.(item); }}>
         <View style={styles.top}>
           <Icon icon={CalendarClock} size={16} color={colors.accentText} />
           <Text style={styles.cadence} numberOfLines={2}>{cadence}</Text>
-          <View style={[styles.chip, item.status === "paused" && styles.chipPaused]}>
-            <Text maxFontSizeMultiplier={1.3} style={[styles.chipText, item.status === "paused" && styles.chipTextPaused]}>{STATUS_LABEL[item.status]}</Text>
+          <View style={[styles.chip, item.status !== "active" && styles.chipPaused]}>
+            <Text maxFontSizeMultiplier={1.3} style={[styles.chipText, item.status !== "active" && styles.chipTextPaused]}>{STATUS_LABEL[item.status]}</Text>
           </View>
         </View>
-        <Text style={styles.text} numberOfLines={2}>{item.text}</Text>
+        <Text style={styles.text} numberOfLines={expanded || item.text.length <= 160 ? undefined : 3}>{item.text}</Text>
         {where ? <View style={styles.thread}><Icon icon={MessageSquare} size={13} /><Text style={styles.meta} numberOfLines={1}>{where}</Text></View> : null}
         {(item.status === "active" || item.status === "paused") && item.next_runs.length ? (
-          <Text style={styles.meta} numberOfLines={2}>{nextRunsLabel(item.status)} {item.next_runs.map(ts => fmtTs(ts)).join(" · ")}</Text>
+          <Text style={styles.nextRun}>{nextRunsLabel(item.status)} {fmtTs(item.next_runs[0])}</Text>
         ) : null}
         <Text style={styles.meta} numberOfLines={1}>
-          {item.owner_name || item.owner}{item.via_agent ? ` · via ${item.via_agent}` : ""}
+          Posts as {item.owner_name || item.owner}{item.via_agent ? ` · via ${item.via_agent}` : ""}
         </Text>
         {item.last_error ? <Text style={styles.error} numberOfLines={3}>{item.last_error}</Text> : null}
         {lostAccess ? <Text style={styles.error} numberOfLines={2}>{LOST_ACCESS_NOTE}</Text> : null}
       </Pressable>
+      {(item.status === "active" || item.status === "paused") && item.next_runs.length > 1 ? <View>
+        <Pressable accessibilityRole="button" accessibilityLabel="Later runs" accessibilityState={{ expanded: showLater }}
+          style={styles.expand} onPress={() => setShowLater(!showLater)}>
+          <Text style={styles.expandText}>{showLater ? "Hide later runs" : "Later runs"}</Text>
+        </Pressable>
+        {showLater ? item.next_runs.slice(1).map((time, index) => <Text key={index} style={styles.meta}>{fmtTs(time)}</Text>) : null}
+      </View> : null}
+      {item.text.length > 160 ? <Pressable accessibilityRole="button" accessibilityState={{ expanded }}
+        accessibilityLabel={expanded ? "Show less" : "Read full message"} style={styles.expand} onPress={() => setExpanded(!expanded)}>
+        <Text style={styles.expandText}>{expanded ? "Show less" : "Read full message"}</Text>
+      </Pressable> : null}
       {manageable && lostAccess ? (
         <View style={styles.actions}>
-          {busy ? <ActivityIndicator size="small" color={colors.dim} /> : (
-            <Pressable accessibilityRole="button" accessibilityLabel={`Cancel schedule: ${cadence}`} hitSlop={10} onPress={() => actions.confirmCancel(item)}>
-              <Icon icon={Trash2} size={19} />
+          {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <>
+            {item.status === "active" ? (
+              <Pressable accessibilityRole="button" accessibilityLabel={`Pause schedule: ${cadence}`} style={styles.action} onPress={() => actions.setStatus(item, "paused")}>
+                <Icon icon={Pause} size={17} /><Text style={styles.actionText}>Pause</Text>
+              </Pressable>
+            ) : null}
+            <Pressable accessibilityRole="button" accessibilityLabel={`Cancel schedule: ${cadence}`} style={styles.action} onPress={() => actions.confirmCancel(item)}>
+              <Icon icon={Trash2} size={17} /><Text style={styles.actionText}>Cancel</Text>
             </Pressable>
-          )}
+          </>}
         </View>
       ) : manageable ? (
         <View style={styles.actions}>
           {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Change time: ${cadence}`} hitSlop={10} onPress={() => onEdit(item)}>
-              <Icon icon={Clock} size={19} />
+            <Pressable accessibilityRole="button" accessibilityLabel={`Change time: ${cadence}`} style={styles.action} onPress={() => onEdit(item)}>
+              <Icon icon={Clock} size={17} /><Text style={styles.actionText}>Time</Text>
             </Pressable>
             {item.status === "active" ? (
-              <Pressable accessibilityRole="button" accessibilityLabel={`Pause schedule: ${cadence}`} hitSlop={10} onPress={() => actions.setStatus(item, "paused")}>
-                <Icon icon={Pause} size={19} />
+              <Pressable accessibilityRole="button" accessibilityLabel={`Pause schedule: ${cadence}`} style={styles.action} onPress={() => actions.setStatus(item, "paused")}>
+                <Icon icon={Pause} size={17} /><Text style={styles.actionText}>Pause</Text>
               </Pressable>
             ) : (
-              <Pressable accessibilityRole="button" accessibilityLabel={`Resume schedule: ${cadence}`} hitSlop={10} onPress={() => actions.setStatus(item, "active")}>
-                <Icon icon={Play} size={19} />
+              <Pressable accessibilityRole="button" accessibilityLabel={`Resume schedule: ${cadence}`} style={styles.action} onPress={() => actions.setStatus(item, "active")}>
+                <Icon icon={Play} size={17} /><Text style={styles.actionText}>Resume</Text>
               </Pressable>
             )}
-            <Pressable accessibilityRole="button" accessibilityLabel={`Cancel schedule: ${cadence}`} hitSlop={10} onPress={() => actions.confirmCancel(item)}>
-              <Icon icon={Trash2} size={19} />
+            <Pressable accessibilityRole="button" accessibilityLabel={`Cancel schedule: ${cadence}`} style={styles.action} onPress={() => actions.confirmCancel(item)}>
+              <Icon icon={Trash2} size={17} /><Text style={styles.actionText}>Cancel</Text>
             </Pressable>
           </>}
         </View>
@@ -208,7 +226,8 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
   // Posts go out in the owner's name, so only the owner changes how often;
   // an admin managing someone else's schedule edits just the next time.
   const timeOnly = item?.is_owner === false;
-  const [once, setOnce] = useState(formatLocalInput(item?.run_at ?? (initial?.kind === "once" ? initial.at : Math.floor(Date.now() / 1000) + 3600)));
+  const initialOnce = formatLocalInput(item?.run_at ?? (initial?.kind === "once" ? initial.at : Math.floor(Date.now() / 1000) + 3600));
+  const [once, setOnce] = useState(initialOnce);
   const [count, setCount] = useState(String(parts.count));
   const [unit, setUnit] = useState<IntervalUnit>(parts.unit);
   const [cron, setCron] = useState(initial?.kind === "cron" ? initial.expr : "0 7 * * *");
@@ -223,9 +242,19 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
     const next = nextRunChange(timeOnly ? "once" : mode, nextAt);
     if (next && "error" in next) { setError(next.error); return; }
     setError(null);
-    const change = timeOnly && draft.spec.kind === "once"
-      ? { run_at: draft.spec.at }
-      : next ? { schedule: draft.spec, run_at: next.run_at } : { schedule: draft.spec };
+    // Only send what the person changed: re-sending the stored rule (or the
+    // pre-filled minute of a one-off) would restart the clock or drop seconds.
+    const spec = draft.spec;
+    const onceUnchanged = once === initialOnce;
+    const sameRule = spec.kind === "once"
+      ? initial?.kind === "once" && onceUnchanged
+      : spec.kind === "interval"
+        ? initial?.kind === "interval" && initial.seconds === spec.seconds
+        : initial?.kind === "cron" && initial.expr.trim().replace(/\s+/g, " ") === spec.expr;
+    const change = timeOnly && spec.kind === "once"
+      ? (onceUnchanged ? {} : { run_at: spec.at })
+      : { ...(sameRule ? {} : { schedule: spec }), ...(next ? { run_at: next.run_at } : {}) };
+    if (!Object.keys(change).length) { onClose(); return; }
     update.mutate({ id: item.id, change }, {
       onSuccess: onClose,
       // The server validates cron rules and limits; show its words in place.
@@ -234,9 +263,12 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
   };
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.keyboard} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <Pressable accessible={false} style={styles.backdrop} onPress={onClose}>
         <Pressable accessibilityViewIsModal accessible={false} style={styles.sheet} onPress={event => event.stopPropagation()}>
           <SheetHeader title="Change time" onClose={onClose} />
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.editorContent}>
+          <Text style={styles.hint}>Posts as {item.owner_name || item.owner}. To change the message, ask an agent.</Text>
           {timeOnly ? null : <View style={styles.modes} accessibilityRole="tablist">
             {(["once", "interval", "cron"] as const).map(option => (
               <Pressable key={option} accessibilityRole="tab" accessibilityState={{ selected: mode === option }}
@@ -248,6 +280,7 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
               </Pressable>
             ))}
           </View>}
+          <Text style={styles.fieldLabel}>{timeOnly || mode === "once" ? "Date and time · local time" : mode === "cron" ? "Cron rule · UTC" : "Repeat every"}</Text>
           {timeOnly || mode === "once" ? (
             <ThemedInput accessibilityLabel="Date and time" value={once} onChangeText={setOnce} autoCapitalize="none"
               autoCorrect={false} placeholder="2026-10-25 07:00" />
@@ -266,8 +299,11 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
               autoCorrect={false} placeholder="0 7 * * 1-5" />
           )}
           {!timeOnly && mode !== "once" ? (
+            <View style={styles.field}>
+            <Text style={styles.fieldLabel}>Next run · optional, local time</Text>
             <ThemedInput accessibilityLabel="Next run" value={nextAt} onChangeText={setNextAt} autoCapitalize="none"
-              autoCorrect={false} placeholder="Next run (optional), 2026-10-25 07:00" />
+              autoCorrect={false} placeholder="YYYY-MM-DD HH:MM" />
+            </View>
           ) : null}
           <Text style={styles.hint}>
             {timeOnly
@@ -282,8 +318,10 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
             style={[styles.save, update.isPending && styles.disabled]} onPress={save}>
             {update.isPending ? <ActivityIndicator color={colors.onAccent} /> : <Text style={styles.saveText}>Save</Text>}
           </Pressable>
+          </ScrollView>
         </Pressable>
       </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -349,30 +387,39 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   emptyList: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   group: { gap: 8 },
   groupTitle: { ...typography.caption, color: colors.dim, fontWeight: weight.semibold, marginTop: space.sm },
-  row: { flexDirection: "row", alignItems: "flex-start", gap: 12, padding: 12, borderRadius: 14,
+  row: { gap: 12, padding: 16, borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong, backgroundColor: colors.panel },
-  main: { flex: 1, minWidth: 0, gap: 4 },
+  main: { minWidth: 0, gap: 8 },
   top: { flexDirection: "row", alignItems: "center", gap: 8 },
   cadence: { flex: 1, color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
   chip: { borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: colors.accentSoft },
   chipPaused: { backgroundColor: colors.panelStrong },
   chipText: { ...typography.caption, color: colors.accentText, fontWeight: weight.semibold },
   chipTextPaused: { color: colors.dim },
-  text: { color: colors.text, fontSize: typography.caption.fontSize },
+  text: { ...typography.bodySm, color: colors.text },
+  nextRun: { ...typography.bodySm, color: colors.text, fontWeight: weight.semibold },
   thread: { flexDirection: "row", alignItems: "center", gap: 5 },
   meta: { flexShrink: 1, color: colors.dim, fontSize: typography.caption.fontSize },
   error: { color: colors.red, fontSize: typography.caption.fontSize },
-  actions: { flexDirection: "row", alignItems: "center", gap: 16, paddingTop: 2 },
+  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderStrong, paddingTop: 8 },
+  action: { minHeight: 44, minWidth: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, borderRadius: radii.md, backgroundColor: colors.panelStrong },
+  actionText: { ...typography.caption, color: colors.text, fontWeight: weight.semibold },
+  expand: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
+  expandText: { ...typography.caption, color: colors.accentText },
+  keyboard: { flex: 1 },
+  editorContent: { gap: space.md, paddingBottom: space.xl },
+  field: { gap: space.xs },
+  fieldLabel: { ...typography.bodySm, color: colors.text, fontWeight: weight.semibold },
   backdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: colors.scrim },
-  sheet: { ...surfaces.sheet, gap: space.md, paddingBottom: space.xl },
+  sheet: { ...surfaces.sheet, maxHeight: "90%", gap: space.md, paddingBottom: space.xl },
   modes: { flexDirection: "row", gap: space.xs, padding: space.xs, borderRadius: radii.lg, backgroundColor: colors.panel },
-  mode: { flex: 1, minHeight: 40, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
+  mode: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
   modeActive: { backgroundColor: colors.accentSoft },
   modeText: { ...typography.bodySm, color: colors.dim, fontWeight: weight.semibold },
   modeTextActive: { color: colors.accentText },
-  intervalRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  intervalRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm },
   count: { width: 72 },
-  unit: { minHeight: 40, paddingHorizontal: space.sm, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
+  unit: { minHeight: 44, paddingHorizontal: space.sm, alignItems: "center", justifyContent: "center", borderRadius: radii.md },
   hint: { ...typography.caption, color: colors.dim },
   save: { minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: radii.md, backgroundColor: colors.a1 },
   saveText: { color: colors.onAccent, fontWeight: weight.semibold },

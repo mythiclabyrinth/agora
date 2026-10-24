@@ -25,7 +25,7 @@ pub const MAX_LIVE_PER_OWNER: i64 = 200;
 pub const MAX_CREATES_PER_HOUR: i64 = 30;
 
 const COLS: &str = "id, owner, channel_id, thread_id, text, run_at, schedule, status, \
-     last_run_at, last_error, created_at, updated_at, created_by, updated_by, via_agent, text_agent";
+     last_run_at, last_error, created_at, updated_at, created_by, updated_by, via_agent, text_agent, last_due_at";
 
 fn row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     let thread_id: i64 = r.get(3)?;
@@ -46,11 +46,16 @@ fn row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
         "updated_by": r.get::<_, String>(13)?,
         "via_agent": r.get::<_, Option<String>>(14)?,
         "text_agent": r.get::<_, Option<String>>(15)?,
+        "last_due_at": r.get::<_, Option<f64>>(16)?,
     }))
 }
 
 /// Fields a schedule update may carry; `None` leaves a field alone.
 /// `schedule` must already be validated (see [`Spec::parse`]).
+/// Finished schedules stay in the lists this long, then drop off (the
+/// rows are kept; only listing hides them).
+pub(crate) const DONE_LISTED_SECS: f64 = 7.0 * 86_400.0;
+
 #[derive(Default, Debug, Clone)]
 pub struct ScheduleChange {
     pub text: Option<String>,
@@ -96,8 +101,10 @@ impl UpdateRefused {
 /// What [`Store::record_fire`] did.
 #[derive(Debug)]
 pub enum Fire {
-    /// Posted: `(message, schedule after the advance)`.
-    Posted(Value, Value),
+    /// Posted: `(message, schedule after the advance)`. The schedule is
+    /// `None` when it was deleted concurrently (a cascade) after the commit:
+    /// the message is stored either way, so it must still be delivered.
+    Posted(Value, Option<Value>),
     /// The slot had already posted; the schedule was advanced with an error.
     AlreadyFired(Value),
     /// The schedule is gone, not active, or no longer due at that time.
@@ -107,7 +114,7 @@ pub enum Fire {
 impl Fire {
     pub fn posted(self) -> Option<(Value, Value)> {
         match self {
-            Fire::Posted(m, s) => Some((m, s)),
+            Fire::Posted(m, Some(s)) => Some((m, s)),
             _ => None,
         }
     }
@@ -146,18 +153,23 @@ fn apply_change(
 }
 
 /// Move a schedule past a fired slot: to its next due time, or `done`.
-fn advance(tx: &rusqlite::Transaction, id: &str, next: Option<f64>, now_s: f64, error: Option<&str>, ran: bool) {
-    let last_run = if ran { Some(now_s) } else { None };
+fn advance(
+    tx: &rusqlite::Transaction, id: &str, next: Option<f64>, now_s: f64, error: Option<&str>,
+    ran: Option<f64>,
+) {
+    // `ran` is the due slot that just posted: last_run_at records when it
+    // actually went out, last_due_at which slot it was.
+    let last_run = ran.map(|_| now_s);
     match next {
         Some(next_run) => tx.execute(
             "UPDATE schedules SET run_at = ?2, last_run_at = COALESCE(?3, last_run_at), last_error = ?4, \
-             updated_at = ?5 WHERE id = ?1",
-            params![id, next_run, last_run, error, now_s],
+             updated_at = ?5, last_due_at = COALESCE(?6, last_due_at) WHERE id = ?1",
+            params![id, next_run, last_run, error, now_s, ran],
         ),
         None => tx.execute(
             "UPDATE schedules SET status = 'done', last_run_at = COALESCE(?2, last_run_at), last_error = ?3, \
-             updated_at = ?4 WHERE id = ?1",
-            params![id, last_run, error, now_s],
+             updated_at = ?4, last_due_at = COALESCE(?5, last_due_at) WHERE id = ?1",
+            params![id, last_run, error, now_s, ran],
         ),
     }
     .unwrap();
@@ -218,6 +230,9 @@ fn insert_schedule(
 }
 
 impl Store {
+    /// Test-only: uncapped insert. Production creates go through
+    /// create_schedule_capped (live cap + hourly limit).
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn create_schedule(
         &self,
@@ -245,7 +260,9 @@ impl Store {
             .unwrap()
     }
 
-    /// Apply a change; `None` when the schedule doesn't exist.
+    /// Test-only: apply a change unconditionally. Production writes go
+    /// through update_schedule_if (stale-row check, cap, hourly limit).
+    #[cfg(test)]
     pub fn update_schedule(
         &self,
         id: &str,
@@ -378,16 +395,18 @@ impl Store {
     }
 
     /// Schedules shown in a channel's list (thread ones included unless a
-    /// thread filter is given). Cancelled rows are history, not shown.
+    /// thread filter is given). Cancelled rows are history, not shown, and
+    /// finished ones drop off after DONE_LISTED_SECS.
     pub fn list_schedules_for_channel(&self, channel_id: &str, thread_id: Option<i64>) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {COLS} FROM schedules WHERE channel_id = ?1 AND status != 'cancelled' \
+                 AND (status != 'done' OR updated_at >= ?3) \
                  AND (?2 IS NULL OR thread_id = ?2) ORDER BY run_at, id"
             ))
             .unwrap();
-        stmt.query_map(params![channel_id, thread_id], row_json)
+        stmt.query_map(params![channel_id, thread_id, now() - DONE_LISTED_SECS], row_json)
             .unwrap()
             .filter_map(Result::ok)
             .collect()
@@ -406,7 +425,7 @@ impl Store {
             .prepare(&format!(
                 "SELECT {cols} FROM schedules s JOIN channels c ON c.id = s.channel_id \
                  LEFT JOIN groups g ON g.id = c.group_id \
-                 WHERE s.status != 'cancelled' AND ( \
+                 WHERE s.status != 'cancelled' AND (s.status != 'done' OR s.updated_at >= ?3) AND ( \
                    s.owner = ?1 OR \
                    (c.kind = 'agent_dm' AND c.dm_user_id = ?1) OR \
                    (c.kind != 'agent_dm' AND g.id IS NOT NULL AND (?2 = 1 OR g.is_public = 1 OR EXISTS ( \
@@ -415,7 +434,7 @@ impl Store {
                  ORDER BY s.run_at, s.id"
             ))
             .unwrap();
-        stmt.query_map(params![username, instance_admin as i64], row_json)
+        stmt.query_map(params![username, instance_admin as i64, now() - DONE_LISTED_SECS], row_json)
             .unwrap()
             .filter_map(Result::ok)
             .collect()
@@ -426,10 +445,11 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {COLS} FROM schedules WHERE owner = ?1 AND status != 'cancelled' ORDER BY run_at, id"
+                "SELECT {COLS} FROM schedules WHERE owner = ?1 AND status != 'cancelled' \
+                 AND (status != 'done' OR updated_at >= ?2) ORDER BY run_at, id"
             ))
             .unwrap();
-        stmt.query_map(params![owner], row_json).unwrap().filter_map(Result::ok).collect()
+        stmt.query_map(params![owner, now() - DONE_LISTED_SECS], row_json).unwrap().filter_map(Result::ok).collect()
     }
 
     #[cfg(test)]
@@ -488,7 +508,7 @@ impl Store {
             // instead of leaving it active in the past where every tick would
             // skip it silently.
             let error = format!("already fired at {}", fmt_utc(due_at));
-            advance(&tx, schedule_id, next, now_s, Some(&error), false);
+            advance(&tx, schedule_id, next, now_s, Some(&error), None);
             tx.commit().unwrap();
             drop(conn);
             return match self.schedule(schedule_id) {
@@ -522,7 +542,7 @@ impl Store {
             params![schedule_id, due_at, message_id],
         )
         .unwrap();
-        advance(&tx, schedule_id, next, now_s, None, true);
+        advance(&tx, schedule_id, next, now_s, None, Some(due_at));
         tx.commit().unwrap();
         drop(conn);
         let message = json!({
@@ -538,10 +558,7 @@ impl Store {
             "meta": meta,
             "attachments": [],
         });
-        match self.schedule(schedule_id) {
-            Some(schedule) => Fire::Posted(message, schedule),
-            None => Fire::NotDue,
-        }
+        Fire::Posted(message, self.schedule(schedule_id))
     }
 
     pub fn mark_fire_delivered(&self, schedule_id: &str, due_at: f64) {
@@ -732,6 +749,25 @@ mod tests {
         assert_eq!(cron["schedule"], json!({"kind": "cron", "expr": "0 7 * * *"}));
         let (_, after) = store.record_fire(cron["id"].as_str().unwrap(), seven, "Ana", seven + 2.0 * 86_400.0).posted().unwrap();
         assert_eq!(after["run_at"], seven + 3.0 * 86_400.0);
+    }
+
+    #[test]
+    fn finished_schedules_drop_off_the_lists_after_a_week() {
+        let (store, cid) = setup();
+        let t = now();
+        let recent = store.create_schedule("ana", &cid, None, "recent", t - 10.0,
+            &json!({"kind": "once", "at": t - 10.0}), "ana", None);
+        store.record_fire(recent["id"].as_str().unwrap(), t - 10.0, "Ana", t).posted().unwrap();
+        let old_at = t - DONE_LISTED_SECS - 60.0;
+        let old = store.create_schedule("ana", &cid, None, "old", old_at,
+            &json!({"kind": "once", "at": old_at}), "ana", None);
+        store.record_fire(old["id"].as_str().unwrap(), old_at, "Ana", old_at + 1.0).posted().unwrap();
+        let texts = |items: Vec<Value>| items.iter().map(|s| s["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(texts(store.list_schedules_for_channel(&cid, None)), ["recent"]);
+        assert_eq!(texts(store.list_visible_schedules("ana", false)), ["recent"]);
+        assert_eq!(texts(store.list_owner_schedules("ana")), ["recent"]);
+        // The row itself is kept; only the lists hide it.
+        assert_eq!(store.schedule(old["id"].as_str().unwrap()).unwrap()["status"], "done");
     }
 
     #[test]

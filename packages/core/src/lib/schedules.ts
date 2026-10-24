@@ -131,7 +131,8 @@ export function nextRunsLabel(status: Schedule["status"]): string {
 }
 
 /** The owner was removed from the schedule's channel: it still posts in
-    their name unless stopped, so they keep only Cancel. */
+    their name unless stopped, so they keep Pause and Cancel (no Resume or
+    retime) to stop it. */
 export function lostChannelAccess(schedule: Schedule): boolean {
   return schedule.channel_access === false;
 }

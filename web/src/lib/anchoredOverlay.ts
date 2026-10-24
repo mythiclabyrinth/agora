@@ -1,4 +1,4 @@
-export type OverlayAlignment = "start" | "center";
+export type OverlayAlignment = "start" | "center" | "end";
 
 /** Position a fixed overlay beside its anchor and keep it attached through
     viewport resizes and scrolling in any nested pane. */
@@ -45,7 +45,7 @@ export function watchAnchoredOverlay(
     const width = overlay.offsetWidth;
     const wantedLeft = alignment === "center"
       ? rect.left + rect.width / 2 - width / 2
-      : rect.left;
+      : alignment === "end" ? rect.right - width : rect.left;
     const left = Math.max(viewLeft + gutter, Math.min(wantedLeft, viewLeft + viewWidth - width - gutter));
     const height = Math.min(naturalHeight, available, viewHeight - gutter * 2);
     const nextMaxHeight = naturalHeight > height ? `${height}px` : "";

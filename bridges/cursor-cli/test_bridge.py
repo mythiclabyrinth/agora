@@ -2088,6 +2088,17 @@ class RosterDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ScheduleAskTests(unittest.TestCase):
+    def test_hello_opts_in_to_schedule_grants_only_when_enabled(self):
+        b = make_bridge()
+        for attr, default in (("avatar", None), ("bot_loop_limit", None), ("context_buffer_limit", 0)):
+            if not hasattr(b, attr):
+                setattr(b, attr, default)
+        b.schedules_enabled = False
+        self.assertIs(b.hello_agent()["schedules"], False)
+        b.schedules_enabled = True
+        self.assertIs(b.hello_agent()["schedules"], True)
+        self.assertEqual(b.hello_agent()["id"], b.agent_id)
+
     CREATE = (bridge.SCHEDULE_SENTINEL + ' {"op": "create", "text": "@agent check", '
               '"schedule": {"kind": "interval", "seconds": 21600}, "bogus": 1}')
 
@@ -2109,7 +2120,9 @@ class ScheduleAskTests(unittest.TestCase):
         self.assertIn("not typed by Tom", note)
         self.assertNotIn('"update"', note)
         # The writer itself gets the re-arm note, and only when it can schedule.
-        self.assertIn("scheduled post s-9", bridge.scheduled_post_note([frame], "claude", True))
+        self.assertIn("scheduled post s-9", bridge.scheduled_post_note([dict(frame, turn_id="g")], "claude", True))
+        # A delivery without a grant gets no re-arm offer (it would be refused).
+        self.assertIsNone(bridge.scheduled_post_note([frame], "claude", True))
         self.assertIsNone(bridge.scheduled_post_note([frame], "claude", False))
 
     def _bridge(self):
@@ -2122,13 +2135,48 @@ class ScheduleAskTests(unittest.TestCase):
         ask = bridge.parse_schedule_ask("```\n" + self.CREATE + "\n```")
         self.assertEqual(ask["op"], "create")
         self.assertNotIn("bogus", ask)
-        self.assertIsNone(bridge.parse_schedule_ask("Sure.\n" + self.CREATE))
+        # Mixed with prose the ask is still served, never silently dropped.
+        self.assertEqual(bridge.parse_schedule_ask("Sure.\n" + self.CREATE)["op"], "create")
         self.assertTrue(bridge.parse_schedule_ask(bridge.SCHEDULE_SENTINEL + " nope")["error"])
         frame = bridge.schedule_request_frame(ask, "AGENT", "t-9", "r1")
         self.assertEqual(frame["type"], "schedule_request")
         self.assertEqual(frame["turn_id"], "t-9")
         self.assertEqual(frame["schedule"], {"kind": "interval", "seconds": 21600})
         self.assertNotIn("bogus", frame)
+
+    def _forward(self, binding, text, swap_binding=False):
+        b = self._bridge()
+        b.allowed_roots = []
+        b.max_attachment_bytes = 1024
+        del b.forward_to_agent
+        b.bindings["c1:42"] = binding
+        b.typing = Mock()
+        b._save_state = Mock()
+        b.send = Mock()
+
+        async def agent(*_args):
+            if swap_binding:
+                b.bindings["c1:42"] = {"cwd": "/tmp", "session_id": "other"}
+            return self.CREATE
+
+        b.run_agent = AsyncMock(side_effect=agent)
+        b.tldr_default = False
+        b.tldr_min_chars = 1500
+        frame = {"channel_id": "c1", "thread_id": 42, "message_id": 7, "turn_id": "grant-1",
+                 "author": {"type": "user", "id": "tom"}}
+        asyncio.run(b.forward_to_agent("c1:42", frame, text))
+        sent = [c.args[0] for c in b.send.call_args_list if c.args and isinstance(c.args[0], dict)]
+        self.assertFalse([f for f in sent if f.get("type") == "schedule_request"])
+        return b
+
+    def test_a_discarded_fork_answer_never_schedules(self):
+        b = self._forward({"cwd": "/tmp", "session_id": None, "_fork_context": "earlier"},
+                          "schedule a check", swap_binding=True)
+        self.assertIn("discarded", b.post.call_args.args[1])
+
+    def test_a_slash_command_turn_never_schedules(self):
+        b = self._forward({"cwd": "/tmp", "session_id": "s1"}, "/status")
+        self.assertNotIn(bridge.SCHEDULE_SENTINEL, b.post.call_args.args[1])
 
     def test_ask_is_sent_with_turn_id_and_the_result_is_fed_back(self):
         async def run():
@@ -2182,6 +2230,10 @@ class ScheduleAskTests(unittest.TestCase):
         # The writer itself answering its own scheduled post keeps the grant.
         own = dict(foreign, written_by_agent="me", turn_id="t8")
         self.assertEqual(bridge.batch_turn_id([own], "me"), ("t8", None))
+        # A typed request beats a scheduled post's narrower grant in the same
+        # batch, even when the scheduled post arrived last.
+        self.assertEqual(bridge.batch_turn_id(
+            [{"author": tom, "turn_id": "typed"}, own], "me"), ("typed", None))
 
     def test_a_turn_mixing_two_people_never_sends(self):
         async def run():
@@ -2292,6 +2344,54 @@ class ScheduleConfigTextTests(unittest.TestCase):
             self.assertTrue(bridge.schedules_enabled(raw), raw)
         for raw in ("0", "false", "False", "NO", " off ", "Off"):
             self.assertFalse(bridge.schedules_enabled(raw), raw)
+
+
+class AgentWrittenScheduledCommandTests(unittest.TestCase):
+    """A scheduled post an agent wrote posts as the person, but its slash
+    commands get only the peer allowlist, never the person's command table."""
+
+    def _bridge(self, peer_commands=""):
+        instance = make_bridge(peer_commands=peer_commands)
+        instance._cmd_new = Mock(return_value="bound to ~/X")
+        instance._cmd_sandbox = Mock(return_value="sandbox set")
+        if hasattr(instance, "_retire_if_stale"):
+            instance._retire_if_stale = AsyncMock()
+        return instance
+
+    def _frame(self, text, writer="other-agent"):
+        frame = peer_frame(author={"type": "user", "id": "tom", "name": "Tom"}, text=text,
+                           scheduled=True, schedule_id="s1")
+        if writer:
+            frame["written_by_agent"] = writer
+            frame["written_by_agent_name"] = "Other"
+        return frame
+
+    def test_agent_written_scheduled_command_is_relayed_not_run(self):
+        for text in ("@cursor /new ~/other-repo", "@cursor /sandbox full"):
+            instance = self._bridge()
+            asyncio.run(instance.handle_inbound(self._frame(text)))
+            instance._cmd_new.assert_not_called()
+            instance._cmd_sandbox.assert_not_called()
+            instance.forward_to_agent.assert_awaited_once()
+            prompt = instance.forward_to_agent.await_args.args[2]
+            self.assertTrue(prompt.startswith("[Scheduled post written by Other"), prompt)
+            self.assertIn(text.split(" ", 1)[1], prompt)
+
+    def test_own_scheduled_post_cannot_run_commands_either(self):
+        instance = self._bridge()
+        frame = self._frame("@cursor /new ~/X", writer=instance.agent_id or "me")
+        asyncio.run(instance.handle_inbound(frame))
+        instance._cmd_new.assert_not_called()
+
+    def test_peer_allowlisted_command_still_runs(self):
+        instance = self._bridge(peer_commands="/new")
+        asyncio.run(instance.handle_inbound(self._frame("@cursor /new ~/X")))
+        instance._cmd_new.assert_called_once_with("c1", "~/X")
+
+    def test_person_written_scheduled_command_runs_as_today(self):
+        instance = self._bridge()
+        asyncio.run(instance.handle_inbound(self._frame("@cursor /new ~/X", writer=None)))
+        instance._cmd_new.assert_called_once_with("c1", "~/X")
 
 
 if __name__ == "__main__":

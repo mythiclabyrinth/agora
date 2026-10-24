@@ -89,6 +89,45 @@ export const Schedules: Story = {
     await expect(canvas.findByRole("region", { name: "Schedules in storybook" })).resolves.toBeVisible();
   },
 };
+// Agent DMs come back with group_id "" — opening one must still navigate,
+// landing on the synthetic DMs group rather than silently doing nothing.
+export const SchedulesInAgentDm: Story = {
+  parameters: {
+    apiRoutes: {
+      ...meta.parameters.apiRoutes,
+      "GET /api/schedules": { items: [{
+        ...fixtureSchedules[1], id: "sch-dm", channel_id: "dm-claude", channel_name: "Claude",
+        channel_kind: "agent_dm", group_id: "", thread_id: null, thread_title: null,
+      }] },
+    },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /Claude/ }));
+    await expect(useUiState.getState().sel).toEqual({ g: "__dms", c: "dm-claude" });
+  },
+};
+export const SchedulesOwnerLostChannel: Story = {
+  parameters: {
+    apiRoutes: {
+      ...meta.parameters.apiRoutes,
+      "GET /api/schedules": { items: [{
+        ...fixtureSchedules[1], id: "sch-lost", channel_id: "ops", channel_name: "ops",
+        thread_id: 42, thread_title: "old thread", can_manage: true, is_owner: true, channel_access: false,
+      }] },
+    },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const head = await canvas.findByRole("button", { name: /#ops/ });
+    await expect(head).toBeDisabled();
+    // No "open conversation" link into a channel the owner can't load.
+    await expect(canvas.queryByTitle("Open conversation")).toBeNull();
+    await expect(canvas.findByText(/no longer have access/i)).resolves.toBeTruthy();
+  },
+};
 export const DraftsOnOlderServer: Story = {
   parameters: {
     apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/me": { ...fixtureMe, drafts_sync: false } },

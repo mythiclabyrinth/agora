@@ -57,7 +57,14 @@ pub(crate) struct TurnGrant {
     /// Set for grants minted from a scheduled post: only this schedule.
     pub schedule_id: Option<String>,
     pub expires_at: f64,
+    /// schedule_requests served on this grant so far (capped per turn).
+    pub ops: u32,
 }
+
+/// Server-side ceiling on schedule_requests per turn. Bridges cap themselves
+/// lower; this stops a modified or misbehaving client from spinning on one
+/// grant (each cron write costs a month-long scan).
+pub(crate) const MAX_OPS_PER_GRANT: u32 = 10;
 
 fn thread_title(store: &Store, thread_id: Option<i64>) -> Value {
     let Some(root) = thread_id.and_then(|tid| store.message(tid)) else { return Value::Null };
@@ -76,10 +83,7 @@ fn thread_title(store: &Store, thread_id: Option<i64>) -> Value {
 pub(crate) fn resume_run_at(spec: &Spec, current: &Value, now_s: f64) -> Result<f64, String> {
     let run_at = current["run_at"].as_f64().unwrap_or(0.0);
     let mut next = reactivated_run_at(spec, run_at, now_s)?;
-    if let Some(floor) = current["last_run_at"]
-        .as_f64()
-        .map(|l| l + crate::schedule_spec::MIN_INTERVAL_SECS as f64)
-    {
+    if let Some(floor) = posting_floor(current) {
         if next < floor && next != run_at {
             next = spec.next_after_fire(run_at, floor).unwrap_or(next);
         }
@@ -255,13 +259,29 @@ pub(crate) fn keeps_interval_phase(current: &Value, new_spec: &Spec, now_s: f64)
         && current["run_at"].as_f64().is_some_and(|t| t > now_s && t <= now_s + *seconds as f64)
 }
 
+/// Slack between a slot falling due and the tick that posts it; a fire this
+/// late still counts from its slot.
+const FIRE_LATENESS_SLACK_SECS: f64 = 60.0;
+
+/// The earliest next due time the posting floor allows. It counts from the
+/// last post's due slot, so a fire that ran a tick late doesn't push the
+/// schedule's own next slot out of reach — but never from more than a minute
+/// before the post actually went out, so a catch-up fire after downtime (due
+/// hours earlier) can't be re-armed to post again straight away.
+pub(crate) fn posting_floor(current: &Value) -> Option<f64> {
+    let last = current["last_run_at"].as_f64()?;
+    let base = current["last_due_at"]
+        .as_f64()
+        .map_or(last, |due| due.max(last - FIRE_LATENESS_SLACK_SECS));
+    Some(base + crate::schedule_spec::MIN_INTERVAL_SECS as f64)
+}
+
 /// An explicit next time must leave the posting floor after the last post:
 /// otherwise a run could re-arm itself seconds ahead after every fire (or an
 /// admin could keep nudging it) and post in the owner's name every tick,
 /// sidestepping the interval and cron minimums.
 pub(crate) fn require_floor_after_last_run(current: &Value, run_at: f64) -> Result<(), String> {
-    let Some(last) = current["last_run_at"].as_f64() else { return Ok(()) };
-    let floor = last + crate::schedule_spec::MIN_INTERVAL_SECS as f64;
+    let Some(floor) = posting_floor(current) else { return Ok(()) };
     if run_at < floor {
         return Err(format!(
             "the next run must be at least {} minutes after the last post (no earlier than {})",
@@ -332,6 +352,11 @@ pub(crate) struct ChangeRequest<'a> {
     /// They may move a pending post or pause/resume it, but never bring a
     /// finished schedule back: that would post in the owner's name on demand.
     pub non_owner: bool,
+    /// Someone who doesn't decide the cadence (a non-owner manager, or a
+    /// scheduled run re-arming itself): on a recurring schedule they may only
+    /// push the next post later, never pull it ahead of the rule's own slot —
+    /// otherwise retiming right after every fire would set the frequency.
+    pub postpone_only: bool,
 }
 
 /// The one place retime / re-arm / pause / resume rules live, shared by
@@ -354,7 +379,14 @@ pub(crate) fn plan_change(
         validate_text(text).map_err(Bad)?;
         change.text = Some(text.to_string());
     }
-    let new_spec = match req.schedule.filter(|v| !v.is_null()) {
+    // Re-sending the stored rule (an editor saved without touching the
+    // cadence) is no change at all: it must not re-validate or restart the
+    // clock and undo a postponed next run.
+    let unchanged = |v: &Value| match (Spec::from_stored(v), Spec::from_stored(&current["schedule"])) {
+        (Ok(a), Ok(b)) => a.to_json() == b.to_json(),
+        _ => false,
+    };
+    let new_spec = match req.schedule.filter(|v| !v.is_null() && !unchanged(v)) {
         Some(v) => {
             let spec = Spec::parse(v).map_err(Bad)?;
             spec.validate_future(now_s).map_err(Bad)?;
@@ -364,12 +396,51 @@ pub(crate) fn plan_change(
         None => None,
     };
     let explicit = req.run_at.filter(|v| !v.is_null());
+    // Set when an explicit time is just the pending one again: no effective
+    // change, so none of the move rules (floor, postpone-only) apply.
+    let mut kept_pending = false;
     if let Some(v) = explicit {
         let spec = match &new_spec {
             Some(s) => s.clone(),
             None => Spec::from_stored(&current["schedule"]).map_err(Bad)?,
         };
-        change.run_at = Some(resolve_run_at(&spec, Some(v), now_s).map_err(Bad)?);
+        let mut t = resolve_run_at(&spec, Some(v), now_s).map_err(Bad)?;
+        // Editors work to the minute, so a time that is the pending one to
+        // within a minute means "keep it": snap to it rather than treating
+        // the dropped seconds as moving the post earlier. Only a pending time
+        // still ahead counts: snapping onto a past one would undo the
+        // in-the-future check and drop the time the person just chose.
+        if let Some(pending) = current["run_at"].as_f64().filter(|p| *p > now_s && (t - *p).abs() < 60.0) {
+            t = pending;
+            kept_pending = new_spec.is_none();
+        }
+        if kept_pending {
+            // Re-confirming the pending time (an editor saved unchanged) is
+            // not a move: it must not be refused by the floor after a late
+            // fire, nor by postpone-only.
+        } else if req.postpone_only && !matches!(spec, Spec::Once { .. }) {
+            let own_slot = reactivated_run_at(&spec, current["run_at"].as_f64().unwrap_or(0.0), now_s)
+                .map_err(Bad)?;
+            if t + 1.0 < own_slot {
+                return Err(Bad(format!(
+                    "only the owner can move a repeating schedule earlier; its next run is {}",
+                    crate::schedule_spec::fmt_utc(own_slot)
+                )));
+            }
+        }
+        // A non-owner manager can push someone's one-off later but never pull
+        // it forward: that would make the owner "say" it on demand.
+        if !kept_pending && req.non_owner && matches!(spec, Spec::Once { .. }) {
+            if let Some(pending) = current["run_at"].as_f64().filter(|p| t + 1.0 < *p) {
+                return Err(Bad(format!(
+                    "only the owner can move this message earlier; it is due {}",
+                    crate::schedule_spec::fmt_utc(pending)
+                )));
+            }
+        }
+        if !kept_pending {
+            change.run_at = Some(t);
+        }
     } else if let Some(spec) = &new_spec {
         if !keeps_interval_phase(current, spec, now_s) {
             let mut first = spec.first_run(now_s).ok_or_else(|| Bad("that schedule has no future run".into()))?;
@@ -378,11 +449,7 @@ pub(crate) fn plan_change(
             // (the last post can land a tick after its due time). A one-off's
             // `at` is the person's own time, so it is checked, not moved.
             if !matches!(spec, Spec::Once { .. }) {
-                if let Some(floor) = current["last_run_at"]
-                    .as_f64()
-                    .map(|l| l + crate::schedule_spec::MIN_INTERVAL_SECS as f64)
-                    .filter(|f| first < *f)
-                {
+                if let Some(floor) = posting_floor(current).filter(|f| first < *f) {
                     first = spec.next_after_fire(first, floor).unwrap_or(first);
                 }
             }
@@ -401,6 +468,9 @@ pub(crate) fn plan_change(
                 change.clear_error = true;
             }
         }
+        // Pausing something already paused is a no-op too (double-clicked
+        // Pause, two devices), not an error toast.
+        Some("paused") if status == "paused" => {}
         Some("paused") => {
             if status != "active" {
                 return Err(Conflict("only an active schedule can be paused".into()));
@@ -435,8 +505,8 @@ pub(crate) fn plan_change(
         Some(_) => return Err(Bad("status must be \"paused\" or \"active\"".into())),
     }
     if change.is_empty() {
-        if req.status == Some("active") && status == "active" {
-            return Ok(change); // resume of an active schedule: nothing to do
+        if kept_pending || (req.status == Some(status) && matches!(status, "active" | "paused")) {
+            return Ok(change); // resume of an active / pause of a paused schedule
         }
         return Err(Bad("nothing to change (text, schedule, run_at or status)".into()));
     }
@@ -542,6 +612,10 @@ impl Hub {
         if message["author_type"] != "user" {
             return None;
         }
+        // Only bridges that announced the capability get grants.
+        if !handle.schedules {
+            return None;
+        }
         let owner = message["author_id"].as_str()?.to_string();
         let scheduled = message["meta"]["scheduled"] == true;
         let schedule_id = scheduled
@@ -577,6 +651,7 @@ impl Hub {
                 thread_id,
                 schedule_id,
                 expires_at: now_s + GRANT_TTL_SECS,
+                ops: 0,
             },
         );
         Some(turn_id)
@@ -598,14 +673,19 @@ impl Hub {
     /// The live grant `turn_id` names, if it belongs to this agent on this
     /// credential. Identity claimed inside the frame is never trusted.
     fn check_grant(&self, handle: &AgentHandle, turn_id: &str) -> Result<TurnGrant, String> {
-        let st = self.state.lock().unwrap();
-        let grant = st.grants.get(turn_id).cloned().ok_or("unknown or expired turn_id")?;
-        if grant.expires_at <= now() {
+        let mut st = self.state.lock().unwrap();
+        let slot = st.grants.get_mut(turn_id).ok_or("unknown or expired turn_id")?;
+        if slot.expires_at <= now() {
             return Err("unknown or expired turn_id".into());
         }
-        if grant.agent_id != handle.agent_id || grant.source != handle.source {
+        if slot.agent_id != handle.agent_id || slot.source != handle.source {
             return Err("turn_id was not issued to this agent".into());
         }
+        if slot.ops >= MAX_OPS_PER_GRANT {
+            return Err("too many schedule requests in this turn".into());
+        }
+        slot.ops += 1;
+        let grant = slot.clone();
         drop(st);
         // The person must still exist and be enabled: a disabled account's
         // grant must not keep reading or changing their schedules for its
@@ -745,7 +825,9 @@ impl Hub {
             }
             self.deliver_scheduled(&message);
             self.store.mark_fire_delivered(&id, due_at);
-            self.publish_for(&updated);
+            if let Some(updated) = &updated {
+                self.publish_for(updated);
+            }
             posted += 1;
         }
         posted
@@ -826,8 +908,10 @@ impl Hub {
         if schedule["owner"].as_str() != Some(grant.owner.as_str()) {
             return Err("that schedule belongs to someone else".into());
         }
-        // Same conversation only: a schedule elsewhere (another channel, a
-        // private DM with another agent) is out of this turn's reach.
+        // Channel scope: any thread in the grant's channel is in reach (a
+        // loop's turn may manage the thread it lives in from the channel), but
+        // a schedule in another channel or a private DM with another agent is
+        // not.
         if schedule["channel_id"].as_str() != Some(grant.channel_id.as_str()) {
             return Err("that schedule is in another conversation".into());
         }
@@ -906,6 +990,7 @@ impl Hub {
                     run_at: explicit_run_at,
                     status: None,
                     non_owner: false,
+                    postpone_only: scheduled_turn,
                 };
                 if req.text.is_none() && req.schedule.is_none_or(Value::is_null) && req.run_at.is_none() {
                     return Err("nothing to update (text, schedule or run_at)".into());
@@ -926,8 +1011,11 @@ impl Hub {
                 }
                 let id = frame["id"].as_str().ok_or("id is required")?;
                 let current = self.owned_schedule(&grant, id)?;
-                // Resuming an active schedule is a harmless no-op (same as REST).
-                if op == "resume" && current["status"] == "active" {
+                // Resuming an active / pausing a paused schedule is a harmless
+                // no-op (same as REST).
+                if (op == "resume" && current["status"] == "active")
+                    || (op == "pause" && current["status"] == "paused")
+                {
                     return Ok(json!({"schedule": decorate(&current)}));
                 }
                 let (from, to) = if op == "pause" { ("active", "paused") } else { ("paused", "active") };
@@ -1036,6 +1124,32 @@ mod tests {
         h.post_user_message(&cid, "@quiet now you", "tom", Some("Tom"), None, vec![]);
         let asked = last_frame(&mut quiet, "inbound").unwrap();
         assert!(asked["turn_id"].is_string(), "{asked}");
+    }
+
+    #[test]
+    fn only_agents_that_announced_schedules_get_a_turn_id() {
+        let h = hub();
+        people(&h);
+        let mut with = add_agent(&h, "claude", "Claude", false);
+        let (tx, mut without) = tokio::sync::mpsc::unbounded_channel();
+        h.register_agent(AgentHandle {
+            agent_id: "plain".into(),
+            agent_name: "Plain".into(),
+            requires_mention: false,
+            bot_loop_limit: None,
+            wants_context_feed: false,
+            schedules: false,
+            has_avatar: false,
+            avatar_v: 0,
+            source: "test".into(),
+            conn_id: h.next_conn_id(),
+            tx,
+        });
+        let cid = setup_channel(&h, &["claude", "plain"]);
+        h.post_user_message(&cid, "hi both", "tom", Some("Tom"), None, vec![]);
+        assert!(last_frame(&mut with, "inbound").unwrap()["turn_id"].is_string());
+        let plain = last_frame(&mut without, "inbound").unwrap();
+        assert!(plain.get("turn_id").is_none(), "no grant without the hello flag: {plain}");
     }
 
     #[test]
@@ -1453,7 +1567,7 @@ mod tests {
                 st.grants.insert(format!("old{i}"), TurnGrant {
                     agent_id: "claude".into(), source: "test".into(), owner: "tom".into(),
                     channel_id: cid.clone(), thread_id: None, schedule_id: None,
-                    expires_at: now() + 10.0 + i as f64,
+                    expires_at: now() + 10.0 + i as f64, ops: 0,
                 });
             }
         }
@@ -1570,6 +1684,13 @@ mod tests {
         let r = ask(&h, &mut claude, req("claude", &turn, "resume", json!({"id": s["id"]})));
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["schedule"]["run_at"], due);
+        // Pausing twice is the same kind of no-op, not an error.
+        let p1 = ask(&h, &mut claude, req("claude", &turn, "pause", json!({"id": s["id"]})));
+        assert_eq!(p1["schedule"]["status"], "paused", "{p1}");
+        let p2 = ask(&h, &mut claude, req("claude", &turn, "pause", json!({"id": s["id"]})));
+        assert_eq!(p2["ok"], true, "{p2}");
+        assert_eq!(p2["schedule"]["status"], "paused");
+        assert_eq!(p2["schedule"]["updated_at"], p1["schedule"]["updated_at"], "nothing was written");
     }
 
     #[test]
@@ -1661,11 +1782,23 @@ mod tests {
         let first = ask(&h, &mut claude, req("claude", &turn, "create", json!({
             "text": "\n\n  @claude LOOP check \n", "schedule": {"kind": "interval", "seconds": 600}})));
         assert_eq!(first["schedule"]["text"], "@claude LOOP check");
+        // One turn may only make MAX_OPS_PER_GRANT requests, so the burst
+        // spreads across fresh turns from the same person.
+        let mut turn = turn;
+        let mut used = 1;
         for i in 1..crate::store::MAX_CREATES_PER_HOUR {
+            if used == MAX_OPS_PER_GRANT {
+                h.post_user_message(&cid, "more", "tom", Some("Tom"), None, vec![]);
+                turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+                used = 0;
+            }
             let r = ask(&h, &mut claude, req("claude", &turn, "create", json!({
                 "text": format!("n{i}"), "schedule": {"kind": "interval", "seconds": 600}})));
             assert_eq!(r["ok"], true, "{r}");
+            used += 1;
         }
+        h.post_user_message(&cid, "one more", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
         let burst = ask(&h, &mut claude, req("claude", &turn, "create", json!({
             "text": "one too many", "schedule": {"kind": "once", "at": now() + 600.0}})));
         assert_eq!(burst["ok"], false);
@@ -1798,6 +1931,154 @@ mod tests {
     }
 
     #[test]
+    fn only_the_owner_can_pull_a_repeating_schedule_earlier() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let now_s = now();
+        let next = now_s + 3600.0;
+        let s = h.store.create_schedule("tom", &cid, None, "x", next,
+            &json!({"kind": "interval", "seconds": 7200}), "tom", None);
+        let current = h.store.schedule(s["id"].as_str().unwrap()).unwrap();
+        let earlier = json!(now_s + 600.0);
+        let later = json!(next + 600.0);
+        // A non-owner manager (or a scheduled run) may postpone, not pull ahead.
+        let req = ChangeRequest { run_at: Some(&earlier), postpone_only: true, non_owner: true, ..Default::default() };
+        let refused = plan_change(&h.store, &current, &req, now_s).err().expect("earlier refused");
+        assert!(refused.message().contains("only the owner can move a repeating schedule earlier"));
+        let req = ChangeRequest { run_at: Some(&later), postpone_only: true, non_owner: true, ..Default::default() };
+        assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, Some(next + 600.0));
+        // The owner can still pull it in.
+        let req = ChangeRequest { run_at: Some(&earlier), ..Default::default() };
+        assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, Some(now_s + 600.0));
+    }
+
+    #[test]
+    fn resaving_the_stored_rule_keeps_a_postponed_next_run() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let now_s = now();
+        let postponed = now_s + 5.0 * 86_400.0;
+        let rule = json!({"kind": "cron", "expr": "0 7 * * *"});
+        let s = h.store.create_schedule("tom", &cid, None, "x", postponed, &rule, "tom", None);
+        let current = h.store.schedule(s["id"].as_str().unwrap()).unwrap();
+        // The editor saved without touching the cadence: nothing to change.
+        let req = ChangeRequest { schedule: Some(&rule), ..Default::default() };
+        let err = plan_change(&h.store, &current, &req, now_s).err().expect("no-op").message();
+        assert!(err.contains("nothing to change"), "{err}");
+        // An actually different rule still applies.
+        let other = json!({"kind": "cron", "expr": "30 8 * * *"});
+        let req = ChangeRequest { schedule: Some(&other), ..Default::default() };
+        let change = plan_change(&h.store, &current, &req, now_s).unwrap();
+        assert!(change.schedule.is_some() && change.run_at.unwrap() < postponed);
+    }
+
+    #[test]
+    fn a_minute_precise_retime_of_the_pending_run_keeps_it() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let now_s = now();
+        let due = now_s + 3600.0 + 41.3;
+        let s = h.store.create_schedule("tom", &cid, None, "x", due,
+            &json!({"kind": "interval", "seconds": 3600}), "tom", None);
+        let current = h.store.schedule(s["id"].as_str().unwrap()).unwrap();
+        // An admin's editor shows the minute and sends it back without seconds.
+        let same_minute = json!((due / 60.0).floor() * 60.0);
+        let req = ChangeRequest { run_at: Some(&same_minute), postpone_only: true, non_owner: true, ..Default::default() };
+        // Snapped onto the pending time: accepted, and nothing moves.
+        assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, None);
+    }
+
+    #[test]
+    fn reconfirming_the_pending_time_after_a_late_fire_is_not_refused() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let now_s = now();
+        // Interval 300 s, due D, fired 120 s late: next run D+300, but the
+        // posting floor is D+360. Sending the pending time back is a no-op.
+        let d = now_s - 120.0;
+        let mut current = h.store.create_schedule("tom", &cid, None, "x", d + 300.0,
+            &json!({"kind": "interval", "seconds": 300}), "tom", None);
+        current["last_due_at"] = json!(d);
+        current["last_run_at"] = json!(now_s);
+        let same = json!(d + 300.0);
+        for req in [
+            ChangeRequest { run_at: Some(&same), ..Default::default() },
+            ChangeRequest { run_at: Some(&same), postpone_only: true, ..Default::default() },
+            ChangeRequest { run_at: Some(&same), postpone_only: true, non_owner: true, ..Default::default() },
+        ] {
+            let change = plan_change(&h.store, &current, &req, now_s).expect("no-op accepted");
+            assert!(change.is_empty(), "nothing moves");
+        }
+        // A real move still has to clear the floor.
+        let early = json!(d + 200.0);
+        assert!(plan_change(&h.store, &current, &ChangeRequest { run_at: Some(&early), ..Default::default() }, now_s).is_err());
+    }
+
+    #[test]
+    fn the_posting_floor_counts_from_the_due_slot_of_a_late_fire() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let now_s = now();
+        let mut current = h.store.create_schedule("tom", &cid, None, "x", now_s + 286.0,
+            &json!({"kind": "interval", "seconds": 300}), "tom", None);
+        // Due 14 s ago, posted now: its own next slot is 286 s away.
+        current["last_due_at"] = json!(now_s - 14.0);
+        current["last_run_at"] = json!(now_s);
+        assert!(require_floor_after_last_run(&current, now_s + 286.0).is_ok());
+        assert!(require_floor_after_last_run(&current, now_s + 200.0).is_err());
+        // A catch-up fire hours after its slot still waits 5 minutes from now.
+        current["last_due_at"] = json!(now_s - 4.0 * 3600.0);
+        assert!(require_floor_after_last_run(&current, now_s + 60.0).is_err());
+        assert!(require_floor_after_last_run(&current, now_s + 300.0 - 60.0).is_ok());
+    }
+
+    #[test]
+    fn a_non_owner_may_only_push_a_one_off_later() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let now_s = now();
+        let due = now_s + 3600.0;
+        let s = h.store.create_schedule("tom", &cid, None, "x", due,
+            &json!({"kind": "once", "at": due}), "tom", None);
+        let current = h.store.schedule(s["id"].as_str().unwrap()).unwrap();
+        let earlier = json!(now_s + 60.0);
+        let later = json!(due + 600.0);
+        let req = ChangeRequest { run_at: Some(&earlier), postpone_only: true, non_owner: true, ..Default::default() };
+        let refused = plan_change(&h.store, &current, &req, now_s).err().expect("pulling in refused").message();
+        assert!(refused.contains("only the owner can move this message earlier"), "{refused}");
+        let req = ChangeRequest { run_at: Some(&later), postpone_only: true, non_owner: true, ..Default::default() };
+        assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, Some(due + 600.0));
+        // The owner (and an agent acting for them) can still bring it in.
+        let req = ChangeRequest { run_at: Some(&earlier), ..Default::default() };
+        assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, Some(now_s + 60.0));
+    }
+
+    #[test]
+    fn a_scheduled_run_may_postpone_but_not_pull_in_an_interval() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let cid = setup_channel(&h, &["claude"]);
+        let at = now() - 1.0;
+        let s = h.store.create_schedule("tom", &cid, None, "@claude LOOP demo", at,
+            &json!({"kind": "interval", "seconds": 3600}), "tom", Some("claude"));
+        assert_eq!(h.fire_due_schedules(now()), 1);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let pulled = ask(&h, &mut claude, req("claude", &turn, "update",
+            json!({"id": s["id"], "run_at": now() + 600.0})));
+        assert!(pulled["error"].as_str().unwrap_or_default().contains("earlier"), "{pulled}");
+        let pushed = ask(&h, &mut claude, req("claude", &turn, "update",
+            json!({"id": s["id"], "run_at": now() + 7200.0})));
+        assert_eq!(pushed["ok"], true, "{pushed}");
+    }
+
+    #[test]
     fn an_over_limit_create_is_refused_before_the_rule_is_parsed() {
         let h = hub();
         people(&h);
@@ -1856,5 +2137,44 @@ mod tests {
             &ScheduleChange { status: Some("done".into()), ..Default::default() }, "tom", None);
         let finished = ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": d["id"]})));
         assert!(finished["error"].as_str().unwrap_or_default().contains("already finished"), "{finished}");
+    }
+
+    #[test]
+    fn a_new_time_is_not_snapped_onto_a_pending_time_that_has_passed() {
+        let h = hub();
+        people(&h);
+        let cid = setup_channel(&h, &[]);
+        let now_s = now();
+        let past = now_s - 20.0;
+        let s = h.store.create_schedule("tom", &cid, None, "x", past,
+            &json!({"kind": "once", "at": past}), "tom", None);
+        let current = h.store.schedule(s["id"].as_str().unwrap()).unwrap();
+        let soon = json!(now_s + 30.0);
+        let req = ChangeRequest { run_at: Some(&soon), ..Default::default() };
+        assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, Some(now_s + 30.0));
+        // A pending time still ahead keeps absorbing minute-precision edits.
+        let ahead = now_s + 600.0;
+        let s = h.store.create_schedule("tom", &cid, None, "y", ahead,
+            &json!({"kind": "once", "at": ahead}), "tom", None);
+        let current = h.store.schedule(s["id"].as_str().unwrap()).unwrap();
+        let minute = json!(ahead - 30.0);
+        let req = ChangeRequest { run_at: Some(&minute), ..Default::default() };
+        assert_eq!(plan_change(&h.store, &current, &req, now_s).unwrap().run_at, None, "kept as is");
+    }
+
+    #[test]
+    fn one_grant_serves_a_bounded_number_of_schedule_requests() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let cid = setup_channel(&h, &["claude"]);
+        h.post_user_message(&cid, "list my schedules", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        for _ in 0..MAX_OPS_PER_GRANT {
+            let ok = ask(&h, &mut claude, req("claude", &turn, "list", json!({})));
+            assert_eq!(ok["ok"], true, "{ok}");
+        }
+        let capped = ask(&h, &mut claude, req("claude", &turn, "list", json!({})));
+        assert!(capped["error"].as_str().unwrap_or_default().contains("too many schedule requests"), "{capped}");
     }
 }

@@ -19,9 +19,11 @@ import { SectionRail } from "./SectionRail";
 import { Composer } from "./Composer";
 import { LiveRows } from "./ChannelPane";
 import { LiveButton, LiveStrip, SpeakButton } from "./VoiceControls";
+import { HeaderToolLabel } from "./HeaderToolLabel";
 import { confirmStep, useConfirm } from "../state/confirm";
 import { toast } from "../lib/toast";
 import { ThreadResizeHandle } from "./ThreadResizeHandle";
+import { useHeaderMenu, useMediaQuery } from "../hooks/useHeaderMenu";
 
 const AT_BOTTOM_PX = 40;
 const NEAR_TOP_PX = 400;
@@ -150,8 +152,13 @@ export function ThreadPane() {
   const me = useMe().data;
   const groups = useGroups().data || [];
   const rootId = ui.threadRoot as number;
-  const [toolsOpen, setToolsOpen] = useState(false);
-  useEffect(() => setToolsOpen(false), [rootId]);
+  // Docked beside the channel (or on a phone) the thread tools sit behind ⋯;
+  // expanded to full width they're inline with labels.
+  const compact = useMediaQuery("(max-width: 820px)");
+  const menuMode = compact || !ui.threadExpanded;
+  const menu = useHeaderMenu(menuMode);
+  const closeMenu = menu.close;
+  useEffect(() => closeMenu(), [rootId, closeMenu]);
   const group = groups.find(g => g.id === ui.sel.g) || null;
   const channel = group?.channels?.find(c => c.id === ui.sel.c) || null;
 
@@ -255,22 +262,28 @@ export function ThreadPane() {
         {/* Docked to the side the header only has ~340px, so `.ago-btn-label`
             is hidden there and the titles carry the meaning; expanded (or
             full-width on a phone) the labels come back. */}
-        <button className="btn sm ago-pane-tools-toggle" aria-label="Thread actions" aria-expanded={toolsOpen}
-          onClick={() => setToolsOpen(!toolsOpen)}><Icon name="ellipsis" /></button>
-        <div className={`ago-head-actions ago-thread-tools ${toolsOpen ? "open" : ""}`}>
+        <button className={`btn sm ago-pane-tools-toggle ${menu.open ? "active" : ""}`} aria-label="Thread actions"
+          title="Thread actions" {...menu.triggerProps}><Icon name="ellipsis" /></button>
+        <div className={`ago-thread-tools ${menuMode ? "ago-head-menu" : "ago-head-actions"}`} {...menu.menuProps}>
+          {menuMode && <div className="ago-head-menu-title">Thread{threadName ? ` · ${threadName}` : ""}</div>}
           <button className={`btn sm ${ui.filesOpen && ui.filesThread === rootId ? "active" : ""}`}
-            title="Files: attachments in this thread"
+            title="Files: attachments in this thread" style={menuMode ? { order: 1 } : undefined}
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread === rootId), rootId)}>
-            <Icon name="paperclip" /><span className="ago-btn-label">Files</span>
+            <Icon name="paperclip" />
+            <HeaderToolLabel menu={menuMode} label="Files" menuLabel="Thread attachments" detail="Files, images and shared media" />
           </button>
           <button className={`btn sm ${ui.schedulesOpen && ui.schedulesThread === rootId ? "active" : ""}`}
             title="Schedules: scheduled messages in this thread"
+            aria-label="Schedules" aria-expanded={ui.schedulesOpen && ui.schedulesThread === rootId}
+            style={menuMode ? { order: 2 } : undefined}
             onClick={() => ui.setSchedulesOpen(!(ui.schedulesOpen && ui.schedulesThread === rootId), rootId)}>
-            <Icon name="clock" /><span className="ago-btn-label">Schedules</span>
+            <Icon name="calendar-clock" />
+            <HeaderToolLabel menu={menuMode} label="Schedules" detail="Messages set to post later in this thread" />
           </button>
           {(channel.kind === "agent_dm" || isAdmin) && <button
             className={`btn sm danger ${clearArmed ? "armed" : ""}`}
-            disabled={clearThread.isPending}
+            style={menuMode ? { order: 6 } : undefined}
+            disabled={clearThread.isPending} data-keep-open={clearArmed ? undefined : ""}
             title={clearArmed ? "Click again to clear all replies" : "Clear all replies; keep the first message"}
             onClick={() => {
               if (!confirmStep(`clear-thread:${rootId}`)) return;
@@ -284,23 +297,26 @@ export function ThreadPane() {
             }}>
             <Icon name="trash-2" /><span className="ago-btn-label">{clearArmed ? "Clear all?" : "Clear thread"}</span>
           </button>}
-          {me?.voice_tts && <SpeakButton />}
-          {me?.voice_stt && me?.voice_tts && <LiveButton channelId={channel.id} threadId={rootId} />}
-          <button className={`btn sm ${pinned ? "active" : ""}`}
+          {me?.voice_tts && <SpeakButton style={menuMode ? { order: 3 } : undefined} />}
+          <button className={`btn sm ${pinned ? "active" : ""}`} style={menuMode ? { order: 4 } : undefined}
             title={pinned ? "Unpin this thread" : "Pin this thread for quick access"}
             onClick={() => pinMut.mutate({ messageId: rootId, pinned: !pinned })}>
             <Icon name="pin" cls={pinned ? "fill" : undefined} />
             <span className="ago-btn-label">{pinned ? "Pinned" : "Pin"}</span>
           </button>
-          <button className="btn sm ago-thread-expand"
+          <button className="btn sm ago-thread-expand" style={menuMode ? { order: 5 } : undefined}
             title={ui.threadExpanded ? "Shrink thread back to the side panel" : "Expand thread to full width"}
             onClick={() => ui.toggleThreadSize()}>
             <Icon name={ui.threadExpanded ? "minimize-2" : "maximize-2"} />
-          </button>
-          <button className="btn sm ago-thread-close" title="Close thread" aria-label="Close thread" onClick={() => ui.closeThread()}>
-            <Icon name="x" />
+            <span className="ago-menu-label">{ui.threadExpanded ? "Shrink thread" : "Expand thread"}</span>
           </button>
         </div>
+        {/* Live stays visible at the right edge (before close) on every screen
+            size; the other tools fold into ⋯. */}
+        {me?.voice_stt && me?.voice_tts && <LiveButton channelId={channel.id} threadId={rootId} />}
+        <button className="btn sm ago-thread-close" title="Close thread" aria-label="Close thread" onClick={() => ui.closeThread()}>
+          <Icon name="x" />
+        </button>
       </div>
       <ThreadLog key={rootId} root={root} replies={replies} isAdmin={isAdmin} mentions={mentions}
         hasOlder={!!q.hasNextPage} loadingOlder={q.isFetchingNextPage}

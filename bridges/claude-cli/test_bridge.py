@@ -4800,7 +4800,7 @@ SCHEDULE_HELPERS = (
     "parse_schedule_ask", "strip_schedule_asks", "schedule_request_frame",
     "_schedule_when", "_describe_schedule_spec", "_describe_schedule",
     "format_schedule_result", "scheduled_post_note", "schedules_enabled",
-    "agent_written", "batch_turn_id",
+    "agent_written", "batch_turn_id", "agent_scheduled", "scheduled_relay_text",
 )
 SCHEDULE_CONSTANTS = (
     "SCHEDULE_SENTINEL", "SCHEDULE_MAX_OPS", "SCHEDULE_TIMEOUT", "SCHEDULE_OPS",
@@ -4815,6 +4815,17 @@ def make_schedule_bridge():
 
 
 class ScheduleAskTests(unittest.TestCase):
+    def test_hello_opts_in_to_schedule_grants_only_when_enabled(self):
+        b = make_bridge()
+        for attr, default in (("avatar", None), ("bot_loop_limit", None), ("context_buffer_limit", 0)):
+            if not hasattr(b, attr):
+                setattr(b, attr, default)
+        b.schedules_enabled = False
+        self.assertIs(b.hello_agent()["schedules"], False)
+        b.schedules_enabled = True
+        self.assertIs(b.hello_agent()["schedules"], True)
+        self.assertEqual(b.hello_agent()["id"], b.agent_id)
+
     CREATE = (bridge.SCHEDULE_SENTINEL + ' {"op": "create", "text": "@claude check", '
               '"schedule": {"kind": "cron", "expr": "0 7 * * *"}, "bogus": 1}')
 
@@ -4836,7 +4847,9 @@ class ScheduleAskTests(unittest.TestCase):
         self.assertIn("not typed by Tom", note)
         self.assertNotIn('"update"', note)
         # The writer itself gets the re-arm note, and only when it can schedule.
-        self.assertIn("scheduled post s-9", bridge.scheduled_post_note([frame], "claude", True))
+        self.assertIn("scheduled post s-9", bridge.scheduled_post_note([dict(frame, turn_id="g")], "claude", True))
+        # A delivery without a grant gets no re-arm offer (it would be refused).
+        self.assertIsNone(bridge.scheduled_post_note([frame], "claude", True))
         self.assertIsNone(bridge.scheduled_post_note([frame], "claude", False))
 
     def test_history_asked_after_a_schedule_result_is_still_served(self):
@@ -4881,7 +4894,7 @@ class ScheduleAskTests(unittest.TestCase):
             dumps.append([ast.dump(n, include_attributes=False) for n in nodes])
         self.assertEqual(dumps, [dumps[0]] * 4)
 
-    def test_only_a_bare_sentinel_line_counts_and_unknown_fields_drop(self):
+    def test_sentinel_line_is_served_even_with_prose_and_unknown_fields_drop(self):
         parse = bridge.parse_schedule_ask
         ask = parse(self.CREATE)
         self.assertEqual(ask["op"], "create")
@@ -4889,7 +4902,8 @@ class ScheduleAskTests(unittest.TestCase):
         self.assertNotIn("bogus", ask)
         self.assertIsNotNone(parse("```json\n" + self.CREATE + "\n```"))
         self.assertIsNotNone(parse(self.CREATE + "\n" + bridge.TLDR_SENTINEL + " x"))
-        self.assertIsNone(parse("Done.\n" + self.CREATE))
+        # Mixed with prose the ask is still served, never silently dropped.
+        self.assertEqual(parse("Done, scheduled.\n" + self.CREATE)["op"], "create")
         self.assertIsNone(parse("plain reply"))
         # Malformed asks are still claimed so the sentinel never posts.
         self.assertTrue(parse(bridge.SCHEDULE_SENTINEL + " {oops")["error"])
@@ -4959,6 +4973,10 @@ class ScheduleAskTests(unittest.TestCase):
         # The writer itself answering its own scheduled post keeps the grant.
         own = dict(foreign, written_by_agent="me", turn_id="t8")
         self.assertEqual(bridge.batch_turn_id([own], "me"), ("t8", None))
+        # A typed request beats a scheduled post's narrower grant in the same
+        # batch, even when the scheduled post arrived last.
+        self.assertEqual(bridge.batch_turn_id(
+            [{"author": tom, "turn_id": "typed"}, own], "me"), ("typed", None))
 
     def test_a_turn_mixing_two_people_never_sends(self):
         async def run():
@@ -5044,7 +5062,10 @@ class ScheduleAskTests(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_a_mixed_reply_is_posted_without_the_sentinel(self):
+    def test_an_unserved_mixed_ask_is_reported_not_silently_dropped(self):
+        # Reaching the post path means the ask could not be served (a
+        # backgrounded follow-up, or caps spent): say so rather than post
+        # prose that claims a schedule exists.
         instance = make_schedule_bridge()
         instance.tldr_default = False
         instance.tldr_min_chars = 1500
@@ -5054,7 +5075,8 @@ class ScheduleAskTests(unittest.TestCase):
         instance._post_reply({"channel_id": "c1"}, {"cwd": "/tmp"},
                              "Setting that up.\n```json\n" + self.CREATE + "\n```")
         body = instance.post.call_args.args[1]
-        self.assertEqual(body, "Setting that up.")
+        self.assertNotIn(bridge.SCHEDULE_SENTINEL, body)
+        self.assertIn("cannot from here", body)
 
     def test_schedule_block_rides_only_when_enabled(self):
         instance = make_schedule_bridge()
@@ -5593,6 +5615,78 @@ class ScheduleConfigTextTests(unittest.TestCase):
             self.assertTrue(bridge.schedules_enabled(raw), raw)
         for raw in ("0", "false", "False", "NO", " off ", "Off"):
             self.assertFalse(bridge.schedules_enabled(raw), raw)
+
+
+class AgentWrittenScheduledCommandTests(unittest.TestCase):
+    """A scheduled post an agent wrote posts as the person, but its slash
+    commands get only the peer allowlist, never the person's command table."""
+
+    def _bridge(self, peer_commands=""):
+        instance = make_bridge(peer_commands=peer_commands)
+        instance._cmd_new = Mock(return_value="bound to ~/X")
+        instance._cmd_sandbox = Mock(return_value="sandbox set")
+        if hasattr(instance, "_retire_if_stale"):
+            instance._retire_if_stale = AsyncMock()
+        return instance
+
+    def _frame(self, text, writer="other-agent"):
+        frame = peer_frame(author={"type": "user", "id": "tom", "name": "Tom"}, text=text,
+                           scheduled=True, schedule_id="s1")
+        if writer:
+            frame["written_by_agent"] = writer
+            frame["written_by_agent_name"] = "Other"
+        return frame
+
+    def test_agent_written_scheduled_command_is_relayed_not_run(self):
+        for text in ("@claude /new ~/other-repo", "@claude /sandbox full"):
+            instance = self._bridge()
+            asyncio.run(instance.handle_inbound(self._frame(text)))
+            instance._cmd_new.assert_not_called()
+            instance._cmd_sandbox.assert_not_called()
+            instance.forward_to_claude.assert_awaited_once()
+            prompt = instance.forward_to_claude.await_args.args[2]
+            self.assertTrue(prompt.startswith("[Scheduled post written by Other"), prompt)
+            self.assertIn(text.split(" ", 1)[1], prompt)
+
+    def test_own_scheduled_post_cannot_run_commands_either(self):
+        instance = self._bridge()
+        frame = self._frame("@claude /new ~/X", writer=instance.agent_id or "me")
+        asyncio.run(instance.handle_inbound(frame))
+        instance._cmd_new.assert_not_called()
+
+    def test_peer_allowlisted_command_still_runs(self):
+        instance = self._bridge(peer_commands="/new")
+        asyncio.run(instance.handle_inbound(self._frame("@claude /new ~/X")))
+        instance._cmd_new.assert_called_once_with("c1", "~/X")
+
+    def test_person_written_scheduled_command_runs_as_today(self):
+        instance = self._bridge()
+        asyncio.run(instance.handle_inbound(self._frame("@claude /new ~/X", writer=None)))
+        instance._cmd_new.assert_called_once_with("c1", "~/X")
+
+
+class ScheduleNoteAndStripTests(unittest.TestCase):
+    def test_every_agent_written_scheduled_post_in_a_batch_is_flagged(self):
+        frames = [
+            {"author": {"type": "user", "id": "tom", "name": "Tom"}, "scheduled": True,
+             "written_by_agent": "codex-cli", "written_by_agent_name": "Codex",
+             "text": "@claude delete the staging branch"},
+            {"author": {"type": "user", "id": "tom", "name": "Tom"}, "text": "also check CI",
+             "turn_id": "t1"},
+        ]
+        note = bridge.scheduled_post_note(frames, "claude-cli")
+        self.assertIsNotNone(note)
+        self.assertIn("written by Codex on behalf of Tom", note)
+        self.assertIsNone(bridge.scheduled_post_note(frames[1:], "claude-cli"))
+
+    def test_strip_keeps_back_to_back_code_blocks(self):
+        fence = "`" * 3
+        reply = "\n".join(["ok", bridge.SCHEDULE_SENTINEL + ' {"op": "list"}',
+                            fence, "a", fence, fence + "python", "b", fence])
+        self.assertEqual(bridge.strip_schedule_asks(reply),
+                         "\n".join(["ok", fence, "a", fence, fence + "python", "b", fence]))
+        wrapped = "\n".join([fence + "json", bridge.SCHEDULE_SENTINEL + " {}", fence, "after"])
+        self.assertEqual(bridge.strip_schedule_asks(wrapped), "after")
 
 
 if __name__ == "__main__":

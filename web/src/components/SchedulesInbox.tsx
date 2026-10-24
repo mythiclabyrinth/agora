@@ -1,4 +1,4 @@
-import { sortSchedules, useAllSchedules, useGroups, type Schedule } from "@agora/core";
+import { lostChannelAccess, sortSchedules, useAllSchedules, useGroups, type Schedule } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useUiState } from "../state/ui";
 import { ScheduleEmpty, ScheduleRow } from "./SchedulesPane";
@@ -14,7 +14,10 @@ export function SchedulesInbox() {
   const byChannel = new Map<string, Schedule[]>();
   for (const s of items) byChannel.set(s.channel_id, [...(byChannel.get(s.channel_id) || []), s]);
   const open = (s: Schedule) => {
-    if (!s.group_id) return;
+    // Agent DMs carry group_id "" — selectChannel maps that to the DMs group.
+    if (s.group_id == null) return;
+    // The owner was removed from that channel: it can't be opened.
+    if (lostChannelAccess(s)) return;
     ui.selectChannel(s.group_id, s.channel_id);
     if (s.thread_id != null) ui.openThread(s.thread_id);
   };
@@ -28,12 +31,13 @@ export function SchedulesInbox() {
           const first = rows[0];
           return (
             <section className="ago-sched-group" key={channelId} aria-label={`Schedules in ${first.channel_name ?? channelId}`}>
-              <button className="ago-sched-group-head" onClick={() => open({ ...first, thread_id: null })}>
+              <button className="ago-sched-group-head" disabled={lostChannelAccess(first)}
+                onClick={() => open({ ...first, thread_id: null })}>
                 <Icon name={first.channel_kind === "agent_dm" ? "bot" : "messages-square"} />
                 {first.channel_kind === "agent_dm" ? first.channel_name : `#${first.channel_name ?? channelId}`}
                 {groupName(first.group_id) && <span className="dim"> · {groupName(first.group_id)}</span>}
               </button>
-              {rows.map(s => <ScheduleRow key={s.id} schedule={s} showThread onOpen={open} />)}
+              {rows.map(s => <ScheduleRow key={s.id} schedule={s} showThread onOpen={lostChannelAccess(s) ? undefined : open} />)}
             </section>
           );
         })}

@@ -6467,6 +6467,7 @@ async fn handle_agent_socket(
                                     requires_mention: a["requires_mention"].as_bool().unwrap_or(false),
                                     bot_loop_limit: crate::hub::agent_bot_loop_limit(&a["bot_loop_limit"]),
                                     wants_context_feed: a["wants_context_feed"].as_bool().unwrap_or(false),
+                                    schedules: a["schedules"].as_bool().unwrap_or(false),
                                     has_avatar: avatar_v.is_some(),
                                     avatar_v: avatar_v.unwrap_or(0),
                                     source: format!("pairing:{source_id}"),
@@ -8170,7 +8171,7 @@ mod tests {
         state.hub.register_agent(AgentHandle {
             agent_id: "bot-a".into(), agent_name: "Bot A".into(), requires_mention: false,
             bot_loop_limit: None,
-            wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            wants_context_feed: false, schedules: false, has_avatar: false, avatar_v: 0,
             source: "pairing:duplicate".into(), conn_id: conn_a, tx,
         });
         let conn_b = state.hub.next_conn_id();
@@ -8195,7 +8196,7 @@ mod tests {
         state.hub.register_agent(AgentHandle {
             agent_id: "outbound".into(), agent_name: "Outbound".into(),
             requires_mention: false, bot_loop_limit: None,
-            wants_context_feed: false, has_avatar: false,
+            wants_context_feed: false, schedules: false, has_avatar: false,
             avatar_v: 0, source: "remote".into(), conn_id: state.hub.next_conn_id(),
             tx: outbound_tx,
         });
@@ -8213,7 +8214,7 @@ mod tests {
         state.hub.register_agent(AgentHandle {
             agent_id: "gone".into(), agent_name: "Gone".into(), requires_mention: false,
             bot_loop_limit: None,
-            wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            wants_context_feed: false, schedules: false, has_avatar: false, avatar_v: 0,
             source: "pairing:duplicate".into(), conn_id: gone_conn, tx: gone_tx,
         });
         state.hub.unregister_connection(gone_conn);
@@ -8480,7 +8481,7 @@ mod tests {
             agent_name: "Claude".into(),
             requires_mention: false,
             bot_loop_limit: None,
-            wants_context_feed: false,
+            wants_context_feed: false, schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "pairing:test".into(),
@@ -8796,7 +8797,7 @@ mod tests {
             agent_name: "Bridge Agent".into(),
             requires_mention: false,
             bot_loop_limit: None,
-            wants_context_feed: false,
+            wants_context_feed: false, schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "pairing:duplicate".into(),
@@ -9115,13 +9116,13 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         state.hub.register_agent(AgentHandle {
             agent_id: "bot".into(), agent_name: "Bot".into(), requires_mention: false,
-            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            bot_loop_limit: None, wants_context_feed: false, schedules: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx,
         });
         let (strict_tx, mut strict_rx) = unbounded_channel();
         state.hub.register_agent(AgentHandle {
             agent_id: "strict".into(), agent_name: "Strict".into(), requires_mention: true,
-            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            bot_loop_limit: None, wants_context_feed: false, schedules: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx: strict_tx,
         });
         let q = || Query(HashMap::new());
@@ -9396,13 +9397,13 @@ mod tests {
         state.hub.register_agent(AgentHandle {
             agent_id: "bot".into(), agent_name: "Bot".into(), requires_mention: false,
             bot_loop_limit: None,
-            wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            wants_context_feed: false, schedules: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx,
         });
         let (strict_tx, mut strict_rx) = unbounded_channel();
         state.hub.register_agent(AgentHandle {
             agent_id: "strict".into(), agent_name: "Strict".into(), requires_mention: true,
-            bot_loop_limit: None, wants_context_feed: false, has_avatar: false, avatar_v: 0,
+            bot_loop_limit: None, wants_context_feed: false, schedules: false, has_avatar: false, avatar_v: 0,
             source: "test".into(), conn_id: state.hub.next_conn_id(), tx: strict_tx,
         });
         let own = store.add_message(&cid, "old searchable phrase", "user", "ana", None, None, &[]);

@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiClient, ApiProvider, useAllSchedules, useApprovals, useMarkUnreadsRead, useMe, useSyncedDrafts, useUnreads, type Schedule } from "@agora/core";
 import { fixtureSchedules } from "@agora/core/testing/fixtures";
 import { SchedulesList, editedSpec, nextRunChange, parseLocalInput, formatLocalInput } from "../src/components/SchedulesList";
-import { groupSchedulesByChannel } from "../src/components/SchedulesInbox";
+import { groupSchedulesByChannel, openSchedule } from "../src/components/SchedulesInbox";
 import { channelToolActions, threadToolActions } from "../src/lib/conversationTools";
 import InboxScreen from "../app/(app)/inbox";
 import { useInboxTab } from "../src/state/inboxTab";
@@ -118,6 +118,18 @@ test("change time saves a new interval and shows the server's validation error i
   await act(async () => { byLabel("Save time")[0].props.onPress(); });
   await flush();
   expect(texts().join("\n")).toContain("invalid cron rule: minute 99 out of range");
+});
+
+test("saving the time sheet without edits sends nothing", async () => {
+  const api = new TestApi([fixtureSchedules[1]]);
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  await act(async () => { byLabel("Change time: Every 6 hours")[0].props.onPress(); });
+  await act(async () => { byLabel("Save time")[0].props.onPress(); });
+  await flush();
+  // Re-sending the stored rule would restart its clock; nothing changed.
+  expect(api.patches).toEqual([]);
+  expect(byLabel("Save time")).toHaveLength(0);
 });
 
 test("an admin managing someone else's schedule edits only its next time", async () => {
@@ -238,15 +250,24 @@ test("a paused schedule's times are labelled as what resuming would do", async (
   expect(all).not.toMatch(/Next: /);
 });
 
-test("an owner who lost the channel sees why and keeps only Cancel", async () => {
+test("an owner who lost the channel sees why and keeps only Pause and Cancel", async () => {
   const lost: Schedule = { ...fixtureSchedules[1], can_manage: true, is_owner: true, channel_access: false };
   const api = new TestApi([lost]);
   await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
   await flush();
   expect(texts().join("\n")).toContain("You no longer have access to this channel");
-  expect(byLabel("Pause schedule: Every 6 hours")).toHaveLength(0);
+  expect(byLabel("Pause schedule: Every 6 hours")).toHaveLength(1);
+  expect(byLabel("Resume schedule: Every 6 hours")).toHaveLength(0);
   expect(byLabel("Change time: Every 6 hours")).toHaveLength(0);
   expect(byLabel("Cancel schedule: Every 6 hours")).toHaveLength(1);
+});
+
+test("opening a schedule whose channel the owner lost goes nowhere", () => {
+  (router.push as jest.Mock).mockClear();
+  openSchedule({ ...fixtureSchedules[1], channel_access: false });
+  expect(router.push).not.toHaveBeenCalled();
+  openSchedule({ ...fixtureSchedules[1], channel_access: true });
+  expect(router.push).toHaveBeenCalledTimes(1);
 });
 
 test("overlapping actions on two rows keep each row's own busy state", async () => {
@@ -282,4 +303,22 @@ test("overlapping actions on two rows keep each row's own busy state", async () 
   expect(byLabel("Cancel schedule: Every 12 hours")).toHaveLength(0);
   await act(async () => { releaseDelete(); });
   await flush();
+});
+
+test("the change-time sheet is an opaque surface over a scrim, never see-through", async () => {
+  const { Modal, StyleSheet } = jest.requireActual("react-native");
+  const api = new TestApi([fixtureSchedules[1]]);
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  await act(async () => { byLabel("Change time: Every 6 hours")[0].props.onPress(); });
+  const modal = tree!.root.findByType(Modal);
+  const opaque = (c: unknown) => typeof c === "string" && !/transparent|rgba\([^)]*,\s*0(\.0+)?\)/.test(c) && !/^#[0-9a-f]{8}$/i.test(c) && c !== "";
+  // The sheet holding the editor (it has the SheetHeader) must paint a solid colour.
+  const styled = modal.findAll(node => node.props.style && node.props.accessibilityViewIsModal);
+  expect(styled.length).toBeGreaterThan(0);
+  const sheet = StyleSheet.flatten(styled[0].props.style);
+  expect(opaque(sheet.backgroundColor)).toBe(true);
+  // …and the backdrop behind it dims the screen.
+  const backdrop = modal.findAll(node => node.props.style && StyleSheet.flatten(node.props.style)?.justifyContent === "flex-end")[0];
+  expect(StyleSheet.flatten(backdrop.props.style).backgroundColor).toBeTruthy();
 });

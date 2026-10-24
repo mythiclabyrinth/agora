@@ -291,7 +291,8 @@ CREATE TABLE IF NOT EXISTS schedules (
     created_by TEXT NOT NULL,
     updated_by TEXT NOT NULL,
     via_agent TEXT,
-    text_agent TEXT
+    text_agent TEXT,
+    last_due_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(status, run_at);
 CREATE INDEX IF NOT EXISTS idx_schedules_channel ON schedules(channel_id, thread_id);
@@ -383,6 +384,11 @@ fn migrate(conn: &Connection) {
     // The agent that last wrote a schedule's text (None = no agent did).
     if !has_column("schedules", "text_agent") {
         conn.execute("ALTER TABLE schedules ADD COLUMN text_agent TEXT", []).unwrap();
+    }
+    // The due slot of the last post, so the posting floor can count from the
+    // slot rather than from a fire that ran a tick late.
+    if !has_column("schedules", "last_due_at") {
+        conn.execute("ALTER TABLE schedules ADD COLUMN last_due_at REAL", []).unwrap();
     }
     if !has_column("channels", "kind") {
         conn.execute("ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'channel'", []).unwrap();

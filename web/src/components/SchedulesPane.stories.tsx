@@ -91,9 +91,23 @@ export const OwnerMovesNextRun: Story = {
     const field = within(row).getByLabelText("Next run");
     await userEvent.type(field, value);
     await userEvent.click(within(row).getByRole("button", { name: "Save" }));
-    await expect(patched).toHaveBeenCalledWith({
-      schedule: { kind: "interval", seconds: 21_600 }, run_at: Math.round(new Date(value).getTime() / 1000),
-    });
+    // The rule itself is untouched, so only the new next run is sent.
+    await expect(patched).toHaveBeenCalledWith({ run_at: Math.round(new Date(value).getTime() / 1000) });
+  },
+};
+
+// Saving the editor without edits must not re-send the rule (which would
+// restart the clock and undo a postponed next run) or a seconds-less time.
+export const SaveWithoutEditsSendsNothing: Story = {
+  play: async ({ canvasElement }) => {
+    patched.mockClear();
+    const canvas = within(canvasElement);
+    await canvas.findByText("Every 6 hours");
+    const row = canvasElement.querySelector<HTMLElement>('[data-schedule-id="sch-watchdog"]')!;
+    await userEvent.click(within(row).getByRole("button", { name: /Change time/ }));
+    await userEvent.click(within(row).getByRole("button", { name: "Save" }));
+    await expect(within(row).queryByRole("button", { name: "Save" })).toBeNull();
+    await expect(patched).not.toHaveBeenCalled();
   },
 };
 
@@ -140,8 +154,9 @@ export const OwnerLostTheChannel: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("You no longer have access to this channel")).resolves.toBeVisible();
     const row = canvasElement.querySelector<HTMLElement>('[data-schedule-id="sch-watchdog"]')!;
-    // Only Cancel: nothing that would post into a channel they can't see.
-    expect(within(row).queryByRole("button", { name: /Pause/ })).toBeNull();
+    // Pause or Cancel only: nothing that would post into a channel they can't see.
+    await expect(within(row).findByRole("button", { name: /Pause/ })).resolves.toBeVisible();
+    expect(within(row).queryByRole("button", { name: /Resume/ })).toBeNull();
     expect(within(row).queryByRole("button", { name: /Change time/ })).toBeNull();
     await userEvent.click(within(row).getByRole("button", { name: /Cancel/ }));
     await userEvent.click(within(row).getByRole("button", { name: /Cancel it\?/ }));
@@ -161,8 +176,14 @@ export const AdminRetimesSomeoneElses: Story = {
     // Only the owner changes how often; an admin gets just the next time.
     expect(within(row).queryByRole("radiogroup", { name: "Repeat" })).toBeNull();
     await expect(within(row).findByText(/Only Alice can change how often/)).resolves.toBeVisible();
+    const later = new Date(Date.now() + 4 * 86_400_000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const value = `${later.getFullYear()}-${pad(later.getMonth() + 1)}-${pad(later.getDate())}T09:00`;
+    const field = within(row).getByLabelText("Next run");
+    await userEvent.clear(field);
+    await userEvent.type(field, value);
     await userEvent.click(within(row).getByRole("button", { name: "Save" }));
-    await expect(patched).toHaveBeenCalledWith({ run_at: expect.any(Number) });
+    await expect(patched).toHaveBeenCalledWith({ run_at: Math.round(new Date(value).getTime() / 1000) });
   },
 };
 
@@ -188,5 +209,19 @@ export const Empty: Story = {
   parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules": { items: [] } } },
   play: async ({ canvasElement }) => {
     await expect(within(canvasElement).findByText(/Ask an agent to schedule a message/)).resolves.toBeVisible();
+  },
+};
+
+export const LongMessage: Story = {
+  parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules": {
+    items: [{ ...watchdog, text: "Review the release checks and report any blockers.\n".repeat(12) }],
+  } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const expand = await canvas.findByRole("button", { name: "Read full message" });
+    await userEvent.click(expand);
+    await expect(canvas.getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(canvas.getByText("Later runs"));
+    await expect(canvasElement.querySelector("details")).toHaveAttribute("open");
   },
 };

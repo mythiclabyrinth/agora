@@ -1,7 +1,7 @@
 /* Voice UI: the composer mic button (record → draft / send / discard),
    the channel-header speak-aloud and Live buttons, and the live-session
    strip. */
-
+import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
 import { ariaCombo, currentPlatform, formatCombo } from "@agora/core";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
@@ -71,15 +71,20 @@ export function MicButton({ channelId, threadId, mentions, draftOK = false }: {
   );
 }
 
-export function SpeakButton() {
+export function SpeakButton({ style }: { style?: CSSProperties } = {}) {
   const { on, toggle } = useSpeak();
   return (
-    <button className={`btn sm ago-speak-btn ${on ? "active" : ""}`}
+    <button className={`btn sm ago-speak-btn ${on ? "active" : ""}`} style={style}
       title={on
         ? "Stop speaking agent replies aloud"
         : "Speak agent replies aloud (applies to every channel)"}
       onClick={toggle}>
       <Icon name={on ? "volume-2" : "volume-x"} />
+      {/* Shown only inside a header ⋯ menu; same wording as the mobile sheet. */}
+      <span className="ago-menu-label ago-menu-text">
+        <span className="ago-menu-main">Read replies aloud</span>
+        <span className="ago-menu-detail">{on ? "On · tap to turn off" : "Off · tap to turn on"}</span>
+      </span>
     </button>
   );
 }

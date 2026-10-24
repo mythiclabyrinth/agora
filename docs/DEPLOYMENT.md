@@ -222,14 +222,19 @@ Env key fallbacks are **not** folded into `config.json` at boot — see
 `AGORA_*` environment overrides are written into `config.json` at boot, so
 unsetting one later keeps the last value rather than reverting.
 
-`AGORA_BOT_LOOP_LIMIT`, `AGORA_BOT_LOOP_MAX`, and
-`AGORA_STREAK_RESET_AGENTS` are exceptions: they are read
+`AGORA_BOT_LOOP_LIMIT`, `AGORA_BOT_LOOP_MAX`, `AGORA_STREAK_RESET_AGENTS`, and
+`AGORA_SCHEDULER_GRACE_SECS` are exceptions: they are read
 straight from the process env and are not persisted to `config.json`.
 `AGORA_BOT_LOOP_LIMIT` is the default consecutive-agent relay budget (`10`),
 while `AGORA_BOT_LOOP_MAX` is the safety ceiling (`50`) applied to a per-agent
 cap requested in its live registration. Missing per-agent values inherit the
 server default; invalid/non-positive ones also fall back, and values above the
 ceiling are clamped. These env values are read once at server startup.
+
+`AGORA_SCHEDULER_GRACE_SECS` (default `45`, at most `600`) is how long the
+scheduled-message tick waits after boot, and after a sleep/wake gap, before
+firing due schedules, so agent bridges and dial-out connections can reconnect
+first.
 
 `AGORA_STREAK_RESET_AGENTS` is a comma-separated allowlist of scheduler agent
 ids. A listed agent resets the bot streak for a channel/thread only when its

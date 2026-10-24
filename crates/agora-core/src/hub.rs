@@ -512,6 +512,10 @@ pub struct AgentHandle {
     /// These frames are context only — the bridge never drives its CLI from a
     /// non-human author, so a context feed can't create bot loops.
     pub wants_context_feed: bool,
+    /// Whether this agent's bridge can use scheduled messages (it sent
+    /// `"schedules": true` in its hello). Only these get a per-turn grant, so
+    /// agents that never schedule don't fill the grant table.
+    pub schedules: bool,
     /// Whether the agent's home instance has a profile picture for it, plus
     /// a cache-busting stamp; the bytes are proxied via /api/agents/{id}/avatar.
     pub has_avatar: bool,
@@ -3161,6 +3165,7 @@ mod tests {
             requires_mention,
             bot_loop_limit: None,
             wants_context_feed,
+            schedules: true,
             has_avatar: false,
             avatar_v: 0,
             source: "test".into(),
@@ -3183,6 +3188,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: limit,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "test".into(),
@@ -4452,6 +4458,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: None,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "test".into(),
@@ -6428,6 +6435,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: None,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "pairing:openclaw".into(),
@@ -6441,6 +6449,7 @@ mod tests {
             requires_mention: false,
             bot_loop_limit: None,
             wants_context_feed: false,
+            schedules: false,
             has_avatar: false,
             avatar_v: 0,
             source: "pairing:openclaw".into(),

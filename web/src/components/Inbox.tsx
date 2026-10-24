@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useUnreads, useMe, useSyncedDrafts, type UnreadItem } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useJump } from "../state/jump";
@@ -44,6 +44,15 @@ export function Inbox() {
     const next = initialTab();
     if (next) ui.setInboxTab(next);
   }, [ui.view]); // eslint-disable-line react-hooks/exhaustive-deps
+  // On a phone the tab strip scrolls; keep the selected tab in view (Schedules is last).
+  const tabsRef = useRef<HTMLElement>(null);
+  // Once the strip scrolls, its leading edge fades so a partly scrolled-off
+  // tab never shows as a stray sliver next to the back button.
+  const [tabsScrolled, setTabsScrolled] = useState(false);
+  useEffect(() => {
+    tabsRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    setTabsScrolled((tabsRef.current?.scrollLeft ?? 0) > 0);
+  }, [tab]);
   const switchTab = (next: InboxTab) => ui.goInbox(next, "replace");
   const open = (item: UnreadItem) => {
     ui.selectChannel(item.group_id, item.channel_id);
@@ -55,7 +64,8 @@ export function Inbox() {
       <button className="btn sm ago-back" title="Back to groups" aria-label="Back to groups"
         onClick={() => ui.backToGroups()}><Icon name="chevron-left" /></button>
       <div className="inbox-heading"><Icon name="messages-square" /><h1>Inbox</h1></div>
-      <nav className="ago-inbox-tabs" role="tablist" aria-label="Inbox tabs">
+      <nav ref={tabsRef} className={`ago-inbox-tabs ${tabsScrolled ? "is-scrolled" : ""}`} role="tablist" aria-label="Inbox tabs"
+        onScroll={e => setTabsScrolled(e.currentTarget.scrollLeft > 0)}>
         <button role="tab" aria-selected={tab === "unreads"} onClick={() => switchTab("unreads")}>Unreads {showTabCount && unreadTotal ? `(${unreadTotal})` : ""}</button>
         <button role="tab" aria-selected={tab === "threads"} onClick={() => switchTab("threads")}>Threads</button>
         <button role="tab" aria-selected={tab === "approvals"} onClick={() => switchTab("approvals")}>Approvals{approvals.total ? ` (${approvals.total})` : ""}</button>

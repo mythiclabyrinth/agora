@@ -6,7 +6,7 @@ import React, { useMemo } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { router } from "expo-router";
 import { CalendarClock } from "lucide-react-native";
-import { sortSchedules, useAllSchedules, type Schedule } from "@agora/core";
+import { lostChannelAccess, sortSchedules, useAllSchedules, type Schedule } from "@agora/core";
 import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { EmptyState } from "./EmptyState";
 import { ScheduleRows, schedulesEmptyCopy } from "./SchedulesList";
@@ -23,6 +23,8 @@ export function groupSchedulesByChannel(items: Schedule[]): Schedule[] {
 }
 
 export function openSchedule(item: Schedule): void {
+  // The owner was removed from that channel: there is nothing to open.
+  if (lostChannelAccess(item)) return;
   if (item.thread_id != null) router.push({
     pathname: "/(app)/thread/[channelId]/[rootId]",
     params: { channelId: item.channel_id, rootId: String(item.thread_id), channelName: item.channel_name ?? undefined, groupId: item.group_id ?? undefined },

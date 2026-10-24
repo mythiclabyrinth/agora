@@ -153,6 +153,7 @@ fn patch_schedule(state: &AppState, user: &AuthedUser, id: &str, body: &Value) -
             Some(v) => Some(v.as_str().ok_or_else(|| err(StatusCode::BAD_REQUEST, "status must be \"paused\" or \"active\""))?),
         },
         non_owner: current["owner"].as_str() != Some(user.username.as_str()),
+        postpone_only: current["owner"].as_str() != Some(user.username.as_str()),
     };
     let change = plan_change(&state.hub.store, &current, &req, now()).map_err(|e| match e {
         PlanError::Bad(m) => err(StatusCode::BAD_REQUEST, &m),
@@ -293,7 +294,11 @@ mod tests {
         assert_eq!(owner["schedule"]["via_agent"], "claude", "a person's change keeps the agent provenance");
         let paused = patch(&f, &f.sid, session_headers(s, "cat"), json!({"status": "paused"})).await.unwrap();
         assert_eq!(paused["schedule"]["status"], "paused");
-        let resumed = patch(&f, &f.sid, session_headers(s, "root"), json!({"status": "active"})).await.unwrap();
+        // A second pause (double-click, another device) succeeds without a write.
+        let again = patch(&f, &f.sid, session_headers(s, "cat"), json!({"status": "paused"})).await.unwrap();
+        assert_eq!(again["schedule"]["status"], "paused");
+        assert_eq!(again["schedule"]["updated_at"], paused["schedule"]["updated_at"]);
+        let resumed =patch(&f, &f.sid, session_headers(s, "root"), json!({"status": "active"})).await.unwrap();
         assert_eq!(resumed["schedule"]["status"], "active");
         // DMs stay owner-only, admins included.
         assert_eq!(patch(&f, &f.dm_sid, session_headers(s, "root"), json!({"status": "paused"})).await.unwrap_err(), StatusCode::FORBIDDEN);
@@ -337,6 +342,41 @@ mod tests {
         assert_eq!(ok.status(), StatusCode::OK);
         let body: Value = serde_json::from_slice(&to_bytes(ok.into_body(), usize::MAX).await.unwrap()).unwrap();
         assert_eq!(body["items"][0]["id"], f.sid.as_str());
+    }
+
+    #[tokio::test]
+    async fn the_thread_filter_scopes_a_channel_list_to_one_thread() {
+        let f = fixture();
+        let s = &f.state;
+        let store = &s.hub.store;
+        let root = store.add_message(&f.cid, "root", "user", "ana", None, None, &[]);
+        let root_id = root["id"].as_i64().unwrap();
+        let reply = store.add_message(&f.cid, "reply", "user", "ana", None, Some(root_id), &[]);
+        let at = now() + 3600.0;
+        let tsid = store.create_schedule("ana", &f.cid, Some(root_id), "in thread", at,
+            &json!({"kind": "once", "at": at}), "ana", None)["id"].as_str().unwrap().to_string();
+        let list = |tid: Option<&str>| {
+            let mut q = HashMap::new();
+            if let Some(t) = tid {
+                q.insert("thread_id".to_string(), t.to_string());
+            }
+            list_channel_schedules(State(s.clone()), Path(f.cid.clone()), Query(q), session_headers(s, "ana"))
+        };
+        let ids = |v: &Value| -> Vec<String> {
+            v["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap().to_string()).collect()
+        };
+        let Json(all) = list(None).await.ok().unwrap();
+        let all_ids = ids(&all);
+        assert!(all_ids.contains(&f.sid) && all_ids.contains(&tsid), "channel view lists both: {all_ids:?}");
+        let Json(thread) = list(Some(&root_id.to_string())).await.ok().unwrap();
+        assert_eq!(ids(&thread), vec![tsid.clone()], "only the thread's schedule");
+        assert_eq!(thread["items"][0]["thread_id"], root_id);
+        // A reply id continues its thread, like a live post.
+        let Json(via_reply) = list(Some(&reply["id"].as_i64().unwrap().to_string())).await.ok().unwrap();
+        assert_eq!(ids(&via_reply), vec![tsid]);
+        let status = |r: Result<Json<Value>, ApiError>| r.err().map(|e| e.into_response().status());
+        assert_eq!(status(list(Some("999999")).await), Some(StatusCode::NOT_FOUND));
+        assert_eq!(status(list(Some("abc")).await), Some(StatusCode::BAD_REQUEST));
     }
 
     #[tokio::test]
@@ -470,7 +510,7 @@ mod tests {
         let admin = admin_headers(&f.state);
         let resume = patch(&f, &f.sid, admin.clone(), json!({"status": "active"})).await;
         assert_eq!(resume.unwrap_err(), StatusCode::CONFLICT);
-        let retime = patch(&f, &f.sid, admin.clone(), json!({"run_at": now() + 3600.0})).await;
+        let retime = patch(&f, &f.sid, admin.clone(), json!({"run_at": now() + 7200.0})).await;
         assert_eq!(retime.unwrap_err(), StatusCode::CONFLICT);
         // Pausing is never blocked by it.
         store.update_schedule(&f.sid, &ScheduleChange { status: Some("active".into()), ..Default::default() }, "ana", None);

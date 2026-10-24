@@ -81,8 +81,11 @@ impl Spec {
                 let seconds = value["seconds"]
                     .as_i64()
                     .ok_or("an interval schedule needs whole `seconds`")?;
-                if seconds < MIN_INTERVAL_SECS {
-                    return Err(format!("interval must be at least {MIN_INTERVAL_SECS} seconds (5 minutes)"));
+                // Only shape here: a stored row written under an older floor
+                // must keep loading and advancing. The floor is write-time
+                // policy (`parse`); a non-positive gap would never advance.
+                if seconds <= 0 {
+                    return Err("an interval schedule needs positive `seconds`".into());
                 }
                 Ok(Spec::Interval { seconds })
             }
@@ -117,6 +120,9 @@ impl Spec {
                 }
             }
             Spec::Interval { seconds } => {
+                if *seconds < MIN_INTERVAL_SECS {
+                    return Err(format!("interval must be at least {MIN_INTERVAL_SECS} seconds (5 minutes)"));
+                }
                 if *seconds as f64 > MAX_LEAD_SECS {
                     return Err("interval is more than 400 days — is it in milliseconds?".into());
                 }
@@ -289,6 +295,12 @@ mod tests {
         assert!(matches!(spec, Spec::Cron { .. }));
         assert!(Spec::from_stored(&json!({"kind": "once", "at": 1000.0})).is_ok());
         assert!(Spec::from_stored(&json!({"kind": "nope"})).is_err());
+        // An interval stored under an older (lower) floor still loads and
+        // keeps advancing, instead of finishing silently after one post.
+        let short = Spec::from_stored(&json!({"kind": "interval", "seconds": 60})).unwrap();
+        assert!(short.next_after_fire(1000.0, 1001.0).is_some_and(|t| t > 1001.0));
+        assert!(Spec::parse(&json!({"kind": "interval", "seconds": 60})).is_err(), "floor stays at write time");
+        assert!(Spec::from_stored(&json!({"kind": "interval", "seconds": 0})).is_err());
     }
 
     #[test]

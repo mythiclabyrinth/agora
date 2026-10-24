@@ -34,9 +34,12 @@ function fromLocalInput(value: string): number | null {
     posts go out in the owner's name, so only the owner changes how often. */
 function NextRunEditor({ schedule, onDone }: { schedule: Schedule; onDone: () => void }) {
   const update = useUpdateSchedule();
-  const [at, setAt] = useState(toLocalInput(schedule.run_at));
+  const initialAt = toLocalInput(schedule.run_at);
+  const [at, setAt] = useState(initialAt);
   const [error, setError] = useState<string | null>(null);
   const save = () => {
+    // Saving the untouched minute would send a time without its seconds.
+    if (at === initialAt) { onDone(); return; }
     const t = fromLocalInput(at);
     if (t == null) { setError("Pick a date and time"); return; }
     setError(null);
@@ -47,7 +50,9 @@ function NextRunEditor({ schedule, onDone }: { schedule: Schedule; onDone: () =>
   };
   return (
     <div className="ago-sched-editor">
-      <input type="datetime-local" aria-label="Next run" value={at} onChange={e => setAt(e.target.value)} />
+      <label className="ago-sched-next">Next run
+        <input type="datetime-local" aria-label="Next run" value={at} onChange={e => setAt(e.target.value)} />
+      </label>
       <span className="dim ago-sched-hint">
         Your local time. Only {schedule.owner_name} can change how often it repeats.
       </span>
@@ -68,7 +73,8 @@ function ScheduleEditor({ schedule, onDone }: { schedule: Schedule; onDone: () =
   const spec = schedule.schedule;
   const [kind, setKind] = useState<Kind>(spec.kind);
   // Pre-fill from the live due time: a re-armed one-off's spec time can lag.
-  const [at, setAt] = useState(toLocalInput(schedule.run_at));
+  const initialAt = toLocalInput(schedule.run_at);
+  const [at, setAt] = useState(initialAt);
   const initialGap = intervalParts(spec.kind === "interval" ? spec.seconds : 3600);
   const [count, setCount] = useState(String(initialGap.count));
   const [unit, setUnit] = useState<IntervalUnit>(initialGap.unit);
@@ -101,8 +107,17 @@ function ScheduleEditor({ schedule, onDone }: { schedule: Schedule; onDone: () =
       if (t <= Date.now() / 1000) { setError("The next run must be in the future"); return; }
       runAt = t;
     }
+    // Only send what the person changed: re-sending the stored rule (or the
+    // pre-filled minute of a one-off) would restart the clock or drop seconds.
+    const sameRule = next.kind === "once"
+      ? spec.kind === "once" && at === initialAt
+      : next.kind === "interval"
+        ? spec.kind === "interval" && spec.seconds === next.seconds
+        : spec.kind === "cron" && spec.expr.trim().replace(/\s+/g, " ") === next.expr.replace(/\s+/g, " ");
+    const change = { ...(sameRule ? {} : { schedule: next }), ...(runAt != null ? { run_at: runAt } : {}) };
     setError(null);
-    update.mutate({ id: schedule.id, change: runAt != null ? { schedule: next, run_at: runAt } : { schedule: next } }, {
+    if (!Object.keys(change).length) { onDone(); return; }
+    update.mutate({ id: schedule.id, change }, {
       onSuccess: () => { toast("Schedule updated"); onDone(); },
       onError: e => setError((e as Error).message),
     });
@@ -119,7 +134,9 @@ function ScheduleEditor({ schedule, onDone }: { schedule: Schedule; onDone: () =
         ))}
       </div>
       {kind === "once" && (
-        <input type="datetime-local" aria-label="Run at" value={at} onChange={e => setAt(e.target.value)} />
+        <label className="ago-sched-next">Date and time
+          <input type="datetime-local" aria-label="Run at" value={at} onChange={e => setAt(e.target.value)} />
+        </label>
       )}
       {kind === "interval" && (
         <div className="ago-sched-gap">
@@ -134,8 +151,10 @@ function ScheduleEditor({ schedule, onDone }: { schedule: Schedule; onDone: () =
       )}
       {kind === "cron" && (
         <>
-          <input type="text" aria-label="Cron rule" spellCheck={false} value={expr}
-            onChange={e => setExpr(e.target.value)} placeholder="min hour day month weekday" />
+          <label className="ago-sched-next">Cron rule · UTC
+            <input type="text" aria-label="Cron rule" spellCheck={false} value={expr}
+              onChange={e => setExpr(e.target.value)} placeholder="min hour day month weekday" />
+          </label>
           <span className="dim ago-sched-hint">
             5 fields, UTC. {expr.trim() && describeSchedule({ kind: "cron", expr: expr.trim() })}
           </span>
@@ -177,9 +196,11 @@ export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
   const cancel = useCancelSchedule();
   const [editing, setEditing] = useState(false);
   const [armed, setArmed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const live = schedule.status === "active" || schedule.status === "paused";
   // The owner lost the channel: it still posts in their name, so they keep
-  // a way to stop it, but nothing that would post into a place they can't see.
+  // ways to stop it (pause or cancel, as the server allows), but nothing that
+  // would post into a place they can't see (no resume, no retime).
   const lostAccess = lostChannelAccess(schedule);
   const fail = (what: string) => (e: unknown) =>
     toast(`Couldn't ${what} schedule: ${(e as Error).message}`, { variant: "warn" });
@@ -208,14 +229,22 @@ export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
             </button>
           : <span className="ago-sched-where"><Icon name="message-square" /> {where}</span>
       )}
-      <div className="ago-sched-text" title={schedule.text}>{schedule.text}</div>
+      <div className={`ago-sched-text ${expanded || schedule.text.length <= 160 ? "expanded" : ""}`}>{schedule.text}</div>
+      {schedule.text.length > 160 && <button className="ago-sched-expand" aria-expanded={expanded}
+        onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Read full message"}</button>}
       <div className="ago-sched-meta">
         {live && schedule.next_runs.length > 0 && (
-          <span>{nextRunsLabel(schedule.status)} {schedule.next_runs.map(t => fmtTs(t)).join(" · ")}</span>
+          <div className="ago-sched-upcoming">
+            <span className="ago-sched-next-run">{nextRunsLabel(schedule.status)} {fmtTs(schedule.next_runs[0])}</span>
+            {schedule.next_runs.length > 1 && <details className="ago-sched-later">
+              <summary>Later runs</summary>
+              {schedule.next_runs.slice(1).map((t, i) => <div key={i}>{fmtTs(t)}</div>)}
+            </details>}
+          </div>
         )}
         {!live && schedule.last_run_at != null && <span>Last ran {fmtTs(schedule.last_run_at)}</span>}
         <span>
-          {schedule.owner_name}
+          Posts as {schedule.owner_name}
           {schedule.via_agent ? ` · via ${schedule.via_agent}` : ""}
         </span>
       </div>
@@ -223,6 +252,8 @@ export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
       {lostAccess && <div className="ago-sched-error">{LOST_ACCESS_NOTE}</div>}
       {lostAccess && schedule.can_manage && live && (
         <div className="ago-sched-actions">
+          {schedule.status === "active" &&
+            <button className="btn sm" disabled={update.isPending} onClick={() => setStatus("paused")}><Icon name="pause" /> Pause</button>}
           <button className={`btn sm danger ${armed ? "armed" : ""}`} disabled={cancel.isPending}
             title={armed ? "Click again to cancel this schedule" : "Cancel schedule"}
             onBlur={() => setArmed(false)} onClick={remove}>
@@ -253,8 +284,10 @@ export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
 export function ScheduleEmpty() {
   return (
     <div className="empty ago-sched-empty">
-      No schedules here yet. Ask an agent to schedule a message — for example
-      “@claude post the daily check here every weekday at 07:00 UTC”.
+      <Icon name="clock" />
+      <strong>No schedules yet</strong>
+      <span>Ask an agent to schedule a message here. It will post as you at the time you choose.</span>
+      <span className="ago-sched-example">Try: “Post our daily check here every weekday at 07:00 UTC.”</span>
     </div>
   );
 }
@@ -286,14 +319,14 @@ export function SchedulesPane() {
           <span className="ago-chan-name">Schedules</span>
           <span className="dim">{threadId == null ? `#${channel.name}` : "this thread"}</span>
         </div>
-        <button className="btn sm" title="Close schedules" onClick={() => ui.setSchedulesOpen(false)}><Icon name="x" /></button>
+        <button className="btn sm" title="Close schedules" aria-label="Close schedules" onClick={() => ui.setSchedulesOpen(false)}><Icon name="x" /></button>
       </div>
       <div className="ago-files-body">
         {items.map(s => (
           <ScheduleRow key={s.id} schedule={s} showThread={threadId == null} onOpen={threadId == null ? open : undefined} />
         ))}
         {q.isLoading && <div className="empty">Loading schedules…</div>}
-        {q.isError && <div className="empty">Couldn't load schedules.</div>}
+        {q.isError && <div className="empty" role="alert">Couldn't load schedules. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
         {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty />}
       </div>
     </aside>
