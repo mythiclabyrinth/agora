@@ -337,6 +337,12 @@ export interface MessageMeta {
   /* Agent-authored, server-sanitized presentation data. Clients dispatch on
      type + version and degrade visibly when they do not support a renderer. */
   artifacts?: MessageArtifact[];
+  /* Set by the server when a schedule posted this message as its owner. */
+  scheduled?: boolean;
+  schedule_id?: string;
+  /* The agent that wrote a scheduled post's words (absent when none did). */
+  written_by_agent?: string;
+  written_by_agent_name?: string;
 }
 
 /** One emoji's reactions on a message; users in reaction order, so the
@@ -409,6 +415,62 @@ export interface AttachmentPage {
   items: AttachmentBrowserItem[];
   has_more: boolean;
   offset: number;
+}
+
+/** When a schedule fires: once at a unix-second instant, at a fixed gap, or
+    on a 5-field cron rule evaluated in UTC (the Pantheo spec shape). */
+export type ScheduleSpec =
+  | { kind: "once"; at: number }
+  | { kind: "interval"; seconds: number }
+  | { kind: "cron"; expr: string };
+
+export type ScheduleStatus = "active" | "paused" | "done" | "cancelled";
+
+/** A scheduled message, decorated by the server for display. Created and
+    re-worded by agents acting for the owner; people retime/pause/cancel. */
+export interface Schedule {
+  id: string;
+  owner: string;
+  owner_name: string;
+  channel_id: string;
+  channel_name: string | null;
+  channel_kind: string | null;
+  group_id: string | null;
+  thread_id: number | null;
+  thread_title: string | null;
+  text: string;
+  schedule: ScheduleSpec;
+  /** Unix seconds of the next due fire. */
+  run_at: number;
+  /** Up to three upcoming fires (unix seconds); empty once done/cancelled.
+      For a paused schedule: what resuming it would schedule. */
+  next_runs: number[];
+  status: ScheduleStatus;
+  last_run_at: number | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+  created_by: string | null;
+  updated_by: string | null;
+  via_agent: string | null;
+  /** REST only: whether the caller may pause/resume/cancel/retime it. */
+  can_manage?: boolean;
+  /** True when the viewer owns it; only the owner may change its cadence. */
+  is_owner?: boolean;
+  /** REST only: false when the viewer (its owner) can no longer see the
+      channel; they may then only cancel it. */
+  channel_access?: boolean;
+}
+
+export interface ScheduleList {
+  items: Schedule[];
+}
+
+/** PATCH body: retime, change the cadence, or pause/resume. Never text. */
+export interface ScheduleChange {
+  run_at?: number;
+  schedule?: ScheduleSpec;
+  status?: "paused" | "active";
 }
 
 export interface SearchChannelHit {
@@ -685,9 +747,17 @@ export interface DraftsRefreshEvent {
   force?: boolean;
 }
 
+/** Something about a channel's schedules changed; refetch its lists. */
+export interface SchedulesChangedEvent {
+  type: "schedules_changed";
+  channel_id: string;
+  thread_id: number | null;
+}
+
 export type WsEvent =
   | import("../state/drafts").DraftEvent
   | DraftsRefreshEvent
+  | SchedulesChangedEvent
   | TypingEvent
   | ProgressEvent
   | MessageEvent

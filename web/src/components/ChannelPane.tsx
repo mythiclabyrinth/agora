@@ -275,6 +275,12 @@ export function ChannelPane() {
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread == null), null)}>
             <Icon name="paperclip" /> Files
           </button>
+          <button className={`btn sm ${ui.schedulesOpen && ui.schedulesThread == null ? "active" : ""}`}
+            title={`Schedules in #${channel.name}`}
+            onClick={() => ui.setSchedulesOpen(!(ui.schedulesOpen && ui.schedulesThread == null), null)}>
+            <Icon name="clock" />{/* Icon-only beside a docked thread, where the header is ~340px wide. */}
+            {ui.threadRoot == null && " Schedules"}
+          </button>
           {(isDm || isAdmin) && <button
             className={`btn sm danger ${clearArmed ? "armed" : ""}`}
             disabled={clearChat.isPending}

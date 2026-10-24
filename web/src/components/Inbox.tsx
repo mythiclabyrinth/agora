@@ -6,11 +6,13 @@ import { useUiState, type InboxTab } from "../state/ui";
 import { ThreadsInbox } from "./ThreadsInbox";
 import { ApprovalsInbox } from "./ApprovalsInbox";
 import { DraftsInbox } from "./DraftsInbox";
+import { SchedulesInbox } from "./SchedulesInbox";
 
 function initialTab(): InboxTab | null {
   if (window.location.pathname === "/inbox/approvals") return "approvals";
   if (window.location.pathname === "/inbox/threads") return "threads";
   if (window.location.pathname === "/inbox/drafts") return "drafts";
+  if (window.location.pathname === "/inbox/schedules") return "schedules";
   if (window.location.pathname === "/inbox/unreads") return "unreads";
   return null;
 }
@@ -58,9 +60,10 @@ export function Inbox() {
         <button role="tab" aria-selected={tab === "threads"} onClick={() => switchTab("threads")}>Threads</button>
         <button role="tab" aria-selected={tab === "approvals"} onClick={() => switchTab("approvals")}>Approvals{approvals.total ? ` (${approvals.total})` : ""}</button>
         {draftsEnabled && <button role="tab" aria-selected={tab === "drafts"} onClick={() => switchTab("drafts")}>Drafts{drafts.length ? ` (${drafts.length})` : ""}</button>}
+        <button role="tab" aria-selected={tab === "schedules"} onClick={() => switchTab("schedules")}>Schedules</button>
       </nav>
     </header>
-    {tab === "threads" ? <ThreadsInbox embedded /> : tab === "approvals" ? <ApprovalsInbox query={approvals} /> : tab === "drafts" && draftsEnabled ? <DraftsInbox /> : <div className="ago-inbox-content ago-unreads">
+    {tab === "threads" ? <ThreadsInbox embedded /> : tab === "approvals" ? <ApprovalsInbox query={approvals} /> : tab === "drafts" && draftsEnabled ? <DraftsInbox /> : tab === "schedules" ? <SchedulesInbox /> : <div className="ago-inbox-content ago-unreads">
       <div className="ago-unreads-toolbar">
         <div className="ago-unreads-filters" aria-label="Filter unreads">
           {(["all", "mentions", "channels", "threads"] as const).map(option =>

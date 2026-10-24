@@ -15,6 +15,7 @@ import { ThreadPane } from "./ThreadPane";
 import { GroupOverview } from "./GroupOverview";
 import { MembersPanel } from "./MembersPanel";
 import { AttachmentBrowser } from "./AttachmentBrowser";
+import { SchedulesPane } from "./SchedulesPane";
 import { SearchPane } from "./SearchPane";
 import { PeoplePane } from "./PeoplePane";
 import { ConnectionsPane } from "./ConnectionsPane";
@@ -176,6 +177,7 @@ export function AgoraLayout() {
           : <div className="agora-thread" id="agora-thread" style={{ display: "none" }}></div>}
         <MembersPanel />
         <AttachmentBrowser />
+        <SchedulesPane />
       </div>
       <EmojiPickerHost onPick={(mid, emoji) => toggleReaction(mid, emoji)} />
       <SearchPane />

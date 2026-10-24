@@ -36,6 +36,8 @@ use crate::hub::{normalize_thread_alias, AgentHandle, Hub};
 use crate::store::{new_token, now, NewAttachment};
 use crate::attachments::{agent_wire_limit, attachment_mime, safe_filename, sniff_video_mime};
 
+mod schedules;
+
 pub(crate) const MAX_MESSAGE_CHARS: usize = 20_000;
 const MAX_PINS_PER_CHANNEL: i64 = 25;
 const MAX_FILES_PER_MESSAGE: usize = 5;
@@ -411,6 +413,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/channels/{channel_id}/threads/{thread_id}/replies", delete(clear_thread_replies))
         .route("/api/channels/{channel_id}/attachments", get(list_attachments))
+        .route("/api/channels/{channel_id}/schedules", get(schedules::list_channel_schedules))
+        .route("/api/schedules", get(schedules::list_schedules))
+        .route(
+            "/api/schedules/{schedule_id}",
+            patch(schedules::update_schedule).delete(schedules::delete_schedule),
+        )
         .route(
             "/api/channels/{channel_id}/attachments/{file_id}",
             delete(delete_attachment),
@@ -797,6 +805,7 @@ async fn delete_me(
     tokio::task::spawn_blocking(move || store.delete_user_data(&username))
         .await
         .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Deletion failed"))?;
+    state.hub.flush_schedule_cascades();
     tracing::info!("account data for {} deleted; sessions revoked", user.username);
     Ok(Json(json!({"ok": true})))
 }
@@ -1109,6 +1118,7 @@ async fn delete_group(
     require_group_admin(&state, &user, &group_id)?;
     let owners = state.hub.store.draft_owners_for_group(&group_id);
     state.hub.store.delete_group(&group_id);
+    state.hub.flush_schedule_cascades();
     for owner in owners { state.hub.publish_drafts_refresh(&owner, None, Some(&group_id), false); }
     Ok(Json(json!({"ok": true})))
 }
@@ -1351,6 +1361,7 @@ async fn delete_channel(
     require_group_admin(&state, &user, &group_id)?;
     let owners = state.hub.store.draft_owners_for_channel(&channel_id);
     state.hub.store.delete_channel(&channel_id);
+    state.hub.flush_schedule_cascades();
     for owner in owners { state.hub.publish_drafts_refresh(&owner, Some(&channel_id), None, false); }
     Ok(Json(json!({"ok": true})))
 }
@@ -3805,6 +3816,7 @@ async fn delete_message(
             })?;
     }
     state.hub.store.delete_message(message_id);
+    state.hub.flush_schedule_cascades();
     let reply_stats = message["thread_id"].as_i64()
         .and_then(|root_id| state.hub.store.thread_reply_stats(root_id));
     state.hub.notify_inbound_control(
@@ -3846,6 +3858,7 @@ async fn clear_channel_messages(
     let channel = require_channel_member(&state, &user, &channel_id)?;
     if channel["kind"] != "agent_dm" { require_channel_admin(&state, &user, &channel_id)?; }
     let deleted = state.hub.store.clear_channel_messages(&channel_id);
+    state.hub.flush_schedule_cascades();
     state.hub.post_transient(&channel_id, json!({
         "type": "message_clear", "channel_id": channel_id, "thread_id": null,
     }));
@@ -6500,7 +6513,7 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    fn test_state() -> (AppState, tempfile::TempDir) {
+    pub(crate) fn test_state() -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let config = Arc::new(Config::load(dir.path()).unwrap());
         let hub = Arc::new(Hub::new(Arc::new(crate::store::Store::open_in_memory().unwrap())));
@@ -8326,7 +8339,7 @@ mod tests {
     }
 
     /// Auth headers for a freshly minted session of `username`.
-    fn session_headers(state: &AppState, username: &str) -> HeaderMap {
+    pub(crate) fn session_headers(state: &AppState, username: &str) -> HeaderMap {
         let v = state.hub.store.user(username).unwrap()["session_version"]
             .as_i64()
             .unwrap();
@@ -8336,7 +8349,7 @@ mod tests {
         h
     }
 
-    fn admin_headers(state: &AppState) -> HeaderMap {
+    pub(crate) fn admin_headers(state: &AppState) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",

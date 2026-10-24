@@ -8,7 +8,7 @@ import { Pin, Star } from "lucide-react-native";
 import type { Session } from "@agora/core";
 import { FEATURES } from "@agora/core";
 import type { Message } from "@agora/core";
-import { fmtLastReply, fmtLastReplyFull, fmtTs, validLastReplyTs } from "@agora/core";
+import { fmtLastReply, fmtLastReplyFull, fmtTs, scheduledLabel, scheduledTitle, validLastReplyTs } from "@agora/core";
 import { typography, weight, radii, space } from "../lib/theme";
 import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { useSession } from "../state/session";
@@ -188,7 +188,7 @@ export function MessageItem({
           <Reactions message={message} />
           <View style={styles.foot}>
             {flags}
-            <Text maxFontSizeMultiplier={1.3} style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
+            <Text maxFontSizeMultiplier={1.3} style={styles.ts} accessibilityLabel={message.meta?.scheduled ? `${scheduledTitle(message.meta)}, ${fmtTs(message.ts)}` : undefined}>{message.meta?.scheduled ? `${scheduledLabel(message.meta).replace(/^Scheduled/, "scheduled")} · ` : ""}{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
           </View>
           {threadFoot}
         </View>
@@ -219,7 +219,7 @@ export function MessageItem({
             ) : null}
           </Text>
           {flags}
-          <Text maxFontSizeMultiplier={1.3} style={styles.ts}>{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
+          <Text maxFontSizeMultiplier={1.3} style={styles.ts} accessibilityLabel={message.meta?.scheduled ? `${scheduledTitle(message.meta)}, ${fmtTs(message.ts)}` : undefined}>{message.meta?.scheduled ? `${scheduledLabel(message.meta).replace(/^Scheduled/, "scheduled")} · ` : ""}{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
         </View>
         <MdText text={body} onPressIn={pressIn} onPress={openThread} onLongPress={longPress} />
         <ArtifactList artifacts={message.meta?.artifacts} />

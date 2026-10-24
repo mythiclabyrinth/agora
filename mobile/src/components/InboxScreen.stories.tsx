@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-native";
 import React from "react";
-import { fixtureGroups, fixtureThreads, fixtureMe } from "@agora/core/testing/fixtures";
+import { fixtureGroups, fixtureSchedules, fixtureThreads, fixtureMe } from "@agora/core/testing/fixtures";
 import { useMessageDrafts } from "@agora/core";
 import InboxScreen from "../../app/(app)/inbox";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -81,6 +81,22 @@ export const Drafts: Story = {
       body: "I will check the mobile flow", meta: { addressed: ["codex"], reply_in_thread: false },
       rev: 1, client_id: "phone", updated_at: Date.now() / 1000,
       channel_name: "general", group_id: "product", group_name: "Product", thread_title: "Launch planning" }]);
+    return <InboxScreen />;
+  },
+};
+
+export const Schedules: Story = {
+  parameters: { apiRoutes: {
+    "GET /api/me": { ...fixtureMe, drafts_sync: true },
+    "GET /api/drafts": { items: [], total: 0 },
+    "GET /api/groups": { groups: fixtureGroups },
+    "GET /api/threads?limit=100": { threads: fixtureThreads },
+    "GET /api/unreads": { items: [], total: 0 },
+    "GET /api/approvals": { items: [], total: 0 },
+    "GET /api/schedules": { items: fixtureSchedules },
+  } },
+  render: () => {
+    useInboxTab.setState({ tab: "schedules" });
     return <InboxScreen />;
   },
 };

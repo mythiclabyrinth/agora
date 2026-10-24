@@ -263,6 +263,11 @@ export function ThreadPane() {
             onClick={() => ui.setFilesOpen(!(ui.filesOpen && ui.filesThread === rootId), rootId)}>
             <Icon name="paperclip" /><span className="ago-btn-label">Files</span>
           </button>
+          <button className={`btn sm ${ui.schedulesOpen && ui.schedulesThread === rootId ? "active" : ""}`}
+            title="Schedules: scheduled messages in this thread"
+            onClick={() => ui.setSchedulesOpen(!(ui.schedulesOpen && ui.schedulesThread === rootId), rootId)}>
+            <Icon name="clock" /><span className="ago-btn-label">Schedules</span>
+          </button>
           {(channel.kind === "agent_dm" || isAdmin) && <button
             className={`btn sm danger ${clearArmed ? "armed" : ""}`}
             disabled={clearThread.isPending}

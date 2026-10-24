@@ -52,6 +52,9 @@ import type {
   MessageTemplate,
   PairingToken,
   PinnedMessage,
+  Schedule,
+  ScheduleChange,
+  ScheduleList,
   SearchResponse,
   StarredMessage,
   ThreadRow,
@@ -728,6 +731,56 @@ export function useDeleteAttachment(channelId: string, threadId: number | null) 
       applyMessageUpdate(qc, message);
       qc.invalidateQueries({ queryKey: keys.attachments(channelId, threadId) });
     },
+  });
+}
+
+/* ------------------------------------------------------------ schedules */
+
+/** A channel's schedules (thread ones included and labelled), or only one
+    thread's when `threadId` is given. */
+export function useSchedules(channelId: string, threadId: number | null = null) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.schedules(channelId, threadId),
+    queryFn: () => api.get<ScheduleList>(
+      `/api/channels/${encodeURIComponent(channelId)}/schedules` +
+      (threadId == null ? "" : `?thread_id=${threadId}`),
+    ),
+    enabled: !!channelId,
+  });
+}
+
+/** Every schedule in channels the caller can access, for the inbox tab. */
+export function useAllSchedules() {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.allSchedules,
+    queryFn: () => api.get<ScheduleList>("/api/schedules"),
+  });
+}
+
+function refreshSchedules(qc: QueryClient, channelId: string): void {
+  void qc.invalidateQueries({ queryKey: ["schedules", channelId] });
+  void qc.invalidateQueries({ queryKey: keys.allSchedules });
+}
+
+/** Retime, change the cadence, or pause/resume one schedule. */
+export function useUpdateSchedule() {
+  const api = useApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, change }: { id: string; change: ScheduleChange }) =>
+      api.patch<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(id)}`, change),
+    onSuccess: ({ schedule }) => refreshSchedules(qc, schedule.channel_id),
+  });
+}
+
+/** Cancel a schedule; it stops firing and drops out of the lists. */
+export function useCancelSchedule() {
+  const api = useApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (schedule: Pick<Schedule, "id" | "channel_id">) =>
+      api.delete<{ ok: boolean }>(`/api/schedules/${encodeURIComponent(schedule.id)}`),
+    onSuccess: (_res, schedule) => refreshSchedules(qc, schedule.channel_id),
   });
 }
 

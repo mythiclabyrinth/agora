@@ -19,7 +19,7 @@ import {
 } from "react-native";
 import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
-import { Headphones, Paperclip, Volume2 } from "lucide-react-native";
+import { Headphones } from "lucide-react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { keys } from "@agora/core";
 import { useSendVoice, useTranscribeVoice } from "../../../../src/api/voice";
@@ -38,7 +38,9 @@ import {
 import type { Message, ThreadRow } from "@agora/core";
 import { Composer, type MentionCandidate } from "../../../../src/components/Composer";
 import { EmojiPicker } from "../../../../src/components/EmojiPicker";
-import { Icon } from "../../../../src/components/Icon";
+import { ConversationTools } from "../../../../src/components/ConversationTools";
+import { threadToolActions } from "../../../../src/lib/conversationTools";
+import { IconButton } from "../../../../src/components/IconButton";
 import { ProgressBubbles, TypingRow } from "../../../../src/components/LiveRows";
 import { MessageItem } from "../../../../src/components/MessageItem";
 import { MessageActions } from "../../../../src/components/MessageActions";
@@ -310,38 +312,11 @@ export default function ThreadScreen() {
           headerShown: true,
           ...headerActions(
             <View style={styles.headerBtns}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Thread attachments"
-                onPress={() => router.push({
-                  pathname: "/(app)/attachments/[channelId]",
-                  params: { channelId, channelName, groupId, threadId: String(rootId), threadName },
-                })}
-                hitSlop={8}
-              >
-                <Icon icon={Paperclip} size={20} color={colors.text} />
-              </Pressable>
-              {ttsOk ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Read replies aloud"
-                  accessibilityState={{ selected: speakAloud }}
-                  onPress={() => {
-                    if (speakAloud) stopSpeech();
-                    setSpeakAloud(!speakAloud);
-                  }}
-                  hitSlop={8}
-                >
-                  <View style={!speakAloud && styles.headerBtnOff}>
-                    <Icon icon={Volume2} size={20} color={colors.text} />
-                  </View>
-                </Pressable>
-              ) : null}
-              {sttOk && ttsOk ? (
-                <Pressable accessibilityRole="button" accessibilityLabel="Start live voice" onPress={openLive} hitSlop={12}>
-                  <Icon icon={Headphones} size={20} color={colors.text} />
-                </Pressable>
-              ) : null}
+              {sttOk && ttsOk ? <IconButton icon={Headphones} accessibilityLabel="Start live voice" onPress={openLive} /> : null}
+              <ConversationTools title={threadName || "Thread"} actions={threadToolActions({
+                channelId, channelName, groupId, rootId, threadName, ttsOk, speakAloud,
+                toggleSpeak: () => { if (speakAloud) stopSpeech(); setSpeakAloud(!speakAloud); },
+              })} />
             </View>,
           ),
         }}
@@ -450,7 +425,6 @@ const useStyles = createThemedStyles(({ colors }) => ({
   root: { flex: 1, backgroundColor: colors.bg },
   listWrap: { flex: 1, position: "relative" },
   headerBtns: { flexDirection: "row", gap: 16 },
-  headerBtnOff: { opacity: 0.35 },
   deepLinkTarget: { backgroundColor: colors.accentSoft, borderRadius: 8 },
   headerTitle: { color: colors.text, fontSize: typography.title.fontSize, fontWeight: weight.bold },
   headerTitleWrap: { alignItems: "center", maxWidth: 230, gap: 2 },

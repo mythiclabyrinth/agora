@@ -303,3 +303,22 @@ test("shows an edited marker when edited_at is present", () => {
     Array.isArray(node.props.children) && node.props.children.includes("edited · "),
   )).toBe(true);
 });
+
+test("a scheduled post an agent wrote names the writer, also for screen readers", () => {
+  const scheduled = message("@codex daily check");
+  scheduled.meta = { scheduled: true, schedule_id: "s-1", written_by_agent: "claude", written_by_agent_name: "Claude" };
+  const tree = render(scheduled);
+  const stamp = tree.root.findAllByType(Text).find((node) =>
+    Array.isArray(node.props.children) && node.props.children.includes("scheduled · written by Claude · "));
+  expect(stamp).toBeTruthy();
+  expect(stamp!.props.accessibilityLabel).toContain("Claude wrote the message");
+});
+
+test("a scheduled post no agent wrote keeps the plain marker", () => {
+  const scheduled = message("Weekly standup");
+  scheduled.meta = { scheduled: true, schedule_id: "s-2" };
+  const tree = render(scheduled);
+  expect(tree.root.findAllByType(Text).some((node) =>
+    Array.isArray(node.props.children) && node.props.children.includes("scheduled · "),
+  )).toBe(true);
+});

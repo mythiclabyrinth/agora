@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 import { create } from "zustand";
 import {
   fmtLastReply, fmtLastReplyFull, fmtTs, tldrOf, useAgents, useDeleteMessage, useEditMessage, useMe, usePinMessage, usePins,
-  FEATURES, useStarMessage, useStars, useTldrView, validLastReplyTs, type LinkPreview, type Message,
+  FEATURES, scheduledLabel, scheduledTitle, useStarMessage, useStars, useTldrView, validLastReplyTs, type LinkPreview, type Message,
 } from "@agora/core";
 import { watchAnchoredOverlay } from "../lib/anchoredOverlay";
 import { Icon } from "../lib/icons";
@@ -206,6 +206,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
         </span>
         {pinned && <span className="ago-pinned-mark" title="Pinned"><Icon name="pin" /></span>}
         {FEATURES.stars && starred && <span className="ago-starred-mark" title="Starred by you"><Icon name="star" cls="fill" /></span>}
+        {m.meta?.scheduled && <span className="ago-scheduled-mark" title={scheduledTitle(m.meta)}><Icon name="clock" /> {scheduledLabel(m.meta)}</span>}
         {onTldr && <span className="ago-tldr-mark" title="Short version — the full message is one click away">TL;DR</span>}
         <time className="bubble-ts" dateTime={new Date(m.ts * 1000).toISOString()} title={fmtTs(m.ts)}>{m.meta?.edited_at ? "edited · " : ""}{messageTime.format(m.ts * 1000)}</time>
       </div>
@@ -308,7 +309,7 @@ export function MessageItem({ message: m, inThread, isAdmin, mentions, onOpenThr
     </div>
   );
 
-  return <><div className={`ago-msg-row ${mine ? "is-mine" : "is-peer"} ${grouped && !pinned && !starred && !onTldr && !m.meta?.edited_at ? "grouped" : ""}`}>
+  return <><div className={`ago-msg-row ${mine ? "is-mine" : "is-peer"} ${grouped && !pinned && !starred && !onTldr && !m.meta?.edited_at && !m.meta?.scheduled ? "grouped" : ""}`}>
     {m.author_type === "agent" ? <AgentAvatar agentId={m.author_id} /> : (
       <span className={`ago-av ago-person-avatar ${mine ? "mine" : ""}`} aria-hidden="true">
         {(m.author_name || m.author_id).slice(0, 2).toUpperCase()}

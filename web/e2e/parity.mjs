@@ -234,6 +234,23 @@ async function main() {
     }
   });
 
+  await check("schedules: Inbox tab and channel pane open (empty-safe)", async () => {
+    await page.goto(BASE + "/inbox/schedules");
+    await page.getByRole("tab", { name: "Schedules" }).waitFor();
+    if (await page.getByRole("tab", { name: "Schedules" }).getAttribute("aria-selected") !== "true") {
+      throw new Error("direct Inbox Schedules URL did not select the Schedules tab");
+    }
+    await page.locator(".ago-sched-inbox").waitFor({ timeout: 5000 });
+    await page.goto(BASE + `/g/${SEED.group}/c/${SEED.channel}`);
+    await page.locator("#ago-msg").waitFor();
+    await page.locator(".ago-channel-tools").getByRole("button", { name: /Schedules/ }).click();
+    const pane = page.getByRole("complementary", { name: "Schedules" });
+    await pane.waitFor({ timeout: 5000 });
+    await pane.locator(".ago-sched-row, .ago-sched-empty").first().waitFor({ timeout: 5000 });
+    await pane.getByTitle("Close schedules").click();
+    await pane.waitFor({ state: "detached", timeout: 5000 });
+  });
+
   await check("sidebar: group renders, expands, channel selects", async () => {
     await page.waitForSelector(".ago-group-head", { timeout: 10000 });
     const group = page.locator(".ago-group", { hasText: "Parity" }).first();

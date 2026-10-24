@@ -17,14 +17,7 @@ import {
 } from "react-native";
 import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
-import {
-  Headphones,
-  Paperclip,
-  Pin,
-  Star,
-  Users,
-  Volume2,
-} from "lucide-react-native";
+import { Headphones } from "lucide-react-native";
 import {
   flattenMessages,
   FEATURES,
@@ -66,6 +59,7 @@ import { channelRows, type ChannelRow } from "../../../src/lib/channelRows";
 import { usePrefs } from "../../../src/state/prefs";
 import { useSession } from "../../../src/state/session";
 import { ConversationTools } from "../../../src/components/ConversationTools";
+import { channelToolActions } from "../../../src/lib/conversationTools";
 import { IconButton } from "../../../src/components/IconButton";
 
 type Row = ChannelRow;
@@ -334,15 +328,12 @@ export default function ChannelScreen() {
           ...headerActions(
             <View style={styles.headerBtns}>
               {sttOk && ttsOk ? <IconButton icon={Headphones} accessibilityLabel="Start live voice" onPress={openLive} /> : null}
-              <ConversationTools title={`# ${channelName}`} actions={[
-                { label: "Channel attachments", detail: "Files, images and shared media", icon: Paperclip,
-                  onPress: () => router.push({ pathname: "/(app)/attachments/[channelId]", params: { channelId, channelName, groupId } }) },
-                { label: "Pinned messages", detail: "The things worth keeping close", icon: Pin, onPress: () => setSheet("pins") },
-                ...(FEATURES.stars ? [{ label: "Starred messages", icon: Star, onPress: () => setSheet("stars") }] : []),
-                ...(groupId && groupId !== "__dms" ? [{ label: "Participants", detail: "People, agents and channel access", icon: Users, onPress: openMembers }] : []),
-                ...(ttsOk ? [{ label: "Read replies aloud", detail: speakAloud ? "On · tap to turn off" : "Off · tap to turn on", icon: Volume2, selected: speakAloud,
-                  onPress: () => { if (speakAloud) stopSpeech(); setSpeakAloud(!speakAloud); } }] : []),
-              ]} />
+              <ConversationTools title={`# ${channelName}`} actions={channelToolActions({
+                channelId, channelName, groupId, ttsOk, speakAloud,
+                toggleSpeak: () => { if (speakAloud) stopSpeech(); setSpeakAloud(!speakAloud); },
+                stars: FEATURES.stars, showMembers: !!groupId && groupId !== "__dms",
+                onPins: () => setSheet("pins"), onStars: () => setSheet("stars"), onMembers: openMembers,
+              })} />
             </View>,
           ),
         }}

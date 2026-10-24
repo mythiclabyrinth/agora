@@ -14,6 +14,11 @@ export const keys = {
   stars: (channelId: string) => ["stars", channelId] as const,
   attachments: (channelId: string, threadId: number | null) =>
     ["attachments", channelId, threadId ?? 0] as const,
+  /* Every schedule list for a channel shares the ["schedules", id] prefix so
+     one schedules_changed event refreshes the channel and its threads. */
+  schedules: (channelId: string, threadId: number | null) =>
+    ["schedules", channelId, threadId ?? 0] as const,
+  allSchedules: ["allSchedules"] as const,
   channelAgents: (channelId: string) => ["channelAgents", channelId] as const,
   activity: (channelId: string) => ["activity", channelId] as const,
   allActivity: ["allActivity"] as const,

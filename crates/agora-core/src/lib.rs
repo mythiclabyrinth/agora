@@ -17,6 +17,7 @@ pub mod jarvis;
 pub mod migrate;
 pub mod notify_actions;
 pub mod push;
+pub mod schedule_spec;
 pub mod server;
 pub mod sources;
 pub mod store;
@@ -102,6 +103,46 @@ pub async fn run(data_dir: PathBuf, ui_dir: Option<PathBuf>) -> anyhow::Result<A
     });
     let connections = connections::ConnectionManager::new(Arc::clone(&hub), Arc::clone(&config));
     connections.sync();
+    // Scheduled messages: wait for bridges and dial-out connections to
+    // (re)attach first — fan-out skips agents with no live socket, so firing
+    // at boot would mark an overdue loop post delivered with nobody to
+    // receive it. Then replay side effects a crash interrupted, and fire due
+    // schedules. Runs wherever this database lives (server or desktop
+    // embedded); the per-fire UNIQUE key makes a repeated pass harmless.
+    let schedule_hub = Arc::clone(&hub);
+    let grace = hub::scheduler_start_grace(std::env::var("AGORA_SCHEDULER_GRACE_SECS").ok().as_deref());
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        let hub = Arc::clone(&schedule_hub);
+        let _ = tokio::task::spawn_blocking(move || hub.redeliver_pending_fires(store::now())).await;
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(hub::SCHEDULER_TICK_SECS));
+        // After a stall, tick once on schedule instead of bursting the missed ones.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut clock = hub::WakeClock::default();
+        loop {
+            ticker.tick().await;
+            // Woke from sleep/suspend: bridges are likely reconnecting, so
+            // give them the same grace as boot before firing anything.
+            if clock.needs_grace(store::now()) {
+                tracing::info!("scheduler woke after a stall; waiting for agents to reconnect");
+                tokio::time::sleep(grace).await;
+            }
+            let hub = Arc::clone(&schedule_hub);
+            if tokio::task::spawn_blocking(move || {
+                let now_s = store::now();
+                hub.fire_due_schedules(now_s);
+                hub.prune_turn_grants(now_s);
+                hub.maintain_schedule_fires(now_s);
+                hub.flush_schedule_cascades();
+            })
+            .await
+            .is_err()
+            {
+                tracing::warn!("schedule tick failed");
+            }
+            clock.tick_finished(store::now());
+        }
+    });
 
     let (auth_limiter, upload_limiter) = server::AppState::default_limiters();
     let state = server::AppState {

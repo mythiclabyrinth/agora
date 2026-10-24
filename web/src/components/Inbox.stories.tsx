@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
-import { fixtureGroups, fixtureMe, fixtureThreads } from "@agora/core/testing/fixtures";
+import { fixtureGroups, fixtureMe, fixtureSchedules, fixtureThreads } from "@agora/core/testing/fixtures";
 import { useMessageDrafts, type DraftRow, type UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
 import { useUiState } from "../state/ui";
@@ -77,6 +77,18 @@ export const Drafts: Story = { parameters: { setup: () => {
 } }, play: async ({ canvasElement }) => {
   await expect(within(canvasElement).findByRole("tab", { name: "Drafts (1)" })).resolves.toBeVisible();
 } };
+export const Schedules: Story = {
+  parameters: {
+    apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/schedules": { items: fixtureSchedules } },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole("tab", { name: "Schedules" })).resolves.toHaveAttribute("aria-selected", "true");
+    await expect(canvas.findByText("Weekdays at 07:00 UTC")).resolves.toBeVisible();
+    await expect(canvas.findByRole("region", { name: "Schedules in storybook" })).resolves.toBeVisible();
+  },
+};
 export const DraftsOnOlderServer: Story = {
   parameters: {
     apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/me": { ...fixtureMe, drafts_sync: false } },
@@ -102,6 +114,7 @@ export const ReloadResetRules: Story = {
   play: async () => {
     expect(inboxPathAfterReload("/inbox/threads", "reload", {})).toBe("/inbox/unreads");
     expect(inboxPathAfterReload("/inbox/approvals", "reload", {})).toBe("/inbox/unreads");
+    expect(inboxPathAfterReload("/inbox/schedules", "reload", {})).toBe("/inbox/unreads");
     expect(inboxPathAfterReload("/inbox/threads", "reload", null)).toBeNull();
     expect(inboxPathAfterReload("/inbox/threads", "navigate", {})).toBeNull();
     expect(inboxPathAfterReload("/inbox/unreads", "reload", {})).toBeNull();
