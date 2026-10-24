@@ -3116,7 +3116,8 @@ class ScheduleListPrivacyTests(unittest.TestCase):
             frame = bridge.schedule_request_frame(
                 {"op": op, "id": "s1", "channel": "#exec-comp"}, "AGENT", "t-1", "r1")
             self.assertEqual(frame["channel"], "#exec-comp", op)
-        self.assertIn("to see or manage it", bridge.SCHEDULE_SYSTEM_PROMPT)
+        self.assertIn("name it in their own message", bridge.SCHEDULE_SYSTEM_PROMPT)
+        self.assertIn("posted in the named conversation", bridge.SCHEDULE_SYSTEM_PROMPT)
 
     def test_list_limit_is_clamped_to_one_rendered_page(self):
         for asked, sent in ((50, bridge.SCHEDULE_LIST_MAX), (5, 5), (0, 1), ("x", bridge.SCHEDULE_LIST_MAX)):

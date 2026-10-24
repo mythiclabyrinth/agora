@@ -290,15 +290,17 @@ SCHEDULE_SYSTEM_PROMPT = (
     f"line that is exactly `{SCHEDULE_SENTINEL} " + "{...}` and nothing else, "
     f'for example `{SCHEDULE_SENTINEL} ' + '{"op": "create", "text": "@<your-handle> '
     'daily check", "schedule": {"kind": "cron", "expr": "0 7 * * *"}}`. Ops: '
-    "create (text and schedule; optional thread_id, run_at), update "
+    "create (text and schedule; optional channel, thread_id, run_at), update "
     "(id plus any of text, schedule, run_at), pause, resume and cancel (id), "
     "list (optional status: all, active, paused, done or cancelled; offset and "
     "limit page through older ones, so keep paging before saying a schedule "
     "doesn't exist). Schedules in the person's other private conversations "
-    "are listed without their words or names; only when the person explicitly "
-    "names that conversation, add \"channel\": \"<name or #name>\" (or "
-    "\"dm\" for your direct messages with them) to list, update, pause, resume or "
-    "cancel to see or manage it. "
+    "are listed without their words or names. To see or act in another "
+    "conversation, the person has to name it in their own message (\"#ops\", "
+    "or \"DM\" for your direct messages with them); then add \"channel\": "
+    "\"<name or #name>\" (or \"dm\") to list, update, pause, resume, cancel or "
+    "create, and a create made that way is posted in the named conversation. "
+    "Without the person naming it, those requests are refused. "
     'A schedule is {"kind": "once", "at": <unix '
     'seconds>}, {"kind": "interval", "seconds": <300 or more>} or {"kind": '
     '"cron", "expr": "<5-field cron, UTC>"}. The relay runs the request and '

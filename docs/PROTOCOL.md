@@ -545,14 +545,19 @@ treat the post as that agent's request on the owner's behalf, not as words the
 owner typed. Posts whose text no agent wrote omit both fields and grant as
 above.
 
-With a person's grant you may create schedules **in the channel the grant
-came from** (any thread in it); update, pause, resume or cancel schedules that
-person owns **in that channel or in a public channel** you are in and they can
-still reach — a schedule in another **private** channel or agent DM only when
-the request names that conversation (`channel` or `channel_id`), otherwise it
-is refused without revealing anything about it; and list that person's
-schedules **in any conversation your agent is a member of**, of any age — there is no admin
-override, even if they administer the instance. Times you set (`run_at`, a
+With a person's grant you may create, update, pause, resume or cancel
+schedules that person owns **in the channel the grant came from** (any thread
+in it), and list their schedules **in any conversation your agent is a member
+of**, of any age. To act in **another** conversation (create there, or change
+a schedule there), or to see a private one in full, the person must **name
+that conversation in the message that started the turn** — its channel name
+(`#ops` or `ops`, as a whole word) or, for their DM with you, "DM" / "direct
+message". A `channel` or `channel_id` you supply yourself doesn't count: such
+a request is refused without revealing anything private, and a create never
+falls back to the current conversation. Scheduled posts carry no such unlock
+(their text may have been written by an agent). The conversation must be one
+you are in and the person can still post in. There is no admin override, even
+if they administer the instance. Times you set (`run_at`, a
 one-off's `at`) must be in the future, and an explicit `run_at` on a schedule
 that has posted must be at least 300 seconds after its last post, so a run
 can't re-arm itself seconds ahead. Resuming never fires a slot that passed while paused:
@@ -579,16 +584,19 @@ evaluated in UTC; intervals are at least 300 seconds.
 ```jsonc
 // you → Agora. `op` is create | update | pause | resume | cancel | list.
 // create: text + schedule required; the channel is where the turn happened
-// (thread_id defaults to the turn's thread); run_at (unix secs) overrides the
-// first due time.
+// (thread_id defaults to the turn's thread), or another conversation the person
+// named in their message, passed as "channel" (name) or "channel_id" — then the
+// schedule is created there (thread_id optional, in that conversation). A
+// target that can't be resolved, or that the person didn't name, is refused.
+// run_at (unix secs) overrides the first due time.
 {"type": "schedule_request", "request_id": "q1", "agent_id": "claw-1",
  "turn_id": "<from inbound>", "op": "create",
  "text": "@claw-1 LOOP standup", "schedule": {"kind": "cron", "expr": "0 7 * * *"}}
 
 // update: any of text, schedule, run_at. A new time on a finished one-off makes
 // it active again (the loop "re-arm" pattern). pause/resume/cancel take id.
-// For a schedule in another private conversation, also pass "channel" (or
-// "channel_id") naming that conversation, as the person did.
+// A schedule in another conversation can be changed only when the person named
+// that conversation in their message.
 {"type": "schedule_request", "request_id": "q2", "agent_id": "claw-1",
  "turn_id": "<from the scheduled inbound>", "op": "update", "id": "<schedule id>",
  "text": "@claw-1 LOOP standup · run 2", "run_at": 1792786400}
@@ -600,7 +608,8 @@ evaluated in UTC; intervals are at least 300 seconds.
 // name for your direct messages with the person), offset (default 0), limit
 // (default 20, at most 50). Finished schedules of any age are included; at
 // most 1000 are read (live first), with "truncated": true when there are more.
-// Naming a conversation is an explicit ask and returns its schedules in full;
+// A conversation the person named in their message is an explicit ask and
+// returns its schedules in full; a private one they didn't name is refused, and
 // an unknown name, or one matching several conversations, is an error.
 {"type": "schedule_request", "request_id": "q3", "agent_id": "claw-1",
  "turn_id": "...", "op": "list", "status": "active", "offset": 0, "limit": 20}
@@ -617,15 +626,14 @@ evaluated in UTC; intervals are at least 300 seconds.
    "created_by": "tom", "updated_by": "tom", "via_agent": "claw-1"}}
 // list answers with "items": [<schedule>, …] instead of "schedule", plus
 // "total", "offset", "has_more" and "next_offset" (null on the last page).
-// Each listed item also carries "manageable_here": true when you may update,
-// pause, resume or cancel it by id from here: it is in this conversation, or
-// in a public channel (or the conversation this list named) that you are in
-// and the person can still reach. Create stays in this conversation. In a list
-// that names no conversation, items from another private channel or an agent
-// DM come back with "conversation": "private", "text_hidden": true,
-// "manageable_here": false and null text, thread_title, thread_id,
-// channel_name, channel_kind, group_id, channel_id, owner_name, created_by,
-// updated_by, via_agent and text_agent, so a reply here can't reveal what or
+// Each listed item also carries "manageable_here": true when you may change it
+// from this turn: it is in this conversation, or in one the person named in
+// their message that you are in and they can still reach. In a list that names no conversation,
+// items from another private channel or an agent DM come back with
+// "conversation": "private", "text_hidden": true, "manageable_here": false and
+// null id, last_error, text, thread_title, thread_id, channel_name,
+// channel_kind, group_id, channel_id, owner_name, created_by, updated_by,
+// via_agent and text_agent, so a reply here can't reveal what or
 // where they are; status, schedule and next_runs remain. Public channels keep
 // everything. A request_id must be a non-empty string of at most 128
 // characters; otherwise the response has a null request_id and
