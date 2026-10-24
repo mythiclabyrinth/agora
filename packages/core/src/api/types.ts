@@ -464,6 +464,8 @@ export interface Schedule {
 
 export interface ScheduleList {
   items: Schedule[];
+  /** The server capped the list (soonest-due first); later ones exist. */
+  truncated?: boolean;
 }
 
 /** PATCH body: retime, change the cadence, or pause/resume. Never text. */

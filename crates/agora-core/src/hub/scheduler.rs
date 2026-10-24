@@ -1272,7 +1272,8 @@ mod tests {
         assert_eq!(rearmed["schedule"]["status"], "active");
         assert_eq!(rearmed["schedule"]["run_at"], next);
         // The one-off's spec follows its new time, so clients describe it right.
-        assert_eq!(rearmed["schedule"]["schedule"]["at"], next);
+        // `at` comes back from stored JSON text (last-bit float drift).
+        assert!((rearmed["schedule"]["schedule"]["at"].as_f64().unwrap() - next).abs() < 1e-3);
         let cancelled = ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": s["id"]})));
         assert_eq!(cancelled["schedule"]["status"], "cancelled");
     }
@@ -1527,7 +1528,7 @@ mod tests {
         let when = now() + 7200.0;
         let made = ask(&h, &mut claude, req("claude", &turn, "create", json!({
             "text": "y", "schedule": {"kind": "once", "at": now() + 600.0}, "run_at": when})));
-        assert_eq!(made["schedule"]["schedule"]["at"], when);
+        assert!((made["schedule"]["schedule"]["at"].as_f64().unwrap() - when).abs() < 1e-3);
         assert_eq!(made["schedule"]["run_at"], when);
     }
 

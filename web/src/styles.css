@@ -609,6 +609,7 @@ button.ago-sched-where:hover { color: var(--a1); }
 .ago-sched-empty > svg { width: 28px; height: 28px; color: var(--dim); }
 .ago-sched-empty strong { color: var(--text); font-size: 15px; }
 .ago-sched-example { font-size: 12px; color: var(--dim); }
+.ago-sched-truncated { padding: 8px 12px; font-size: 12px; color: var(--dim); text-align: center; }
 .ago-sched-inbox .ago-log { padding: 12px 16px; }
 .ago-sched-group { width: 100%; max-width: 760px; margin: 0 auto 16px; }
 .ago-sched-group-head { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; padding: 0; border: 0; color: var(--text); background: none; font-size: 13px; font-weight: 600; cursor: pointer; }

@@ -1,4 +1,4 @@
-import { lostChannelAccess, sortSchedules, useAllSchedules, useGroups, type Schedule } from "@agora/core";
+import { lostChannelAccess, SCHEDULES_TRUNCATED_NOTE, sortSchedules, useAllSchedules, useGroups, type Schedule } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useUiState } from "../state/ui";
 import { ScheduleEmpty, ScheduleRow } from "./SchedulesPane";
@@ -41,6 +41,7 @@ export function SchedulesInbox() {
             </section>
           );
         })}
+        {q.data?.truncated && <div className="ago-sched-truncated" role="status">{SCHEDULES_TRUNCATED_NOTE}</div>}
       </div>
     </div>
   );

@@ -536,7 +536,9 @@ mod tests {
         let when = now() + 7200.0;
         let out = patch(&f, &f.sid, session_headers(s, "cat"), json!({"run_at": when})).await.unwrap();
         assert_eq!(out["schedule"]["run_at"], when);
-        assert_eq!(out["schedule"]["schedule"]["at"], when);
+        // `at` is read back from stored JSON text, which can differ from the
+        // f64 in its last bit; run_at (a REAL column) round-trips exactly.
+        assert!((out["schedule"]["schedule"]["at"].as_f64().unwrap() - when).abs() < 1e-3);
     }
 
     #[tokio::test]

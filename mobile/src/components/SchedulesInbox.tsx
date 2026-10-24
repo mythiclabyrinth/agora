@@ -45,7 +45,7 @@ export function SchedulesInbox() {
     <EmptyState icon={CalendarClock} title="Couldn’t load schedules."
       action={{ label: "Retry", accessibilityLabel: "Retry schedules", onPress: () => void query.refetch() }} />
   );
-  return <ScheduleRows items={items} showThread onOpen={openSchedule}
+  return <ScheduleRows items={items} showThread onOpen={openSchedule} truncated={!!query.data?.truncated}
     header={(item, index, all) => index === 0 || all[index - 1].channel_id !== item.channel_id ? channelLabel(item) : null}
     refreshing={query.isRefetching} onRefresh={() => void query.refetch()}
     empty={<EmptyState icon={CalendarClock} title={schedulesEmptyCopy.title} description={schedulesEmptyCopy.description} />} />;

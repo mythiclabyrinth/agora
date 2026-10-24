@@ -15,6 +15,7 @@ import {
   LOST_ACCESS_NOTE,
   lostChannelAccess,
   nextRunsLabel,
+  SCHEDULES_TRUNCATED_NOTE,
   sortSchedules,
   useCancelSchedule,
   useSchedules,
@@ -327,7 +328,7 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
 }
 
 /** Rows plus the shared editor and actions, for any list of schedules. */
-export function ScheduleRows({ items, showThread, showChannel, onOpen, header, refreshing, onRefresh, empty }: {
+export function ScheduleRows({ items, showThread, showChannel, onOpen, header, refreshing, onRefresh, empty, truncated }: {
   items: Schedule[];
   showThread: boolean;
   showChannel?: boolean;
@@ -336,6 +337,8 @@ export function ScheduleRows({ items, showThread, showChannel, onOpen, header, r
   refreshing: boolean;
   onRefresh: () => void;
   empty: React.ReactElement;
+  /** The server capped the list; say so under it. */
+  truncated?: boolean;
 }) {
   const { colors } = useAppTheme();
   const styles = useStyles();
@@ -348,6 +351,7 @@ export function ScheduleRows({ items, showThread, showChannel, onOpen, header, r
       contentContainerStyle={items.length ? styles.list : styles.emptyList}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.a1} />}
       ListEmptyComponent={empty}
+      ListFooterComponent={truncated ? <Text accessibilityRole="text" style={styles.truncated}>{SCHEDULES_TRUNCATED_NOTE}</Text> : null}
       renderItem={({ item, index }) => {
         const title = header?.(item, index, items) ?? null;
         return <View style={styles.group}>
@@ -374,7 +378,7 @@ export function SchedulesList({ channelId, threadId, onOpen }: {
     <EmptyState icon={CalendarClock} title="Couldn’t load schedules."
       action={{ label: "Retry", accessibilityLabel: "Retry schedules", onPress: () => void query.refetch() }} />
   );
-  return <ScheduleRows items={items} showThread={threadId == null} onOpen={onOpen}
+  return <ScheduleRows items={items} showThread={threadId == null} onOpen={onOpen} truncated={!!query.data?.truncated}
     refreshing={query.isRefetching} onRefresh={() => void query.refetch()}
     empty={<EmptyState icon={CalendarClock} title={EMPTY_TITLE} description={EMPTY_DESCRIPTION} />} />;
 }
@@ -387,6 +391,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   emptyList: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   group: { gap: 8 },
   groupTitle: { ...typography.caption, color: colors.dim, fontWeight: weight.semibold, marginTop: space.sm },
+  truncated: { ...typography.caption, color: colors.dim, textAlign: "center", paddingVertical: space.sm },
   row: { gap: 12, padding: 16, borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong, backgroundColor: colors.panel },
   main: { minWidth: 0, gap: 8 },

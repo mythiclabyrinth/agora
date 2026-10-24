@@ -138,3 +138,6 @@ export function lostChannelAccess(schedule: Schedule): boolean {
 }
 
 export const LOST_ACCESS_NOTE = "You no longer have access to this channel";
+
+/** Shown under a schedule list the server capped (it keeps the soonest-due). */
+export const SCHEDULES_TRUNCATED_NOTE = "Showing the 1,000 soonest schedules. Later ones are not listed here.";

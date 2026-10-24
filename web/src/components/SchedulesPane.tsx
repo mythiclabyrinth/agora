@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   describeSchedule, fmtTs, intervalParts, intervalSeconds, LOST_ACCESS_NOTE, lostChannelAccess, nextRunsLabel,
-  sortSchedules, useCancelSchedule, useGroups, useSchedules, useUpdateSchedule,
+  SCHEDULES_TRUNCATED_NOTE, sortSchedules, useCancelSchedule, useGroups, useSchedules, useUpdateSchedule,
   type IntervalUnit, type Schedule, type ScheduleSpec,
 } from "@agora/core";
 import { toast } from "../lib/toast";
@@ -328,6 +328,7 @@ export function SchedulesPane() {
         {q.isLoading && <div className="empty">Loading schedules…</div>}
         {q.isError && <div className="empty" role="alert">Couldn't load schedules. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
         {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty />}
+        {q.data?.truncated && <div className="ago-sched-truncated" role="status">{SCHEDULES_TRUNCATED_NOTE}</div>}
       </div>
     </aside>
   );

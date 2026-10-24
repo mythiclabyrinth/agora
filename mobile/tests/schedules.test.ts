@@ -29,8 +29,9 @@ class TestApi extends ApiClient {
   readonly patches: { path: string; body: unknown }[] = [];
   readonly deletes: string[] = [];
   patchError: Error | null = null;
+  truncated = false;
   constructor(private readonly items: Schedule[]) { super({ baseUrl: "https://example.invalid", token: "test" }); }
-  override async get<T>(path: string) { this.gets.push(path); return { items: this.items } as T; }
+  override async get<T>(path: string) { this.gets.push(path); return (this.truncated ? { items: this.items, truncated: true } : { items: this.items }) as T; }
   override async patch<T>(path: string, body?: unknown) {
     this.patches.push({ path, body });
     if (this.patchError) throw this.patchError;
@@ -323,4 +324,17 @@ test("the change-time sheet is an opaque surface over a scrim, never see-through
   // …and the backdrop behind it dims the screen.
   const backdrop = modal.findAll(node => node.props.style && StyleSheet.flatten(node.props.style)?.justifyContent === "flex-end")[0];
   expect(StyleSheet.flatten(backdrop.props.style).backgroundColor).toBeTruthy();
+});
+
+test("a capped list says so under the rows; an uncapped one doesn't", async () => {
+  const capped = new TestApi(fixtureSchedules);
+  capped.truncated = true;
+  await act(async () => { tree = TestRenderer.create(wrap(capped, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  expect(texts().some(t => t.startsWith("Showing the 1,000 soonest schedules"))).toBe(true);
+  act(() => tree!.unmount());
+  const full = new TestApi(fixtureSchedules);
+  await act(async () => { tree = TestRenderer.create(wrap(full, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  expect(texts().some(t => t.startsWith("Showing the 1,000"))).toBe(false);
 });
