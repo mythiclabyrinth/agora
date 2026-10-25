@@ -1,0 +1,66 @@
+:root {
+  color-scheme: dark light;
+  --bg: #07090f; --surface: #10131b; --border: rgba(255,255,255,.075);
+  --text: #eceef4; --dim: #adb5c7; --a1: #8b7cff; --a2: #38e1c8; --accent-text: #c3baff;
+  --accent-rgb: 139,124,255; --teal-rgb: 56,225,200;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f6fa; --surface: #ffffff; --border: rgba(24,32,51,.09);
+    --text: #182033; --dim: #4f586b; --a1: #6250ce; --a2: #087365; --accent-text: #5140b4;
+    --accent-rgb: 98,80,206; --teal-rgb: 8,115,101;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  -webkit-font-smoothing: antialiased; background: var(--bg); color: var(--text);
+  background-image:
+    radial-gradient(900px 500px at 85% -10%, rgba(var(--accent-rgb),.13), transparent 60%),
+    radial-gradient(700px 500px at -10% 110%, rgba(var(--teal-rgb),.08), transparent 60%);
+  background-attachment: fixed;
+}
+main { max-width: 1040px; margin: 0 auto; padding: 32px 18px 56px; }
+header { display: flex; align-items: center; gap: 12px; }
+header img { width: 40px; height: 40px; border-radius: 10px; }
+h1 { font-size: 1.6rem; font-weight: 800; letter-spacing: -.02em; margin: 0; }
+h2 { font-size: 1.2rem; font-weight: 750; letter-spacing: -.01em; margin: 0 0 4px; }
+.tag { margin: 6px 0 22px; color: var(--dim); }
+.tag strong { color: var(--accent-text); font-weight: 650; }
+a { color: var(--a2); text-decoration: none; font-weight: 600; }
+a:hover { text-decoration: underline; }
+
+/* Page nav between videos */
+nav.pages { display: flex; gap: 8px; margin: 18px 0 6px; flex-wrap: wrap; }
+nav.pages a { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); font-weight: 600; }
+nav.pages a[aria-current="page"] { color: var(--text); background: rgba(var(--accent-rgb),.16); border-color: rgba(var(--accent-rgb),.45); }
+nav.pages a:hover { text-decoration: none; color: var(--text); }
+
+/* Mobile / Desktop tabs, CSS-only: a radio per tab, each panel shown when its radio is checked */
+.tabs > input { position: absolute; opacity: 0; pointer-events: none; }
+.tabs .tablist { display: inline-flex; gap: 4px; padding: 4px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); margin-bottom: 14px; }
+.tabs .tablist label { padding: 8px 18px; border-radius: 9px; cursor: pointer; font-weight: 650; color: var(--dim); user-select: none; }
+.tabs .panel { display: none; }
+#tab-mobile:checked ~ .tablist label[for="tab-mobile"],
+#tab-desktop:checked ~ .tablist label[for="tab-desktop"] { background: rgba(var(--accent-rgb),.18); color: var(--text); }
+#tab-mobile:checked ~ .panel-mobile,
+#tab-desktop:checked ~ .panel-desktop { display: block; }
+.tabs input:focus-visible ~ .tablist { outline: 2px solid var(--a1); outline-offset: 2px; }
+
+figure { margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 10px; }
+.panel-mobile figure { max-width: 380px; }
+video { width: 100%; display: block; border-radius: 12px; background: #07090f; }
+figcaption { padding: 10px 4px 2px; font-size: .92rem; color: var(--dim); }
+
+.copy { margin-top: 24px; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--a1); border-radius: 14px; padding: 16px 18px; line-height: 1.6; }
+.copy .label { display: block; font-size: .72rem; letter-spacing: .14em; text-transform: uppercase; font-weight: 700; color: var(--dim); margin-bottom: 6px; }
+.note { margin-top: 18px; font-size: .88rem; color: var(--dim); }
+
+/* Index cards */
+.cards { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .cards { grid-template-columns: 1fr 1fr; } }
+.card { display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; overflow: hidden; color: var(--text); }
+.card:hover { text-decoration: none; border-color: rgba(var(--accent-rgb),.45); }
+.card img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; display: block; }
+.card div { padding: 14px 16px 16px; }
+.card p { margin: 0; color: var(--dim); font-weight: 400; line-height: 1.5; }
