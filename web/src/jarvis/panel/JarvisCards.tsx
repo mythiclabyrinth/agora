@@ -1,10 +1,13 @@
-/* Card stack for the Agora assistant: digests, message hits, and drafts.
+/* Card stack for the Agora assistant: digests, message hits, drafts, and
+   schedules (new ones, changes to the user's own, and their list).
    Cards carry the detail so the spoken answer can stay short. */
 
 import { useEffect, useId, useRef, useState } from "react";
 import {
-  ApiError, cancelJarvisDraft, sendJarvisDraft, updateJarvisDraft, useApi,
-  type ApiClient, type JarvisCard, type JarvisDigestItem, type JarvisMessageHit,
+  ApiError, cancelJarvisDraft, describeSchedule, formatLocal, formatUtc, isDraftLikeCard, sendJarvisDraft,
+  updateJarvisDraft, useApi,
+  type ApiClient, type JarvisCard, type JarvisDigestItem, type JarvisDraftLikeCard, type JarvisMessageHit,
+  type JarvisScheduleChangeCard, type JarvisScheduleDraftCard, type JarvisSchedulesCard, type Schedule,
 } from "@agora/core";
 import { Icon } from "../../lib/icons";
 import { toast } from "../../lib/toast";
@@ -110,7 +113,7 @@ export function saveDraftEdit(api: ApiClient, entryId: string): Promise<boolean>
   }
   const next = (saving.get(entryId) ?? Promise.resolve(true)).then(async () => {
     const entry = cardById(entryId);
-    if (!entry || entry.card.kind !== "draft" || entry.text === undefined) return true;
+    if (!entry || (entry.card.kind !== "draft" && entry.card.kind !== "schedule_draft") || entry.text === undefined) return true;
     const text = entry.text.trim();
     if (text === (entry.savedText ?? entry.card.text).trim()) return true;
     if (!text) return false;
@@ -152,10 +155,17 @@ export function announceSent(api: ApiClient, entryId: string, card: JarvisDraftC
   });
 }
 
+/** What a refused confirm toast starts with, by what was being confirmed. */
+export function confirmFailurePrefix(card: JarvisDraftLikeCard): string {
+  if (card.kind === "schedule_draft") return "Couldn't schedule: ";
+  if (card.kind === "schedule_change") return "Couldn't change the schedule: ";
+  return "Couldn't send: ";
+}
+
 /** Confirm a draft with the card's Send: saves any pending edit first, then
     sends at the revision the card shows (the server refuses a stale one).
     Resolves true once sent. */
-export async function sendDraftEntry(api: ApiClient, entry: JarvisCardEntry, card: JarvisDraftCard): Promise<boolean> {
+export async function sendDraftEntry(api: ApiClient, entry: JarvisCardEntry, card: JarvisDraftLikeCard): Promise<boolean> {
   const { setCardStatus: setStatus } = useJarvis.getState();
   const text = cardById(entry.id)?.text ?? entry.text;
   if (text !== undefined && !text.trim()) {
@@ -170,22 +180,46 @@ export async function sendDraftEntry(api: ApiClient, entry: JarvisCardEntry, car
   try {
     const revision = cardById(entry.id)?.revision ?? card.revision ?? 1;
     const res = await sendJarvisDraft(api, card.draft_id, revision);
+    if (res.kind === "refreshed") {
+      // The schedule changed after the user reviewed this: nothing was
+      // written. The fresh card (against its current state) replaces this one.
+      setStatus(entry.id, "cancelled");
+      res.events.forEach(ev => useJarvis.getState().applyEvent(ev));
+      toast(res.detail, { variant: "warn" });
+      return false;
+    }
+    if (res.kind === "schedule") {
+      useJarvis.setState(s => ({
+        cards: s.cards.map(c => c.id === entry.id ? { ...c, status: "sent" as const, schedule: res.schedule } : c),
+      }));
+      if (!res.already_sent) announceScheduled(card, res.action);
+      return true;
+    }
     useJarvis.setState(s => ({
       cards: s.cards.map(c => c.id === entry.id ? { ...c, status: "sent" as const, messageId: res.message.id } : c),
     }));
     // Already posted (a spoken yes won the race): its toast was shown then.
-    if (!res.already_sent) announceSent(api, entry.id, card, res.message.id);
+    if (!res.already_sent && card.kind === "draft") announceSent(api, entry.id, card, res.message.id);
     return true;
   } catch (e) {
     // A stale revision can't be retried into success (the card has no newer
     // one): close it like a stale save, rather than leave a dead Send.
     if (e instanceof ApiError && e.status === 409) draftConflict(api, entry.id, card.draft_id, e);
-    else draftFailed(entry.id, e, "Couldn't send: ");
+    else draftFailed(entry.id, e, confirmFailurePrefix(card));
     return false;
   }
 }
 
-export function cancelDraftEntry(api: ApiClient, entry: JarvisCardEntry, card: JarvisDraftCard): void {
+/** A schedule draft was confirmed (by its button or a spoken yes). */
+export function announceScheduled(card: JarvisDraftLikeCard, action: string): void {
+  const done: Record<string, string> = {
+    create: `Scheduled for ${card.destination}`, pause: "Schedule paused", resume: "Schedule resumed",
+    cancel: "Schedule cancelled", retime: "Schedule time changed",
+  };
+  toast(done[action] ?? "Schedule updated", { variant: "ok" });
+}
+
+export function cancelDraftEntry(api: ApiClient, entry: JarvisCardEntry, card: JarvisDraftLikeCard): void {
   useJarvis.getState().setCardStatus(entry.id, "cancelled");
   void cancelJarvisDraft(api, card.draft_id).catch(() => { /* expired drafts are already gone */ });
 }
@@ -261,6 +295,192 @@ function DraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisDraftC
   );
 }
 
+/** The coming runs, in the user's own time (what they asked for), with UTC
+    alongside: the server keeps schedules in UTC. */
+function RunTimes({ runs, label = "Next runs" }: { runs: number[]; label?: string }) {
+  if (!runs.length) return null;
+  return (
+    <div className="jv-sched-runs">
+      <span className="jv-recipient-label">{label}</span>
+      <ol>{runs.slice(0, 3).map(t => <li key={t}><span>{formatLocal(t)}</span><span className="jv-sched-utc">{formatUtc(t)}</span></li>)}</ol>
+    </div>
+  );
+}
+
+function DstNote({ note }: { note: string | null | undefined }) {
+  return note ? <p className="jv-sched-dst" role="note"><Icon name="clock" />{note}</p> : null;
+}
+
+/** Countdown, expiry, and a lifecycle label shared by the confirmable schedule cards. */
+function useDraftLifecycle(entry: JarvisCardEntry, expiresIn: number) {
+  const setStatus = useJarvis(s => s.setCardStatus);
+  const [fallbackExpiry] = useState(() => Date.now() + expiresIn * 1000);
+  const left = useCountdown(entry.expiresAt ?? fallbackExpiry);
+  const status = entry.status ?? "pending";
+  const live = isLiveDraft({ ...entry, expiresAt: entry.expiresAt ?? fallbackExpiry }) && left > 0;
+  useEffect(() => {
+    if (status === "pending" && left === 0) setStatus(entry.id, "expired");
+  }, [left, status, entry.id, setStatus]);
+  return { left, status, live };
+}
+
+function Expiry({ left }: { left: number }) {
+  return <span className={`jv-expiry${left <= 20 ? " is-soon" : ""}`} aria-live="off" title="This draft expires automatically if you do not confirm it">Expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</span>;
+}
+
+function ScheduleDraftCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisScheduleDraftCard }) {
+  const api = useApi();
+  const setCardText = useJarvis(s => s.setCardText);
+  const text = entry.text ?? card.text;
+  const [editing, setEditing] = useState(false);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  const titleId = useId();
+  const hintId = useId();
+  const { left, status, live } = useDraftLifecycle(entry, card.expires_in);
+  const statusLabel = status === "sent" ? "Scheduled" : status === "sending" ? "Scheduling…" : status === "cancelled" ? "Closed" : status === "expired" ? "Expired" : "Awaiting your confirmation";
+  const runs = entry.schedule?.next_runs ?? card.next_runs;
+  return (
+    <div className={`jv-card jv-draft jv-sched-draft is-${status}`} data-testid="jarvis-schedule-draft" role="group" aria-labelledby={titleId}>
+      <div className="jv-card-heading">
+        <span className="jv-card-symbol"><Icon name={status === "sent" ? "check" : "calendar-clock"} /></span>
+        <div className="jv-card-heading-copy">
+          <span className="jv-card-kicker">Scheduled message · {card.group_name}</span>
+          <h3 id={titleId}>To <span className="jv-where">{card.destination}</span></h3>
+        </div>
+      </div>
+      <p className="jv-sched-when"><Icon name="clock" />{describeSchedule(card.schedule)}</p>
+      <RunTimes runs={runs} label={card.schedule.kind === "once" ? "Posts at" : "Next runs"} />
+      <DstNote note={card.dst_note} />
+      <DstNote note={card.time_note} />
+      <div className="jv-draft-state">
+        <span className={status === "sent" ? "jv-done" : "jv-draft-status"}>{statusLabel}</span>
+        {live && <Expiry left={left} />}
+      </div>
+      {card.mentions.length > 0 && (
+        <div className="jv-mentions" aria-label="Tagged recipients">
+          <span className="jv-recipient-label">Tagging</span>
+          {card.mentions.map(m => <span key={m.id} className="jv-mention" title={m.kind === "agent" ? "Agent" : "Person"}>@{m.handle}</span>)}
+        </div>
+      )}
+      <textarea ref={editor} className="jv-draft-text" value={text} maxLength={20000} readOnly={!editing || !live} rows={Math.min(6, Math.max(2, Math.ceil(text.length / 60)))}
+        aria-label="Scheduled message" aria-describedby={hintId} aria-live="off"
+        onChange={e => { setCardText(entry.id, e.target.value); scheduleDraftSave(api, entry.id); }}
+        onBlur={() => { if (editing) void saveDraftEdit(api, entry.id); }} />
+      <p className="jv-confirm-hint" id={hintId}>
+        <Icon name={status === "sent" ? "check" : "lock"} />
+        {status === "sent" ? "Scheduled. Manage it any time from Schedules." : status === "sending" ? "Creating your schedule…" : status === "cancelled" ? "This draft is closed. Nothing was scheduled." : status === "expired" ? "Nothing was scheduled. Ask Agora for a fresh draft." : "Only scheduled after you confirm. It posts as you."}
+      </p>
+      <div className="jv-draft-actions">
+        {(status === "pending" || status === "sending") && <>
+          <button className="btn sm primary" disabled={!live || !text.trim()} onClick={() => void sendDraftEntry(api, entry, card)}>
+            <Icon name="calendar-clock" />{status === "sending" ? "Scheduling…" : "Schedule"}
+          </button>
+          <button className="btn sm" disabled={!live} aria-pressed={editing} onClick={() => {
+            setEditing(!editing);
+            if (!editing) editor.current?.focus();
+            else void saveDraftEdit(api, entry.id);
+          }}>{editing ? "Done" : "Edit"}</button>
+          <button className="jv-discard" disabled={!live} onClick={e => {
+            const panel = e.currentTarget.closest(".jv-panel");
+            dismissCardEntry(api, entry);
+            panel?.querySelector<HTMLInputElement>('[aria-label="Ask Agora"]')?.focus();
+          }}><Icon name="trash-2" />Discard</button>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+const CHANGE_VERB: Record<JarvisScheduleChangeCard["action"], { label: string; icon: string; done: string }> = {
+  pause: { label: "Pause", icon: "pause", done: "Paused" },
+  resume: { label: "Resume", icon: "play", done: "Resumed" },
+  cancel: { label: "Cancel schedule", icon: "x", done: "Cancelled" },
+  retime: { label: "Change time", icon: "clock", done: "Time changed" },
+};
+
+function ScheduleChangeCard({ entry, card }: { entry: JarvisCardEntry; card: JarvisScheduleChangeCard }) {
+  const api = useApi();
+  const titleId = useId();
+  const { left, status, live } = useDraftLifecycle(entry, card.expires_in);
+  const verb = CHANGE_VERB[card.action];
+  const before = card.schedule;
+  const statusLabel = status === "sent" ? verb.done : status === "sending" ? "Applying…" : status === "cancelled" ? "Closed" : status === "expired" ? "Expired" : "Awaiting your confirmation";
+  return (
+    <div className={`jv-card jv-draft jv-sched-change is-${status}`} data-testid="jarvis-schedule-change" role="group" aria-labelledby={titleId}>
+      <div className="jv-card-heading">
+        <span className="jv-card-symbol"><Icon name={status === "sent" ? "check" : verb.icon} /></span>
+        <div className="jv-card-heading-copy">
+          <span className="jv-card-kicker">Schedule change · {verb.label}</span>
+          <h3 id={titleId}>In <span className="jv-where">{card.destination}</span></h3>
+        </div>
+      </div>
+      <p className="jv-sched-text">{before.text}</p>
+      <dl className="jv-sched-diff">
+        <dt>Now</dt><dd>{describeSchedule(before.schedule)} · <span className={`jv-sched-status is-${before.status}`}>{before.status}</span></dd>
+        <dt>After</dt><dd>{describeSchedule(card.after.schedule)} · <span className={`jv-sched-status is-${card.after.status}`}>{card.after.status}</span></dd>
+      </dl>
+      <RunTimes runs={card.after.next_runs} label={card.after.status === "paused" ? "Would resume at" : "Next runs"} />
+      <DstNote note={card.dst_note} />
+      <DstNote note={card.time_note} />
+      <div className="jv-draft-state">
+        <span className={status === "sent" ? "jv-done" : "jv-draft-status"}>{statusLabel}</span>
+        {live && <Expiry left={left} />}
+      </div>
+      <p className="jv-confirm-hint">
+        <Icon name={status === "sent" ? "check" : "lock"} />
+        {status === "sent" ? "Done. See it in Schedules." : status === "cancelled" ? "This change is closed. Nothing was changed." : status === "expired" ? "Nothing was changed. Ask Agora again." : "Only applied after you confirm, and only if the schedule hasn't changed meanwhile."}
+      </p>
+      <div className="jv-draft-actions">
+        {(status === "pending" || status === "sending") && <>
+          <button className={`btn sm ${card.action === "cancel" ? "danger" : "primary"}`} disabled={!live} onClick={() => void sendDraftEntry(api, entry, card)}>
+            <Icon name={verb.icon} />{status === "sending" ? "Applying…" : verb.label}
+          </button>
+          <button className="jv-discard" disabled={!live} onClick={e => {
+            const panel = e.currentTarget.closest(".jv-panel");
+            dismissCardEntry(api, entry);
+            panel?.querySelector<HTMLInputElement>('[aria-label="Ask Agora"]')?.focus();
+          }}><Icon name="trash-2" />Discard</button>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+function ScheduleRow({ item }: { item: Schedule }) {
+  const where = item.channel_kind === "agent_dm" ? item.channel_name ?? "DM" : `#${item.channel_name ?? "channel"}`;
+  const next = item.next_runs[0];
+  return (
+    <li className="jv-sched-row">
+      <span className="jv-msg-meta">
+        <span className="jv-where">{where}{item.thread_id != null ? " · thread" : ""}</span>
+        <span className={`jv-sched-status is-${item.status}`}>{item.status}</span>
+      </span>
+      <span className="jv-msg-text">{item.text}</span>
+      <span className="jv-sched-meta"><Icon name="clock" />{describeSchedule(item.schedule)}{next ? ` · next ${formatLocal(next)}` : ""}</span>
+      {item.last_error && <span className="jv-sched-error">{item.last_error}</span>}
+    </li>
+  );
+}
+
+function SchedulesListCard({ card }: { card: JarvisSchedulesCard }) {
+  const titleId = useId();
+  const first = card.offset + 1;
+  const last = card.offset + card.items.length;
+  return (
+    <div className="jv-card jv-schedules" data-testid="jarvis-schedules" role="group" aria-labelledby={titleId}>
+      <div className="jv-card-heading">
+        <span className="jv-card-symbol"><Icon name="calendar-clock" /></span>
+        <div className="jv-card-heading-copy">
+          <span className="jv-card-kicker">Your schedules · {first === last ? first : `${first}–${last}`} of {card.total}{card.truncated ? "+" : ""}</span>
+          <h3 id={titleId}>Scheduled messages</h3>
+        </div>
+      </div>
+      <ul>{card.items.map(item => <ScheduleRow key={item.id} item={item} />)}</ul>
+      {(card.has_more || card.truncated) && <p className="jv-card-empty">{card.has_more ? "More schedules exist. Ask Agora to show the next page." : "Older finished schedules aren't counted here."}</p>}
+    </div>
+  );
+}
+
 function DigestCard({ items }: { items: JarvisDigestItem[] }) {
   const [onlyNeedsYou, setOnlyNeedsYou] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -292,7 +512,7 @@ function DigestCard({ items }: { items: JarvisDigestItem[] }) {
     draft slot, and a later bare "yes" could confirm a draft that is no longer
     on screen. A draft mid-send is only hidden; its send finishes. */
 export function dismissCardEntry(api: ApiClient, entry: JarvisCardEntry): void {
-  if (entry.card.kind === "draft" && (entry.status ?? "pending") === "pending") {
+  if (isDraftLikeCard(entry.card) && (entry.status ?? "pending") === "pending") {
     const timer = saveTimers.get(entry.id);
     if (timer) clearTimeout(timer);
     saveTimers.delete(entry.id);
@@ -312,6 +532,9 @@ export function JarvisCardView({ entry }: { entry: JarvisCardEntry }) {
       panel?.querySelector<HTMLInputElement>('[aria-label="Ask Agora"]')?.focus();
     }}><Icon name="x" /></button>;
   if (card.kind === "draft") return <div className="jv-card-wrap">{close}<DraftCard entry={entry} card={card} /></div>;
+  if (card.kind === "schedule_draft") return <div className="jv-card-wrap">{close}<ScheduleDraftCard entry={entry} card={card} /></div>;
+  if (card.kind === "schedule_change") return <div className="jv-card-wrap">{close}<ScheduleChangeCard entry={entry} card={card} /></div>;
+  if (card.kind === "schedules") return <div className="jv-card-wrap">{close}<SchedulesListCard card={card} /></div>;
   if (card.kind === "digest") {
     return (
       <div className="jv-card-wrap">{close}

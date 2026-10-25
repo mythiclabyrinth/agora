@@ -42,6 +42,14 @@ export function formatUtc(unixSeconds: number): string {
     `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
 }
 
+/** "Mon, Oct 26, 09:00" in the device's own time zone (for what a person
+    asked for in local time; pair it with `formatUtc` where UTC matters). */
+export function formatLocal(unixSeconds: number, locale?: string): string {
+  return new Date(unixSeconds * 1000).toLocaleString(locale, {
+    weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  });
+}
+
 const isNum = (f: string) => /^\d+$/.test(f);
 const isNumList = (f: string) => /^\d+(,\d+)*$/.test(f);
 

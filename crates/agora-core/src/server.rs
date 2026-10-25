@@ -37,6 +37,7 @@ use crate::store::{new_token, now, NewAttachment};
 use crate::attachments::{agent_wire_limit, attachment_mime, safe_filename, sniff_video_mime};
 
 mod schedules;
+pub(crate) use schedules::{apply_own_change, preview_own_change, OwnChange};
 
 pub(crate) const MAX_MESSAGE_CHARS: usize = 20_000;
 const MAX_PINS_PER_CHANNEL: i64 = 25;
@@ -1950,6 +1951,10 @@ async fn jarvis_turn(
         channel_id: payload["context"]["channel_id"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
         thread_id: payload["context"]["thread_id"].as_i64(),
         timezone: client_timezone(payload["timezone"].as_str().unwrap_or_default()),
+        // Minutes east of UTC, bounded to real offsets (-12:00..+14:00).
+        utc_offset_minutes: payload["utc_offset_minutes"].as_i64().filter(|m| (-720..=840).contains(m)).map(|m| m as i32),
+        has_dst: payload["has_dst"].as_bool().unwrap_or(false),
+        tz_transitions: client_tz_transitions(&payload["tz_transitions"]),
         unsaved_drafts: payload["unsaved_drafts"]
             .as_array()
             .map(|a| a.iter().filter_map(Value::as_str).take(16).map(str::to_string).collect())
@@ -2048,25 +2053,45 @@ pub(crate) fn run_jarvis_turn(
             // The card shows an edit the server couldn't save: posting the
             // server's copy would send text the user isn't looking at.
             Approval::Confirm if hint.unsaved_drafts.contains(&draft.id) => Some((
-                format!("Your edit to the draft for {} isn't saved, so I didn't send it. Check the card, then press Send.", draft.destination),
+                format!("Your edit to the draft for {} isn't saved, so I didn't do it. Check the card, then confirm it there.", draft.destination),
                 turn.offered.clone(),
             )),
-            Approval::Confirm => match send_jarvis_draft(state, user, &draft.id, draft.revision, Some(cid), hint.timezone.as_deref()) {
-                Ok((message, already_sent)) => {
-                    emit(crate::jarvis::ev_draft_sent(&draft.id, &message, already_sent));
-                    let reply = if ack.is_empty() { format!("Sent to {}.", draft.destination) } else { ack };
-                    Some((reply, vec![]))
+            Approval::Confirm => match apply_jarvis_draft(state, user, &draft.id, draft.revision, Some(cid), hint.timezone.as_deref(), Some(turn)) {
+                Ok((applied, already)) => {
+                    for ev in applied.event(&draft.id, already) {
+                        emit(ev);
+                    }
+                    let fallback = match &applied {
+                        Applied::Sent(_) => format!("Sent to {}.", draft.destination),
+                        Applied::Scheduled(_) => format!("Scheduled for {}.", draft.destination),
+                        Applied::Changed { action, .. } => match action.as_str() {
+                            "pause" => "Paused.".to_string(),
+                            "resume" => "Resumed.".to_string(),
+                            "cancel" => "Cancelled the schedule.".to_string(),
+                            _ => "Changed the schedule's time.".to_string(),
+                        },
+                        Applied::Refreshed { .. } => String::new(),
+                    };
+                    match applied {
+                        Applied::Refreshed { draft_id, .. } => Some((
+                            "That schedule changed since you reviewed it, so I didn't change anything. The card shows it as it is now. Apply this change?".to_string(),
+                            vec![draft_id],
+                        )),
+                        _ => Some((if ack.is_empty() { fallback } else { ack }, vec![])),
+                    }
                 }
                 Err(e) => {
                     let detail = e.1 .0["detail"].as_str().unwrap_or("it was refused").to_string();
-                    Some((format!("I couldn't send that: {detail}"), turn.offered.clone()))
+                    let what = if matches!(draft.kind, crate::jarvis::DraftKind::Message) { "send that" } else { "do that" };
+                    Some((format!("I couldn't {what}: {detail}"), turn.offered.clone()))
                 }
             },
             Approval::Cancel => {
                 if state.jarvis.cancel_draft(&draft.id, username) {
                     emit(crate::jarvis::ev_draft_cancelled(&draft.id, None));
                 }
-                Some((if ack.is_empty() { "Cancelled. Nothing was sent.".to_string() } else { ack }, vec![]))
+                let fallback = if matches!(draft.kind, crate::jarvis::DraftKind::Message) { "Cancelled. Nothing was sent." } else { "Cancelled. Nothing was changed." };
+                Some((if ack.is_empty() { fallback.to_string() } else { ack }, vec![]))
             }
             // Anything else ends the offer now (it lasts one reply), even if
             // the rest of the turn fails; the assistant answers and can draft
@@ -2087,7 +2112,11 @@ pub(crate) fn run_jarvis_turn(
             return;
         }
     }
-    let ctx = crate::jarvis::ToolCtx::new(state, user).in_turn(turn);
+    let ctx = crate::jarvis::ToolCtx::new(state, user).in_turn(turn).with_tz(crate::jarvis_schedules::TzHint {
+        offset_minutes: hint.utc_offset_minutes.unwrap_or(0),
+        has_dst: hint.has_dst,
+        transitions: hint.tz_transitions.clone(),
+    });
     match crate::jarvis::run_turn(&ctx, brain, turn.prior.clone(), text, hint, emit) {
         Ok((items, answer)) => {
             state.jarvis.commit_turn(cid, username, turn.generation, items, ctx.offered_drafts());
@@ -2135,13 +2164,176 @@ fn draft_revision(payload: &Value) -> Result<u32, ApiError> {
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "Missing the draft's revision — reopen the card and try again"))
 }
 
-/// Post a draft as its owner — the single path behind the card's Send and a
-/// spoken approval. Bound to the owner, the revision the user reviewed and,
-/// for an approval, the conversation that offered it. The claim is atomic,
-/// so a button racing a spoken yes posts once: the loser gets the winner's
-/// message (`true` = it was already sent). Access, thread, and length are
-/// re-checked under the claim; a refusal hands the draft back, still
-/// sendable. Blocking.
+/// What confirming a draft did.
+#[derive(Debug)]
+pub(crate) enum Applied {
+    /// A message draft was posted: the message.
+    Sent(Value),
+    /// A schedule was created.
+    Scheduled(Value),
+    /// One of the user's schedules was paused / resumed / cancelled / retimed.
+    Changed { action: String, schedule: Value },
+    /// The schedule changed after the user reviewed the change: nothing was
+    /// written, and a fresh draft of the same change against its current
+    /// state was offered instead (`events`: its card, and the old draft's
+    /// cancellation).
+    Refreshed { draft_id: String, events: Vec<Value> },
+}
+
+impl Applied {
+    /// What the draft record keeps, so a repeat confirm returns it.
+    fn record(&self) -> Value {
+        match self {
+            Applied::Sent(v) | Applied::Scheduled(v) | Applied::Changed { schedule: v, .. } => v.clone(),
+            Applied::Refreshed { .. } => Value::Null,
+        }
+    }
+
+    fn from_record(kind: &crate::jarvis::DraftKind, v: Value) -> Self {
+        use crate::jarvis::DraftKind;
+        match kind {
+            DraftKind::Message => Applied::Sent(v),
+            DraftKind::ScheduleCreate { .. } => Applied::Scheduled(v),
+            DraftKind::ScheduleChange { action, .. } => Applied::Changed { action: action.clone(), schedule: v },
+        }
+    }
+
+    /// The event a spoken approval sends the client.
+    pub(crate) fn event(&self, draft_id: &str, already: bool) -> Vec<Value> {
+        match self {
+            Applied::Sent(m) => vec![crate::jarvis::ev_draft_sent(draft_id, m, already)],
+            Applied::Scheduled(s) => vec![crate::jarvis::ev_schedule_applied(draft_id, "create", s, already)],
+            Applied::Changed { action, schedule } => vec![crate::jarvis::ev_schedule_applied(draft_id, action, schedule, already)],
+            Applied::Refreshed { events, .. } => events.clone(),
+        }
+    }
+}
+
+/// Confirm a draft as its owner — the single path behind the card's button
+/// and a spoken approval, for every kind of draft. Bound to the owner, the
+/// revision the user reviewed and, for an approval, the conversation that
+/// offered it. The claim is atomic, so a button racing a spoken yes writes
+/// once: the loser gets the winner's result (`true` = already done).
+/// Everything is re-checked under the claim (access, thread, length; for a
+/// schedule its timing and the owner's caps; for a change, that it is still
+/// theirs and unchanged); a refusal hands the draft back, still confirmable.
+/// Blocking.
+pub(crate) fn apply_jarvis_draft(
+    state: &AppState,
+    user: &AuthedUser,
+    draft_id: &str,
+    revision: u32,
+    conversation: Option<&str>,
+    timezone: Option<&str>,
+    turn: Option<&crate::jarvis::ConversationTurn>,
+) -> Result<(Applied, bool), ApiError> {
+    use crate::jarvis::{Claim, DraftKind};
+    let kind_of = || state.jarvis.peek_draft(draft_id, &user.username).map(|d| d.kind).map_err(jarvis_draft_error);
+    let draft = match state.jarvis.claim_draft(draft_id, &user.username, revision, conversation).map_err(jarvis_draft_error)? {
+        Claim::AlreadySent(done) => return Ok((Applied::from_record(&kind_of()?, done), true)),
+        Claim::InFlight => {
+            let done = state
+                .jarvis
+                .wait_for_send(draft_id, &user.username, Duration::from_secs(10))
+                .ok_or_else(|| err(StatusCode::CONFLICT, "This draft is still being confirmed — check again in a moment"))?;
+            return Ok((Applied::from_record(&kind_of()?, done), true));
+        }
+        Claim::Claimed(d) => d,
+    };
+    let outcome = match &draft.kind {
+        DraftKind::Message => post_jarvis_message(state, user, &draft, timezone).map(Applied::Sent),
+        DraftKind::ScheduleCreate { schedule, start, .. } => (|| {
+            require_channel_postable(state, user, &draft.channel_id)?;
+            let checked = crate::hub::check_new_schedule(
+                &state.hub.store, &user.username, &draft.channel_id, draft.thread_id, &draft.final_text(None),
+                schedule, start.map(|t| json!(t)).as_ref(), crate::store::now(),
+            )
+            .map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
+            // A cap or hourly-limit refusal is retryable, not a stale draft: 429
+            // keeps the card offered instead of retiring it.
+            let created = state.hub.create_checked_schedule(&user.username, &checked, None).map_err(|m| err(StatusCode::TOO_MANY_REQUESTS, &m))?;
+            Ok(Applied::Scheduled(crate::hub::decorate_schedule(
+                &state.hub.store, &created, Some((user.username.as_str(), user.instance_admin)),
+            )))
+        })(),
+        DraftKind::ScheduleChange { schedule_id, action, change, reviewed, tz, time_note } => {
+            // Only a change to what the user reviewed re-offers the draft;
+            // any other refusal (access, rules, caps, rate) is the answer.
+            match apply_own_change(state, user, schedule_id, change, reviewed) {
+                Ok(Some(schedule)) => Ok(Applied::Changed { action: action.clone(), schedule }),
+                Ok(None) => refresh_change_draft(state, user, &draft, schedule_id, action, change, tz, time_note.clone(), turn),
+                Err(e) => Err(e),
+            }
+        }
+    };
+    match outcome {
+        Ok(applied @ Applied::Refreshed { .. }) => Ok((applied, false)),
+        Ok(applied) => {
+            state.jarvis.finish_send(draft_id, applied.record());
+            Ok((applied, false))
+        }
+        Err(e) => {
+            state.jarvis.release_claim(draft_id);
+            Err(e)
+        }
+    }
+}
+
+/// Post a message draft through the normal user path, as its owner.
+fn post_jarvis_message(state: &AppState, user: &AuthedUser, draft: &crate::jarvis::Draft, timezone: Option<&str>) -> Result<Value, ApiError> {
+    require_channel_postable(state, user, &draft.channel_id)?;
+    let thread_id = resolve_thread(state, &draft.channel_id, draft.thread_id)?;
+    let text = draft.final_text(None);
+    if text.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(err(StatusCode::BAD_REQUEST, "Message too long"));
+    }
+    Ok(state.hub.post_user_message_opts(
+        &draft.channel_id, &text, &user.username, Some(&user.display_name), thread_id,
+        vec![], false, timezone, false, false,
+    ))
+}
+
+/// The schedule changed after the user reviewed `draft`: offer the same
+/// change against the schedule as it is now, never applying the old one over
+/// someone else's edit. The fresh draft reads times in the clock the change
+/// was said in and stays in the old one's conversation (a spoken yes can
+/// confirm it); the old draft is retired only once the new one exists. If
+/// the change no longer applies, the old draft is handed back and the
+/// reason returned.
+#[allow(clippy::too_many_arguments)]
+fn refresh_change_draft(
+    state: &AppState,
+    user: &AuthedUser,
+    draft: &crate::jarvis::Draft,
+    schedule_id: &str,
+    action: &str,
+    change: &OwnChange,
+    tz: &crate::jarvis_schedules::TzHint,
+    time_note: Option<String>,
+    turn: Option<&crate::jarvis::ConversationTurn>,
+) -> Result<Applied, ApiError> {
+    let ctx = crate::jarvis::ToolCtx::new(state, user).with_tz(tz.clone());
+    let ctx = match turn {
+        Some(t) => ctx.in_turn(t),
+        None => ctx,
+    };
+    let mut events = Vec::new();
+    let card = crate::jarvis_schedules::schedule_change_draft(
+        &ctx, schedule_id, action, change.clone(), time_note, draft.conversation_id.clone(), &mut |e| events.push(e),
+    )
+    .map_err(|m| err(StatusCode::CONFLICT, &format!("That schedule changed since you reviewed it, and the change no longer applies: {m}")))?;
+    let draft_id = card["draft_id"].as_str().unwrap_or_default().to_string();
+    state.jarvis.release_claim(&draft.id);
+    state.jarvis.cancel_draft(&draft.id, &user.username);
+    if let Some(cid) = draft.conversation_id.as_deref() {
+        state.jarvis.replace_offer(cid, &user.username, &draft.id, &draft_id);
+    }
+    events.push(crate::jarvis::ev_draft_cancelled(&draft.id, Some(&draft_id)));
+    Ok(Applied::Refreshed { draft_id, events })
+}
+
+/// A message draft, confirmed (see [`apply_jarvis_draft`]).
+#[cfg(test)]
 pub(crate) fn send_jarvis_draft(
     state: &AppState,
     user: &AuthedUser,
@@ -2150,40 +2342,10 @@ pub(crate) fn send_jarvis_draft(
     conversation: Option<&str>,
     timezone: Option<&str>,
 ) -> Result<(Value, bool), ApiError> {
-    use crate::jarvis::Claim;
-    let draft = match state.jarvis.claim_draft(draft_id, &user.username, revision, conversation).map_err(jarvis_draft_error)? {
-        Claim::AlreadySent(message) => return Ok((message, true)),
-        Claim::InFlight => {
-            return state
-                .jarvis
-                .wait_for_send(draft_id, &user.username, Duration::from_secs(10))
-                .map(|m| (m, true))
-                .ok_or_else(|| err(StatusCode::CONFLICT, "This draft is still being sent — check the conversation in a moment"));
-        }
-        Claim::Claimed(d) => d,
-    };
-    let checked = (|| {
-        require_channel_postable(state, user, &draft.channel_id)?;
-        let thread_id = resolve_thread(state, &draft.channel_id, draft.thread_id)?;
-        let text = draft.final_text(None);
-        if text.chars().count() > MAX_MESSAGE_CHARS {
-            return Err(err(StatusCode::BAD_REQUEST, "Message too long"));
-        }
-        Ok((thread_id, text))
-    })();
-    let (thread_id, text) = match checked {
-        Ok(v) => v,
-        Err(e) => {
-            state.jarvis.release_claim(draft_id);
-            return Err(e);
-        }
-    };
-    let message = state.hub.post_user_message_opts(
-        &draft.channel_id, &text, &user.username, Some(&user.display_name), thread_id,
-        vec![], false, timezone, false, false,
-    );
-    state.jarvis.finish_send(draft_id, message.clone());
-    Ok((message, false))
+    match apply_jarvis_draft(state, user, draft_id, revision, conversation, timezone, None)? {
+        (Applied::Sent(m), already) => Ok((m, already)),
+        (other, _) => Err(err(StatusCode::BAD_REQUEST, &format!("not a message draft: {other:?}"))),
+    }
 }
 
 /// POST /api/jarvis/drafts/{id}/send {revision, timezone?} — the user's
@@ -2207,12 +2369,19 @@ async fn jarvis_send_draft(
     let revision = draft_revision(&payload)?;
     let timezone = client_timezone(payload["timezone"].as_str().unwrap_or(""));
     let st = state.clone();
-    let (message, already_sent) = tokio::task::spawn_blocking(move || {
-        send_jarvis_draft(&st, &user, &draft_id, revision, None, timezone.as_deref())
+    let (applied, already_sent) = tokio::task::spawn_blocking(move || {
+        apply_jarvis_draft(&st, &user, &draft_id, revision, None, timezone.as_deref(), None)
     })
     .await
     .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Message write failed"))??;
-    Ok(Json(json!({"ok": true, "message": message, "already_sent": already_sent})))
+    Ok(Json(match applied {
+        Applied::Sent(message) => json!({"ok": true, "kind": "message", "message": message, "already_sent": already_sent}),
+        Applied::Scheduled(schedule) => json!({"ok": true, "kind": "schedule", "action": "create", "schedule": schedule, "already_sent": already_sent}),
+        Applied::Changed { action, schedule } => json!({"ok": true, "kind": "schedule", "action": action, "schedule": schedule, "already_sent": already_sent}),
+        // Nothing written: the card is replaced by the refreshed one.
+        Applied::Refreshed { draft_id, events } => json!({"ok": false, "kind": "refreshed", "draft_id": draft_id, "events": events,
+            "detail": "That schedule changed since you reviewed it, so nothing was changed. Check the updated card."}),
+    }))
 }
 
 /// PUT /api/jarvis/drafts/{id} {text, revision} — save the card's edit.
@@ -2236,6 +2405,9 @@ async fn jarvis_update_draft(
         return Err(err(StatusCode::BAD_REQUEST, "The draft is empty — type a message or cancel it"));
     }
     let current = state.jarvis.peek_draft(&draft_id, &user.username).map_err(jarvis_draft_error)?;
+    if matches!(current.kind, crate::jarvis::DraftKind::ScheduleChange { .. }) {
+        return Err(err(StatusCode::BAD_REQUEST, "A schedule change can't be edited — ask again for a different change"));
+    }
     if current.final_text(Some(&text)).chars().count() > MAX_MESSAGE_CHARS {
         return Err(err(StatusCode::BAD_REQUEST, "Message too long"));
     }
@@ -2462,6 +2634,29 @@ fn attach_draft_outcome(hub: &Hub, message: &mut Value, username: &str, channel_
         if outcome["deleted"] == true { hub.publish_draft(username, &outcome["row"]); }
         message["draft"] = outcome;
     }
+}
+
+/// The client zone's coming offset changes, `[{at_utc, offset_minutes}]`:
+/// real offsets only, at most a couple of years' worth, in time order.
+fn client_tz_transitions(raw: &Value) -> Vec<(f64, i32)> {
+    let mut out: Vec<(f64, i32)> = raw
+        .as_array()
+        .map(|a| {
+            // Bound the scan, then keep the 24 earliest: sorting before
+            // truncating so an out-of-order list keeps the right ones.
+            a.iter()
+                .take(512)
+                .filter_map(|t| {
+                    let at = t["at_utc"].as_f64().filter(|v| v.is_finite())?;
+                    let off = t["offset_minutes"].as_i64().filter(|m| (-720..=840).contains(m))?;
+                    Some((at, off as i32))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.truncate(24);
+    out
 }
 
 /// Normalize a client-supplied IANA timezone: opaque to us beyond a sanity
@@ -10623,6 +10818,392 @@ mod tests {
 
     fn draft_status(f: &JarvisFixture, id: &str) -> crate::jarvis::DraftStatus {
         f.state.jarvis.peek_draft(id, "ana").map(|d| d.status).unwrap_or(crate::jarvis::DraftStatus::Cancelled)
+    }
+
+    // ------------------------------------------------- jarvis schedules
+
+    fn ist() -> crate::jarvis_schedules::TzHint {
+        crate::jarvis_schedules::TzHint::fixed(330)
+    }
+
+    fn run_tool_tz(state: &AppState, user: &AuthedUser, name: &str, args: Value, tz: crate::jarvis_schedules::TzHint) -> (Value, Vec<Value>) {
+        let ctx = crate::jarvis::ToolCtx::new(state, user).with_tz(tz);
+        let mut cards = Vec::new();
+        let out = ctx.run(name, &args, &mut |c| cards.push(c));
+        (out, cards)
+    }
+
+    fn own_schedules(f: &JarvisFixture, who: &str) -> Vec<Value> {
+        f.state.hub.store.list_owner_schedules(who)
+    }
+
+    #[tokio::test]
+    async fn jarvis_schedule_draft_creates_nothing_until_the_owner_confirms() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        // 9am Mon–Fri in IST, tagging the helper agent.
+        let (out, cards) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "standup notes please",
+            "mentions": ["helper"], "schedule": {"kind": "cron", "expr": "0 9 * * 1-5"}}), ist());
+        assert_eq!(out["status"], "awaiting_user_confirmation", "{out}");
+        let card = &cards[0]["card"];
+        assert_eq!(card["kind"], "schedule_draft");
+        assert_eq!(card["schedule"], json!({"kind": "cron", "expr": "30 3 * * 1-5"}), "stored in UTC");
+        assert_eq!(card["final_text"], "@helper standup notes please", "the @handle is baked in now");
+        assert_eq!(card["next_runs"].as_array().unwrap().len(), 3);
+        assert!(card["dst_note"].is_null(), "IST has no daylight saving");
+        assert!(own_schedules(&f, "ana").is_empty(), "drafting must not schedule");
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        // Only the owner can confirm; an edit invalidates the reviewed revision.
+        assert_eq!(send_draft(&f.state, &id, "bob", rev(1)).await.unwrap_err().0, StatusCode::NOT_FOUND);
+        edit_draft(&f.state, &id, "ana", json!({"text": "standup notes, please", "revision": 1})).await.unwrap();
+        assert_eq!(send_draft(&f.state, &id, "ana", rev(1)).await.unwrap_err().0, StatusCode::CONFLICT);
+        assert!(own_schedules(&f, "ana").is_empty());
+        let done = send_draft(&f.state, &id, "ana", rev(2)).await.unwrap().0;
+        assert_eq!((done["kind"].as_str(), done["action"].as_str(), done["already_sent"].as_bool()), (Some("schedule"), Some("create"), Some(false)));
+        let s = &done["schedule"];
+        assert_eq!(s["owner"], "ana");
+        assert!(s["via_agent"].is_null(), "the person confirmed it themselves: {s}");
+        assert_eq!(s["text"], "@helper standup notes, please");
+        assert_eq!(s["schedule"]["expr"], "30 3 * * 1-5");
+        // A repeat (button racing a spoken yes) writes once.
+        let again = send_draft(&f.state, &id, "ana", rev(2)).await.unwrap().0;
+        assert_eq!((again["already_sent"].as_bool(), &again["schedule"]["id"]), (Some(true), &s["id"]));
+        assert_eq!(own_schedules(&f, "ana").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn jarvis_schedule_confirm_rechecks_access_and_timing() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        // Not a channel she can post in, or a time in the past: refused at draft time.
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.secret, "text": "x",
+            "schedule": {"kind": "interval", "seconds": 3600}}), ist());
+        assert!(out["error"].is_string(), "{out}");
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "x",
+            "schedule": {"kind": "once", "at": "2020-01-01T09:00"}}), ist());
+        assert!(out["error"].is_string(), "{out}");
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "x",
+            "schedule": {"kind": "interval", "seconds": 60}}), ist());
+        assert!(out["error"].is_string(), "under the 5-minute floor: {out}");
+        // Access lost before confirming: refused, still confirmable once restored.
+        let (out, cards) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "hourly",
+            "schedule": {"kind": "interval", "seconds": 3600}}), ist());
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        let card_run_at = cards[0]["card"]["run_at"].as_f64().unwrap();
+        let gid = f.state.hub.store.channel(&f.team).unwrap()["group_id"].as_str().unwrap().to_string();
+        f.state.hub.store.remove_member_all(&gid, "user", "ana");
+        assert_eq!(send_draft(&f.state, &id, "ana", rev(1)).await.unwrap_err().0, StatusCode::FORBIDDEN);
+        assert!(own_schedules(&f, "ana").is_empty());
+        f.state.hub.store.add_member(&gid, "user", "ana", "member", Some(&f.team));
+        let made = send_draft(&f.state, &id, "ana", rev(1)).await.unwrap().0;
+        assert_eq!(made["schedule"]["status"], "active");
+        // An interval with no stated start keeps the first run the card showed.
+        assert!((made["schedule"]["run_at"].as_f64().unwrap() - card_run_at).abs() < 1e-3, "{made}");
+        // A one-off whose time passed while the card waited: refused, nothing stored.
+        let past = crate::store::now() - 3600.0;
+        let id = f.state.jarvis.create_draft(crate::jarvis::Draft {
+            kind: crate::jarvis::DraftKind::ScheduleCreate { schedule: json!({"kind": "once", "at": past}), run_at: past, start: Some(past), time_note: None },
+            ..crate::jarvis::Draft::new("ana", &f.team, "soon")
+        }).id;
+        assert_eq!(send_draft(&f.state, &id, "ana", rev(1)).await.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(own_schedules(&f, "ana").len(), 1);
+    }
+
+    #[test]
+    fn jarvis_lists_only_the_users_own_schedules_paged() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let base = crate::store::now() + 3600.0;
+        for i in 0..23 {
+            let at = base + i as f64 * 60.0;
+            store.create_schedule("ana", &f.team, None, &format!("ana {i}"), at, &json!({"kind": "once", "at": at}), "ana", None);
+        }
+        // An old finished one is still listed (no age cut-off); bob's never are.
+        let old = store.create_schedule("ana", &f.team, None, "long ago", base, &json!({"kind": "once", "at": base}), "ana", None);
+        store.set_schedule_status_for_test(old["id"].as_str().unwrap(), "done", base - 400.0 * 86_400.0);
+        store.create_schedule("bob", &f.team, None, "bob's", base, &json!({"kind": "once", "at": base}), "bob", None);
+        let (page1, cards) = run_tool(&f.state, &ana, "list_schedules", json!({}));
+        assert_eq!((page1["total"].as_u64(), page1["has_more"].as_bool(), page1["next_offset"].as_u64()), (Some(24), Some(true), Some(20)), "{page1}");
+        assert_eq!(page1["items"].as_array().unwrap().len(), 20);
+        assert!(page1["note"].as_str().unwrap().contains("next_offset"));
+        assert_eq!(cards[0]["card"]["kind"], "schedules");
+        assert_eq!(cards[0]["card"]["has_more"], true);
+        let (page2, _) = run_tool(&f.state, &ana, "list_schedules", json!({"offset": 20}));
+        let texts: Vec<&str> = page2["items"].as_array().unwrap().iter().map(|i| i["text"].as_str().unwrap()).collect();
+        assert_eq!((texts.len(), page2["has_more"].as_bool()), (4, Some(false)));
+        assert!(texts.contains(&"long ago"), "finished ones come after the live ones: {texts:?}");
+        let all = format!("{page1}{page2}");
+        assert!(!all.contains("bob's"), "{all}");
+        let (done, _) = run_tool(&f.state, &ana, "list_schedules", json!({"status": "done"}));
+        assert_eq!(done["total"], 1);
+        let (bad, _) = run_tool(&f.state, &ana, "list_schedules", json!({"status": "weird"}));
+        assert!(bad["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn jarvis_changes_only_its_users_own_schedules_bound_to_what_they_saw() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let at = crate::store::now() + 3600.0;
+        let mine = store.create_schedule("ana", &f.team, None, "mine", at, &json!({"kind": "interval", "seconds": 3600}), "ana", None);
+        let mine_id = mine["id"].as_str().unwrap().to_string();
+        let bobs = store.create_schedule("bob", &f.team, None, "bob's", at, &json!({"kind": "interval", "seconds": 3600}), "bob", None);
+        // Someone else's schedule is unknown to her, even through Jarvis.
+        let (out, cards) = run_tool(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": bobs["id"], "action": "pause"}));
+        assert!(out["error"].as_str().unwrap().contains("isn't one of your schedules") && cards.is_empty(), "{out}");
+        // Pause: drafted, not applied; a change draft can't be edited.
+        let (out, cards) = run_tool(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": mine_id, "action": "pause"}));
+        assert_eq!(cards[0]["card"]["kind"], "schedule_change");
+        assert_eq!(cards[0]["card"]["after"]["status"], "paused");
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        assert_eq!(store.schedule(&mine_id).unwrap()["status"], "active");
+        assert_eq!(edit_draft(&f.state, &id, "ana", json!({"text": "x", "revision": 1})).await.unwrap_err().0, StatusCode::BAD_REQUEST);
+        let done = send_draft(&f.state, &id, "ana", rev(1)).await.unwrap().0;
+        assert_eq!((done["action"].as_str(), done["schedule"]["status"].as_str()), (Some("pause"), Some("paused")));
+        // Changed by someone else after she reviewed a retime (an admin
+        // resumed it): nothing is overwritten, she gets a fresh draft against
+        // the current state, read in the same local time.
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": mine_id, "action": "retime",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *"}}), ist());
+        let stale_id = out["draft_id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+        std::thread::sleep(Duration::from_millis(5));
+        let admin = AuthedUser { username: "root".into(), display_name: "Root".into(), instance_admin: true };
+        schedules::patch_for_test(&f.state, &admin, &mine_id, &json!({"status": "active"})).expect("admin may resume");
+        let refreshed = send_draft(&f.state, &stale_id, "ana", rev(1)).await.unwrap().0;
+        assert_eq!(refreshed["kind"], "refreshed", "{refreshed}");
+        let fresh_id = refreshed["draft_id"].as_str().unwrap().to_string();
+        assert_ne!(fresh_id, stale_id);
+        let s = store.schedule(&mine_id).unwrap();
+        assert_eq!(s["schedule"]["kind"], "interval", "the stale retime wrote nothing");
+        assert_eq!(draft_status(&f, &stale_id), crate::jarvis::DraftStatus::Cancelled);
+        let events = refreshed["events"].as_array().unwrap();
+        assert!(events.iter().any(|e| e["card"]["kind"] == "schedule_change" && e["card"]["schedule"]["run_at"] == s["run_at"]), "{events:?}");
+        let fresh = f.state.jarvis.peek_draft(&fresh_id, "ana").unwrap();
+        assert!(matches!(&fresh.kind, crate::jarvis::DraftKind::ScheduleChange { tz, .. } if *tz == ist()), "{:?}", fresh.kind);
+        assert!(fresh.text.contains("every day at 09:00 your time (03:30 UTC)"), "{}", fresh.text);
+        // The fresh draft applies.
+        let done = send_draft(&f.state, &fresh_id, "ana", rev(1)).await.unwrap().0;
+        assert_eq!(done["schedule"]["schedule"]["expr"], "30 3 * * *", "{done}");
+        // Cancel.
+        let (out, _) = run_tool(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": mine_id, "action": "cancel"}));
+        let id = out["draft_id"].as_str().unwrap().to_string();
+        assert_eq!(send_draft(&f.state, &id, "ana", rev(1)).await.unwrap().0["schedule"]["status"], "cancelled");
+        assert_eq!(store.schedule(bobs["id"].as_str().unwrap()).unwrap()["status"], "active");
+    }
+
+    #[tokio::test]
+    async fn jarvis_change_survives_a_run_firing_while_the_card_waits() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let at = crate::store::now() + 3600.0;
+        let mine = store.create_schedule("ana", &f.team, None, "mine", at, &json!({"kind": "interval", "seconds": 3600}), "ana", None);
+        let id = mine["id"].as_str().unwrap().to_string();
+        for action in ["pause", "resume"] {
+            let (out, _) = run_tool(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": id, "action": action}));
+            let draft = out["draft_id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+            // A run fires between the draft and the confirm: run_at and
+            // updated_at move, nothing the person reviewed does.
+            std::thread::sleep(Duration::from_millis(5));
+            let next = store.schedule(&id).unwrap()["run_at"].as_f64().unwrap() + 3600.0;
+            store.update_schedule(&id, &crate::store::ScheduleChange { run_at: Some(next), ..Default::default() }, "ana", None).unwrap();
+            let done = send_draft(&f.state, &draft, "ana", rev(1)).await.unwrap().0;
+            assert_eq!(done["action"], action, "{done}");
+            let want = if action == "pause" { "paused" } else { "active" };
+            assert_eq!(store.schedule(&id).unwrap()["status"], want);
+        }
+    }
+
+    #[tokio::test]
+    async fn jarvis_change_refusals_are_the_real_error_and_keep_the_draft() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let at = crate::store::now() + 3600.0;
+        let mine = store.create_schedule("ana", &f.team, None, "mine", at, &json!({"kind": "interval", "seconds": 3600}), "ana", None);
+        let id = mine["id"].as_str().unwrap().to_string();
+        store.update_schedule(&id, &crate::store::ScheduleChange { status: Some("paused".into()), ..Default::default() }, "ana", None).unwrap();
+        let (out, _) = run_tool(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": id, "action": "resume"}));
+        let draft = out["draft_id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+        // She loses the channel: resuming is forbidden — said as such, not
+        // re-offered as a fresh draft, and the old draft stays confirmable.
+        let gid = store.channel(&f.team).unwrap()["group_id"].as_str().unwrap().to_string();
+        store.remove_member_all(&gid, "user", "ana");
+        let e = send_draft(&f.state, &draft, "ana", rev(1)).await.unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN, "{:?}", e.1 .0);
+        assert_eq!(draft_status(&f, &draft), crate::jarvis::DraftStatus::Pending);
+        assert_eq!(store.schedule(&id).unwrap()["status"], "paused");
+        store.add_member(&gid, "user", "ana", "member", Some(&f.team));
+        assert_eq!(send_draft(&f.state, &draft, "ana", rev(1)).await.unwrap().0["schedule"]["status"], "active");
+        // A refresh that can't be built (the schedule is gone) hands the
+        // old draft back with the reason.
+        let (out, _) = run_tool(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": id, "action": "pause"}));
+        let draft = out["draft_id"].as_str().unwrap().to_string();
+        store.update_schedule(&id, &crate::store::ScheduleChange { status: Some("cancelled".into()), ..Default::default() }, "ana", None).unwrap();
+        let e = send_draft(&f.state, &draft, "ana", rev(1)).await.unwrap_err();
+        assert!(e.1 .0["detail"].as_str().unwrap().contains("no longer applies"), "{:?}", e.1 .0);
+        assert_eq!(draft_status(&f, &draft), crate::jarvis::DraftStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn jarvis_confirm_at_the_live_cap_is_retryable_not_a_conflict() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let at = crate::store::now() + 3600.0;
+        let every = json!({"kind": "interval", "seconds": 3600});
+        let done = store.create_schedule("ana", &f.team, None, "done one", at, &json!({"kind": "once", "at": at}), "ana", None);
+        let pid = done["id"].as_str().unwrap().to_string();
+        store.update_schedule(&pid, &crate::store::ScheduleChange { status: Some("done".into()), ..Default::default() }, "ana", None).unwrap();
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "standup notes please",
+            "schedule": {"kind": "cron", "expr": "0 9 * * 1-5"}}), ist());
+        let create = out["draft_id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+        // Retiming a finished one-off brings it back to life, so it counts
+        // against the cap like a create.
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": pid, "action": "retime",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *"}}), ist());
+        let revive = out["draft_id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+        // She reaches the cap after the cards were offered: both confirms are
+        // refused as retryable (never 409, which retires the card), and both
+        // drafts stay offered.
+        for i in 0..crate::store::MAX_LIVE_PER_OWNER {
+            store.create_schedule("ana", &f.team, None, &format!("filler {i}"), at, &every, "ana", None);
+        }
+        let before = own_schedules(&f, "ana").len();
+        // The create is caught by the pre-check (400, as for the agent op);
+        // a refusal at the write itself (reviving past the cap) answers 429.
+        for (draft, code) in [(&create, StatusCode::BAD_REQUEST), (&revive, StatusCode::TOO_MANY_REQUESTS)] {
+            let e = send_draft(&f.state, draft, "ana", rev(1)).await.unwrap_err();
+            assert_eq!(e.0, code, "{:?}", e.1 .0);
+            assert_eq!(draft_status(&f, draft), crate::jarvis::DraftStatus::Pending);
+        }
+        assert_eq!(own_schedules(&f, "ana").len(), before, "nothing created");
+        assert_eq!(store.schedule(&pid).unwrap()["status"], "done");
+    }
+
+    #[test]
+    fn jarvis_refreshed_change_stays_in_the_conversation_for_a_spoken_yes() {
+        let f = jarvis_fixture();
+        let store = &f.state.hub.store;
+        let at = crate::store::now() + 3600.0;
+        let mine = store.create_schedule("ana", &f.team, None, "mine", at, &json!({"kind": "interval", "seconds": 3600}), "ana", None);
+        let id = mine["id"].as_str().unwrap().to_string();
+        let conv = "jc_refresh";
+        let hint = crate::jarvis::TurnContext { utc_offset_minutes: Some(330), ..Default::default() };
+        let mut brain = scripted(vec![call("c1", "draft_schedule_change", json!({"schedule_id": id, "action": "retime",
+            "schedule": {"kind": "cron", "expr": "0 9 * * 1-5"}})), say("unused")]);
+        let events = jarvis_turn_events_with(&f, "ana", conv, &mut brain, "move it to 9am weekdays", &hint);
+        let done = of_type(&events, "done")[0]["text"].as_str().unwrap().to_string();
+        assert!(done.contains("on weekdays at 09:00 your time (03:30 UTC)"), "{done}");
+        let stale = of_type(&events, "card")[0]["card"]["draft_id"].as_str().unwrap().to_string();
+        // She pauses it elsewhere, then says yes: a fresh draft is offered.
+        std::thread::sleep(Duration::from_millis(5));
+        store.update_schedule(&id, &crate::store::ScheduleChange { status: Some("paused".into()), ..Default::default() }, "ana", None).unwrap();
+        let mut brain = scripted(vec![decide("confirm", "")]);
+        let events = jarvis_turn_events_with(&f, "ana", conv, &mut brain, "yes", &hint);
+        assert!(of_type(&events, "done")[0]["text"].as_str().unwrap().ends_with("Apply this change?"));
+        assert_eq!(draft_status(&f, &stale), crate::jarvis::DraftStatus::Cancelled);
+        let fresh = of_type(&events, "card").iter().find_map(|c| c["card"]["draft_id"].as_str().map(str::to_string)).expect("fresh card");
+        let d = f.state.jarvis.peek_draft(&fresh, "ana").unwrap();
+        assert_eq!(d.conversation_id.as_deref(), Some(conv));
+        // A second yes confirms the fresh one.
+        let mut brain = scripted(vec![decide("confirm", "")]);
+        let events = jarvis_turn_events_with(&f, "ana", conv, &mut brain, "yes", &hint);
+        assert_eq!(of_type(&events, "schedule_applied")[0]["draft_id"], fresh.as_str());
+        assert_eq!(store.schedule(&id).unwrap()["schedule"]["expr"], "30 3 * * 1-5");
+    }
+
+    #[test]
+    fn jarvis_list_says_when_the_scan_was_capped_even_if_filtered_short() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let at = crate::store::now() + 3600.0;
+        for i in 0..1001 {
+            store.create_schedule("ana", &f.team, None, &format!("s{i}"), at, &json!({"kind": "interval", "seconds": 3600}), "ana", None);
+        }
+        let (out, _) = run_tool(&f.state, &ana, "list_schedules", json!({"thread_id": 424242}));
+        assert_eq!((out["total"].as_u64(), out["truncated"].as_bool()), (Some(0), Some(true)), "{out}");
+        assert!(out["note"].as_str().unwrap().contains("may be incomplete"), "{out}");
+        let (out, _) = run_tool(&f.state, &ana, "list_schedules", json!({"status": "paused"}));
+        assert_eq!(out["truncated"], false, "{out}");
+    }
+
+    #[test]
+    fn jarvis_one_off_read_back_says_the_time_once() {
+        let f = jarvis_fixture();
+        let at = (crate::store::now() / 60.0).floor() * 60.0 + 7200.0;
+        let mut brain = scripted(vec![call("c1", "draft_schedule", json!({"channel_id": f.team, "text": "ping",
+            "schedule": {"kind": "once", "at": at}})), say("unused")]);
+        let events = jarvis_turn_events(&f, "ana", "jc_once", &mut brain, "remind the channel in two hours");
+        let done = of_type(&events, "done")[0]["text"].as_str().unwrap().to_string();
+        let when = crate::jarvis_schedules::local_ts(at, &Default::default());
+        assert_eq!(done, format!("Scheduled for #general at {when}: “ping”. Schedule it?"));
+    }
+
+    #[test]
+    fn client_tz_transitions_are_bounded_and_ordered() {
+        let raw = json!([{"at_utc": 200.0, "offset_minutes": -300}, {"at_utc": 100.0, "offset_minutes": -240},
+            {"at_utc": 300.0, "offset_minutes": 9999}, {"offset_minutes": 60}, "junk"]);
+        assert_eq!(client_tz_transitions(&raw), vec![(100.0, -240), (200.0, -300)]);
+        assert!(client_tz_transitions(&json!(null)).is_empty());
+        // Out of order and over the cap: the 24 earliest survive, sorted.
+        let many: Vec<Value> = (0..30).rev().map(|i| json!({"at_utc": i as f64 * 10.0, "offset_minutes": 60})).collect();
+        let kept = client_tz_transitions(&json!(many));
+        assert_eq!(kept.len(), 24);
+        assert_eq!(kept.first(), Some(&(0.0, 60)));
+        assert_eq!(kept.last(), Some(&(230.0, 60)));
+    }
+
+    #[test]
+    fn jarvis_spoken_yes_applies_exactly_the_offered_schedule_once() {
+        let f = jarvis_fixture();
+        let conv = "jc_sched";
+        let mut brain = scripted(vec![
+            call("c1", "draft_schedule", json!({"channel_id": f.team, "text": "weekly sync", "mentions": ["helper"],
+                "schedule": {"kind": "interval", "seconds": 604_800}})),
+            say("unused: Agora asks itself"),
+        ]);
+        let events = jarvis_turn_events(&f, "ana", conv, &mut brain, "every week remind helper about the sync");
+        let done = of_type(&events, "done")[0]["text"].as_str().unwrap().to_string();
+        assert!(done.ends_with("Schedule it?") && done.contains("every week") && done.contains("@helper weekly sync"), "{done}");
+        let id = of_type(&events, "card")[0]["card"]["draft_id"].as_str().unwrap().to_string();
+        // The check is told the exact action it is approving.
+        let mut brain = scripted(vec![decide("confirm", "")]);
+        let events = jarvis_turn_events(&f, "ana", conv, &mut brain, "yes schedule it");
+        let input = brain.seen[0][0]["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(input.contains("create this schedule"), "{input}");
+        let applied = of_type(&events, "schedule_applied");
+        assert_eq!((applied.len(), applied[0]["draft_id"].as_str()), (1, Some(id.as_str())));
+        assert!(of_type(&events, "draft_sent").is_empty());
+        assert_eq!(of_type(&events, "done")[0]["text"], "Scheduled for #general.");
+        assert_eq!(own_schedules(&f, "ana").len(), 1);
+        assert_eq!(own_schedules(&f, "ana")[0]["text"], "@helper weekly sync");
+        // The card's button afterwards gets the same schedule, no second one.
+        let user = jarvis_user(&f.state, "ana");
+        let (again, already) = apply_jarvis_draft(&f.state, &user, &id, 1, None, None, None).unwrap();
+        assert!(already && matches!(again, Applied::Scheduled(_)));
+        assert_eq!(own_schedules(&f, "ana").len(), 1);
+    }
+
+    #[test]
+    fn jarvis_spoken_yes_to_a_change_reads_back_and_applies_it() {
+        let f = jarvis_fixture();
+        let at = crate::store::now() + 3600.0;
+        let mine = f.state.hub.store.create_schedule("ana", &f.team, None, "mine", at, &json!({"kind": "interval", "seconds": 3600}), "ana", None);
+        let conv = "jc_change";
+        let mut brain = scripted(vec![call("c1", "draft_schedule_change", json!({"schedule_id": mine["id"], "action": "pause"})), say("unused")]);
+        let events = jarvis_turn_events(&f, "ana", conv, &mut brain, "pause my hourly one");
+        let done = of_type(&events, "done")[0]["text"].as_str().unwrap().to_string();
+        assert!(done.starts_with("Pause the schedule in #general") && done.ends_with("Apply this change?"), "{done}");
+        let mut brain = scripted(vec![decide("confirm", "")]);
+        let events = jarvis_turn_events(&f, "ana", conv, &mut brain, "yes");
+        assert!(brain.seen[0][0]["content"][0]["text"].as_str().unwrap().contains("pause this schedule"));
+        assert_eq!(of_type(&events, "schedule_applied")[0]["action"], "pause");
+        assert_eq!(of_type(&events, "done")[0]["text"], "Paused.");
+        assert_eq!(f.state.hub.store.schedule(mine["id"].as_str().unwrap()).unwrap()["status"], "paused");
     }
 
     #[test]

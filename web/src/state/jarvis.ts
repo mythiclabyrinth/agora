@@ -10,7 +10,7 @@
    and the card stack. `micMuted` / `speakerOff` are per-device. */
 
 import { create } from "zustand";
-import type { JarvisCard, JarvisEvent, JarvisServerPhase } from "@agora/core";
+import { isDraftLikeCard, type JarvisCard, type JarvisEvent, type JarvisServerPhase, type Schedule } from "@agora/core";
 
 export type JarvisPhase = "idle" | "armed" | "listening" | "recording" | "transcribing" | JarvisServerPhase | "error";
 /** Phases the voice loop sets between turns (`null` = back to resting). */
@@ -36,12 +36,14 @@ export interface JarvisCardEntry {
   expiresAt?: number;
   /** The posted message, once sent (for Undo). */
   messageId?: number;
+  /** A schedule draft's result, once confirmed (created or changed). */
+  schedule?: Schedule;
 }
 
 /** A draft card the user can still act on: pending and not past its expiry
     (the countdown may not have ticked yet, e.g. in a hidden panel). */
 export function isLiveDraft(entry: JarvisCardEntry, now = Date.now()): boolean {
-  return entry.card.kind === "draft" && (entry.status ?? "pending") === "pending"
+  return isDraftLikeCard(entry.card) && (entry.status ?? "pending") === "pending"
     && (entry.expiresAt === undefined || entry.expiresAt > now);
 }
 
@@ -221,11 +223,12 @@ export const useJarvis = create<JarvisState>((set, get) => ({
         log: withAnswer(s.log, prev => prev + event.text),
       };
       case "card": {
-        const draft = event.card.kind === "draft" ? event.card : null;
+        const draft = isDraftLikeCard(event.card) ? event.card : null;
         const entry: JarvisCardEntry = {
           id: `jc${++cardSeq}`, card: event.card,
           status: draft ? "pending" : undefined,
-          savedText: draft?.text, revision: draft ? draft.revision ?? 1 : undefined,
+          savedText: draft && draft.kind !== "schedule_change" ? draft.text : undefined,
+          revision: draft ? draft.revision ?? 1 : undefined,
           // Anchored to arrival, so reopening the panel can't restart the clock.
           expiresAt: draft ? Date.now() + draft.expires_in * 1000 : undefined,
         };
@@ -237,8 +240,13 @@ export const useJarvis = create<JarvisState>((set, get) => ({
           ? { ...c, status: "sent" as const, messageId: event.message?.id }
           : c),
       };
+      case "schedule_applied": return {
+        cards: s.cards.map(c => isDraftLikeCard(c.card) && c.card.kind !== "draft" && c.card.draft_id === event.draft_id
+          ? { ...c, status: "sent" as const, schedule: event.schedule }
+          : c),
+      };
       case "draft_cancelled": return {
-        cards: s.cards.map(c => c.card.kind === "draft" && c.card.draft_id === event.draft_id && (c.status ?? "pending") === "pending"
+        cards: s.cards.map(c => isDraftLikeCard(c.card) && c.card.draft_id === event.draft_id && (c.status ?? "pending") === "pending"
           ? { ...c, status: "cancelled" as const }
           : c),
       };

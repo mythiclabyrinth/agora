@@ -14,6 +14,7 @@ pub mod config;
 pub mod connections;
 pub mod hub;
 pub mod jarvis;
+pub mod jarvis_schedules;
 pub mod migrate;
 pub mod notify_actions;
 pub mod push;

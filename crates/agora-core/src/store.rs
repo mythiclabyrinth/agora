@@ -4529,7 +4529,8 @@ mod tests {
         let ids = vec![cid.to_string()];
         let (items, total, next_expiry) = s.pending_approvals(&ids, 20);
         assert_eq!(total, 3);
-        assert_eq!(next_expiry, Some(expiry));
+        // expires_at round-trips through meta JSON, which can drift in the last bit.
+        assert!(next_expiry.is_some_and(|e| (e - expiry).abs() < 1e-3), "{next_expiry:?} vs {expiry}");
         assert_eq!(items.len(), 2);
         let thread = items.iter().find(|item| item["thread_id"] == tid).unwrap();
         assert_eq!(thread["message"]["id"], first);

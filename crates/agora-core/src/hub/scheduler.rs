@@ -253,6 +253,63 @@ fn validate_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A new schedule that passed every check, ready to store.
+#[derive(Clone, Debug)]
+pub(crate) struct CheckedSchedule {
+    pub channel_id: String,
+    pub thread_id: Option<i64>,
+    pub text: String,
+    /// The validated spec (a one-off's `at` kept in step with `run_at`).
+    pub schedule: Value,
+    pub run_at: f64,
+}
+
+/// Every check a new schedule must pass before it is stored, shared by the
+/// agent `create` op and Jarvis (at draft time and again at confirmation):
+/// text, the owner's caps, the spec, its first run, posting rights, thread.
+pub(crate) fn check_new_schedule(
+    store: &Store,
+    owner: &str,
+    channel_id: &str,
+    thread_id: Option<i64>,
+    text: &str,
+    schedule: &Value,
+    run_at: Option<&Value>,
+    now_s: f64,
+) -> Result<CheckedSchedule, String> {
+    // Trimmed like a typed post, so it can't carry blank lines a person
+    // writing the same text never could.
+    let text = text.trim();
+    validate_text(text)?;
+    // Turn away an over-limit request before the costly part: a cron rule
+    // is validated over a month of matches.
+    if let Some(refusal) = store.create_refusal(owner) {
+        return Err(refusal.message(owner));
+    }
+    let mut spec = Spec::parse(schedule)?;
+    let run_at = resolve_run_at(&spec, run_at, now_s)?;
+    if let Spec::Once { at } = &mut spec {
+        *at = run_at; // an explicit run_at wins; keep the spec in step
+    }
+    store.schedule_owner_can_post(owner, channel_id)?;
+    let thread_id = resolve_thread_root(store, channel_id, thread_id)?;
+    Ok(CheckedSchedule { channel_id: channel_id.into(), thread_id, text: text.into(), schedule: spec.to_json(), run_at })
+}
+
+impl Hub {
+    /// Store a checked schedule (caps re-checked in the transaction) and tell
+    /// its viewers. `via_agent` is None when the person themselves confirmed
+    /// it (Jarvis): their reviewed text is theirs, not an agent's.
+    pub(crate) fn create_checked_schedule(&self, owner: &str, c: &CheckedSchedule, via_agent: Option<&str>) -> Result<Value, String> {
+        let created = self
+            .store
+            .create_schedule_capped(owner, &c.channel_id, c.thread_id, &c.text, c.run_at, &c.schedule, owner, via_agent)
+            .map_err(|e| e.message(owner))?;
+        self.publish_for(&created);
+        Ok(created)
+    }
+}
+
 /// The due time for a schedule becoming active again (resume, or a re-armed
 /// one-off). A time that passed while it was paused must not fire a stale
 /// post the moment it resumes: recurring ones skip ahead to their next slot
@@ -1204,30 +1261,11 @@ impl Hub {
                     None if channel_id == grant.channel_id => grant.thread_id,
                     None => None,
                 };
-                // Trimmed like a typed post, so it can't carry blank lines a
-                // person writing the same text never could.
-                let text = frame["text"].as_str().unwrap_or_default().trim();
-                validate_text(text)?;
-                // Turn away an over-limit request before the costly part: a
-                // cron rule is validated over a month of matches.
-                if let Some(refusal) = self.store.create_refusal(&grant.owner) {
-                    return Err(refusal.message(&grant.owner));
-                }
-                let mut spec = Spec::parse(&frame["schedule"])?;
-                let run_at = resolve_run_at(&spec, frame.get("run_at"), now_s)?;
-                if let Spec::Once { at } = &mut spec {
-                    *at = run_at; // an explicit run_at wins; keep the spec in step
-                }
-                self.store.schedule_owner_can_post(&grant.owner, &channel_id)?;
-                let thread_id = resolve_thread_root(&self.store, &channel_id, thread_id)?;
-                let created = self
-                    .store
-                    .create_schedule_capped(
-                        &grant.owner, &channel_id, thread_id, text, run_at, &spec.to_json(),
-                        &grant.owner, Some(&handle.agent_id),
-                    )
-                    .map_err(|e| e.message(&grant.owner))?;
-                self.publish_for(&created);
+                let checked = check_new_schedule(
+                    &self.store, &grant.owner, &channel_id, thread_id,
+                    frame["text"].as_str().unwrap_or_default(), &frame["schedule"], frame.get("run_at"), now_s,
+                )?;
+                let created = self.create_checked_schedule(&grant.owner, &checked, Some(&handle.agent_id))?;
                 Ok(json!({"schedule": decorate(&created)}))
             }
             "update" => {
@@ -1625,6 +1663,41 @@ mod tests {
         assert!((rearmed["schedule"]["schedule"]["at"].as_f64().unwrap() - next).abs() < 1e-3);
         let cancelled = ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": s["id"]})));
         assert_eq!(cancelled["schedule"]["status"], "cancelled");
+    }
+
+    #[test]
+    fn a_person_confirmed_schedule_lets_each_tagged_agent_only_rearm_it() {
+        // What Jarvis stores once the person confirms: their own schedule
+        // (no writing agent), tagging two agents.
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let mut codex = add_agent(&h, "codex", "Codex", false);
+        let cid = setup_channel(&h, &["claude", "codex"]);
+        let gid = h.store.channel(&cid).unwrap()["group_id"].as_str().unwrap().to_string();
+        h.store.add_member(&gid, "user", "tom", "member", None);
+        let at = now() + 400.0;
+        let checked = check_new_schedule(&h.store, "tom", &cid, None, "@claude @codex LOOP review · run 1",
+            &json!({"kind": "once", "at": at}), None, now()).unwrap();
+        let s = h.create_checked_schedule("tom", &checked, None).unwrap();
+        assert!(s["via_agent"].is_null());
+        assert_eq!(h.fire_due_schedules(at + 1.0), 1);
+        let mut turns = Vec::new();
+        for rx in [&mut claude, &mut codex] {
+            let inbound = last_frame(rx, "inbound").unwrap();
+            assert_eq!((inbound["scheduled"].as_bool(), &inbound["schedule_id"]), (Some(true), &s["id"]), "{inbound}");
+            turns.push(inbound["turn_id"].as_str().expect("each tagged agent gets the narrow grant").to_string());
+        }
+        // Narrow: no new schedules or listing for either agent.
+        for (rx, agent, turn) in [(&mut claude, "claude", &turns[0]), (&mut codex, "codex", &turns[1])] {
+            let r = ask(&h, rx, req(agent, turn, "create", json!({"text": "x", "schedule": {"kind": "interval", "seconds": 600}})));
+            assert_eq!(r["ok"], false, "{r}");
+        }
+        // Either may re-arm its own schedule.
+        let next = now() + 3600.0;
+        let rearmed = ask(&h, &mut codex, req("codex", &turns[1], "update", json!({
+            "id": s["id"], "text": "@claude @codex LOOP review · run 2", "run_at": next})));
+        assert_eq!((rearmed["ok"].as_bool(), rearmed["schedule"]["status"].as_str()), (Some(true), Some("active")), "{rearmed}");
     }
 
     #[test]

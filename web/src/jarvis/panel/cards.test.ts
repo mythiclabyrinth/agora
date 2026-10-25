@@ -187,3 +187,73 @@ describe("a card's Open buttons", () => {
     expect(useJarvis.getState().enabled).toBe(true);
   });
 });
+
+describe("schedule cards", () => {
+  const scheduleDraft = (): Entry => ({
+    id: "js1", status: "pending", revision: 1, savedText: "standup",
+    card: { kind: "schedule_draft", draft_id: "jd_s", revision: 1, channel_id: "c", channel_name: "release", group_id: "g",
+      group_name: "G", thread_id: null, destination: "#release", text: "standup", final_text: "standup", mentions: [],
+      schedule: { kind: "interval", seconds: 3600 }, run_at: 1, next_runs: [1], dst_note: null, expires_in: 120 },
+  });
+  const change = (): Entry => ({
+    id: "jx1", status: "pending", revision: 1,
+    card: { kind: "schedule_change", draft_id: "jd_x", revision: 1, action: "retime", summary: "Change it", destination: "#release",
+      schedule: { id: "s1" } as never, after: { status: "active", schedule: { kind: "interval", seconds: 3600 }, run_at: 1, next_runs: [1] },
+      dst_note: null, expires_in: 120 },
+  });
+
+  beforeEach(() => {
+    sendJarvisDraft.mockReset();
+    cancelJarvisDraft.mockClear();
+    toast.mockClear();
+    useJarvis.setState({ cards: [] });
+  });
+
+  it("confirms a schedule draft and keeps the created schedule on the card", async () => {
+    const entry = scheduleDraft();
+    useJarvis.setState({ cards: [entry] });
+    const schedule = { id: "s1", status: "active" };
+    sendJarvisDraft.mockResolvedValue({ ok: true, kind: "schedule", action: "create", schedule, already_sent: false });
+    expect(await sendDraftEntry(api, entry, entry.card as never)).toBe(true);
+    expect(sendJarvisDraft).toHaveBeenCalledWith(api, "jd_s", 1);
+    expect(shown()).toMatchObject({ status: "sent", schedule });
+    expect(toast).toHaveBeenCalledWith("Scheduled for #release", { variant: "ok" });
+  });
+
+  it("a stale change shows the refreshed card instead and writes nothing", async () => {
+    const entry = change();
+    useJarvis.setState({ cards: [entry] });
+    const fresh = { ...(change().card as object), draft_id: "jd_y" };
+    sendJarvisDraft.mockResolvedValue({ ok: false, kind: "refreshed", draft_id: "jd_y", detail: "That schedule changed",
+      events: [{ type: "card", card: fresh }, { type: "draft_cancelled", draft_id: "jd_x", superseded_by: "jd_y" }] });
+    expect(await sendDraftEntry(api, entry, entry.card as never)).toBe(false);
+    const cards = useJarvis.getState().cards;
+    expect(cards.map(c => [(c.card as { draft_id: string }).draft_id, c.status])).toEqual([["jd_y", "pending"], ["jd_x", "cancelled"]]);
+    expect(toast).toHaveBeenCalledWith("That schedule changed", { variant: "warn" });
+  });
+
+  it("a refused confirm (cap or rate, 429) keeps the draft offered and never cancels it", async () => {
+    const entry = scheduleDraft();
+    useJarvis.setState({ cards: [entry] });
+    sendJarvisDraft.mockRejectedValueOnce(new ApiError(429, "you have too many live schedules"));
+    expect(await sendDraftEntry(api, entry, entry.card as never)).toBe(false);
+    expect(useJarvis.getState().cards[0].status).toBe("pending");
+    expect(cancelJarvisDraft).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith("Couldn't schedule: you have too many live schedules", { variant: "error" });
+    const ch = change();
+    useJarvis.setState({ cards: [ch] });
+    sendJarvisDraft.mockRejectedValueOnce(new ApiError(400, "that time is in the past"));
+    expect(await sendDraftEntry(api, ch, ch.card as never)).toBe(false);
+    expect(useJarvis.getState().cards[0].status).toBe("pending");
+    expect(toast).toHaveBeenCalledWith("Couldn't change the schedule: that time is in the past", { variant: "error" });
+  });
+
+  it("discarding a pending schedule draft cancels it on the server", () => {
+    const entry = change();
+    useJarvis.setState({ cards: [entry] });
+    expect(isLiveDraft(entry)).toBe(true);
+    dismissCardEntry(api, entry);
+    expect(cancelJarvisDraft).toHaveBeenCalledWith(api, "jd_x");
+    expect(splitCards([scheduleDraft(), change()]).primary).toHaveLength(2);
+  });
+});
