@@ -57,7 +57,11 @@ export const FOLLOW_UP_MS = 8_000;
 const session = () => ({ baseUrl: "", token: sessionToken() });
 
 /** What the panel knows: the API client and what the server can do. */
-const caps = { api: null as ApiClient | null, stt: false, tts: false, open: false, rate: 1 };
+/** `ambient`: one capture requested with the panel closed (the wake word in
+    the background, or the pop-up's Reply). It ends with that capture: with
+    the panel closed nothing else is ever heard, so voices in the room can't
+    become requests. */
+const caps = { api: null as ApiClient | null, stt: false, tts: false, open: false, ambient: false, rate: 1 };
 
 export function configureVoice(next: Partial<typeof caps>): void {
   Object.assign(caps, next);
@@ -66,7 +70,7 @@ export function configureVoice(next: Partial<typeof caps>): void {
 /** Voice input is possible right now (not muted, configured, no live voice). */
 export function canListen(): boolean {
   const st = useJarvis.getState();
-  return caps.open && caps.stt && !st.micMuted && useLiveVoice.getState().scope === null && voiceSupported();
+  return (caps.open || caps.ambient) && caps.stt && !st.micMuted && useLiveVoice.getState().scope === null && voiceSupported();
 }
 
 function canSpeak(): boolean {
@@ -196,8 +200,25 @@ export async function listen(reason: "open" | "followUp" = "open"): Promise<void
   if (startRecorder(m)) useJarvis.getState().setVoicePhase("listening");
 }
 
+/** Listen once with the panel closed ("Hey Jarvis" in the background, or
+    the pop-up's Reply): the request is heard, the mic is released, and the
+    answer streams and speaks without the panel. False when voice input
+    isn't possible right now (the caller opens the panel instead). */
+export async function listenInBackground(): Promise<boolean> {
+  caps.ambient = true;
+  if (canListen()) await listen("open");
+  // Listening (the mic opened and the window is waiting), or it can't hear
+  // right now (muted, no STT, the mic refused): then the panel opens, so
+  // the user can see why and type instead.
+  if (capture === "waiting") return true;
+  caps.ambient = false;
+  if (!caps.open) useJarvis.getState().open();
+  return false;
+}
+
 /** Release the mic and go back to resting (the wake word re-arms). */
 export function stopListening(): void {
+  caps.ambient = false;
   const capturing = capture !== "off";
   closeMic();
   if (capturing) useJarvis.getState().setVoicePhase(null);
@@ -335,6 +356,10 @@ async function transcribe(blob: Blob, gen: number): Promise<void> {
     return;
   }
   capture = "off";
+  // Heard in the background: release the mic now, so nothing more (the
+  // room, the answer's own echo) is taken as a request while the panel is
+  // closed. The wake word re-arms once the answer is done.
+  if (!caps.open) stopListening();
   await handleUtterance(text);
 }
 
@@ -400,6 +425,10 @@ export async function runTurn(raw: string): Promise<void> {
   turnSilenced = false;
   turnQuiet = false;
   useJarvis.setState({ speechStopped: false });
+  // Asked from the background (panel closed): what it does, navigating
+  // included, is what was asked for. A turn started in the panel and then
+  // closed mid-answer still doesn't move the user (they may be elsewhere).
+  const origin: "panel" | "background" = caps.open ? "panel" : "background";
   const ctl = new AbortController();
   turnAbort = ctl;
   const store = useJarvis.getState();
@@ -437,7 +466,7 @@ export async function runTurn(raw: string): Promise<void> {
         if (event.type === "schedule_applied") onScheduleApplied(event.draft_id, event.action, event.already_applied === true);
         // Closed meanwhile: the answer may finish speaking, but it doesn't
         // move the user somewhere else while they're doing something.
-        if (event.type === "navigate" && caps.open) jumpTo(event);
+        if (event.type === "navigate" && (caps.open || origin === "background")) jumpTo(event);
         if (event.type === "hide") hide = true;
         if (event.type === "new_conversation") fresh = true;
         // The server reported a failure: keep the panel (and the error) up.

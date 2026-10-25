@@ -22,6 +22,7 @@ export function JarvisChip() {
   const phase = useJarvis(s => s.phase);
   const wake = useJarvis(s => s.wake);
   const wakeError = useJarvis(s => s.wakeError);
+  const isOpen = useJarvis(s => s.isOpen);
   const theme = useAppearance(a => a.resolved);
   useShortcutState(s => s.bindings);
   if (!me) return null;
@@ -46,21 +47,39 @@ export function JarvisChip() {
   const look = orbLook(phase);
   const hint = !enabled ? `Turn on Jarvis mode and say “${JARVIS_WAKE_MODEL.phrase}”`
     : wake === "error" ? wakeError || "The wake word stopped"
-    : wake === "listening" ? `Listening for “${JARVIS_WAKE_MODEL.phrase}” — click to turn off`
-    : wake === "starting" ? "Waiting for the microphone… — click to turn off"
-    : "Turn off Jarvis mode";
+    : wake === "listening" ? `Listening for “${JARVIS_WAKE_MODEL.phrase}” — click to open the assistant, right-click to turn off`
+    : wake === "starting" ? "Waiting for the microphone… — right-click to turn off"
+    : "Click to open the assistant, right-click to turn Jarvis mode off";
+  // With the panel closed the chip is where a background request shows:
+  // what Jarvis is doing, and an unmistakable ring while it hears you.
+  const capturing = enabled && !isOpen && (phase === "listening" || phase === "recording");
+  const label = !enabled || isOpen ? "Jarvis mode"
+    : capturing ? "Listening…"
+    : phase === "transcribing" || phase === "thinking" || phase === "searching" || phase === "composing" || phase === "weaving" ? "Thinking…"
+    : phase === "speaking" ? "Speaking…"
+    : "Jarvis mode";
   return (
-    <button className={`jv-chip${enabled ? " is-on" : ""}${enabled && wake === "error" ? " is-error" : ""}`} aria-pressed={enabled} aria-label="Jarvis mode"
+    <button className={`jv-chip${enabled ? " is-on" : ""}${enabled && wake === "error" ? " is-error" : ""}${capturing ? " is-capturing" : ""}`}
+      aria-pressed={enabled ? undefined : false} aria-expanded={enabled ? isOpen : undefined} aria-label="Jarvis mode"
       aria-keyshortcuts={ariaCombo(combo, currentPlatform())}
       title={`${hint}${key ? ` · ${key} opens the assistant` : ""}`}
       onClick={() => {
         const st = useJarvis.getState();
-        st.setEnabled(!enabled);
-        if (!enabled) st.open(); else st.close();
+        // Off: turn it on and open. On: the chip is the way back to the
+        // conversation, so it opens (or closes) the panel; turning the mode
+        // off is deliberate (right-click, or the panel's switch).
+        if (!enabled) { st.setEnabled(true); st.open(); return; }
+        if (st.isOpen) st.close(); else st.open();
+      }}
+      onContextMenu={event => {
+        if (!enabled) return;
+        event.preventDefault();
+        useJarvis.getState().setEnabled(false);
+        toast("Jarvis mode is off", { variant: "ok" });
       }}>
       {enabled && <ThinkingOrb state={look.state} size={20} paused={look.paused || reduced} theme={theme} aria-hidden="true" />}
       {!enabled && <Icon name="sparkles" />}
-      <span>Jarvis mode</span>
+      <span>{label}</span>
       {enabled && <span className={`jv-chip-signal${wake === "error" ? " is-error" : ""}`} aria-hidden="true" />}
     </button>
   );

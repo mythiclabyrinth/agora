@@ -674,12 +674,61 @@ describe("speed, background speech and Stop", () => {
     expect(core.jarvisTranscribe).not.toHaveBeenCalled();
   });
 
-  it("an answer finishing after the panel closed doesn't navigate the user", async () => {
+  it("an answer started in the panel and closed mid-way doesn't navigate the user", async () => {
     const target = { type: "navigate", group_id: "g1", channel_id: "c1", thread_id: null, label: "#release" } as JarvisEvent;
+    let emit: OnEvent = () => {};
+    let finish: () => void = () => {};
+    core.jarvisTurn.mockImplementationOnce((_s: unknown, _r: unknown, onEvent: OnEvent) => {
+      emit = onEvent;
+      onEvent({ type: "start", conversation_id: "jc1" } as JarvisEvent);
+      return new Promise<void>(r => { finish = r; });
+    });
+    const turn = voice.runTurn("open release"); // panel open
+    await pass(0);
     voice.panelClosed();
-    answerWith([target], "Opening it.");
-    await voice.runTurn("open release");
+    emit(target);
+    emit({ type: "done", conversation_id: "jc1", text: "" } as JarvisEvent);
+    finish();
+    await turn;
     expect(nav.jumpTo).not.toHaveBeenCalled();
+    voice.configureVoice({ open: true });
+  });
+
+  it("a request heard in the background navigates, releases the mic, and doesn't listen again", async () => {
+    voice.panelClosed();
+    const target = { type: "navigate", group_id: "g1", channel_id: "c1", thread_id: null, label: "#release" } as JarvisEvent;
+    answerWith([target], "Opening it.");
+    core.jarvisTranscribe.mockResolvedValueOnce({ text: "open release", noSpeech: false });
+    expect(await voice.listenInBackground()).toBe(true);
+    expect(voice.voiceDebugState().capture).toBe("waiting");
+    env.rms = 0.05; await pass(500);
+    env.rms = 0.001; await pass(voice.END_OF_SPEECH_MS + 100);
+    await pass(0);
+    expect(nav.jumpTo).toHaveBeenCalledWith(target);
+    expect(useJarvis.getState().micOwned).toBe(false); // released once heard
+    FakeAudio.instances.at(-1)?.end();
+    await pass(voice.FOLLOW_UP_MS * 2);
+    expect(env.getUserMedia).toHaveBeenCalledTimes(1); // no follow-up capture
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
+    voice.configureVoice({ open: true });
+  });
+
+  it("background listening needs voice input: muted, it opens the panel instead", async () => {
+    voice.panelClosed();
+    useJarvis.getState().setMicMuted(true);
+    expect(await voice.listenInBackground()).toBe(false);
+    expect(env.getUserMedia).not.toHaveBeenCalled();
+    expect(useJarvis.getState().isOpen).toBe(true);
+    useJarvis.getState().setMicMuted(false);
+    voice.configureVoice({ open: true });
+  });
+
+  it("a background window with no speech ends without listening again", async () => {
+    voice.panelClosed();
+    await voice.listenInBackground();
+    await pass(voice.OPEN_WINDOW_MS + 500);
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
+    expect(await voice.listenInBackground()).toBe(true); // the next wake still works
     voice.configureVoice({ open: true });
   });
 
@@ -807,6 +856,15 @@ describe("speed, background speech and Stop", () => {
       delete proto.createBuffer;
       delete proto.createBufferSource;
     }
+  });
+
+  it("a mic that won't open in the background opens the panel and holds nothing", async () => {
+    voice.panelClosed();
+    env.getUserMedia.mockRejectedValueOnce(new DOMException("denied", "NotAllowedError"));
+    expect(await voice.listenInBackground()).toBe(false);
+    expect(useJarvis.getState().isOpen).toBe(true); // the panel shows why
+    expect(useJarvis.getState().micOwned).toBe(false);
+    voice.configureVoice({ open: true });
   });
 });
 

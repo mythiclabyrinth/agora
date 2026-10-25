@@ -26,6 +26,13 @@ describe("useJarvis", () => {
     expect(useJarvis.getState().phase).toBe("idle");
   });
 
+  it("Hey Jarvis listens in the background by default, per device", () => {
+    expect(useJarvis.getState().wakeBackground).toBe(true); // nothing stored yet
+    useJarvis.getState().setWakeBackground(false);
+    expect(storage.get("agora_jarvis_wake_background")).toBe("0");
+    expect(useJarvis.getState().wakeBackground).toBe(false);
+  });
+
   it("open(text) opens the panel and queues one turn for it", () => {
     useJarvis.getState().open("catch me up");
     expect(useJarvis.getState().isOpen).toBe(true);

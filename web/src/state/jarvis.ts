@@ -50,6 +50,7 @@ export function isLiveDraft(entry: JarvisCardEntry, now = Date.now()): boolean {
 const ENABLED_KEY = "agora_jarvis_enabled";
 const MIC_MUTED_KEY = "agora_jarvis_mic_muted";
 const SPEAKER_OFF_KEY = "agora_jarvis_speaker_off";
+const WAKE_BACKGROUND_KEY = "agora_jarvis_wake_background";
 const MAX_CARDS = 12;
 const MAX_LOG = 40;
 
@@ -60,6 +61,10 @@ function saveFlag(key: string, on: boolean): void {
   try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* private mode */ }
 }
 const loadEnabled = () => loadFlag(ENABLED_KEY);
+/** On unless this device chose otherwise. */
+const loadWakeBackground = () => {
+  try { return localStorage.getItem(WAKE_BACKGROUND_KEY) !== "0"; } catch { return true; }
+};
 
 export interface JarvisState {
   enabled: boolean;
@@ -92,6 +97,9 @@ export interface JarvisState {
   micMuted: boolean;
   /** Replies stay text-only (per device). */
   speakerOff: boolean;
+  /** "Hey Jarvis" with the panel closed listens in the background (the chip
+      and the reply pop-up show it) instead of opening the panel (per device). */
+  wakeBackground: boolean;
   /** Bumped by open(): the voice loop starts listening when it changes. */
   listenSeq: number;
   /** The voice loop holds the mic (the wake word stands down meanwhile). */
@@ -100,6 +108,7 @@ export interface JarvisState {
   setEnabled: (on: boolean) => void;
   setMicMuted: (muted: boolean) => void;
   setSpeakerOff: (off: boolean) => void;
+  setWakeBackground: (on: boolean) => void;
   setMicOwned: (owned: boolean) => void;
   /** Voice-loop phase between turns; null returns to resting (armed/idle). */
   setVoicePhase: (phase: JarvisVoicePhase | null) => void;
@@ -158,6 +167,7 @@ export const useJarvis = create<JarvisState>((set, get) => ({
   wakeError: null,
   micMuted: loadFlag(MIC_MUTED_KEY),
   speakerOff: loadFlag(SPEAKER_OFF_KEY),
+  wakeBackground: loadWakeBackground(),
   listenSeq: 0,
   micOwned: false,
 
@@ -168,6 +178,10 @@ export const useJarvis = create<JarvisState>((set, get) => ({
       // Muting drops a capture in progress; a running turn keeps its phase.
       phase: muted && !s.busy && (s.phase === "listening" || s.phase === "recording") ? restingPhase(s.enabled) : s.phase,
     }));
+  },
+  setWakeBackground: (on) => {
+    saveFlag(WAKE_BACKGROUND_KEY, on);
+    set({ wakeBackground: on });
   },
   setSpeakerOff: (off) => {
     saveFlag(SPEAKER_OFF_KEY, off);
