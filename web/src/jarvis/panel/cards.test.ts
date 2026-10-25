@@ -232,6 +232,22 @@ describe("schedule cards", () => {
     expect(toast).toHaveBeenCalledWith("That schedule changed", { variant: "warn" });
   });
 
+  it("a refused confirm (cap or rate, 429) keeps the draft offered and never cancels it", async () => {
+    const entry = scheduleDraft();
+    useJarvis.setState({ cards: [entry] });
+    sendJarvisDraft.mockRejectedValueOnce(new ApiError(429, "you have too many live schedules"));
+    expect(await sendDraftEntry(api, entry, entry.card as never)).toBe(false);
+    expect(useJarvis.getState().cards[0].status).toBe("pending");
+    expect(cancelJarvisDraft).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith("Couldn't schedule: you have too many live schedules", { variant: "error" });
+    const ch = change();
+    useJarvis.setState({ cards: [ch] });
+    sendJarvisDraft.mockRejectedValueOnce(new ApiError(400, "that time is in the past"));
+    expect(await sendDraftEntry(api, ch, ch.card as never)).toBe(false);
+    expect(useJarvis.getState().cards[0].status).toBe("pending");
+    expect(toast).toHaveBeenCalledWith("Couldn't change the schedule: that time is in the past", { variant: "error" });
+  });
+
   it("discarding a pending schedule draft cancels it on the server", () => {
     const entry = change();
     useJarvis.setState({ cards: [entry] });

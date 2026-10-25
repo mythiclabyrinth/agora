@@ -3700,7 +3700,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .jv-sched-utc { color: var(--faint); font-size: 11px; }
 .jv-sched-dst { display: flex; align-items: baseline; gap: 6px; margin: 0 0 8px; padding: 7px 9px; border-radius: 8px; background: rgba(var(--warning-rgb),.09); color: var(--text); font-size: 11px; line-height: 1.5; }
 .jv-sched-dst .ico { flex: none; width: 11px; height: 11px; color: rgb(var(--warning-rgb)); }
-.jv-sched-text { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.jv-sched-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
 .jv-sched-diff { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 10px; font-size: 12px; }
 .jv-sched-diff dt { color: var(--dim); font-size: 11px; }
 .jv-sched-diff dd { margin: 0; overflow-wrap: anywhere; }

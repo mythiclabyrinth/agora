@@ -297,10 +297,20 @@ pub(crate) fn apply_own_change(
             Err(UpdateRefused::Changed) if attempt == 0 => continue,
             // Still moving: let the caller re-check what the person saw.
             Err(UpdateRefused::Changed) => return Ok(None),
-            Err(e) => return Err(refused(e, &user.username)),
+            Err(e) => return Err(confirm_refused(e, &user.username)),
         }
     }
     Ok(None)
+}
+
+/// A refusal at Jarvis confirm time. Cap and rate refusals are retryable (the
+/// draft stays offered), so they answer 429; 409 stays reserved for a draft
+/// that is stale or already done, which the panel retires.
+fn confirm_refused(e: UpdateRefused, owner: &str) -> ApiError {
+    match e {
+        UpdateRefused::Cap | UpdateRefused::Rate => err(StatusCode::TOO_MANY_REQUESTS, &e.message(owner)),
+        other => refused(other, owner),
+    }
 }
 
 /// PATCH as `user`, for tests of what a concurrent edit does.

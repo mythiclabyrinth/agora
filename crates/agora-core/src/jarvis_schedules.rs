@@ -370,8 +370,8 @@ impl ToolCtx<'_> {
         let store = self.store_ref();
         let status = match args["status"].as_str().unwrap_or("all") {
             "all" | "" => None,
-            s @ ("active" | "paused" | "done") => Some(s),
-            other => return Err(format!("status must be all, active, paused or done (got “{other}”)")),
+            s @ ("active" | "paused" | "done" | "cancelled") => Some(s),
+            other => return Err(format!("status must be all, active, paused, done or cancelled (got “{other}”)")),
         };
         let channel = match args["channel"].as_str().filter(|s| !s.trim().is_empty()) {
             Some(c) => Some(self.channel_arg(c)?["id"].as_str().unwrap_or_default().to_string()),
@@ -394,7 +394,18 @@ impl ToolCtx<'_> {
         let limit = (args["limit"].as_u64().unwrap_or(MAX_LIST as u64) as usize).clamp(1, MAX_LIST);
         let viewer = Some((self.user.username.as_str(), self.user.instance_admin));
         let decorator = crate::hub::ScheduleDecorator::new(store, viewer, crate::store::now());
-        let page: Vec<Value> = rows.iter().skip(offset).take(limit).map(|s| decorator.decorate(s)).collect();
+        // The card carries the same clipped text as the model's copy, so one
+        // long message can't balloon the event.
+        let page: Vec<Value> = rows
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|s| {
+                let mut d = decorator.decorate(s);
+                d["text"] = json!(crate::jarvis::clip(s["text"].as_str().unwrap_or_default(), 160));
+                d
+            })
+            .collect();
         let has_more = offset + page.len() < total;
         if !page.is_empty() {
             emit(ev_card(json!({"kind": "schedules", "items": page, "total": total, "offset": offset,
@@ -411,8 +422,9 @@ impl ToolCtx<'_> {
                 "text": crate::jarvis::clip(s["text"].as_str().unwrap_or_default(), 160),
             }))
             .collect();
-        let mut note = "Only the user's own schedules. If what they asked about isn't here and has_more is true, \
-                        call again with next_offset before saying it doesn't exist."
+        let mut note = "Only the user's own schedules. Cancelled ones are left out unless status is cancelled: \
+                        if it isn't here, check status cancelled before saying it doesn't exist. If has_more is true, \
+                        call again with next_offset first."
             .to_string();
         if truncated {
             note.push_str(&format!(

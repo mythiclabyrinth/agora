@@ -2249,7 +2249,9 @@ pub(crate) fn apply_jarvis_draft(
                 schedule, start.map(|t| json!(t)).as_ref(), crate::store::now(),
             )
             .map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
-            let created = state.hub.create_checked_schedule(&user.username, &checked, None).map_err(|m| err(StatusCode::CONFLICT, &m))?;
+            // A cap or hourly-limit refusal is retryable, not a stale draft: 429
+            // keeps the card offered instead of retiring it.
+            let created = state.hub.create_checked_schedule(&user.username, &checked, None).map_err(|m| err(StatusCode::TOO_MANY_REQUESTS, &m))?;
             Ok(Applied::Scheduled(crate::hub::decorate_schedule(
                 &state.hub.store, &created, Some((user.username.as_str(), user.instance_admin)),
             )))
@@ -2640,8 +2642,10 @@ fn client_tz_transitions(raw: &Value) -> Vec<(f64, i32)> {
     let mut out: Vec<(f64, i32)> = raw
         .as_array()
         .map(|a| {
+            // Bound the scan, then keep the 24 earliest: sorting before
+            // truncating so an out-of-order list keeps the right ones.
             a.iter()
-                .take(24)
+                .take(512)
                 .filter_map(|t| {
                     let at = t["at_utc"].as_f64().filter(|v| v.is_finite())?;
                     let off = t["offset_minutes"].as_i64().filter(|m| (-720..=840).contains(m))?;
@@ -2651,6 +2655,7 @@ fn client_tz_transitions(raw: &Value) -> Vec<(f64, i32)> {
         })
         .unwrap_or_default();
     out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.truncate(24);
     out
 }
 
@@ -11042,6 +11047,42 @@ mod tests {
         assert_eq!(draft_status(&f, &draft), crate::jarvis::DraftStatus::Pending);
     }
 
+    #[tokio::test]
+    async fn jarvis_confirm_at_the_live_cap_is_retryable_not_a_conflict() {
+        let f = jarvis_fixture();
+        let ana = jarvis_user(&f.state, "ana");
+        let store = &f.state.hub.store;
+        let at = crate::store::now() + 3600.0;
+        let every = json!({"kind": "interval", "seconds": 3600});
+        let done = store.create_schedule("ana", &f.team, None, "done one", at, &json!({"kind": "once", "at": at}), "ana", None);
+        let pid = done["id"].as_str().unwrap().to_string();
+        store.update_schedule(&pid, &crate::store::ScheduleChange { status: Some("done".into()), ..Default::default() }, "ana", None).unwrap();
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "standup notes please",
+            "schedule": {"kind": "cron", "expr": "0 9 * * 1-5"}}), ist());
+        let create = out["draft_id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+        // Retiming a finished one-off brings it back to life, so it counts
+        // against the cap like a create.
+        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule_change", json!({"schedule_id": pid, "action": "retime",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *"}}), ist());
+        let revive = out["draft_id"].as_str().unwrap_or_else(|| panic!("{out}")).to_string();
+        // She reaches the cap after the cards were offered: both confirms are
+        // refused as retryable (never 409, which retires the card), and both
+        // drafts stay offered.
+        for i in 0..crate::store::MAX_LIVE_PER_OWNER {
+            store.create_schedule("ana", &f.team, None, &format!("filler {i}"), at, &every, "ana", None);
+        }
+        let before = own_schedules(&f, "ana").len();
+        // The create is caught by the pre-check (400, as for the agent op);
+        // a refusal at the write itself (reviving past the cap) answers 429.
+        for (draft, code) in [(&create, StatusCode::BAD_REQUEST), (&revive, StatusCode::TOO_MANY_REQUESTS)] {
+            let e = send_draft(&f.state, draft, "ana", rev(1)).await.unwrap_err();
+            assert_eq!(e.0, code, "{:?}", e.1 .0);
+            assert_eq!(draft_status(&f, draft), crate::jarvis::DraftStatus::Pending);
+        }
+        assert_eq!(own_schedules(&f, "ana").len(), before, "nothing created");
+        assert_eq!(store.schedule(&pid).unwrap()["status"], "done");
+    }
+
     #[test]
     fn jarvis_refreshed_change_stays_in_the_conversation_for_a_spoken_yes() {
         let f = jarvis_fixture();
@@ -11108,6 +11149,12 @@ mod tests {
             {"at_utc": 300.0, "offset_minutes": 9999}, {"offset_minutes": 60}, "junk"]);
         assert_eq!(client_tz_transitions(&raw), vec![(100.0, -240), (200.0, -300)]);
         assert!(client_tz_transitions(&json!(null)).is_empty());
+        // Out of order and over the cap: the 24 earliest survive, sorted.
+        let many: Vec<Value> = (0..30).rev().map(|i| json!({"at_utc": i as f64 * 10.0, "offset_minutes": 60})).collect();
+        let kept = client_tz_transitions(&json!(many));
+        assert_eq!(kept.len(), 24);
+        assert_eq!(kept.first(), Some(&(0.0, 60)));
+        assert_eq!(kept.last(), Some(&(230.0, 60)));
     }
 
     #[test]

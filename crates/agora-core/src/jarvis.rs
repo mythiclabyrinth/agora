@@ -87,7 +87,7 @@ the draft back and asks, and your turn ends. Give times in the user's local time
 fixed time on chosen weekdays (\"0 9 * * 1-5\"); for anything else, ask the user for it in UTC and pass \
 utc:true, or use an interval. A \
 recurring schedule needs at least 5 minutes between runs. Before saying a schedule doesn't exist, \
-page through list_schedules with next_offset while has_more is true. Find the schedule_id with \
+page through list_schedules with next_offset while has_more is true, and check status cancelled (left out by default). Find the schedule_id with \
 list_schedules before changing one.\n\
 \n\
 Navigating: when the user asks to open, go to, or show a channel, thread, or DM, find it and call \
@@ -1617,7 +1617,7 @@ pub fn tool_specs() -> Vec<Value> {
         tool("list_schedules", "The user's own scheduled messages (live first, then finished), paged. Shows a list card.",
             json!({"channel": {"type": "string", "description": "Optional channel id or name"},
                    "thread_id": {"type": "integer"},
-                   "status": {"type": "string", "enum": ["all", "active", "paused", "done"]},
+                   "status": {"type": "string", "enum": ["all", "active", "paused", "done", "cancelled"], "description": "all = everything except cancelled"},
                    "offset": {"type": "integer", "description": "From next_offset of the previous page"},
                    "limit": {"type": "integer", "description": "1-20, default 20"}}), &[]),
         tool("draft_schedule", "Prepare a scheduled message for the USER to confirm. Nothing is scheduled until they do. \

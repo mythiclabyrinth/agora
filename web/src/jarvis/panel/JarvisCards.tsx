@@ -155,6 +155,13 @@ export function announceSent(api: ApiClient, entryId: string, card: JarvisDraftC
   });
 }
 
+/** What a refused confirm toast starts with, by what was being confirmed. */
+export function confirmFailurePrefix(card: JarvisDraftLikeCard): string {
+  if (card.kind === "schedule_draft") return "Couldn't schedule: ";
+  if (card.kind === "schedule_change") return "Couldn't change the schedule: ";
+  return "Couldn't send: ";
+}
+
 /** Confirm a draft with the card's Send: saves any pending edit first, then
     sends at the revision the card shows (the server refuses a stale one).
     Resolves true once sent. */
@@ -198,7 +205,7 @@ export async function sendDraftEntry(api: ApiClient, entry: JarvisCardEntry, car
     // A stale revision can't be retried into success (the card has no newer
     // one): close it like a stale save, rather than leave a dead Send.
     if (e instanceof ApiError && e.status === 409) draftConflict(api, entry.id, card.draft_id, e);
-    else draftFailed(entry.id, e, "Couldn't send: ");
+    else draftFailed(entry.id, e, confirmFailurePrefix(card));
     return false;
   }
 }
