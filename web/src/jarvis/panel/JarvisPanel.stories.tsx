@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
-import type { JarvisCard } from "@agora/core";
+import type { JarvisCard, Schedule } from "@agora/core";
 import { fixtureMe, fixtureRootMessage } from "@agora/core/testing/fixtures";
 import { useJarvis, type JarvisCardEntry, type JarvisLogEntry, type JarvisState } from "../../state/jarvis";
 import { useUiState } from "../../state/ui";
@@ -53,7 +53,7 @@ const draft: JarvisCard = {
 };
 
 const entry = (id: string, card: JarvisCard): JarvisCardEntry => ({
-  id, card, status: card.kind === "draft" ? "pending" : undefined,
+  id, card, status: "draft_id" in card ? "pending" : undefined,
 });
 
 function open(state: Partial<JarvisState>) {
@@ -515,5 +515,105 @@ export const DraftUndo: Story = {
     await waitFor(() => expect(undoDraft).toHaveBeenCalled());
     expect(card.getByText("This draft is closed. It cannot be sent again.")).toBeVisible();
     expect(card.queryByRole("button", { name: "Send" })).toBeNull();
+  },
+};
+
+// ---------------------------------------------------------------- schedules
+
+const DAY = 86_400;
+const monday9 = 1793005200; // 2026-10-26 09:00 UTC (a Monday)
+const scheduleDraft: JarvisCard = {
+  kind: "schedule_draft", draft_id: "jd_sched", revision: 1,
+  channel_id: "general", channel_name: "storybook", group_id: "product", group_name: "Product",
+  thread_id: null, destination: "#storybook",
+  text: "Post the standup summary and flag anything blocked.",
+  final_text: "@claude @codex Post the standup summary and flag anything blocked.",
+  mentions: [
+    { kind: "agent", id: "claude", name: "Claude", handle: "claude" },
+    { kind: "agent", id: "codex", name: "Codex", handle: "codex" },
+  ],
+  schedule: { kind: "cron", expr: "0 13 * * 1-5" }, run_at: monday9 + 4 * 3600,
+  next_runs: [monday9 + 4 * 3600, monday9 + DAY + 4 * 3600, monday9 + 2 * DAY + 4 * 3600],
+  dst_note: "Stored in UTC: when daylight saving changes, the local time this posts at shifts by an hour.",
+  expires_in: 120,
+};
+
+const loop: Schedule = {
+  id: "sch_loop", owner: "ana", owner_name: "Ana", channel_id: "general", channel_name: "storybook", channel_kind: "channel",
+  group_id: "product", thread_id: null, thread_title: null, text: "@claude LOOP dependabot audit · run 4",
+  schedule: { kind: "interval", seconds: 6 * 3600 }, run_at: monday9, next_runs: [monday9, monday9 + 6 * 3600, monday9 + 12 * 3600],
+  status: "active", last_run_at: monday9 - 6 * 3600, last_error: null, created_at: monday9 - 7 * DAY, updated_at: monday9 - 6 * 3600,
+  created_by: "ana", updated_by: "ana", via_agent: null, is_owner: true, can_manage: true, channel_access: true,
+};
+
+const scheduleChange: JarvisCard = {
+  kind: "schedule_change", draft_id: "jd_change", revision: 1, action: "retime",
+  summary: "Change the schedule in #storybook to run on weekdays at 13:00 UTC", destination: "#storybook",
+  schedule: loop,
+  after: { status: "active", schedule: { kind: "cron", expr: "0 13 * * 1-5" }, run_at: monday9 + 4 * 3600,
+    next_runs: [monday9 + 4 * 3600, monday9 + DAY + 4 * 3600, monday9 + 2 * DAY + 4 * 3600] },
+  dst_note: null, expires_in: 120,
+};
+
+const schedulesList: JarvisCard = {
+  kind: "schedules", total: 23, offset: 0, has_more: true, truncated: false,
+  items: [
+    loop,
+    { ...loop, id: "sch_2", text: "@codex weekly release notes draft", schedule: { kind: "cron", expr: "0 16 * * 5" }, status: "paused", next_runs: [monday9 + 4 * DAY + 7 * 3600] },
+    { ...loop, id: "sch_3", text: "Remind #storybook about the retro", schedule: { kind: "once", at: monday9 - 3 * DAY }, status: "done", next_runs: [], last_error: "Channel was archived" },
+  ],
+};
+
+const confirmSchedule = fn(() => ({ ok: true, kind: "schedule", action: "create", schedule: { ...loop, id: "sch_new", schedule: { kind: "cron", expr: "0 13 * * 1-5" }, next_runs: [monday9 + 4 * 3600, monday9 + DAY + 4 * 3600, monday9 + 2 * DAY + 4 * 3600], text: "@claude @codex Post the standup summary and flag anything blocked." }, already_sent: false }));
+
+export const ScheduleDraft: Story = {
+  parameters: {
+    apiRoutes: { "GET /api/me": jarvisMe, "POST /api/jarvis/drafts/jd_sched/send": confirmSchedule },
+    setup: open({
+      transcript: "every weekday at 9 have Claude and Codex post the standup summary in #storybook", conversationId: "jc_story",
+      caption: "Scheduled for #storybook, on the rule “0 13 * * 1-5” (UTC), first at 2026-10-26 09:00 your time. Schedule it?",
+      log: [
+        said("user", "every weekday at 9 have Claude and Codex post the standup summary in #storybook"),
+        said("assistant", "Scheduled for #storybook, on the rule “0 13 * * 1-5” (UTC), first at 2026-10-26 09:00 your time: “@claude @codex Post the standup summary and flag anything blocked.” Schedule it?"),
+      ],
+      cards: [entry("jc-sched", scheduleDraft)],
+    }),
+  },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-schedule-draft"));
+    expect(card.getByText("@claude")).toBeVisible();
+    expect(card.getByText("@codex")).toBeVisible();
+    expect(card.getByRole("note")).toHaveTextContent("daylight saving");
+    expect(card.getAllByText(/UTC$/).length).toBeGreaterThan(0);
+    await userEvent.click(card.getByRole("button", { name: "Schedule" }));
+    await waitFor(() => expect(confirmSchedule).toHaveBeenCalledWith(expect.objectContaining({ revision: 1 })));
+    await expect(card.findByText("Scheduled")).resolves.toBeVisible();
+  },
+};
+
+export const ScheduleChange: Story = {
+  parameters: {
+    setup: open({
+      ...briefingState,
+      log: [said("user", "move my dependabot loop to weekdays at 9"), said("assistant", "Change the schedule in #storybook to run on weekdays at 13:00 UTC. Apply this change?")],
+      cards: [entry("jc-change", scheduleChange)],
+    }),
+  },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-schedule-change"));
+    expect(card.getByText("Now")).toBeVisible();
+    expect(card.getByText("After")).toBeVisible();
+    expect(card.getByRole("button", { name: "Change time" })).toBeEnabled();
+    expect(card.queryByRole("button", { name: "Edit" })).toBeNull();
+  },
+};
+
+export const SchedulesList: Story = {
+  parameters: { setup: open({ ...briefingState, cards: [entry("jc-list", schedulesList)] }) },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-schedules"));
+    expect(card.getByText(/1–3 of 23/)).toBeVisible();
+    expect(card.getByText(/next page/)).toBeVisible();
+    expect(card.getByText("Channel was archived")).toBeVisible();
   },
 };

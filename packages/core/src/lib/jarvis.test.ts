@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../api/client";
-import { cancelJarvisDraft, createSseParser, jarvisTranscribe, jarvisTurn, sendJarvisDraft, updateJarvisDraft, type JarvisEvent } from "./jarvis";
+import { cancelJarvisDraft, clientClock, createSseParser, isDraftLikeCard, jarvisTranscribe, jarvisTurn, sendJarvisDraft, updateJarvisDraft, type JarvisEvent } from "./jarvis";
 
 const frame = (event: JarvisEvent) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 
@@ -98,5 +98,48 @@ describe("jarvisTurn", () => {
     expect(await jarvisTranscribe(session, new Blob(["a"]))).toEqual({ text: "", noSpeech: true });
     vi.stubGlobal("fetch", reply({ text: " hola, envíalo ", no_speech: false }));
     expect(await jarvisTranscribe(session, new Blob(["a"]))).toEqual({ text: "hola, envíalo", noSpeech: false });
+  });
+});
+
+describe("clientClock", () => {
+  it("reports minutes east of UTC and whether the zone shifts during the year", () => {
+    const at = (offset: number, jan: number, jul: number) => {
+      const d = new Date(2026, 9, 26);
+      vi.spyOn(Date.prototype, "getTimezoneOffset").mockImplementation(function (this: Date) {
+        return this.getTime() === d.getTime() ? offset : this.getMonth() === 0 ? jan : jul;
+      });
+      const { utc_offset_minutes, has_dst } = clientClock(d, 0);
+      return { utc_offset_minutes, has_dst };
+    };
+    expect(at(-330, -330, -330)).toEqual({ utc_offset_minutes: 330, has_dst: false });
+    expect(at(240, 300, 240)).toEqual({ utc_offset_minutes: -240, has_dst: true });
+    expect(at(0, 0, 0)).toEqual({ utc_offset_minutes: 0, has_dst: false });
+    vi.restoreAllMocks();
+  });
+
+  it("lists the zone's coming offset changes, pinned to the minute", () => {
+    // New York: EDT until 2026-11-01 06:00 UTC, EST until 2027-03-14 07:00 UTC.
+    const fallBack = Date.UTC(2026, 10, 1, 6);
+    const springForward = Date.UTC(2027, 2, 14, 7);
+    vi.spyOn(Date.prototype, "getTimezoneOffset").mockImplementation(function (this: Date) {
+      const t = this.getTime();
+      return t >= fallBack && t < springForward ? 300 : 240;
+    });
+    const clock = clientClock(new Date(Date.UTC(2026, 9, 25, 15, 17, 42, 123)));
+    expect(clock.utc_offset_minutes).toBe(-240);
+    expect(clock.tz_transitions).toEqual([
+      { at_utc: fallBack / 1000, offset_minutes: -300 },
+      { at_utc: springForward / 1000, offset_minutes: -240 },
+    ]);
+    vi.restoreAllMocks();
+    vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(-330);
+    expect(clientClock(new Date(Date.UTC(2026, 9, 25))).tz_transitions).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("knows which cards are confirmable drafts", () => {
+    expect(isDraftLikeCard({ kind: "schedules", items: [], total: 0, offset: 0, has_more: false, truncated: false })).toBe(false);
+    expect(isDraftLikeCard({ kind: "digest", items: [] })).toBe(false);
+    expect(isDraftLikeCard({ kind: "schedule_change" } as never)).toBe(true);
   });
 });

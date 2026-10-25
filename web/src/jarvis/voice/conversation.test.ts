@@ -13,12 +13,13 @@ const core = vi.hoisted(() => ({
   jarvisSpeech: vi.fn(),
   resetJarvisConversation: vi.fn(),
 }));
-const cards = vi.hoisted(() => ({ announceSent: vi.fn(), saveDraftEdit: vi.fn() }));
+const cards = vi.hoisted(() => ({ announceSent: vi.fn(), announceScheduled: vi.fn(), saveDraftEdit: vi.fn() }));
 const chime = vi.hoisted(() => ({ armChimeNow: vi.fn(), playChime: vi.fn() }));
 const toasts = vi.hoisted(() => ({ toast: vi.fn() }));
 const nav = vi.hoisted(() => ({ jumpTo: vi.fn() }));
 
-vi.mock("@agora/core", () => core);
+// The pure helpers (card kinds, the device clock) stay real; the server calls are mocked.
+vi.mock("@agora/core", async (orig) => ({ ...(await orig<object>()), ...core }));
 vi.mock("../panel/JarvisCards", () => cards);
 vi.mock("../../lib/chime", () => chime);
 vi.mock("../../lib/toast", () => toasts);
@@ -222,6 +223,22 @@ describe("replies to a draft", () => {
       ["user", "yes go ahead"], ["assistant", "Sent to #release."],
     ]);
     expect(spokenTexts()).toEqual(["Sent to #release."]);
+  });
+
+  it("applies schedule_applied: the schedule card is done and announced once, and the turn carries the clock", async () => {
+    const card = { kind: "schedule_draft", draft_id: "d_s", revision: 1, channel_id: "c", channel_name: "release", group_id: "g",
+      group_name: "G", thread_id: null, destination: "#release", text: "t", final_text: "t", mentions: [],
+      schedule: { kind: "interval", seconds: 3600 }, run_at: 1, next_runs: [1], dst_note: null, expires_in: 120 } as JarvisCard;
+    useJarvis.setState({ cards: [{ id: "s", card, status: "pending", revision: 1, expiresAt: Date.now() + 60_000 }] });
+    const schedule = { id: "s1", status: "active" };
+    answerWith([{ type: "schedule_applied", draft_id: "d_s", action: "create", schedule } as unknown as JarvisEvent], "Scheduled for #release.");
+    await voice.handleUtterance("yes schedule it");
+    expect(useJarvis.getState().cards[0]).toMatchObject({ status: "sent", schedule });
+    expect(cards.announceScheduled).toHaveBeenCalledWith(card, "create");
+    const request = core.jarvisTurn.mock.calls[0][1];
+    expect(typeof request.utc_offset_minutes).toBe("number");
+    expect(typeof request.has_dst).toBe("boolean");
+    expect(Array.isArray(request.tz_transitions)).toBe(true);
   });
 
   it("no second Undo toast when the card's Send already posted it", async () => {

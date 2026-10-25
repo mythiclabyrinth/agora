@@ -133,6 +133,35 @@ fn refused(e: UpdateRefused, owner: &str) -> ApiError {
 
 fn patch_schedule(state: &AppState, user: &AuthedUser, id: &str, body: &Value) -> Result<Value, ApiError> {
     let (current, channel_access) = require_manageable(state, user, id)?;
+    patch_current(state, user, id, current, channel_access, body)
+}
+
+/// PATCH against the row the caller checked: the write is conditional on
+/// `current`, so a change made in between is refused, never overwritten.
+fn patch_current(state: &AppState, user: &AuthedUser, id: &str, current: Value, channel_access: bool, body: &Value) -> Result<Value, ApiError> {
+    let Some(change) = plan_patch(state, user, &current, channel_access, body)? else {
+        // e.g. resuming an already-active schedule: nothing to write.
+        return Ok(json!({"schedule": decorate_schedule(&state.hub.store, &current, viewer(user))}));
+    };
+    let owner = current["owner"].as_str().unwrap_or_default();
+    let updated = state
+        .hub
+        .store
+        .update_schedule_if(id, &current, &change, &user.username, None)
+        .map_err(|e| refused(e, owner))?;
+    state.hub.publish_for(&updated);
+    Ok(json!({"schedule": decorate_schedule(&state.hub.store, &updated, viewer(user))}))
+}
+
+/// The write a PATCH `body` makes to `current`, by the PATCH rules; None
+/// when there is nothing to write.
+fn plan_patch(
+    state: &AppState,
+    user: &AuthedUser,
+    current: &Value,
+    channel_access: bool,
+    body: &Value,
+) -> Result<Option<crate::store::ScheduleChange>, ApiError> {
     // An owner who lost the channel may only stop their schedule, never
     // retime or revive a post into a conversation they can't see.
     if !channel_access {
@@ -173,22 +202,111 @@ fn patch_schedule(state: &AppState, user: &AuthedUser, id: &str, body: &Value) -
         non_owner: current["owner"].as_str() != Some(user.username.as_str()),
         postpone_only: current["owner"].as_str() != Some(user.username.as_str()),
     };
-    let change = plan_change(&state.hub.store, &current, &req, now()).map_err(|e| match e {
+    let change = plan_change(&state.hub.store, current, &req, now()).map_err(|e| match e {
         PlanError::Bad(m) => err(StatusCode::BAD_REQUEST, &m),
         PlanError::Conflict(m) => err(StatusCode::CONFLICT, &m),
     })?;
-    if change.is_empty() {
-        // e.g. resuming an already-active schedule: nothing to write.
-        return Ok(json!({"schedule": decorate_schedule(&state.hub.store, &current, viewer(user))}));
-    }
-    let owner = current["owner"].as_str().unwrap_or_default();
-    let updated = state
+    Ok((!change.is_empty()).then_some(change))
+}
+
+pub(crate) use crate::jarvis_schedules::OwnChange;
+
+/// The caller's own schedule — Jarvis acts for the person, never with an
+/// admin's reach over other people's schedules. Someone else's is reported
+/// as unknown, so a guessed id learns nothing.
+pub(crate) fn own_schedule(state: &AppState, user: &AuthedUser, id: &str) -> Result<Value, ApiError> {
+    state
         .hub
         .store
-        .update_schedule_if(id, &current, &change, &user.username, None)
-        .map_err(|e| refused(e, owner))?;
-    state.hub.publish_for(&updated);
-    Ok(json!({"schedule": decorate_schedule(&state.hub.store, &updated, viewer(user))}))
+        .schedule(id)
+        .filter(|s| s["owner"].as_str() == Some(user.username.as_str()))
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "That isn't one of your schedules"))
+}
+
+/// Dry run of a change on the caller's own schedule, by the same rules as
+/// PATCH/DELETE; nothing is written. Returns (current row, row as it would
+/// be after).
+pub(crate) fn preview_own_change(state: &AppState, user: &AuthedUser, id: &str, change: &OwnChange) -> Result<(Value, Value), ApiError> {
+    own_schedule(state, user, id)?;
+    let (current, channel_access) = require_manageable(state, user, id)?;
+    let planned = match change {
+        OwnChange::Cancel => cancel_change(&current).map_err(|m| err(StatusCode::CONFLICT, &m))?,
+        OwnChange::Patch(body) => {
+            if !channel_access && body.get("status").and_then(Value::as_str) != Some("paused") {
+                return Err(err(StatusCode::FORBIDDEN, "You no longer have access to this channel; you can only pause or cancel this schedule"));
+            }
+            let req = ChangeRequest {
+                text: None,
+                schedule: body.get("schedule").filter(|v| !v.is_null()),
+                run_at: body.get("run_at").filter(|v| !v.is_null()),
+                status: body.get("status").and_then(Value::as_str),
+                non_owner: false,
+                postpone_only: false,
+            };
+            plan_change(&state.hub.store, &current, &req, now()).map_err(|e| match e {
+                PlanError::Bad(m) => err(StatusCode::BAD_REQUEST, &m),
+                PlanError::Conflict(m) => err(StatusCode::CONFLICT, &m),
+            })?
+        }
+    };
+    let mut after = current.clone();
+    if let Some(t) = planned.run_at {
+        after["run_at"] = json!(t);
+    }
+    if let Some(s) = planned.schedule {
+        after["schedule"] = s;
+    }
+    if let Some(s) = planned.status {
+        after["status"] = json!(s);
+    }
+    Ok((current, after))
+}
+
+/// Apply a confirmed change to the caller's own schedule, by the same rules
+/// as PATCH/DELETE. `reviewed` is the fingerprint of what the person saw
+/// (status, cadence, destination, owner): if any of that changed since,
+/// nothing is written (`Ok(None)`) so the caller can show them the schedule
+/// as it is now. A run firing meanwhile only moves bookkeeping, so the change
+/// is planned against the current row and applies; if the row moves between
+/// that read and the write, it is re-read and tried again (once).
+pub(crate) fn apply_own_change(
+    state: &AppState,
+    user: &AuthedUser,
+    id: &str,
+    change: &OwnChange,
+    reviewed: &str,
+) -> Result<Option<Value>, ApiError> {
+    for attempt in 0..2 {
+        own_schedule(state, user, id)?;
+        let (current, channel_access) = require_manageable(state, user, id)?;
+        if crate::jarvis_schedules::change_fingerprint(&current) != reviewed {
+            return Ok(None);
+        }
+        let planned = match change {
+            OwnChange::Patch(body) => plan_patch(state, user, &current, channel_access, body)?,
+            OwnChange::Cancel => Some(cancel_change(&current).map_err(|m| err(StatusCode::CONFLICT, &m))?),
+        };
+        let Some(planned) = planned else {
+            return Ok(Some(decorate_schedule(&state.hub.store, &current, viewer(user))));
+        };
+        match state.hub.store.update_schedule_if(id, &current, &planned, &user.username, None) {
+            Ok(updated) => {
+                state.hub.publish_for(&updated);
+                return Ok(Some(decorate_schedule(&state.hub.store, &updated, viewer(user))));
+            }
+            Err(UpdateRefused::Changed) if attempt == 0 => continue,
+            // Still moving: let the caller re-check what the person saw.
+            Err(UpdateRefused::Changed) => return Ok(None),
+            Err(e) => return Err(refused(e, &user.username)),
+        }
+    }
+    Ok(None)
+}
+
+/// PATCH as `user`, for tests of what a concurrent edit does.
+#[cfg(test)]
+pub(crate) fn patch_for_test(state: &AppState, user: &AuthedUser, id: &str, body: &Value) -> Result<Value, ApiError> {
+    patch_schedule(state, user, id, body)
 }
 
 /// DELETE /api/schedules/{id} — cancel (kept as history, hidden from lists).

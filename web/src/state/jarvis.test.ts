@@ -177,4 +177,31 @@ describe("useJarvis", () => {
     useJarvis.getState().setCardText(id, "ship it after the review");
     expect(useJarvis.getState().cards[0].text).toBe("ship it after the review");
   });
+
+  it("treats schedule drafts and changes as confirmable cards, and marks them applied", () => {
+    const s = () => useJarvis.getState();
+    const schedule = { id: "s1", status: "active", next_runs: [1], schedule: { kind: "interval", seconds: 3600 } } as never;
+    s().applyEvent({ type: "card", card: {
+      kind: "schedule_draft", draft_id: "jd_s", revision: 1, channel_id: "c", channel_name: "release", group_id: "g", group_name: "G",
+      thread_id: null, destination: "#release", text: "standup", final_text: "@helper standup", mentions: [],
+      schedule: { kind: "interval", seconds: 3600 }, run_at: 1, next_runs: [1, 2, 3], dst_note: null, expires_in: 120,
+    } });
+    s().applyEvent({ type: "card", card: {
+      kind: "schedule_change", draft_id: "jd_c", revision: 1, action: "pause", summary: "Pause it", destination: "#release",
+      schedule, after: { status: "paused", schedule: { kind: "interval", seconds: 3600 }, run_at: 1, next_runs: [] },
+      dst_note: null, expires_in: 120,
+    } });
+    s().applyEvent({ type: "card", card: { kind: "schedules", items: [], total: 0, offset: 0, has_more: false, truncated: false } });
+    const [list, change, create] = s().cards;
+    expect(list.status).toBeUndefined();
+    expect(change).toMatchObject({ status: "pending", revision: 1, savedText: undefined });
+    expect(create).toMatchObject({ status: "pending", revision: 1, savedText: "standup" });
+    s().applyEvent({ type: "schedule_applied", draft_id: "jd_s", action: "create", schedule });
+    s().applyEvent({ type: "draft_cancelled", draft_id: "jd_c", superseded_by: "jd_c2" });
+    expect(s().cards.map(c => c.status)).toEqual([undefined, "cancelled", "sent"]);
+    expect(s().cards[2].schedule).toBe(schedule);
+    // A message draft's draft_sent never touches a schedule card with the same id.
+    s().applyEvent({ type: "draft_sent", draft_id: "jd_s", message: { id: 9 } as never });
+    expect(s().cards[2].messageId).toBeUndefined();
+  });
 });

@@ -22,7 +22,7 @@ use crate::attachments::{safe_filename, sniff_image_mime};
 
 mod scheduler;
 pub use scheduler::{scheduler_start_grace, tick_needs_wake_grace, WakeClock, SCHEDULER_TICK_SECS};
-pub(crate) use scheduler::{cancel_change, decorate_schedule, plan_change, ChangeRequest, PlanError, ScheduleDecorator};
+pub(crate) use scheduler::{cancel_change, check_new_schedule, decorate_schedule, plan_change, ChangeRequest, PlanError, ScheduleDecorator};
 use crate::store::{now, slugify, NewAttachment, Store};
 
 /// Default consecutive agent-authored messages fanned out to a recipient in

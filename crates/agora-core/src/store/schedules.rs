@@ -484,6 +484,16 @@ impl Store {
             params![username, agent_id], |r| r.get(0)).ok()
     }
 
+    /// Force a schedule's status and last change time (tests only).
+    #[cfg(test)]
+    pub fn set_schedule_status_for_test(&self, id: &str, status: &str, updated_at: f64) {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE schedules SET status = ?2, updated_at = ?3 WHERE id = ?1", params![id, status, updated_at])
+            .unwrap();
+    }
+
     /// One owner's schedules (tests only; agents page via
     /// [`Store::list_owner_schedules_by_status`]).
     #[cfg(test)]

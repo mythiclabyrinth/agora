@@ -32,7 +32,8 @@
    (state/jarvis.ts) carries everything the panel renders. */
 
 import {
-  jarvisSpeech, jarvisTranscribe, jarvisTurn, resetJarvisConversation, type ApiClient,
+  clientClock, isDraftLikeCard, jarvisSpeech, jarvisTranscribe, jarvisTurn, resetJarvisConversation,
+  type ApiClient, type JarvisDraftLikeCard,
 } from "@agora/core";
 import { sessionToken } from "../../lib/auth";
 import { armChimeNow, playChime } from "../../lib/chime";
@@ -41,7 +42,7 @@ import { toast } from "../../lib/toast";
 import { isLiveDraft, useJarvis } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
 import { useUiState } from "../../state/ui";
-import { announceSent, saveDraftEdit, type JarvisDraftCard } from "../panel/JarvisCards";
+import { announceScheduled, announceSent, saveDraftEdit, type JarvisDraftCard } from "../panel/JarvisCards";
 import { jumpTo } from "../navigate";
 import { jarvisLevel } from "../panel/level";
 import { createEndpointer, ENDPOINT_DEFAULTS, frameRms } from "./endpointer";
@@ -358,6 +359,12 @@ function onDraftSent(draftId: string, messageId: number, alreadySent: boolean): 
   if (entry && caps.api && !alreadySent) announceSent(caps.api, entry.id, entry.card as JarvisDraftCard, messageId);
 }
 
+/** The server applied a schedule draft the user approved out loud. */
+function onScheduleApplied(draftId: string, action: string, already: boolean): void {
+  const entry = useJarvis.getState().cards.find(c => isDraftLikeCard(c.card) && c.card.draft_id === draftId);
+  if (entry && isDraftLikeCard(entry.card) && !already) announceScheduled(entry.card, action);
+}
+
 /** Card edits still waiting for their debounce are saved before the turn,
     so a spoken yes is judged against the text the card shows. Resolves the
     drafts whose edit could not be saved: the server won't let this turn
@@ -367,7 +374,7 @@ async function flushDraftEdits(): Promise<string[]> {
   if (!api) return [];
   const edited = useJarvis.getState().cards.filter(c => isLiveDraft(c) && c.text !== undefined);
   const saved = await Promise.all(edited.map(c => saveDraftEdit(api, c.id)));
-  return edited.filter((_, i) => !saved[i]).map(c => (c.card as JarvisDraftCard).draft_id);
+  return edited.filter((_, i) => !saved[i]).map(c => (c.card as JarvisDraftLikeCard).draft_id);
 }
 
 /** A dropped connection reads as a browser error ("Failed to fetch"); say it plainly, once. */
@@ -419,6 +426,7 @@ export async function runTurn(raw: string): Promise<void> {
         context: ui.view.kind === "channel" && ui.sel.c ? { channel_id: ui.sel.c, thread_id: ui.threadRoot } : undefined,
         unsaved_drafts: unsaved.length ? unsaved : undefined,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        ...clientClock(),
       },
       event => {
         if (ctl.signal.aborted) return;
@@ -426,6 +434,7 @@ export async function runTurn(raw: string): Promise<void> {
         else if (event.type === "status" && event.phase !== "speaking") jarvisLevel.bump(0.12);
         useJarvis.getState().applyEvent(event);
         if (event.type === "draft_sent") onDraftSent(event.draft_id, event.message.id, event.already_sent === true);
+        if (event.type === "schedule_applied") onScheduleApplied(event.draft_id, event.action, event.already_applied === true);
         // Closed meanwhile: the answer may finish speaking, but it doesn't
         // move the user somewhere else while they're doing something.
         if (event.type === "navigate" && caps.open) jumpTo(event);
@@ -433,7 +442,7 @@ export async function runTurn(raw: string): Promise<void> {
         if (event.type === "new_conversation") fresh = true;
         // The server reported a failure: keep the panel (and the error) up.
         if (event.type === "error") hide = fresh = false;
-        if (event.type === "card" && event.card.kind === "draft") drafted = true;
+        if (event.type === "card" && isDraftLikeCard(event.card)) drafted = true;
         // The answer is still being spoken: no flash of "armed" in between.
         if (event.type === "done" && (speech.playing || speech.queue.length)) useJarvis.getState().setVoicePhase("speaking");
         if (event.type === "delta") {
