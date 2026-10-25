@@ -1453,7 +1453,39 @@ impl Hub {
                 }
                 Ok(out)
             }
-            other => Err(format!("unknown op '{other}' (create, update, pause, resume, cancel, list)")),
+            "get" => {
+                // One schedule in full, message included. Same reach as `list`:
+                // the person's own, in a conversation this agent is still in.
+                // Its words come back only where `list` would show them: this
+                // conversation, a public channel, or one the person named in
+                // their message (the answer lands here, where others may read).
+                // A scheduled run may read only its own schedule.
+                let id = frame["id"].as_str().ok_or("id is required")?;
+                let current = self.store.schedule(id).ok_or("unknown schedule")?;
+                if current["owner"].as_str() != Some(grant.owner.as_str()) {
+                    return Err("that schedule belongs to someone else".into());
+                }
+                if grant.schedule_id.as_deref().is_some_and(|only| only != id) {
+                    return Err("this turn may only re-arm or cancel its own schedule".into());
+                }
+                let cid = current["channel_id"].as_str().unwrap_or_default();
+                let here = cid == grant.channel_id;
+                if !here && !agent_still_in(&self.store, &handle.agent_id, cid) {
+                    return Err("that schedule is in a conversation this agent can't manage".into());
+                }
+                if !here && !is_public_channel(&self.store, cid) {
+                    if let Some(refusal) = not_named_error(&self.store, &grant, cid) {
+                        return Err(refusal);
+                    }
+                }
+                let mut item = decorate(&current);
+                item["manageable_here"] = json!(
+                    here || (person_named(&self.store, &grant, cid)
+                        && agent_may_reach(&self.store, &handle.agent_id, &grant.owner, cid))
+                );
+                Ok(json!({"schedule": item}))
+            }
+            other => Err(format!("unknown op '{other}' (create, update, pause, resume, cancel, list, get)")),
         }
     }
 }
@@ -1642,6 +1674,7 @@ mod tests {
             ("list", json!({})),
             ("pause", json!({"id": s["id"]})),
             ("update", json!({"id": other["id"], "run_at": now() + 60.0})),
+            ("get", json!({"id": other["id"]})),
         ] {
             let r = ask(&h, &mut claude, req("claude", &turn, op, extra));
             assert_eq!(r["ok"], false, "{op} should be refused: {r}");
@@ -1661,6 +1694,9 @@ mod tests {
         // The one-off's spec follows its new time, so clients describe it right.
         // `at` comes back from stored JSON text (last-bit float drift).
         assert!((rearmed["schedule"]["schedule"]["at"].as_f64().unwrap() - next).abs() < 1e-3);
+        // It may read its own schedule back in full.
+        let own = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": s["id"]})));
+        assert_eq!(own["schedule"]["text"], "@claude LOOP demo · run 2", "{own}");
         let cancelled = ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": s["id"]})));
         assert_eq!(cancelled["schedule"]["status"], "cancelled");
     }
@@ -2737,6 +2773,91 @@ mod tests {
         let made = ask(&h, &mut claude, req("claude", &turn, "create", json!({
             "text": "reminder", "schedule": {"kind": "once", "at": now() + 900.0}})));
         assert_eq!(made["ok"], true, "{made}");
+    }
+
+    #[test]
+    fn get_returns_one_schedule_in_full_only_where_list_would_show_it() {
+        let h = hub();
+        people(&h);
+        let mut claude = add_agent(&h, "claude", "Claude", false);
+        let room = |group: &str, name: &str, public: bool| {
+            let g = h.store.create_group(group, "", Some("tom"));
+            let gid = g["id"].as_str().unwrap().to_string();
+            if public {
+                h.store.set_group_public(&gid, true);
+            }
+            h.store.add_member(&gid, "agent", "claude", "member", None);
+            h.store.create_channel(&gid, name, "")["id"].as_str().unwrap().to_string()
+        };
+        let here = room("G-here", "general", true);
+        let open = room("G-open", "town", true);
+        let private = room("G-exec", "exec-comp", false);
+        // Two private channels share a name: naming it is ambiguous.
+        let twin_a = room("G-a", "ops", false);
+        room("G-b", "ops", false);
+        let elsewhere_g = h.store.create_group("G-other", "", Some("tom"));
+        let not_in = h.store.create_channel(elsewhere_g["id"].as_str().unwrap(), "secret-room", "")["id"]
+            .as_str().unwrap().to_string();
+        h.store.set_agent_dm_policy("claude", true, &[]);
+        let dm = h.store.open_agent_dm("tom", "claude", "Claude")["id"].as_str().unwrap().to_string();
+        let long = "@claude-cli LOOP demo · run 1\n\nSCHEDULER: line two\nline three";
+        let mine = once_at(&h, "tom", &here, long, now() + 600.0);
+        let public = once_at(&h, "tom", &open, "public text", now() + 610.0);
+        let exec = once_at(&h, "tom", &private, "private text", now() + 620.0);
+        let twin = once_at(&h, "tom", &twin_a, "ops text", now() + 625.0);
+        let dm_s = once_at(&h, "tom", &dm, "dm secret", now() + 630.0);
+        let unreachable = once_at(&h, "tom", &not_in, "never shown", now() + 640.0);
+        let bobs = once_at(&h, "bob", &here, "bob's", now() + 650.0);
+        h.post_user_message(&here, "what's in my schedule?", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+
+        // Its own conversation: everything, the full multi-line text included.
+        let r = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": mine})));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["schedule"]["text"], long);
+        assert_eq!(r["schedule"]["manageable_here"], true);
+        assert!(r["schedule"]["next_runs"].as_array().is_some_and(|n| !n.is_empty()));
+        // A public channel elsewhere reads like list shows it, but isn't manageable unnamed.
+        let r = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": public})));
+        assert_eq!(r["schedule"]["text"], "public text", "{r}");
+        assert_eq!(r["schedule"]["manageable_here"], false);
+        // Someone else's, unknown, not reachable, private unnamed, DM unnamed: refused, nothing leaks.
+        for (id, leak) in [
+            (bobs.as_str(), "bob's"), ("nope", "nope-text"), (unreachable.as_str(), "never shown"),
+            (exec.as_str(), "private text"), (dm_s.as_str(), "dm secret"),
+        ] {
+            let r = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": id})));
+            assert_eq!(r["ok"], false, "{id} should be refused: {r}");
+            let body = r.to_string();
+            for l in [leak, "exec-comp", &private, &dm] {
+                assert!(!body.contains(l), "leaked {l}: {body}");
+            }
+        }
+        let missing = ask(&h, &mut claude, req("claude", &turn, "get", json!({})));
+        assert_eq!(missing["error"], "id is required");
+
+        // Named by the person: the private channel and the DM read in full.
+        h.post_user_message(&here, "show my #exec-comp schedule and the one in our DM", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let r = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": exec})));
+        assert_eq!(r["schedule"]["text"], "private text", "{r}");
+        assert_eq!(r["schedule"]["manageable_here"], true);
+        let r = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": dm_s})));
+        assert_eq!(r["schedule"]["text"], "dm secret", "{r}");
+
+        // A name two private channels share is refused, not guessed.
+        h.post_user_message(&here, "show my #ops schedule", "tom", Some("Tom"), None, vec![]);
+        let turn = last_frame(&mut claude, "inbound").unwrap()["turn_id"].as_str().unwrap().to_string();
+        let r = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": twin})));
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("more than one"), "{r}");
+        assert!(!r.to_string().contains("ops text"));
+
+        // Cancelled schedules still read back, with their status.
+        let gone = ask(&h, &mut claude, req("claude", &turn, "cancel", json!({"id": mine})));
+        assert_eq!(gone["ok"], true, "{gone}");
+        let r = ask(&h, &mut claude, req("claude", &turn, "get", json!({"id": mine})));
+        assert_eq!(r["schedule"]["status"], "cancelled", "{r}");
     }
 
     #[test]

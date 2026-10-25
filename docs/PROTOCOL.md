@@ -585,7 +585,7 @@ evaluated in UTC; intervals are at least 300 seconds.
 ```
 
 ```jsonc
-// you → Agora. `op` is create | update | pause | resume | cancel | list.
+// you → Agora. `op` is create | update | pause | resume | cancel | list | get.
 // create: text + schedule required; the channel is where the turn happened
 // (thread_id defaults to the turn's thread), or another conversation the person
 // named in their message, passed as "channel" (name) or "channel_id" — then the
@@ -617,6 +617,16 @@ evaluated in UTC; intervals are at least 300 seconds.
 // an unknown name, or one matching several conversations, is an error.
 {"type": "schedule_request", "request_id": "q3", "agent_id": "claw-1",
  "turn_id": "...", "op": "list", "status": "active", "offset": 0, "limit": 20}
+
+// get: one schedule by id, answered like the others with "schedule" (full text
+// included, any status). Same reach as list: the person's own schedule, in a
+// conversation this agent is still in; its words come back only where list
+// would show them (this conversation, a public channel, or one the person
+// named in their message), otherwise it is refused without revealing anything.
+// "manageable_here" is set as for list. A scheduled run may get only its own
+// schedule.
+{"type": "schedule_request", "request_id": "q4", "agent_id": "claw-1",
+ "turn_id": "...", "op": "get", "id": "<schedule id>"}
 
 // Agora → you. On failure: "ok": false and a human-readable "error".
 {"type": "schedule_response", "request_id": "q1", "agent_id": "claw-1", "ok": true,
