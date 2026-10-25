@@ -283,8 +283,8 @@ SCHEDULE_FIELDS = ("id", "text", "schedule", "run_at", "channel_id", "channel", 
 
 SCHEDULE_LIST_MAX = 20
 SCHEDULE_LABEL_MAX = 100     # a list row shows only its message's first line
-# A get result quotes the stored message between these lines. Sentinel lines
-# inside such a block are quoted data, never a request (parse_schedule_asks).
+# A get result quotes the stored message between these lines (presentation
+# only: the stored text is defused before quoting, see _quote_stored_text).
 SCHEDULE_TEXT_BEGIN = "-----BEGIN STORED SCHEDULE TEXT-----"
 SCHEDULE_TEXT_END = "-----END STORED SCHEDULE TEXT-----"
 SCHEDULE_SYSTEM_PROMPT = (
@@ -320,19 +320,11 @@ SCHEDULE_SYSTEM_PROMPT = (
 
 
 def _schedule_sentinel_lines(reply: str) -> list[str]:
-    """The reply's sentinel lines, in order. Lines inside a quoted stored-text
-    block (a get result the model repeated) are data, never requests."""
-    lines: list[str] = []
-    quoted = False
-    for line in (reply or "").splitlines():
-        stripped = line.strip()
-        if stripped == SCHEDULE_TEXT_BEGIN:
-            quoted = True
-        elif stripped == SCHEDULE_TEXT_END:
-            quoted = False
-        elif not quoted and line.lstrip().startswith(SCHEDULE_SENTINEL):
-            lines.append(line)
-    return lines
+    """The reply's sentinel lines, in order. Stored text from a get result is
+    defused before the model sees it (_quote_stored_text), so an echo of it
+    can't contain one."""
+    return [line for line in (reply or "").splitlines()
+            if line.lstrip().startswith(SCHEDULE_SENTINEL)]
 
 
 def parse_schedule_asks(reply: str) -> list[dict]:
@@ -615,13 +607,17 @@ def format_schedule_result(ask: dict, response: dict) -> str:
             "plain words.]")
 
 
+SCHEDULE_SENTINEL_DEFUSED = "<<AGORA_SCHEDULE (quoted)>>"
+
+
 def _quote_stored_text(text: str) -> str:
-    """The stored text with any line that would read as a marker defused (a
-    zero-width space in front), so stored words can never close the quoted
-    block early and smuggle a live request after it."""
-    markers = (SCHEDULE_TEXT_BEGIN, SCHEDULE_TEXT_END)
-    return "\n".join("\u200b" + line if line.strip() in markers else line
-                     for line in text.split("\n"))
+    """The stored text made inert wherever it is echoed, whole or in part: the
+    request sentinel and the quote markers are replaced outright (a plain
+    substring swap, so no choice of line break can sneak one past), and a
+    stored message can never become a live request or close its quote."""
+    return (text.replace(SCHEDULE_SENTINEL, SCHEDULE_SENTINEL_DEFUSED)
+            .replace(SCHEDULE_TEXT_BEGIN, "[begin marker]")
+            .replace(SCHEDULE_TEXT_END, "[end marker]"))
 
 
 def _format_schedule_get(item) -> str:
