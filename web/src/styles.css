@@ -3694,8 +3694,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .jv-sched-meta { margin: 4px 0 0; color: var(--dim); font-size: 11px; font-weight: 400; }
 .jv-sched-when .ico, .jv-sched-meta .ico { flex: none; width: 13px; height: 13px; color: var(--accent-text); }
 .jv-sched-runs { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 8px; }
-.jv-sched-runs .jv-recipient-label { align-self: flex-start; padding-top: 2px; }
-.jv-sched-runs .jv-recipient-label { flex: none; min-width: 64px; }
+.jv-sched-runs .jv-recipient-label { align-self: flex-start; padding-top: 2px; flex: none; min-width: 64px; }
 .jv-card .jv-sched-runs ol { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; font-size: 12px; font-variant-numeric: tabular-nums; }
 .jv-sched-runs li { display: flex; flex-wrap: wrap; gap: 4px 10px; }
 .jv-sched-utc { color: var(--faint); font-size: 11px; }
@@ -3708,6 +3707,9 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .jv-sched-status { flex: none; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 5px; text-transform: capitalize; background: var(--panel-strong); color: var(--dim); }
 .jv-sched-status.is-active { background: rgba(var(--success-rgb),.1); color: rgb(var(--success-rgb)); }
 .jv-sched-status.is-paused { background: rgba(var(--warning-rgb),.12); color: var(--text); }
+/* Finished schedules recede; cancelled ones read as struck off. */
+.jv-sched-status.is-done { background: rgba(var(--ink-rgb),.07); color: var(--dim); }
+.jv-sched-status.is-cancelled { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); text-decoration: line-through; }
 .jv-sched-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; }
 .jv-sched-row + .jv-sched-row { border-top: 1px solid var(--border); }
 .jv-sched-error { color: var(--danger); font-size: 11px; overflow-wrap: anywhere; }

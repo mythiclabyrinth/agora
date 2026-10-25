@@ -158,7 +158,8 @@ pub fn parse_when_noted(raw: &Value, tz: &TzHint) -> Result<(f64, Option<String>
     let mut c = clock.split(':');
     let (h, mi, sec) = (num(c.next()), num(c.next()), c.next().map_or(Some(0), |v| v.split('.').next().and_then(|v| v.parse::<i64>().ok())));
     let (Some(h), Some(mi), Some(sec)) = (h, mi, sec) else { return Err(bad()) };
-    if !(1..=12).contains(&mo) || da < 1 || da > days_in_month(y, mo) || !(0..24).contains(&h) || !(0..60).contains(&mi) || !(0..60).contains(&sec) {
+    // Bound the year first: a huge one would overflow the day arithmetic below.
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || da < 1 || da > days_in_month(y, mo) || !(0..24).contains(&h) || !(0..60).contains(&mi) || !(0..60).contains(&sec) {
         return Err(format!("“{s}” isn't a real date and time"));
     }
     let wall = ((days_from_civil(y, mo, da) * 86_400) + h * 3600 + mi * 60 + sec) as f64;
@@ -171,19 +172,30 @@ pub fn parse_when_noted(raw: &Value, tz: &TzHint) -> Result<(f64, Option<String>
 /// A comma list of single numbers in `lo..=hi`, from a cron field that is
 /// a number, a range `a-b`, or a list of those (no steps).
 fn expand_field(field: &str, lo: i64, hi: i64) -> Option<Vec<i64>> {
+    // Range-check before expanding: an unchecked "0-999999999" would allocate
+    // billions of values before anything rejected it.
+    let in_range = |v: i64| (lo..=hi).contains(&v);
     let mut out = Vec::new();
     for part in field.split(',') {
         if let Some((a, b)) = part.split_once('-') {
             let (a, b) = (a.parse::<i64>().ok()?, b.parse::<i64>().ok()?);
-            if a > b {
+            if a > b || !in_range(a) || !in_range(b) {
                 return None;
             }
             out.extend(a..=b);
         } else {
-            out.push(part.parse::<i64>().ok()?);
+            let v = part.parse::<i64>().ok()?;
+            if !in_range(v) {
+                return None;
+            }
+            out.push(v);
+        }
+        // Every field is a small range, so a longer list is a malformed rule.
+        if out.len() > 64 {
+            return None;
         }
     }
-    out.iter().all(|v| (lo..=hi).contains(v)).then_some(out)
+    Some(out)
 }
 
 fn join(mut v: Vec<i64>) -> String {
@@ -435,7 +447,10 @@ impl ToolCtx<'_> {
             kind: DraftKind::ScheduleCreate {
                 schedule: checked.schedule.clone(),
                 run_at: checked.run_at,
-                start: run_at.as_ref().and_then(Value::as_f64),
+                // An interval with no stated start is pinned to the first run the
+                // card showed, so confirming later doesn't shift it.
+                start: run_at.as_ref().and_then(Value::as_f64)
+                    .or_else(|| (checked.schedule["kind"] == "interval").then_some(checked.run_at)),
                 time_note: time_note.clone(),
             },
             conversation_id: self.turn_conversation(),
@@ -618,6 +633,8 @@ mod tests {
             assert!(parse_when(&json!(bad), &ist()).is_err(), "{bad}");
         }
         assert!(parse_when(&json!("2028-02-29T09:00"), &ist()).is_ok(), "leap day exists in 2028");
+        assert!(parse_when(&json!("100000000000000-01-01T09:00"), &ist()).is_err(), "huge year is refused, not overflowed");
+        assert!(parse_when(&json!("1969-12-31T09:00"), &ist()).is_err());
         assert!(parse_when(&json!("2027-02-29T09:00"), &ist()).is_err());
     }
 
@@ -687,6 +704,12 @@ mod tests {
             assert!(err.contains("say it in UTC, or use an every-N interval"), "{expr}: {err}");
         }
         assert!(local_cron_to_utc("0 9 * *", 330).is_err(), "4 fields");
+        // Huge ranges are refused before anything is expanded (no giant allocation).
+        assert!(local_cron_to_utc("0 9 * * 0-999999999", 330).is_err());
+        assert!(local_cron_to_utc("0 9 * * 0-999999999,0-999999999,1-999999999", 60).is_err());
+        assert!(expand_field("0-999999999", 0, 7).is_none());
+        assert!(expand_field("9", 0, 7).is_none());
+        assert_eq!(expand_field("1-5", 0, 7), Some(vec![1, 2, 3, 4, 5]));
         // Stated in UTC, the same rules pass through unchanged.
         let (spec, _, _) = schedule_from_args(&json!({"kind": "cron", "expr": "0 */2 * * *", "utc": true}), &ist()).unwrap();
         assert_eq!(spec["expr"], "0 */2 * * *");

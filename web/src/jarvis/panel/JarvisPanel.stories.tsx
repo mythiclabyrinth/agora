@@ -615,5 +615,23 @@ export const SchedulesList: Story = {
     expect(card.getByText(/1–3 of 23/)).toBeVisible();
     expect(card.getByText(/next page/)).toBeVisible();
     expect(card.getByText("Channel was archived")).toBeVisible();
+    // Finished rows get their own muted pill, not the neutral base style.
+    expect(card.getByText("done")).toHaveClass("jv-sched-status", "is-done");
+  },
+};
+
+export const ScheduleCancel: Story = {
+  parameters: {
+    setup: open({
+      ...briefingState,
+      log: [said("user", "cancel my dependabot loop"), said("assistant", "Cancel the schedule in #storybook? Apply this change?")],
+      cards: [entry("jc-cancel", { ...scheduleChange, draft_id: "jd_cancel", action: "cancel",
+        summary: "Cancel the schedule in #storybook",
+        after: { status: "cancelled", schedule: loop.schedule, run_at: loop.run_at, next_runs: [] } } as JarvisCard)],
+    }),
+  },
+  play: async ({ canvasElement }) => {
+    const card = within(await within(canvasElement).findByTestId("jarvis-schedule-change"));
+    expect(card.getByText("cancelled")).toHaveClass("jv-sched-status", "is-cancelled");
   },
 };

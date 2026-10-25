@@ -10881,15 +10881,19 @@ mod tests {
             "schedule": {"kind": "interval", "seconds": 60}}), ist());
         assert!(out["error"].is_string(), "under the 5-minute floor: {out}");
         // Access lost before confirming: refused, still confirmable once restored.
-        let (out, _) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "hourly",
+        let (out, cards) = run_tool_tz(&f.state, &ana, "draft_schedule", json!({"channel_id": f.team, "text": "hourly",
             "schedule": {"kind": "interval", "seconds": 3600}}), ist());
         let id = out["draft_id"].as_str().unwrap().to_string();
+        let card_run_at = cards[0]["card"]["run_at"].as_f64().unwrap();
         let gid = f.state.hub.store.channel(&f.team).unwrap()["group_id"].as_str().unwrap().to_string();
         f.state.hub.store.remove_member_all(&gid, "user", "ana");
         assert_eq!(send_draft(&f.state, &id, "ana", rev(1)).await.unwrap_err().0, StatusCode::FORBIDDEN);
         assert!(own_schedules(&f, "ana").is_empty());
         f.state.hub.store.add_member(&gid, "user", "ana", "member", Some(&f.team));
-        assert_eq!(send_draft(&f.state, &id, "ana", rev(1)).await.unwrap().0["schedule"]["status"], "active");
+        let made = send_draft(&f.state, &id, "ana", rev(1)).await.unwrap().0;
+        assert_eq!(made["schedule"]["status"], "active");
+        // An interval with no stated start keeps the first run the card showed.
+        assert!((made["schedule"]["run_at"].as_f64().unwrap() - card_run_at).abs() < 1e-3, "{made}");
         // A one-off whose time passed while the card waited: refused, nothing stored.
         let past = crate::store::now() - 3600.0;
         let id = f.state.jarvis.create_draft(crate::jarvis::Draft {
