@@ -866,5 +866,23 @@ describe("speed, background speech and Stop", () => {
     expect(useJarvis.getState().micOwned).toBe(false);
     voice.configureVoice({ open: true });
   });
+
+  it("background: noise ends the one window instead of extending it", async () => {
+    voice.panelClosed();
+    await voice.listenInBackground();
+    // A short burst (a cough, the TV): too little voice to keep.
+    env.rms = 0.05; await pass(150);
+    env.rms = 0.001; await pass(voice.END_OF_SPEECH_MS + 100);
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
+    expect(core.jarvisTranscribe).not.toHaveBeenCalled();
+    // A clip that transcribes to nothing ends it too.
+    core.jarvisTranscribe.mockResolvedValueOnce({ text: "", noSpeech: true });
+    await voice.listenInBackground();
+    env.rms = 0.05; await pass(500);
+    env.rms = 0.001; await pass(voice.END_OF_SPEECH_MS + 100);
+    await pass(0);
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
+    voice.configureVoice({ open: true });
+  });
 });
 

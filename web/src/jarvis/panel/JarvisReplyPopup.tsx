@@ -31,6 +31,7 @@ export function JarvisReplyPopup() {
   const error = useJarvis(s => s.error);
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [lingerUntil, setLingerUntil] = useState(0);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [, tick] = useState(0);
@@ -75,9 +76,9 @@ export function JarvisReplyPopup() {
   // if it were being asked again: just "Listening…".
   const listeningAnew = hearing && !busy;
   const visible = me?.jarvis === true && enabled && !isOpen
-    && (listeningAnew || (turnId !== null && dismissed !== turnId && (active || hovered || expanded || Date.now() < lingerUntil)));
-  // Unmounting under the pointer never fires mouseleave.
-  useEffect(() => { if (!visible) setHovered(false); }, [visible]);
+    && (listeningAnew || (turnId !== null && dismissed !== turnId && (active || hovered || focused || expanded || Date.now() < lingerUntil)));
+  // Unmounting under the pointer (or focus) never fires leave/blur.
+  useEffect(() => { if (!visible) { setHovered(false); setFocused(false); } }, [visible]);
   if (!visible) return null;
 
   const text = reply?.text ?? "";
@@ -94,17 +95,18 @@ export function JarvisReplyPopup() {
 
   return (
     <div className={`jv-popup${expanded ? " is-expanded" : ""}`} role="region" aria-label="Jarvis reply"
-      data-testid="jarvis-popup" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
+      data-testid="jarvis-popup" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false); }}>
       <span className="sr-only" role="status" aria-live="polite">{announce}</span>
       {!listeningAnew && question && <div className="jv-popup-asked"><Icon name="mic" /><span>{question.text}</span></div>}
       {status && <div className="jv-popup-status"><span className="jv-status-dot" aria-hidden="true" />{status}</div>}
       {!listeningAnew && error && !answering && <div className="jv-popup-error" role="alert">{error}</div>}
       {!listeningAnew && text && (
-        <div ref={bodyRef} className="jv-popup-body" role="button" tabIndex={-1} aria-expanded={expanded}
+        <div ref={bodyRef} className="jv-popup-body" id="jv-popup-body"
           title={expanded ? "Click to collapse" : "Click to read more"}
           onMouseDown={e => e.preventDefault() /* never take focus from what you're typing */}
           onClick={() => setExpanded(!expanded)}
-          onWheel={() => { follow.current = false; }}>
+          onWheel={() => { follow.current = false; }} onTouchMove={() => { follow.current = false; }}>
           {body}
         </div>
       )}
@@ -124,6 +126,10 @@ export function JarvisReplyPopup() {
         </div>
       )}
       <div className="jv-popup-actions">
+        {text && <button type="button" className="jv-popup-icon" aria-expanded={expanded} aria-controls="jv-popup-body"
+          aria-label={expanded ? "Show less" : "Show more"} title={expanded ? "Show less" : "Show more"}
+          onMouseDown={e => e.preventDefault()} onClick={() => setExpanded(!expanded)}>
+          <Icon name={expanded ? "chevron-up" : "chevron-down"} /></button>}
         {(busy || audioActive) && <button type="button" className="jv-popup-icon" aria-label="Stop speaking" title="Stop speaking — the text keeps coming"
           onMouseDown={e => e.preventDefault()} onClick={() => stopSpeaking()}><Icon name="square" /></button>}
         {!active && stt && !micMuted && <button type="button" className="jv-popup-icon" aria-label="Reply" title="Reply — speak your follow-up"
@@ -132,7 +138,9 @@ export function JarvisReplyPopup() {
         <button type="button" className="jv-popup-icon" aria-label="Open the assistant" title="Open the assistant"
           onMouseDown={e => e.preventDefault()} onClick={openPanel}><Icon name="external-link" /></button>
         <button type="button" className="jv-popup-icon" aria-label="Dismiss" title="Dismiss"
-          onMouseDown={e => e.preventDefault()} onClick={() => { setDismissed(turnId); setHovered(false); }}><Icon name="x" /></button>
+          // Dismissing a reply that's still talking stops it too: with the
+          // pop-up gone there'd be no Stop left short of opening the panel.
+          onMouseDown={e => e.preventDefault()} onClick={() => { if (answering) stopSpeaking(); setDismissed(turnId); setHovered(false); }}><Icon name="x" /></button>
       </div>
     </div>
   );

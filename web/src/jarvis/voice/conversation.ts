@@ -58,9 +58,10 @@ const session = () => ({ baseUrl: "", token: sessionToken() });
 
 /** What the panel knows: the API client and what the server can do. */
 /** `ambient`: one capture requested with the panel closed (the wake word in
-    the background, or the pop-up's Reply). It ends with that capture: with
-    the panel closed nothing else is ever heard, so voices in the room can't
-    become requests. */
+    the background, or the pop-up's Reply). It is a single window: it ends
+    with the first utterance, or with the window if nothing usable was heard
+    (a cough or noise doesn't extend it). Outside such a window nothing is
+    captured with the panel closed. */
 const caps = { api: null as ApiClient | null, stt: false, tts: false, open: false, ambient: false, rate: 1 };
 
 export function configureVoice(next: Partial<typeof caps>): void {
@@ -323,6 +324,8 @@ function finishRecording(m: Mic, keep: boolean): void {
     m.chunks = [];
     if (mic !== m) return;
     if (!keep || !chunks.length) {
+      // In the background one window is all there is: noise doesn't extend it.
+      if (caps.ambient && !caps.open) { stopListening(); return; }
       // A cough or a click: never send it, keep listening (and recording).
       capture = "waiting";
       listenUntil = performance.now() + FOLLOW_UP_MS;
@@ -349,6 +352,7 @@ async function transcribe(blob: Blob, gen: number): Promise<void> {
   // Capture was torn down meanwhile (panel closed, or reopened since): a
   // late result must not start a turn nobody asked for.
   if (!mic || gen !== captureGen) return;
+  if (!text && caps.ambient && !caps.open) { stopListening(); return; }
   if (!text) {
     capture = "waiting";
     listenUntil = performance.now() + FOLLOW_UP_MS;

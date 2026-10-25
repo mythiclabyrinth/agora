@@ -68,8 +68,9 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   "Wake: background" toggle) "Hey Jarvis" with the panel closed hears one
   request without opening the panel: the chip says Listening… / Thinking… /
   Speaking… (with a ring while it captures), the mic is released as soon as
-  the request is heard, and nothing more is captured until the next wake
-  word, so voices in the room never become requests. A background request
+  the request is heard (a window that hears only noise ends without
+  re-arming), and nothing more is captured until the next wake word or
+  Reply. Speech inside a window you opened is still whatever the mic hears. A background request
   may navigate; one started in the panel and closed mid-answer doesn't. The
   **reply pop-up** under the chip shows the latest reply while it streams
   and speaks (three lines; click to expand, it follows the spoken sentence),
