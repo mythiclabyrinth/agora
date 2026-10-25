@@ -212,7 +212,7 @@ export async function listenInBackground(): Promise<boolean> {
   // right now (muted, no STT, the mic refused): then the panel opens, so
   // the user can see why and type instead.
   if (capture === "waiting") return true;
-  caps.ambient = false;
+  stopListening(); // releases anything half-opened, and clears `ambient`
   if (!caps.open) useJarvis.getState().open();
   return false;
 }
@@ -341,18 +341,25 @@ function finishRecording(m: Mic, keep: boolean): void {
 
 async function transcribe(blob: Blob, gen: number): Promise<void> {
   let text = "";
+  let failed = false;
   try {
     // Breath and rustle come back as `noSpeech` (empty text): routine
     // hands-free, so it just keeps listening without an error.
     const heard = await jarvisTranscribe(session(), blob);
     text = heard.noSpeech ? "" : heard.text;
   } catch (e) {
+    failed = true;
     if (gen === captureGen) useJarvis.setState({ error: (e as Error).message || "Transcription failed" });
   }
   // Capture was torn down meanwhile (panel closed, or reopened since): a
   // late result must not start a turn nobody asked for.
   if (!mic || gen !== captureGen) return;
-  if (!text && caps.ambient && !caps.open) { stopListening(); return; }
+  if (!text && caps.ambient && !caps.open) {
+    stopListening();
+    // In the background a failure would otherwise look like "didn't hear me".
+    if (failed) toast("Jarvis couldn't hear that — " + (useJarvis.getState().error || "transcription failed"), { variant: "warn" });
+    return;
+  }
   if (!text) {
     capture = "waiting";
     listenUntil = performance.now() + FOLLOW_UP_MS;

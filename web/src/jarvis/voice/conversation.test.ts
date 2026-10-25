@@ -884,5 +884,17 @@ describe("speed, background speech and Stop", () => {
     expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
     voice.configureVoice({ open: true });
   });
+
+  it("a background transcription that fails says so, and closes the mic", async () => {
+    voice.panelClosed();
+    await voice.listenInBackground();
+    core.jarvisTranscribe.mockRejectedValueOnce(new Error("Groq is unavailable"));
+    env.rms = 0.05; await pass(500);
+    env.rms = 0.001; await pass(voice.END_OF_SPEECH_MS + 100);
+    await pass(0);
+    expect(toasts.toast).toHaveBeenCalledWith(expect.stringContaining("Groq is unavailable"), { variant: "warn" });
+    expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
+    voice.configureVoice({ open: true });
+  });
 });
 

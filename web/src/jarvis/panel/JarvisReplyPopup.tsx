@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { isDraftLikeCard, useApi, useMe } from "@agora/core";
 import { Icon } from "../../lib/icons";
 import { isLiveDraft, useJarvis } from "../../state/jarvis";
-import { listenInBackground, stopSpeaking } from "../voice/conversation";
+import { listenInBackground, stopListening, stopSpeaking } from "../voice/conversation";
 import { cancelDraftEntry, sendDraftEntry } from "./JarvisCards";
 import { splitTurn } from "./derive";
 
@@ -77,6 +77,13 @@ export function JarvisReplyPopup() {
   const listeningAnew = hearing && !busy;
   const visible = me?.jarvis === true && enabled && !isOpen
     && (listeningAnew || (turnId !== null && dismissed !== turnId && (active || hovered || focused || expanded || Date.now() < lingerUntil)));
+  // While it listens in the background, the pop-up is where you can stop it.
+  const stopHearing = () => {
+    stopListening();
+    const st = useJarvis.getState();
+    if (st.phase === "listening" || st.phase === "recording") st.setVoicePhase(null);
+    setHovered(false); setFocused(false);
+  };
   // Unmounting under the pointer (or focus) never fires leave/blur.
   useEffect(() => { if (!visible) { setHovered(false); setFocused(false); } }, [visible]);
   if (!visible) return null;
@@ -130,6 +137,8 @@ export function JarvisReplyPopup() {
           aria-label={expanded ? "Show less" : "Show more"} title={expanded ? "Show less" : "Show more"}
           onMouseDown={e => e.preventDefault()} onClick={() => setExpanded(!expanded)}>
           <Icon name={expanded ? "chevron-up" : "chevron-down"} /></button>}
+        {listeningAnew && <button type="button" className="jv-popup-icon" aria-label="Stop listening" title="Stop listening"
+          onMouseDown={e => e.preventDefault()} onClick={stopHearing}><Icon name="mic-off" /></button>}
         {(busy || audioActive) && <button type="button" className="jv-popup-icon" aria-label="Stop speaking" title="Stop speaking — the text keeps coming"
           onMouseDown={e => e.preventDefault()} onClick={() => stopSpeaking()}><Icon name="square" /></button>}
         {!active && stt && !micMuted && <button type="button" className="jv-popup-icon" aria-label="Reply" title="Reply — speak your follow-up"
@@ -140,7 +149,11 @@ export function JarvisReplyPopup() {
         <button type="button" className="jv-popup-icon" aria-label="Dismiss" title="Dismiss"
           // Dismissing a reply that's still talking stops it too: with the
           // pop-up gone there'd be no Stop left short of opening the panel.
-          onMouseDown={e => e.preventDefault()} onClick={() => { if (answering) stopSpeaking(); setDismissed(turnId); setHovered(false); }}><Icon name="x" /></button>
+          onMouseDown={e => e.preventDefault()} onClick={() => {
+            if (listeningAnew) { stopHearing(); return; }
+            if (answering) stopSpeaking();
+            setDismissed(turnId); setHovered(false);
+          }}><Icon name="x" /></button>
       </div>
     </div>
   );

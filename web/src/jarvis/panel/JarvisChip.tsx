@@ -60,7 +60,7 @@ export function JarvisChip() {
     : "Jarvis mode";
   return (
     <button className={`jv-chip${enabled ? " is-on" : ""}${enabled && wake === "error" ? " is-error" : ""}${capturing ? " is-capturing" : ""}`}
-      aria-pressed={enabled ? undefined : false} aria-expanded={enabled ? isOpen : undefined} aria-label="Jarvis mode"
+      aria-pressed={enabled} aria-label={label === "Jarvis mode" ? "Jarvis mode" : `Jarvis mode, ${label}`}
       aria-keyshortcuts={ariaCombo(combo, currentPlatform())}
       title={`${hint}${key ? ` · ${key} opens the assistant` : ""}`}
       onClick={() => {

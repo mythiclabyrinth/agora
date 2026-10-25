@@ -117,6 +117,11 @@ export const ListeningAnew: Story = {
     expect(canvas.getAllByText("Listening…").length).toBeGreaterThan(0);
     expect(canvas.queryByText("what's happening in release?")).toBeNull();
     expect(canvas.queryByText(/Two agents are online/)).toBeNull();
+    // Listening with the panel closed always offers a way to stop it.
+    expect(canvas.getByRole("button", { name: "Stop listening" })).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Dismiss" }));
+    expect(useJarvis.getState().phase).not.toBe("recording"); // Dismiss stops listening
+    expect(canvas.queryByText("Listening…")).toBeNull();
   },
 };
 
