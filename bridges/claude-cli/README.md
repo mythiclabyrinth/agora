@@ -51,12 +51,11 @@ rebinds the conversation or changes what it may do (`/new`, `/use`,
 the one your next message would start. `/worktree remove` likewise refuses while
 a child is still held, rather than deleting the tree out from under it.
 
-One wrinkle worth knowing: a `result` carries nothing saying which prompt it
-answers, so the bridge attributes them by obligation instead. A task leaving the
-inventory means a report is owed, and reports owed *before* your message was
-sent are delivered as their own messages rather than being mistaken for its
-answer. Two replies can still land in the opposite order to the one you'd
-expect, but neither is lost or mis-attributed.
+The bridge uses the CLI's replayed stdin UUIDs to tell whether a result answers
+your message or reports background work. A message taken into an ongoing report
+turn receives that turn's result. Task departures still keep the child alive
+until its background reports arrive or the idle limit expires. For older CLIs
+without replay events, the bridge retains its earlier report-order fallback.
 
 **This is off by default.** Turn it on per bridge with `--async-followups` or
 `CLAUDE_ASYNC_FOLLOWUPS=1`. While it is off every code path above is inert and
