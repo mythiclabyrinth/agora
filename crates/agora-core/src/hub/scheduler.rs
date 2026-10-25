@@ -1426,7 +1426,7 @@ impl Hub {
                             // Nothing that identifies the conversation either:
                             // its name would tell readers here it exists.
                             for key in [
-                                "id", "last_error", "text", "thread_title", "channel_name", "channel_kind",
+                                "id", "last_error", "last_run_at", "text", "thread_title", "channel_name", "channel_kind",
                                 "group_id", "channel_id", "thread_id", "via_agent", "text_agent", "updated_by",
                                 "created_by", "owner_name",
                             ] {
@@ -1466,7 +1466,7 @@ impl Hub {
                     return Err("that schedule belongs to someone else".into());
                 }
                 if grant.schedule_id.as_deref().is_some_and(|only| only != id) {
-                    return Err("this turn may only re-arm or cancel its own schedule".into());
+                    return Err("this turn may only read, re-arm or cancel its own schedule".into());
                 }
                 let cid = current["channel_id"].as_str().unwrap_or_default();
                 let here = cid == grant.channel_id;
