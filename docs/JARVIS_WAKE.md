@@ -64,6 +64,22 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   arriving) without listening afterwards; it is one-off, not the Sound
   setting. Signing out, losing access, or switching Jarvis mode off stops
   everything (`JarvisVoiceHost`).
+- **Background (panel closed)**: by default (per device: Settings →
+  Notifications → Jarvis) "Hey Jarvis" with the panel closed hears one
+  request without opening the panel: the chip says Listening… / Thinking… /
+  Speaking… (with a ring while it captures), the mic is released as soon as
+  the request is heard (a window that hears only noise ends without
+  re-arming), and nothing more is captured until the next wake word or
+  Reply. Speech inside a window you opened is still whatever the mic hears. A background request
+  may navigate; one started in the panel and closed mid-answer doesn't. The
+  **reply pop-up** under the chip shows the latest reply while it streams
+  and speaks (three lines; click to expand, it follows the spoken sentence),
+  with Stop, Reply (one more background capture), Open, Dismiss, and Send /
+  Edit / Cancel for a waiting draft; it fades 8 s after the answer unless
+  hovered or expanded. With Jarvis mode on, clicking the chip opens (or
+  closes) the panel; turning the mode off is the panel's switch or a
+  right-click on the chip. Without voice input (muted, no STT) the wake word
+  opens the panel as before.
 - **Barge-in**: 150 ms of speech while the answer plays stops the audio,
   drops the rest of the answer's speech, and records the interruption.
 - **Mic**: opened with echo cancellation; the wake detector is disarmed

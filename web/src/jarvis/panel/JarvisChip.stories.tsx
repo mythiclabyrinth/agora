@@ -37,9 +37,28 @@ export const Listening: Story = {
     expect(chip).toHaveAttribute("aria-pressed", "true");
     expect(chip).toHaveClass("is-on");
     expect(chip).not.toHaveClass("is-error");
-    expect(chip.title).toMatch(/^Listening for “Hey Jarvis” — click to turn off/);
+    expect(chip.title).toMatch(/^Listening for “Hey Jarvis” — click to open the assistant, right-click to turn off/);
+    // On, a click opens the conversation (and closes it again); it never turns the mode off.
     await userEvent.click(chip);
+    expect(useJarvis.getState().isOpen).toBe(true);
+    expect(useJarvis.getState().enabled).toBe(true);
+    await userEvent.click(chip);
+    expect(useJarvis.getState().isOpen).toBe(false);
+    // Turning it off is deliberate: right-click.
+    await userEvent.pointer({ keys: "[MouseRight]", target: chip });
     expect(useJarvis.getState().enabled).toBe(false);
+  },
+};
+
+export const HearingInBackground: Story = {
+  parameters: { setup: () => useJarvis.setState({ enabled: true, isOpen: false, phase: "recording", wake: "listening" }) },
+  play: async ({ canvasElement }) => {
+    // The state is in the accessible name too, not just on screen.
+    const chip = await within(canvasElement).findByRole("button", { name: "Jarvis mode, Listening…" });
+    expect(chip).toHaveClass("is-capturing");
+    useJarvis.setState({ phase: "speaking" });
+    await expect(within(canvasElement).findByRole("button", { name: "Jarvis mode, Speaking…" })).resolves.toBeVisible();
+    expect(chip).not.toHaveClass("is-capturing");
   },
 };
 

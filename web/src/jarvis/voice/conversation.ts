@@ -50,6 +50,8 @@ import { createSentenceChunker, type Sentence } from "./sentences";
 import { timeStretch, trimSilence } from "./stretch";
 
 const TICK_MS = 50;
+/** A background listen whose mic hasn't opened by then gives up visibly. */
+export const MIC_START_TIMEOUT_MS = 4_000;
 /** How long the loop waits for speech after opening, or after an answer. */
 export const OPEN_WINDOW_MS = 10_000;
 export const FOLLOW_UP_MS = 8_000;
@@ -57,7 +59,12 @@ export const FOLLOW_UP_MS = 8_000;
 const session = () => ({ baseUrl: "", token: sessionToken() });
 
 /** What the panel knows: the API client and what the server can do. */
-const caps = { api: null as ApiClient | null, stt: false, tts: false, open: false, rate: 1 };
+/** `ambient`: one capture requested with the panel closed (the wake word in
+    the background, or the pop-up's Reply). It is a single window: it ends
+    with the first utterance, or with the window if nothing usable was heard
+    (a cough or noise doesn't extend it). Outside such a window nothing is
+    captured with the panel closed. */
+const caps = { api: null as ApiClient | null, stt: false, tts: false, open: false, ambient: false, rate: 1 };
 
 export function configureVoice(next: Partial<typeof caps>): void {
   Object.assign(caps, next);
@@ -66,7 +73,7 @@ export function configureVoice(next: Partial<typeof caps>): void {
 /** Voice input is possible right now (not muted, configured, no live voice). */
 export function canListen(): boolean {
   const st = useJarvis.getState();
-  return caps.open && caps.stt && !st.micMuted && useLiveVoice.getState().scope === null && voiceSupported();
+  return (caps.open || caps.ambient) && caps.stt && !st.micMuted && useLiveVoice.getState().scope === null && voiceSupported();
 }
 
 function canSpeak(): boolean {
@@ -196,8 +203,39 @@ export async function listen(reason: "open" | "followUp" = "open"): Promise<void
   if (startRecorder(m)) useJarvis.getState().setVoicePhase("listening");
 }
 
+/** Listen once with the panel closed ("Hey Jarvis" in the background, or
+    the pop-up's Reply): the request is heard, the mic is released, and the
+    answer streams and speaks without the panel. False when voice input
+    isn't possible right now (the caller opens the panel instead). */
+export async function listenInBackground(): Promise<boolean> {
+  caps.ambient = true;
+  if (!canListen()) {
+    caps.ambient = false;
+    if (!caps.open) useJarvis.getState().open();
+    return false;
+  }
+  // Show "Listening…" the moment the wake word is heard, not once the mic
+  // has opened (that can lag, notably in the desktop's WebKit), and don't
+  // wait on a mic that never opens: say so and open the panel instead.
+  useJarvis.getState().setVoicePhase("listening");
+  const opened = await Promise.race([
+    listen("open").then(() => true),
+    new Promise<boolean>(r => setTimeout(() => r(false), MIC_START_TIMEOUT_MS)),
+  ]);
+  if (!opened) toast("The microphone didn't start — opening the assistant instead", { variant: "warn" });
+  // Listening (the mic opened and the window is waiting), or it can't hear
+  // right now (muted, no STT, the mic refused): then the panel opens, so
+  // the user can see why and type instead.
+  if (capture === "waiting") return true;
+  stopListening(); // releases anything half-opened, and clears `ambient`
+  useJarvis.getState().setVoicePhase(null); // the early "Listening…"
+  if (!caps.open) useJarvis.getState().open();
+  return false;
+}
+
 /** Release the mic and go back to resting (the wake word re-arms). */
 export function stopListening(): void {
+  caps.ambient = false;
   const capturing = capture !== "off";
   closeMic();
   if (capturing) useJarvis.getState().setVoicePhase(null);
@@ -302,6 +340,8 @@ function finishRecording(m: Mic, keep: boolean): void {
     m.chunks = [];
     if (mic !== m) return;
     if (!keep || !chunks.length) {
+      // In the background one window is all there is: noise doesn't extend it.
+      if (caps.ambient && !caps.open) { stopListening(); return; }
       // A cough or a click: never send it, keep listening (and recording).
       capture = "waiting";
       listenUntil = performance.now() + FOLLOW_UP_MS;
@@ -317,17 +357,25 @@ function finishRecording(m: Mic, keep: boolean): void {
 
 async function transcribe(blob: Blob, gen: number): Promise<void> {
   let text = "";
+  let failed = false;
   try {
     // Breath and rustle come back as `noSpeech` (empty text): routine
     // hands-free, so it just keeps listening without an error.
     const heard = await jarvisTranscribe(session(), blob);
     text = heard.noSpeech ? "" : heard.text;
   } catch (e) {
+    failed = true;
     if (gen === captureGen) useJarvis.setState({ error: (e as Error).message || "Transcription failed" });
   }
   // Capture was torn down meanwhile (panel closed, or reopened since): a
   // late result must not start a turn nobody asked for.
   if (!mic || gen !== captureGen) return;
+  if (!text && caps.ambient && !caps.open) {
+    stopListening();
+    // In the background a failure would otherwise look like "didn't hear me".
+    if (failed) toast("Jarvis couldn't hear that — " + (useJarvis.getState().error || "transcription failed"), { variant: "warn" });
+    return;
+  }
   if (!text) {
     capture = "waiting";
     listenUntil = performance.now() + FOLLOW_UP_MS;
@@ -335,6 +383,10 @@ async function transcribe(blob: Blob, gen: number): Promise<void> {
     return;
   }
   capture = "off";
+  // Heard in the background: release the mic now, so nothing more (the
+  // room, the answer's own echo) is taken as a request while the panel is
+  // closed. The wake word re-arms once the answer is done.
+  if (!caps.open) stopListening();
   await handleUtterance(text);
 }
 
@@ -400,6 +452,10 @@ export async function runTurn(raw: string): Promise<void> {
   turnSilenced = false;
   turnQuiet = false;
   useJarvis.setState({ speechStopped: false });
+  // Asked from the background (panel closed): what it does, navigating
+  // included, is what was asked for. A turn started in the panel and then
+  // closed mid-answer still doesn't move the user (they may be elsewhere).
+  const origin: "panel" | "background" = caps.open ? "panel" : "background";
   const ctl = new AbortController();
   turnAbort = ctl;
   const store = useJarvis.getState();
@@ -437,7 +493,7 @@ export async function runTurn(raw: string): Promise<void> {
         if (event.type === "schedule_applied") onScheduleApplied(event.draft_id, event.action, event.already_applied === true);
         // Closed meanwhile: the answer may finish speaking, but it doesn't
         // move the user somewhere else while they're doing something.
-        if (event.type === "navigate" && caps.open) jumpTo(event);
+        if (event.type === "navigate" && (caps.open || origin === "background")) jumpTo(event);
         if (event.type === "hide") hide = true;
         if (event.type === "new_conversation") fresh = true;
         // The server reported a failure: keep the panel (and the error) up.

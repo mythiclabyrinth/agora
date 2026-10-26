@@ -11,6 +11,7 @@ import { useMe } from "@agora/core";
 import { playChime } from "../../lib/chime";
 import { useJarvis } from "../../state/jarvis";
 import { useLiveVoice } from "../../state/liveVoice";
+import { listenInBackground } from "../voice/conversation";
 import { createWakeDetector, WAKE_MODELS, type WakeDetector } from "./detector";
 
 export const JARVIS_WAKE_MODEL = WAKE_MODELS.hey_jarvis;
@@ -44,6 +45,13 @@ export function JarvisWakeHost() {
       onWake: () => {
         const st = useJarvis.getState();
         if (!st.enabled || st.busy || st.audioActive) return;
+        // Panel closed and this device prefers it: hear the request in the
+        // background (the chip and the reply pop-up show it). Without voice
+        // input that can't work, so the panel opens for typing instead.
+        if (!st.isOpen && st.wakeBackground && voiceInRef.current && !st.micMuted) {
+          void listenInBackground();
+          return;
+        }
         // The voice loop chimes when it starts listening; without it (mic
         // muted, no STT) the chime still confirms the wake was heard.
         if (st.micMuted || !voiceInRef.current) playChime(0.5);
