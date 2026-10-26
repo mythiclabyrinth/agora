@@ -235,6 +235,7 @@ function OpenPanel() {
               useJarvis.getState().setEnabled(!s.enabled);
             }}>
             <span className="jv-mode-track" aria-hidden="true"><span className="jv-mode-thumb" /></span><span>Jarvis mode</span>
+            <span className="jv-mode-state" aria-hidden="true">{s.enabled ? "On" : "Off"}</span>
           </button>
           <button className="jv-close" aria-label="Close assistant (Esc)" title="Close assistant · Esc"
             onClick={() => useJarvis.getState().close()}><Icon name="x" /></button>
@@ -308,13 +309,6 @@ function OpenPanel() {
               onClick={() => { if (tts) useJarvis.getState().setSpeakerOff(!s.speakerOff); }}>
               <Icon name={tts && !s.speakerOff ? "volume-2" : "volume-x"} /><span>{!tts || s.speakerOff ? "Sound off" : "Sound on"}</span>
             </button>
-            {stt && <button type="button" className={`jv-toggle${s.wakeBackground ? " is-live" : ""}`}
-              aria-label="Hey Jarvis in the background" aria-pressed={s.wakeBackground} data-testid="jarvis-wake-background"
-              title={s.wakeBackground ? "“Hey Jarvis” with this panel closed listens in the background — click to open the panel instead"
-                : "“Hey Jarvis” opens this panel — click to listen in the background instead"}
-              onClick={() => useJarvis.getState().setWakeBackground(!s.wakeBackground)}>
-              <Icon name={s.wakeBackground ? "minimize-2" : "maximize-2"} /><span>{s.wakeBackground ? "Wake: background" : "Wake: panel"}</span>
-            </button>}
           </div>
           <span className="jv-voice-hint">{voiceHint}</span>
         </div>

@@ -50,6 +50,8 @@ import { createSentenceChunker, type Sentence } from "./sentences";
 import { timeStretch, trimSilence } from "./stretch";
 
 const TICK_MS = 50;
+/** A background listen whose mic hasn't opened by then gives up visibly. */
+export const MIC_START_TIMEOUT_MS = 4_000;
 /** How long the loop waits for speech after opening, or after an answer. */
 export const OPEN_WINDOW_MS = 10_000;
 export const FOLLOW_UP_MS = 8_000;
@@ -207,12 +209,26 @@ export async function listen(reason: "open" | "followUp" = "open"): Promise<void
     isn't possible right now (the caller opens the panel instead). */
 export async function listenInBackground(): Promise<boolean> {
   caps.ambient = true;
-  if (canListen()) await listen("open");
+  if (!canListen()) {
+    caps.ambient = false;
+    if (!caps.open) useJarvis.getState().open();
+    return false;
+  }
+  // Show "Listening…" the moment the wake word is heard, not once the mic
+  // has opened (that can lag, notably in the desktop's WebKit), and don't
+  // wait on a mic that never opens: say so and open the panel instead.
+  useJarvis.getState().setVoicePhase("listening");
+  const opened = await Promise.race([
+    listen("open").then(() => true),
+    new Promise<boolean>(r => setTimeout(() => r(false), MIC_START_TIMEOUT_MS)),
+  ]);
+  if (!opened) toast("The microphone didn't start — opening the assistant instead", { variant: "warn" });
   // Listening (the mic opened and the window is waiting), or it can't hear
   // right now (muted, no STT, the mic refused): then the panel opens, so
   // the user can see why and type instead.
   if (capture === "waiting") return true;
   stopListening(); // releases anything half-opened, and clears `ambient`
+  useJarvis.getState().setVoicePhase(null); // the early "Listening…"
   if (!caps.open) useJarvis.getState().open();
   return false;
 }

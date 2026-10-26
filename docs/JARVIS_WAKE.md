@@ -64,8 +64,8 @@ Input is optional: the panel listens, answers aloud, and keeps listening.
   arriving) without listening afterwards; it is one-off, not the Sound
   setting. Signing out, losing access, or switching Jarvis mode off stops
   everything (`JarvisVoiceHost`).
-- **Background (panel closed)**: by default (per device, the panel's
-  "Wake: background" toggle) "Hey Jarvis" with the panel closed hears one
+- **Background (panel closed)**: by default (per device: Settings →
+  Notifications → Jarvis) "Hey Jarvis" with the panel closed hears one
   request without opening the panel: the chip says Listening… / Thinking… /
   Speaking… (with a ring while it captures), the mic is released as soon as
   the request is heard (a window that hears only noise ends without

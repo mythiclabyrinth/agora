@@ -896,5 +896,18 @@ describe("speed, background speech and Stop", () => {
     expect(voice.voiceDebugState()).toMatchObject({ capture: "off", micOpen: false });
     voice.configureVoice({ open: true });
   });
+
+  it("background: shows Listening at once, and a mic that never opens gives up visibly", async () => {
+    voice.panelClosed();
+    env.getUserMedia.mockImplementationOnce(() => new Promise(() => {})); // WebKit can stall here
+    const result = voice.listenInBackground();
+    expect(useJarvis.getState().phase).toBe("listening"); // before the mic has opened
+    await pass(voice.MIC_START_TIMEOUT_MS + 100);
+    expect(await result).toBe(false);
+    expect(toasts.toast).toHaveBeenCalledWith(expect.stringContaining("microphone didn't start"), { variant: "warn" });
+    expect(useJarvis.getState().isOpen).toBe(true);
+    expect(useJarvis.getState().phase).not.toBe("listening");
+    voice.configureVoice({ open: true });
+  });
 });
 

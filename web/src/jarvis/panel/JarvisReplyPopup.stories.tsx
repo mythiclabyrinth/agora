@@ -6,7 +6,10 @@ import { JarvisReplyPopup } from "./JarvisReplyPopup";
 
 const jarvisMe = { ...fixtureMe, jarvis: true, jarvis_hint: null, jarvis_stt: true, jarvis_tts: true };
 const answer = "Two agents are online: Claude and Codex. Codex reran the deploy at 5pm and it is green now. "
-  + "Claude is reviewing the release notes and will post them in #release within the hour. Nothing needs you yet.";
+  + "Claude is reviewing the release notes and will post them in #release within the hour. Nothing needs you yet. "
+  + "Earlier today the staging deploy failed once on a flaky migration test; it passed on the retry and nobody has touched it since. "
+  + "Priya asked in #general whether the 5pm window still holds, and nobody has answered her yet. "
+  + "The on-call rotation changes tomorrow morning, and Sam takes over from Alex at nine.";
 const said = (role: "user" | "assistant", text: string, id: string) => ({ id, role, text });
 
 const meta = {

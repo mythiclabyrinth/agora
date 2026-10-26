@@ -30,6 +30,7 @@ export function JarvisReplyPopup() {
   const micMuted = useJarvis(s => s.micMuted);
   const error = useJarvis(s => s.error);
   const [expanded, setExpanded] = useState(false);
+  const [askExpanded, setAskExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const [lingerUntil, setLingerUntil] = useState(0);
@@ -55,7 +56,7 @@ export function JarvisReplyPopup() {
     if (wasAnswering.current && !answering && !useJarvis.getState().isOpen) setLingerUntil(Date.now() + POPUP_LINGER_MS);
     wasAnswering.current = answering;
   }, [answering]);
-  useEffect(() => { setExpanded(false); setHovered(false); follow.current = true; }, [turnId]);
+  useEffect(() => { setExpanded(false); setAskExpanded(false); setHovered(false); follow.current = true; }, [turnId]);
   useEffect(() => {
     if (!lingerUntil) return;
     const t = setTimeout(() => tick(n => n + 1), Math.max(0, lingerUntil - Date.now()) + 50);
@@ -105,7 +106,10 @@ export function JarvisReplyPopup() {
       data-testid="jarvis-popup" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       onFocus={() => setFocused(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false); }}>
       <span className="sr-only" role="status" aria-live="polite">{announce}</span>
-      {!listeningAnew && question && <div className="jv-popup-asked"><Icon name="mic" /><span>{question.text}</span></div>}
+      {!listeningAnew && question && <div className={`jv-popup-asked${askExpanded ? " is-expanded" : ""}`}
+        title={askExpanded ? "Click to collapse" : "Click to read all of it"}
+        onMouseDown={e => e.preventDefault()} onClick={() => setAskExpanded(!askExpanded)}>
+        <Icon name="mic" /><span>{question.text}</span></div>}
       {status && <div className="jv-popup-status"><span className="jv-status-dot" aria-hidden="true" />{status}</div>}
       {!listeningAnew && error && !answering && <div className="jv-popup-error" role="alert">{error}</div>}
       {!listeningAnew && text && (
@@ -133,14 +137,14 @@ export function JarvisReplyPopup() {
         </div>
       )}
       <div className="jv-popup-actions">
-        {text && <button type="button" className="jv-popup-icon" aria-expanded={expanded} aria-controls="jv-popup-body"
+        {listeningAnew && <button type="button" className="jv-popup-icon is-stop" aria-label="Stop listening" title="Stop listening"
+          onMouseDown={e => e.preventDefault()} onClick={stopHearing}><Icon name="square" cls="fill" /></button>}
+        {(busy || audioActive) && <button type="button" className="jv-popup-icon is-stop" aria-label="Stop speaking" title="Stop speaking — the text keeps coming"
+          onMouseDown={e => e.preventDefault()} onClick={() => stopSpeaking()}><Icon name="square" cls="fill" /></button>}
+        {(text || question) && <button type="button" className="jv-popup-icon" aria-expanded={expanded} aria-controls="jv-popup-body"
           aria-label={expanded ? "Show less" : "Show more"} title={expanded ? "Show less" : "Show more"}
           onMouseDown={e => e.preventDefault()} onClick={() => setExpanded(!expanded)}>
           <Icon name={expanded ? "chevron-up" : "chevron-down"} /></button>}
-        {listeningAnew && <button type="button" className="jv-popup-icon" aria-label="Stop listening" title="Stop listening"
-          onMouseDown={e => e.preventDefault()} onClick={stopHearing}><Icon name="mic-off" /></button>}
-        {(busy || audioActive) && <button type="button" className="jv-popup-icon" aria-label="Stop speaking" title="Stop speaking — the text keeps coming"
-          onMouseDown={e => e.preventDefault()} onClick={() => stopSpeaking()}><Icon name="square" /></button>}
         {!active && stt && !micMuted && <button type="button" className="jv-popup-icon" aria-label="Reply" title="Reply — speak your follow-up"
           onMouseDown={e => e.preventDefault()}
           onClick={() => { void listenInBackground(); }}><Icon name="mic" /></button>}
