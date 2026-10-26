@@ -2101,6 +2101,11 @@ def _user_text(text):
     }]}})
 
 
+def _replay(uuid):
+    return json.dumps({"type": "user", "isReplay": True, "uuid": uuid,
+                       "message": {"role": "user", "content": []}})
+
+
 def followup_bridge(idle=5.0):
     """A Bridge configured for the async-follow-up path, bound at key "k"."""
     b = make_bridge()
@@ -2231,6 +2236,225 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
 
 
 class AsyncFollowupTests(unittest.TestCase):
+    def test_original_prompt_replay_selects_attribution_mode(self):
+        for enabled in (False, True):
+            with self.subTest(async_followups=enabled):
+                _, spawned = run_bridge([_result("ordinary answer")],
+                                        async_followups=enabled)
+                self.assertEqual(
+                    "--replay-user-messages" in spawned.spawn_calls[0][0], enabled)
+
+        async def run(replayed):
+            b = followup_bridge()
+            lines = [_tasks("research")]
+            if replayed:
+                lines.append(_replay("original"))
+            lines.append(_result("started"))
+            with patch.object(bridge.uuid, "uuid4", return_value="original"):
+                await hand_off(b, lines)
+            return b.live["k"].replay_supported
+
+        for replayed in (False, True):
+            with self.subTest(replayed=replayed):
+                self.assertEqual(asyncio.run(run(replayed)), replayed)
+
+    def test_blank_result_before_real_report_preserves_child_and_answer(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            _, proc = await hand_off(b, [_tasks("one", "two"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            b._send_to_claude = AsyncMock()
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            await asyncio.sleep(0.01)
+            turn = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1"}, b.bindings["k"], "update?"))
+            await asyncio.sleep(0.01)
+            uuid = b._send_to_claude.await_args.args[1]["uuid"]
+            for event in (_result(""), _result("real report"),
+                          _replay(uuid), _result("your answer")):
+                proc.stdout.feed_data((event + "\n").encode())
+            answer = await asyncio.wait_for(turn, 1)
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(live.reader, 1)
+            return b, answer
+
+        b, answer = asyncio.run(run())
+        self.assertEqual(answer, "your answer")
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["real report"])
+        self.assertEqual(b.live, {})
+
+    def test_replay_merges_mid_report_turn_into_user_answer(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            b._send_to_claude = AsyncMock()
+            proc.stdout.feed_data((_tasks() + "\n" +
+                                   json.dumps({"type": "assistant", "message": {"content": []}})
+                                   + "\n").encode())
+            await asyncio.sleep(0.01)
+            turn = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1"}, b.bindings["k"], "update?"))
+            await asyncio.sleep(0.01)
+            uuid = b._send_to_claude.await_args.args[1]["uuid"]
+            proc.stdout.feed_data((_replay(uuid) + "\n" +
+                                   _result("combined answer") + "\n").encode())
+            answer = await asyncio.wait_for(turn, 1)
+            remaining_owed = set(live.owed_reports)
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(live.reader, 1)
+            return b, answer, remaining_owed
+
+        b, answer, remaining_owed = asyncio.run(run())
+        self.assertEqual(answer, "combined answer")
+        self.assertEqual(remaining_owed, set())
+        b.post.assert_not_called()
+
+    def test_replayed_blank_answer_does_not_claim_later_report(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            b._send_to_claude = AsyncMock()
+            turn = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1"}, b.bindings["k"], "update?"))
+            await asyncio.sleep(0.01)
+            replay_uuid = b._send_to_claude.await_args.args[1]["uuid"]
+            proc.stdout.feed_data((_replay(replay_uuid) + "\n" +
+                                   _result("") + "\n").encode())
+            answer = await asyncio.wait_for(turn, 1)
+            proc.stdout.feed_data((_tasks() + "\n" +
+                                   _result("bg report") + "\n").encode())
+            await asyncio.wait_for(live.reader, 1)
+            return b, answer
+
+        b, answer = asyncio.run(run())
+        self.assertEqual(answer, "")
+        self.assertEqual([c.args[1] for c in b.post.call_args_list], ["bg report"])
+
+    def test_user_turn_does_not_settle_report_without_prior_assistant(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            b._send_to_claude = AsyncMock()
+            proc.stdout.feed_data((_tasks() + "\n").encode())
+            await asyncio.sleep(0.01)
+            turn = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1"}, b.bindings["k"], "update?"))
+            await asyncio.sleep(0.01)
+            replay_uuid = b._send_to_claude.await_args.args[1]["uuid"]
+            proc.stdout.feed_data((_replay(replay_uuid) + "\n" +
+                                   _result("user answer") + "\n").encode())
+            answer = await asyncio.wait_for(turn, 1)
+            remaining_owed = set(live.owed_reports)
+            proc.stdout.feed_data((_result("bg report") + "\n").encode())
+            await asyncio.wait_for(live.reader, 1)
+            return b, answer, remaining_owed
+
+        b, answer, remaining_owed = asyncio.run(run())
+        self.assertEqual(answer, "user answer")
+        self.assertEqual(remaining_owed, {"t0"})
+        self.assertEqual([c.args[1] for c in b.post.call_args_list], ["bg report"])
+
+    def test_timed_out_replay_cannot_settle_real_report(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            b.timeout = 0.04
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            b._send_to_claude = AsyncMock()
+            turn = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1"}, b.bindings["k"], "update?"))
+            await asyncio.sleep(0.01)
+            replay_uuid = b._send_to_claude.await_args.args[1]["uuid"]
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                await turn
+            proc.stdout.feed_data((_tasks() + "\n" + _replay(replay_uuid) + "\n"
+                                   + _result("late user answer") + "\n").encode())
+            await asyncio.sleep(0.01)
+            remaining_owed = set(live.owed_reports)
+            proc.stdout.feed_data((_result("bg report") + "\n").encode())
+            await asyncio.wait_for(live.reader, 1)
+            return b, remaining_owed
+
+        b, remaining_owed = asyncio.run(run())
+        self.assertEqual(remaining_owed, {"t0"})
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["late user answer", "bg report"])
+
+    def test_each_background_result_settles_one_departure(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            _, proc = await hand_off(b, [_tasks("one", "two"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            for event in (_tasks_with_ids(("t1", "two")), _tasks(),
+                          _result("first report"), _result("second report")):
+                proc.stdout.feed_data((event + "\n").encode())
+            await asyncio.wait_for(live.reader, 1)
+            return b
+
+        b = asyncio.run(run())
+        self.assertEqual([c.args[1] for c in b.post.call_args_list],
+                         ["first report", "second report"])
+        self.assertEqual(b.live, {})
+
+    def test_two_replayed_waiters_share_one_result(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            b._send_to_claude = AsyncMock()
+            first = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1", "message_id": 1}, b.bindings["k"], "A"))
+            second = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1", "message_id": 2}, b.bindings["k"], "B"))
+            await asyncio.sleep(0.02)
+            uuids = [call.args[1]["uuid"] for call in b._send_to_claude.await_args_list]
+            for event in (_replay(uuids[1]), _result("shared answer")):
+                proc.stdout.feed_data((event + "\n").encode())
+            answers = await asyncio.wait_for(asyncio.gather(first, second), 1)
+            proc.stdout.feed_eof()
+            await asyncio.wait_for(live.reader, 1)
+            return b, answers
+
+        b, answers = asyncio.run(run())
+        self.assertEqual(answers, ["shared answer", ""])
+        self.assertFalse(any(c.args[1] == "shared answer"
+                             for c in b.post.call_args_list))
+
+    def test_unreplayed_waiter_cannot_claim_background_result(self):
+        async def run():
+            b = followup_bridge(idle=0.1)
+            _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            live.replay_supported = True
+            b._send_to_claude = AsyncMock()
+            turn = asyncio.create_task(b.run_claude(
+                "k", {"channel_id": "c1"}, b.bindings["k"], "update?"))
+            await asyncio.sleep(0.01)
+            for event in (_result("background report"),):
+                proc.stdout.feed_data((event + "\n").encode())
+            await asyncio.sleep(0.01)
+            self.assertFalse(turn.done())
+            proc.stdout.feed_eof()
+            with self.assertRaisesRegex(RuntimeError, "ended before replying"):
+                await turn
+            await asyncio.wait_for(live.reader, 1)
+            return b
+
+        b = asyncio.run(run())
+        self.assertIn("background report",
+                      [c.args[1] for c in b.post.call_args_list])
+
     def test_activity_frame_returns_reflect_what_was_sent(self):
         b = make_bridge()
         del b.post

@@ -45,6 +45,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -793,11 +794,11 @@ class LiveRun:
         self.spawned_with = spawned_with
         self.perm_ids = perm_ids
         self.tasks: list[dict] = []  # latest background_tasks_changed inventory
-        # Each waiter remembers the report IDs already owed at injection.
-        # A later task stopping must not move it past an earlier report.
         self.waiters: deque = deque()
         self.owed_reports: set[str] = set()  # departed tasks awaiting a report
         self.report_order: deque[str] = deque()
+        self.replay_supported = False
+        self.dropped_waiter_uuids: set[str] = set()
         self.anon_task_serial = 0
         self.handled_tasks: set[str] = set()  # stopped by the model
         self.pending_stops: dict[str, str] = {}  # tool-use ID to task ID
@@ -3930,6 +3931,7 @@ class Bridge:
                 self.claude_bin, "-p",
                 "--input-format", "stream-json",
                 "--output-format", "stream-json", "--verbose",
+                *(["--replay-user-messages"] if self.async_followups else []),
                 "--permission-prompt-tool", "stdio",
                 "--permission-mode", mode,
                 *sys_args,
@@ -3965,10 +3967,13 @@ class Bridge:
             # now that this child is registered and before it is given any work.
             if key in self.stop_requested:
                 raise RunStopped
+            original_uuid = str(uuid.uuid4())
             await self._send_to_claude(proc, {
                 "type": "user",
+                "uuid": original_uuid,
                 "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
             })
+            replay_supported = False
             result_text, last_progress = None, 0.0
             # A blank result we're holding in case a real one is still coming,
             # and the deadline after which we give up and accept it.
@@ -4014,6 +4019,9 @@ class Bridge:
                         except json.JSONDecodeError:
                             continue
                         kind = event.get("type")
+                        if (kind == "user" and event.get("isReplay") is True
+                                and event.get("uuid") == original_uuid):
+                            replay_supported = True
                         if kind == "rate_limit_event":
                             if run_account == self.account:
                                 self.capture_usage(event)
@@ -4091,7 +4099,7 @@ class Bridge:
                         handed_off = True
                         self._start_live_run(key, frame, binding, spawned_with,
                                              proc, bg_tasks, perm_ids,
-                                             perm_tasks, tmpdir)
+                                             perm_tasks, tmpdir, replay_supported)
                     else:
                         # A background task can finish at the same instant as
                         # the foreground result. In that race the CLI may
@@ -4170,6 +4178,7 @@ class Bridge:
                                         self._start_live_run(
                                             key, frame, binding, spawned_with, proc,
                                             listed, perm_ids, perm_tasks, tmpdir,
+                                            replay_supported,
                                         )
                                         break
                                 if saw_background_tasks:
@@ -4198,6 +4207,7 @@ class Bridge:
                                     self._start_live_run(
                                         key, frame, binding, spawned_with, proc,
                                         [], perm_ids, perm_tasks, tmpdir,
+                                        replay_supported,
                                     )
                                     self.live[key].last_event_was_result = False
                                     break
@@ -4333,10 +4343,12 @@ class Bridge:
     def _start_live_run(self, key: str, frame: dict, binding: dict,
                         spawned_with: tuple, proc, tasks: list[dict],
                         perm_ids: list[str], perm_tasks: list[asyncio.Task],
-                        tmpdir: str | None = None) -> None:
+                        tmpdir: str | None = None,
+                        replay_supported: bool = False) -> None:
         """Keep a replied-to child alive so its background work can report in."""
         live = LiveRun(proc, key, frame, binding, spawned_with, perm_ids)
         live.tasks = list(tasks)
+        live.replay_supported = replay_supported
         live.tmpdir = tmpdir
         # stderr is a pipe nobody else reads for the life of the hold; once its
         # buffer fills the child blocks on write() and stops producing stdout
@@ -4353,15 +4365,18 @@ class Bridge:
                                 roster_note: str | None, context_epoch: int) -> str:
         """Send a new channel turn down a live child's stdin and await its reply."""
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        live.waiters.append({"fut": fut, "frame": frame,
-                             "prior_owed": set(live.owed_reports),
-                             "ahead": len(live.owed_reports),
-                             "events_seen": live.events_seen,
-                             "was_result": live.last_event_was_result})
+        waiter = {"fut": fut, "frame": frame,
+                  "uuid": str(uuid.uuid4()), "replayed": False,
+                  "prior_owed": set(live.owed_reports),
+                  "ahead": len(live.owed_reports),
+                  "events_seen": live.events_seen,
+                  "was_result": live.last_event_was_result}
+        live.waiters.append(waiter)
         live.last_event_was_result = False
         try:
             await self._send_to_claude(live.proc, {
                 "type": "user",
+                "uuid": waiter["uuid"],
                 "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
             })
         except Exception:
@@ -4389,6 +4404,8 @@ class Bridge:
     def _drop_waiter(live: LiveRun, fut: asyncio.Future) -> None:
         dropped = next((w for w in live.waiters if w["fut"] is fut), None)
         live.waiters = deque(w for w in live.waiters if w["fut"] is not fut)
+        if dropped is not None:
+            live.dropped_waiter_uuids.add(dropped["uuid"])
         if (dropped is not None and not live.waiters
                 and dropped.get("events_seen") == live.events_seen):
             live.last_event_was_result = dropped["was_result"]
@@ -4409,7 +4426,10 @@ class Bridge:
         # says which prompt it answers, so a blank one is held rather than
         # handed to a waiter that is probably owed real text.
         blank_held: str | None = None
+        blank_waiters: list[dict] = []
         blank_deadline: float | None = None
+        assistant_since_result = False
+        dropped_replay_in_turn = False
         try:
             while True:
                 deadlines = [started + self.followup_max_wait]
@@ -4426,13 +4446,18 @@ class Bridge:
                     deadlines.append(blank_deadline)
                 remaining = min(deadlines) - time.monotonic()
                 if remaining <= 0:
-                    if blank_held is not None and live.waiters:
-                        waiter = live.waiters.popleft()
-                        if not waiter["fut"].done():
-                            waiter["fut"].set_result(blank_held)
-                            if not waiter["frame"].get("_auto_compact"):
-                                progress_pending = False
-                        blank_held, blank_deadline = None, None
+                    if (blank_held is not None and any(
+                            any(waiter is current for current in live.waiters)
+                            for waiter in blank_waiters)):
+                        for waiter in blank_waiters:
+                            if any(waiter is current for current in live.waiters):
+                                live.waiters = deque(
+                                    current for current in live.waiters if current is not waiter)
+                                if not waiter["fut"].done():
+                                    waiter["fut"].set_result(blank_held)
+                                    if not waiter["frame"].get("_auto_compact"):
+                                        progress_pending = False
+                        blank_held, blank_deadline, blank_waiters = None, None, []
                         last_event = time.monotonic()
                         continue
                     if blank_held is not None and (live.tasks or live.waiters):
@@ -4440,7 +4465,7 @@ class Bridge:
                         # injection timeout dropped it), but work is still
                         # outstanding — keep reading rather than killing a child
                         # that still owes an answer.
-                        blank_held, blank_deadline = None, None
+                        blank_held, blank_deadline, blank_waiters = None, None, []
                         continue
                     if (not live.tasks and live.last_event_was_result
                             and (live.owed_reports or live.waiters)):
@@ -4479,7 +4504,10 @@ class Bridge:
                 kind = event.get("type")
                 if kind not in ("rate_limit_event", "system"):
                     live.last_event_was_result = kind == "result"
-                target = live.waiters[0]["frame"] if live.waiters else live.frame
+                active_waiter = next((w for w in live.waiters if w.get("replayed")), None)
+                target = (active_waiter["frame"] if active_waiter else
+                          live.waiters[0]["frame"] if live.waiters and not live.replay_supported
+                          else live.frame)
                 if kind == "rate_limit_event":
                     if live.spawned_with[2] == self.account:
                         self.capture_usage(event)
@@ -4512,6 +4540,7 @@ class Bridge:
                             live.report_order.append(task_id)
                     live.tasks = listed
                 elif kind == "assistant":
+                    assistant_since_result = True
                     for block in (event.get("message") or {}).get("content") or []:
                         if not isinstance(block, dict) or block.get("type") != "tool_use":
                             continue
@@ -4538,6 +4567,18 @@ class Bridge:
                     self._cancel_request(event.get("request_id") or "",
                                          "Claude withdrew the request.")
                 elif kind == "user":
+                    if event.get("isReplay") is True:
+                        replay_uuid = event.get("uuid")
+                        if replay_uuid in live.dropped_waiter_uuids:
+                            live.dropped_waiter_uuids.remove(replay_uuid)
+                            dropped_replay_in_turn = True
+                        for index, waiter in enumerate(live.waiters):
+                            if waiter.get("uuid") == replay_uuid:
+                                for earlier in list(live.waiters)[:index + 1]:
+                                    earlier["replayed"] = True
+                                    if assistant_since_result:
+                                        earlier["merged_with_report"] = True
+                                break
                     for block in (event.get("message") or {}).get("content") or []:
                         if not isinstance(block, dict) or block.get("type") != "tool_result":
                             continue
@@ -4567,42 +4608,61 @@ class Bridge:
                         binding["session_id"] = new_sid
                         self.bindings[key] = binding
                         self._save_state()
-                    # A result says nothing about which prompt it answers, so
-                    # attribution goes by obligation order: the head waiter may
-                    # only claim one once the reports the CLI already owed when
-                    # that turn was injected have been delivered. Without this a
-                    # background report generated *before* the user's message
-                    # became that message's answer — and the release check below
-                    # then killed the child before the real answer was written.
-                    claims_waiter = bool(live.waiters) and live.waiters[0]["ahead"] == 0
-                    if not text.strip():
+                    # Replay is emitted when the CLI takes an injected message
+                    # into a turn, including when it merges one mid-turn.
+                    # Older CLIs without replay support retain obligation order.
+                    claimed = ([w for w in live.waiters if w.get("replayed")]
+                               if live.replay_supported else
+                               [live.waiters[0]] if live.waiters and live.waiters[0]["ahead"] == 0
+                               else [])
+                    claims_waiter = bool(claimed)
+                    if claims_waiter and live.replay_supported:
+                        if any(w.get("merged_with_report") for w in claimed):
+                            self._settle_report(live)
+                            live.reported = True
+                        for index, waiter in enumerate(claimed):
+                            live.waiters = deque(
+                                current for current in live.waiters if current is not waiter)
+                            if not waiter["fut"].done():
+                                waiter["fut"].set_result(text if index == 0 else "")
+                                if not waiter["frame"].get("_auto_compact"):
+                                    progress_pending = False
+                            elif index == 0:
+                                live.reported = True
+                                if self._post_reply(live.frame, live.binding, text):
+                                    progress_pending = False
+                    elif not text.strip():
                         # A re-invoked model that said nothing. Held only if a
                         # turn is waiting and might still be owed real text;
                         # otherwise fall through so an empty inventory releases
                         # the child now instead of idling for the full timeout.
                         if claims_waiter and blank_held is None:
                             blank_held = text
+                            blank_waiters = claimed
                             blank_deadline = time.monotonic() + BLANK_RESULT_IDLE_GRACE
                         elif not claims_waiter:
                             # Re-invoked by its own background work and chose to
                             # say nothing. That is still an answer, so the
                             # release below owes no "never reported" notice.
-                            self._settle_report(live)
+                            if not dropped_replay_in_turn:
+                                self._settle_report(live)
                             live.reported = True
                     else:
-                        blank_held, blank_deadline = None, None
+                        blank_held, blank_deadline, blank_waiters = None, None, []
                         if claims_waiter:
-                            waiter = live.waiters.popleft()
-                            if not waiter["fut"].done():
-                                waiter["fut"].set_result(text)
-                                if not waiter["frame"].get("_auto_compact"):
-                                    progress_pending = False
-                            else:
-                                # Its turn was cancelled between appending and
-                                # now; post rather than discard the answer.
-                                live.reported = True
-                                if self._post_reply(live.frame, live.binding, text):
-                                    progress_pending = False
+                            for index, waiter in enumerate(claimed):
+                                live.waiters = deque(
+                                    current for current in live.waiters if current is not waiter)
+                                if not waiter["fut"].done():
+                                    waiter["fut"].set_result(text if index == 0 else "")
+                                    if not waiter["frame"].get("_auto_compact"):
+                                        progress_pending = False
+                                elif index == 0:
+                                    # Its turn was cancelled between appending
+                                    # and now; post rather than discard it.
+                                    live.reported = True
+                                    if self._post_reply(live.frame, live.binding, text):
+                                        progress_pending = False
                         else:
                             # Backgrounded work reporting in, so it becomes its
                             # own message. Formatted against the binding the
@@ -4610,13 +4670,16 @@ class Bridge:
                             # paths resolve against its cwd, and its TL;DR
                             # setting is the one it was told to write for. The
                             # current binding may point at another repo by now.
-                            self._settle_report(live)
+                            if not dropped_replay_in_turn:
+                                self._settle_report(live)
                             log(f"async follow-up posted for {key}: tasks={len(live.tasks)} "
                                 f"owed={sorted(live.owed_reports)} "
                                 f"ahead={[w['ahead'] for w in live.waiters]}")
                             live.reported = True
                             if self._post_reply(live.frame, live.binding, text):
                                 progress_pending = False
+                    assistant_since_result = False
+                    dropped_replay_in_turn = False
                 if (kind == "result" and not live.waiters and not live.tasks
                         and not live.owed_reports and blank_held is None):
                     log(f"live run for {key} has no background work left — releasing")
