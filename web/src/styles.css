@@ -611,7 +611,7 @@ button.ago-sched-where:hover { color: var(--a1); }
 .ago-sched-example { font-size: 12px; color: var(--dim); }
 .ago-sched-truncated { padding: 8px 12px; font-size: 12px; color: var(--dim); text-align: center; }
 .ago-sched-inbox .ago-log { padding: 12px 16px; }
-.ago-sched-group { width: 100%; max-width: 760px; margin: 0 auto 16px; }
+.ago-sched-group { width: 100%; margin: 0 0 16px; }
 .ago-sched-group-head { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; padding: 0; border: 0; color: var(--text); background: none; font-size: 13px; font-weight: 600; cursor: pointer; }
 .ago-sched-group-head:hover { color: var(--a1); }
 .ago-sched-next-run { color: var(--text); font-weight: 600; }
@@ -3929,4 +3929,4 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .ago-sched-filters [aria-selected="true"] { background: rgba(var(--accent-rgb),.14); color: var(--a1); }
 .ago-sched-filters [role="tab"]:focus-visible { outline: 2px solid var(--a1); outline-offset: 1px; }
 .ago-sched-count { font-size: 11px; font-variant-numeric: tabular-nums; padding: 1px 5px; border-radius: 5px; background: rgba(var(--ink-rgb),.06); }
-.ago-sched-inbox > .ago-sched-filters { width: calc(100% - 32px); max-width: 760px; box-sizing: border-box; align-self: center; }
+.ago-sched-inbox > .ago-sched-filters { margin: 12px 16px; }
