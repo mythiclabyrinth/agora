@@ -6157,3 +6157,147 @@ class ScheduleGetAndMultiAskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowupScheduleAskTests(unittest.TestCase):
+    """A background follow-up's schedule asks run under the turn the held child
+    was started for, with that turn's budget, and the model answers them."""
+
+    OK = {"ok": True, "schedule": {"id": "s1", "status": "active",
+                                   "schedule": {"kind": "once", "at": 0}, "text": "next run"}}
+
+    @staticmethod
+    def _ask(obj):
+        return bridge.SCHEDULE_SENTINEL + " " + json.dumps(obj)
+
+    def _run(self, followup_text, *, auth=("t-orig", None), budget=None,
+             response=None, answer="Re-armed for 08:00.", send_fails=False,
+             newer_turn=False):
+        sent_prompts: list[str] = []
+        out: dict = {}
+
+        async def run():
+            b = followup_bridge(idle=2.0)
+            b.schedules_enabled = True
+            b.request_schedule = AsyncMock(return_value=response or self.OK)
+            b._post_reply = Mock(return_value=True)
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", {"channel_id": "c1", "turn_id": "t-orig"},
+                                  b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth = auth
+            live.ask_budget = budget if budget is not None else {}
+            live.reported = True
+            if newer_turn:  # still running background work when the newer message lands
+                live.tasks = [{"task_id": "t0", "description": "sweep"}]
+            b.live["k"] = live
+
+            async def send(_proc, obj):
+                text = obj["message"]["content"][0]["text"]
+                sent_prompts.append(text)
+                if send_fails and text != "hello":
+                    raise RuntimeError("child stdin closed")
+                reply = "hi" if text == "hello" else answer
+                proc.stdout.feed_data((_result(reply) + "\n").encode())
+
+            b._send_to_claude = send
+            reader = asyncio.create_task(b._followup_loop(live, []))
+            if newer_turn:
+                # A newer message lands in the held child first; it must not
+                # replace the original turn's grant or budget.
+                got = await b._inject_into_live(
+                    live, {"channel_id": "c1", "turn_id": "t-newer"}, "hello", None, 0)
+                self.assertEqual(got, "hi")
+            proc.stdout.feed_data((_tasks() + "\n" + _result(followup_text) + "\n").encode())
+            await asyncio.wait_for(reader, 5)
+            for _ in range(50):
+                if not b._detached:
+                    break
+                await asyncio.sleep(0.02)
+            out["b"], out["live"] = b, live
+
+        asyncio.run(run())
+        return out["b"], out["live"], sent_prompts
+
+    def _posted(self, b):
+        return [c.args[2] for c in b._post_reply.call_args_list]
+
+    def test_stopping_the_run_mid_request_sends_no_further_requests(self):
+        sent: list[str] = []
+
+        async def run():
+            b = followup_bridge(idle=2.0)
+            b.schedules_enabled = True
+            b._post_reply = Mock(return_value=True)
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", {"channel_id": "c1", "turn_id": "t-orig"},
+                                  b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth, live.ask_budget, live.reported = ("t-orig", None), {}, True
+            b.live["k"] = live
+
+            async def request(ask, turn_id):
+                sent.append(ask["id"])
+                live.closing = True  # the person stops the run while request one is pending
+                return self.OK
+
+            b.request_schedule = request
+            text = "\n".join(self._ask({"op": "update", "id": i, "run_at": 1}) for i in ("a", "b", "c"))
+            live.ask_holds += 1
+            await b._serve_followup_schedule_asks(live, text)
+            return b
+
+        b = asyncio.run(run())
+        self.assertEqual(sent, ["a"])
+        posted = "\n".join(self._posted(b))
+        self.assertIn("- update a: done", posted)
+        self.assertNotIn(bridge.SCHEDULE_SENTINEL, posted)
+
+    def test_followup_update_is_served_with_the_original_turn(self):
+        text = "Sweep done.\n" + self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, live, prompts = self._run(text)
+        b.request_schedule.assert_awaited_once()
+        self.assertEqual(b.request_schedule.await_args.args[1], "t-orig")
+        self.assertEqual(self._posted(b), ["Re-armed for 08:00."])
+        self.assertNotIn("cannot from here", " ".join(self._posted(b)))
+        self.assertEqual(live.ask_holds, 0)
+
+    def test_budget_is_shared_with_the_original_turn(self):
+        text = "\n".join([self._ask({"op": "update", "id": "s1", "run_at": 1}),
+                          self._ask({"op": "update", "id": "s1", "run_at": 2})])
+        b, live, prompts = self._run(text, budget={"schedule": 2})
+        self.assertEqual(b.request_schedule.await_count, 1)
+        self.assertIn("Not run", prompts[-1])
+        self.assertEqual(live.ask_budget["schedule"], 3)
+
+    def test_followup_of_an_agent_turn_is_refused_without_a_request(self):
+        text = self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, _, prompts = self._run(text, auth=(None, "agent"))
+        b.request_schedule.assert_not_awaited()
+        self.assertIn("cannot manage schedules", prompts[-1])
+        self.assertEqual(self._posted(b), ["Re-armed for 08:00."])
+
+    def test_a_newer_message_does_not_replace_the_grant(self):
+        text = self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, live, _ = self._run(text, newer_turn=True)
+        self.assertEqual(b.request_schedule.await_args.args[1], "t-orig")
+        self.assertEqual(live.ask_auth, ("t-orig", None))
+
+    def test_expired_grant_reaches_the_model_and_ends_cleanly(self):
+        text = self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, live, prompts = self._run(
+            text, response={"ok": False, "error": "unknown or expired turn_id"},
+            answer="The re-arm was refused; please re-arm.")
+        self.assertIn("expired", prompts[-1])
+        self.assertEqual(self._posted(b), ["The re-arm was refused; please re-arm."])
+        self.assertEqual(live.ask_holds, 0)
+
+    def test_feedback_failure_never_replays_and_says_what_was_done(self):
+        text = "Sweep done.\n" + self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, live, _ = self._run(text, send_fails=True)
+        b.request_schedule.assert_awaited_once()
+        posted = self._posted(b)
+        self.assertEqual(len(posted), 1)
+        self.assertIn("Sweep done.", posted[0])
+        self.assertIn("- update s1: done", posted[0])
+        self.assertNotIn(bridge.SCHEDULE_SENTINEL, posted[0])
+        self.assertEqual(live.ask_holds, 0)
+        self.assertFalse(live.alive)

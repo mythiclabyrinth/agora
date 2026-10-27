@@ -817,6 +817,15 @@ class LiveRun:
         self.started = time.monotonic()
         self.tmpdir: str | None = None  # --add-dir staging, removed at retirement
         self.reader: asyncio.Task | None = None
+        # Schedule authority of the turn this child was started for, fixed at
+        # spawn: (turn_id, why) from batch_turn_id, and that turn's request
+        # budget, shared with its follow-ups. A newer message injected into the
+        # child never replaces either (see _serve_followup_schedule_asks).
+        self.ask_auth: tuple[str | None, str | None] = (None, "none")
+        self.ask_budget: dict = {}
+        # Follow-ups whose schedule asks are being served: the child stays held
+        # until their results have gone back into it.
+        self.ask_holds = 0
         self.stderr_drain: asyncio.Task | None = None
 
     @property
@@ -3351,6 +3360,12 @@ class Bridge:
                 if binding:
                     fork_failed = False
                 batch_frame, batch_text = self._coalesce_turns(entries)
+                # This turn's schedule authority and budget travel on its frame,
+                # so a child held for its background work keeps them (and every
+                # re-prompt of the turn draws on the same budget).
+                batch_frame["_ask_auth"] = batch_turn_id(
+                    [q["frame"] for q in entries], self.agent_id)
+                batch_frame["_ask_budget"] = {}
                 # A scheduled post's writer learns which schedule it may re-arm; any
                 # other agent learns an agent wrote it, not the person it posts as.
                 if not batch_text.lstrip().startswith("/"):
@@ -3669,7 +3684,9 @@ class Bridge:
         them (look back, then schedule, then look back again …) until it gives
         a normal reply. Each kind keeps its own per-turn cap; every pass either
         uses up some of a cap or returns a non-ask fallback, so this ends."""
-        budget: dict = {}
+        budget = frame.get("_ask_budget")
+        if not isinstance(budget, dict):
+            budget = {}
         while True:
             if self._parse_history_ask(reply) is not None:
                 reply = await self._serve_history_asks(key, frame, binding, reply, budget)
@@ -3698,21 +3715,7 @@ class Bridge:
             # post) and never for an agent's, so nothing here can widen it. A
             # coalesced turn from several people schedules for none of them.
             turn_id, why = batch_turn_id(frames or [frame], self.agent_id)
-            results: list[str] = []
-            for ask in asks:
-                if budget.get("schedule", 0) >= SCHEDULE_MAX_OPS:
-                    results.append(f"[Not run: this turn's limit of {SCHEDULE_MAX_OPS} schedule "
-                                   "requests is used up. Do not ask again this turn; tell the "
-                                   "person what is still to do.]")
-                    continue
-                budget["schedule"] = budget.get("schedule", 0) + 1
-                results.append(await self._schedule_result(key, ask, turn_id, why))
-            if len(results) == 1:
-                prompt = results[0]
-            else:
-                prompt = "\n\n".join(
-                    f"[Request {n} of {len(results)} ({asks[n - 1].get('op') or 'not understood'}):]\n{r}"
-                    for n, r in enumerate(results, 1))
+            prompt = await self._run_schedule_asks(key, asks, turn_id, why, budget)
             reply = await self.run_claude(
                 key, {**frame, "attachments": []}, binding, prompt)
         # Out of requests (or the capability is off) and the model still asks:
@@ -3722,8 +3725,35 @@ class Bridge:
                     "Ask me again with what you want scheduled.")
         return reply
 
+    async def _run_schedule_asks(self, key: str, asks: list[dict], turn_id: str | None,
+                                 why: str | None, budget: dict,
+                                 outcomes: list[str] | None = None,
+                                 still_wanted=None) -> str:
+        """Run a reply's asks in order against ``budget`` and return the prompt
+        that feeds every result back to the model. ``outcomes`` collects a
+        one-line, person-readable note per request actually sent.
+        ``still_wanted()`` is checked before each request: once it is false
+        (the run was stopped), the rest are not sent."""
+        results: list[str] = []
+        for ask in asks:
+            if still_wanted is not None and not still_wanted():
+                results.append("[Not run: the run was stopped before this request.]")
+                continue
+            if budget.get("schedule", 0) >= SCHEDULE_MAX_OPS:
+                results.append(f"[Not run: this turn's limit of {SCHEDULE_MAX_OPS} schedule "
+                               "requests is used up. Do not ask again this turn; tell the "
+                               "person what is still to do.]")
+                continue
+            budget["schedule"] = budget.get("schedule", 0) + 1
+            results.append(await self._schedule_result(key, ask, turn_id, why, outcomes))
+        if len(results) == 1:
+            return results[0]
+        return "\n\n".join(
+            f"[Request {n} of {len(results)} ({asks[n - 1].get('op') or 'not understood'}):]\n{r}"
+            for n, r in enumerate(results, 1))
+
     async def _schedule_result(self, key: str, ask: dict, turn_id: str | None,
-                               why: str | None) -> str:
+                               why: str | None, outcomes: list[str] | None = None) -> str:
         """Run one parsed ask (or refuse it) and render what the model reads."""
         if ask.get("error"):
             return (f"[The schedule request was not understood: {ask['error']}. "
@@ -3751,6 +3781,10 @@ class Bridge:
             response = {"ok": False, "error": "the server did not answer in time"}
         if not response.get("ok"):
             log(f"schedule ask failed: {response.get('error')}")
+        if outcomes is not None:
+            target = f" {ask['id']}" if ask.get("id") else ""
+            outcomes.append(f"- {ask['op']}{target}: " + (
+                "done" if response.get("ok") else f"failed ({response.get('error') or 'error'})"))
         return format_schedule_result(ask, response)
 
     @staticmethod
@@ -4348,6 +4382,11 @@ class Bridge:
         """Keep a replied-to child alive so its background work can report in."""
         live = LiveRun(proc, key, frame, binding, spawned_with, perm_ids)
         live.tasks = list(tasks)
+        auth = frame.get("_ask_auth")
+        live.ask_auth = (tuple(auth) if isinstance(auth, (tuple, list)) and len(auth) == 2
+                         else batch_turn_id([frame], self.agent_id))
+        budget = frame.get("_ask_budget")
+        live.ask_budget = budget if isinstance(budget, dict) else {}
         live.replay_supported = replay_supported
         live.tmpdir = tmpdir
         # stderr is a pipe nobody else reads for the life of the hold; once its
@@ -4362,8 +4401,10 @@ class Bridge:
         live.reader = asyncio.create_task(self._followup_loop(live, perm_tasks))
 
     async def _inject_into_live(self, live: LiveRun, frame: dict, prompt: str,
-                                roster_note: str | None, context_epoch: int) -> str:
-        """Send a new channel turn down a live child's stdin and await its reply."""
+                                roster_note: str | None, context_epoch: int,
+                                on_queued=None) -> str:
+        """Send a new channel turn down a live child's stdin and await its reply.
+        ``on_queued(waiter)`` runs once the waiter is registered, before any await."""
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         waiter = {"fut": fut, "frame": frame,
                   "uuid": str(uuid.uuid4()), "replayed": False,
@@ -4373,6 +4414,8 @@ class Bridge:
                   "was_result": live.last_event_was_result}
         live.waiters.append(waiter)
         live.last_event_was_result = False
+        if on_queued is not None:
+            on_queued(waiter)
         try:
             await self._send_to_claude(live.proc, {
                 "type": "user",
@@ -4399,6 +4442,88 @@ class Bridge:
         except TimeoutError:
             self._drop_waiter(live, fut)
             raise RuntimeError(f"timed out after {self.timeout}s")
+
+    def _followup_wants_schedule(self, live: LiveRun, text: str) -> bool:
+        """A follow-up whose schedule asks can still be served under the turn
+        the child was started for (history asks keep the old refusal)."""
+        return (self.schedules_enabled and live.alive
+                and self._parse_history_ask(text) is None
+                and parse_schedule_ask(text) is not None
+                and live.ask_budget.get("schedule", 0) < SCHEDULE_MAX_OPS)
+
+    def _rehold_for_followup_asks(self, live: LiveRun, waiter: dict, text: str) -> None:
+        """The model's answer to served follow-up results asks again: hold the
+        child before the release check so the next round can go back in."""
+        if waiter.get("followup_asks") and self._followup_wants_schedule(live, text):
+            live.ask_holds += 1
+            waiter["reheld"] = True
+
+    async def _serve_followup_schedule_asks(self, live: LiveRun, text: str) -> None:
+        """Serve a background follow-up's schedule asks under the authority and
+        budget of the turn the child was started for, feed the results back into
+        the same child, and post its answer. One path, one child: nothing here
+        resumes the session elsewhere. A request that ran is never repeated: if
+        the answer can't be had, a bridge note says what was done."""
+        held = True
+        outcomes: list[str] = []
+        reply = text
+        turn_id, why = live.ask_auth
+
+        def queued(waiter: dict) -> None:
+            nonlocal held
+            waiter["followup_asks"] = True
+            if held:
+                held = False
+                live.ask_holds -= 1
+
+        try:
+            while True:
+                asks = parse_schedule_asks(reply)
+                log(f"follow-up schedule asks for {live.key}: {len(asks)}")
+                prompt = await self._run_schedule_asks(
+                    live.key, asks, turn_id, why, live.ask_budget, outcomes,
+                    still_wanted=lambda: live.alive)
+                if not live.alive:
+                    raise RuntimeError("the held child ended before the results went back")
+                box: dict = {}
+
+                def on_queued(waiter: dict) -> None:
+                    box["waiter"] = waiter
+                    queued(waiter)
+
+                reply = await self._inject_into_live(
+                    live, live.frame, prompt, None, 0, on_queued=on_queued)
+                if (box.get("waiter") or {}).get("reheld"):
+                    held = True
+                    continue
+                break
+            if reply.startswith("(claude error)"):
+                raise RuntimeError(reply)
+            if parse_schedule_ask(reply) is not None:
+                # Out of requests and the model still asks: same line a turn gets.
+                reply = ("I could not finish that scheduling request from here. "
+                         "Ask me again with what you want scheduled.")
+            self._post_reply(live.frame, live.binding, reply)
+        except Exception as e:  # never replay a request; say what happened instead
+            log(f"follow-up schedule asks failed for {live.key}: {e!r}")
+            body = strip_schedule_asks(text)
+            if outcomes:
+                note = ("I made these schedule changes from a background follow-up, "
+                        "but couldn't finish my reply:\n" + "\n".join(outcomes))
+            else:
+                note = ("I wanted to change a schedule from a background follow-up "
+                        "but couldn't finish. Ask me again with what you want scheduled.")
+            self._post_reply(live.frame, live.binding, (body + "\n\n" + note).strip())
+        finally:
+            if held:
+                held = False
+                live.ask_holds -= 1
+            # Nothing left to wait for: end the child now rather than leave the
+            # reader idling to its timeout.
+            if (live.alive and not live.ask_holds and not live.waiters
+                    and not live.tasks and not live.owed_reports
+                    and self.live.get(live.key) is live):
+                await self._end_live_run(live.key, "follow-up schedule asks done")
 
     @staticmethod
     def _drop_waiter(live: LiveRun, fut: asyncio.Future) -> None:
@@ -4433,7 +4558,7 @@ class Bridge:
         try:
             while True:
                 deadlines = [started + self.followup_max_wait]
-                if live.tasks or not live.last_event_was_result:
+                if live.tasks or live.ask_holds or not live.last_event_was_result:
                     # A listed job or active turn can be silent for a long
                     # foreground tool call. Bound it with the long timeout.
                     deadlines.append(last_event + self.followup_task_idle_timeout)
@@ -4623,6 +4748,8 @@ class Bridge:
                         for index, waiter in enumerate(claimed):
                             live.waiters = deque(
                                 current for current in live.waiters if current is not waiter)
+                            if index == 0:
+                                self._rehold_for_followup_asks(live, waiter, text)
                             if not waiter["fut"].done():
                                 waiter["fut"].set_result(text if index == 0 else "")
                                 if not waiter["frame"].get("_auto_compact"):
@@ -4653,6 +4780,8 @@ class Bridge:
                             for index, waiter in enumerate(claimed):
                                 live.waiters = deque(
                                     current for current in live.waiters if current is not waiter)
+                                if index == 0:
+                                    self._rehold_for_followup_asks(live, waiter, text)
                                 if not waiter["fut"].done():
                                     waiter["fut"].set_result(text if index == 0 else "")
                                     if not waiter["frame"].get("_auto_compact"):
@@ -4676,11 +4805,19 @@ class Bridge:
                                 f"owed={sorted(live.owed_reports)} "
                                 f"ahead={[w['ahead'] for w in live.waiters]}")
                             live.reported = True
-                            if self._post_reply(live.frame, live.binding, text):
+                            if self._followup_wants_schedule(live, text):
+                                # Served off the reader (it must keep reading to
+                                # deliver the model's answer); the hold keeps the
+                                # child until the results have gone back in.
+                                live.ask_holds += 1
+                                self._spawn(self._serve_followup_schedule_asks(live, text))
+                                progress_pending = False
+                            elif self._post_reply(live.frame, live.binding, text):
                                 progress_pending = False
                     assistant_since_result = False
                     dropped_replay_in_turn = False
                 if (kind == "result" and not live.waiters and not live.tasks
+                        and not live.ask_holds
                         and not live.owed_reports and blank_held is None):
                     log(f"live run for {key} has no background work left — releasing")
                     break
