@@ -6155,10 +6155,6 @@ class ScheduleGetAndMultiAskTests(unittest.TestCase):
         self.assertNotIn(bridge.SCHEDULE_SENTINEL, final)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FollowupScheduleAskTests(unittest.TestCase):
     """A background follow-up's schedule asks run under the turn the held child
     was started for, with that turn's budget, and the model answers them."""
@@ -6172,7 +6168,7 @@ class FollowupScheduleAskTests(unittest.TestCase):
 
     def _run(self, followup_text, *, auth=("t-orig", None), budget=None,
              response=None, answer="Re-armed for 08:00.", send_fails=False,
-             newer_turn=False):
+             newer_turn=False, newer_frame=None):
         sent_prompts: list[str] = []
         out: dict = {}
 
@@ -6182,7 +6178,8 @@ class FollowupScheduleAskTests(unittest.TestCase):
             b.request_schedule = AsyncMock(return_value=response or self.OK)
             b._post_reply = Mock(return_value=True)
             proc = _fake_proc([], returncode=None)
-            live = bridge.LiveRun(proc, "k", {"channel_id": "c1", "turn_id": "t-orig"},
+            live = bridge.LiveRun(proc, "k", {"channel_id": "c1", "turn_id": "t-orig",
+                                              "author": {"type": "user", "id": "tom"}},
                                   b.bindings["k"], (None, "acceptEdits", b.account), [])
             live.ask_auth = auth
             live.ask_budget = budget if budget is not None else {}
@@ -6205,7 +6202,9 @@ class FollowupScheduleAskTests(unittest.TestCase):
                 # A newer message lands in the held child first; it must not
                 # replace the original turn's grant or budget.
                 got = await b._inject_into_live(
-                    live, {"channel_id": "c1", "turn_id": "t-newer"}, "hello", None, 0)
+                    live, newer_frame or {"channel_id": "c1", "turn_id": "t-newer",
+                                          "author": {"type": "user", "id": "tom"}},
+                    "hello", None, 0)
                 self.assertEqual(got, "hi")
             proc.stdout.feed_data((_tasks() + "\n" + _result(followup_text) + "\n").encode())
             await asyncio.wait_for(reader, 5)
@@ -6281,6 +6280,57 @@ class FollowupScheduleAskTests(unittest.TestCase):
         self.assertEqual(b.request_schedule.await_args.args[1], "t-orig")
         self.assertEqual(live.ask_auth, ("t-orig", None))
 
+    def test_an_injected_agent_or_other_persons_message_revokes_the_grant(self):
+        text = self._ask({"op": "update", "id": "s1", "run_at": 1})
+        for author, why in (({"type": "agent", "id": "codex-cli"}, "agent"),
+                            ({"type": "user", "id": "bob"}, "mixed")):
+            b, live, prompts = self._run(text, newer_turn=True, newer_frame={
+                "channel_id": "c1", "turn_id": "t-newer", "author": author})
+            b.request_schedule.assert_not_awaited()
+            self.assertEqual(live.ask_auth, (None, why))
+            self.assertIn("cannot manage schedules", prompts[-1])
+
+    def test_a_grant_revoked_mid_batch_refuses_the_rest(self):
+        sent: list[str] = []
+
+        async def run():
+            b = followup_bridge(idle=2.0)
+            b.schedules_enabled = True
+            b._post_reply = Mock(return_value=True)
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", {"channel_id": "c1", "turn_id": "t-orig",
+                                              "author": {"type": "user", "id": "tom"}},
+                                  b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth, live.ask_budget, live.reported = ("t-orig", None), {}, True
+            b.live["k"] = live
+
+            async def request(ask, turn_id):
+                sent.append(ask["id"])
+                # Another agent's message enters the child while request one is pending.
+                live.ask_auth = bridge.batch_turn_id(
+                    [live.frame, {"author": {"type": "agent", "id": "codex-cli"}}], b.agent_id)
+                return self.OK
+
+            b.request_schedule = request
+            text = "\n".join(self._ask({"op": "update", "id": i, "run_at": 1}) for i in ("a", "b", "c"))
+            prompt = await b._run_schedule_asks(
+                "k", bridge.parse_schedule_asks(text), *live.ask_auth, live.ask_budget, [],
+                still_wanted=lambda: live.alive, auth_now=lambda: live.ask_auth)
+            return prompt
+
+        prompt = asyncio.run(run())
+        self.assertEqual(sent, ["a"])
+        self.assertEqual(prompt.count("cannot manage schedules"), 2)
+
+    def test_a_blank_answer_still_reports_what_was_done(self):
+        text = "Sweep done.\n" + self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, live, _ = self._run(text, answer="")
+        b.request_schedule.assert_awaited_once()
+        posted = "\n".join(self._posted(b))
+        self.assertIn("- update s1: done", posted)
+        self.assertNotIn("no reply", posted)
+        self.assertEqual(live.ask_holds, 0)
+
     def test_expired_grant_reaches_the_model_and_ends_cleanly(self):
         text = self._ask({"op": "update", "id": "s1", "run_at": 1})
         b, live, prompts = self._run(
@@ -6301,3 +6351,7 @@ class FollowupScheduleAskTests(unittest.TestCase):
         self.assertNotIn(bridge.SCHEDULE_SENTINEL, posted[0])
         self.assertEqual(live.ask_holds, 0)
         self.assertFalse(live.alive)
+
+
+if __name__ == "__main__":
+    unittest.main()

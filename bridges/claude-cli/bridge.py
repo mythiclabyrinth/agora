@@ -3728,12 +3728,14 @@ class Bridge:
     async def _run_schedule_asks(self, key: str, asks: list[dict], turn_id: str | None,
                                  why: str | None, budget: dict,
                                  outcomes: list[str] | None = None,
-                                 still_wanted=None) -> str:
+                                 still_wanted=None, auth_now=None) -> str:
         """Run a reply's asks in order against ``budget`` and return the prompt
         that feeds every result back to the model. ``outcomes`` collects a
         one-line, person-readable note per request actually sent.
         ``still_wanted()`` is checked before each request: once it is false
-        (the run was stopped), the rest are not sent."""
+        (the run was stopped), the rest are not sent. ``auth_now()``, when
+        given, supplies the current (turn_id, why) before each request, so a
+        grant revoked mid-batch stops the requests after it."""
         results: list[str] = []
         for ask in asks:
             if still_wanted is not None and not still_wanted():
@@ -3745,6 +3747,8 @@ class Bridge:
                                "person what is still to do.]")
                 continue
             budget["schedule"] = budget.get("schedule", 0) + 1
+            if auth_now is not None:
+                turn_id, why = auth_now()
             results.append(await self._schedule_result(key, ask, turn_id, why, outcomes))
         if len(results) == 1:
             return results[0]
@@ -4414,6 +4418,13 @@ class Bridge:
                   "was_result": live.last_event_was_result}
         live.waiters.append(waiter)
         live.last_event_was_result = False
+        if frame is not live.frame:
+            # Its words now share the child's context: an agent's message, or
+            # another person's, means no follow-up may schedule on the original
+            # person's grant (the same rule batch_turn_id applies to a turn).
+            merged = batch_turn_id([live.frame, frame], self.agent_id)
+            if merged[0] is None and merged[1] in ("agent", "mixed"):
+                live.ask_auth = merged
         if on_queued is not None:
             on_queued(waiter)
         try:
@@ -4467,8 +4478,6 @@ class Bridge:
         held = True
         outcomes: list[str] = []
         reply = text
-        turn_id, why = live.ask_auth
-
         def queued(waiter: dict) -> None:
             nonlocal held
             waiter["followup_asks"] = True
@@ -4481,8 +4490,8 @@ class Bridge:
                 asks = parse_schedule_asks(reply)
                 log(f"follow-up schedule asks for {live.key}: {len(asks)}")
                 prompt = await self._run_schedule_asks(
-                    live.key, asks, turn_id, why, live.ask_budget, outcomes,
-                    still_wanted=lambda: live.alive)
+                    live.key, asks, *live.ask_auth, live.ask_budget, outcomes,
+                    still_wanted=lambda: live.alive, auth_now=lambda: live.ask_auth)
                 if not live.alive:
                     raise RuntimeError("the held child ended before the results went back")
                 box: dict = {}
@@ -4497,8 +4506,8 @@ class Bridge:
                     held = True
                     continue
                 break
-            if reply.startswith("(claude error)"):
-                raise RuntimeError(reply)
+            if reply.startswith("(claude error)") or not reply.strip():
+                raise RuntimeError(reply or "blank answer to the schedule results")
             if parse_schedule_ask(reply) is not None:
                 # Out of requests and the model still asks: same line a turn gets.
                 reply = ("I could not finish that scheduling request from here. "
@@ -4748,9 +4757,9 @@ class Bridge:
                         for index, waiter in enumerate(claimed):
                             live.waiters = deque(
                                 current for current in live.waiters if current is not waiter)
-                            if index == 0:
-                                self._rehold_for_followup_asks(live, waiter, text)
                             if not waiter["fut"].done():
+                                if index == 0:
+                                    self._rehold_for_followup_asks(live, waiter, text)
                                 waiter["fut"].set_result(text if index == 0 else "")
                                 if not waiter["frame"].get("_auto_compact"):
                                     progress_pending = False
@@ -4780,9 +4789,9 @@ class Bridge:
                             for index, waiter in enumerate(claimed):
                                 live.waiters = deque(
                                     current for current in live.waiters if current is not waiter)
-                                if index == 0:
-                                    self._rehold_for_followup_asks(live, waiter, text)
                                 if not waiter["fut"].done():
+                                    if index == 0:
+                                        self._rehold_for_followup_asks(live, waiter, text)
                                     waiter["fut"].set_result(text if index == 0 else "")
                                     if not waiter["frame"].get("_auto_compact"):
                                         progress_pending = False
