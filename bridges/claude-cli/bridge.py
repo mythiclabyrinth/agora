@@ -4422,9 +4422,15 @@ class Bridge:
             # Its words now share the child's context: an agent's message, or
             # another person's, means no follow-up may schedule on the original
             # person's grant (the same rule batch_turn_id applies to a turn).
+            # A coalesced batch frame stands for several entries; its own
+            # _ask_auth was worked out over all of them, so honour it too.
+            incoming = frame.get("_ask_auth")
             merged = batch_turn_id([live.frame, frame], self.agent_id)
-            if merged[0] is None and merged[1] in ("agent", "mixed"):
-                live.ask_auth = merged
+            for auth in (merged, incoming):
+                if (isinstance(auth, (tuple, list)) and len(auth) == 2
+                        and auth[0] is None and auth[1] in ("agent", "mixed")):
+                    live.ask_auth = (None, auth[1])
+                    break
         if on_queued is not None:
             on_queued(waiter)
         try:
@@ -4457,7 +4463,9 @@ class Bridge:
     def _followup_wants_schedule(self, live: LiveRun, text: str) -> bool:
         """A follow-up whose schedule asks can still be served under the turn
         the child was started for (history asks keep the old refusal)."""
-        return (self.schedules_enabled and live.alive
+        # One serving round at a time: a second follow-up arriving while one
+        # is being served keeps the plain refusal rather than interleave.
+        return (self.schedules_enabled and live.alive and not live.ask_holds
                 and self._parse_history_ask(text) is None
                 and parse_schedule_ask(text) is not None
                 and live.ask_budget.get("schedule", 0) < SCHEDULE_MAX_OPS)

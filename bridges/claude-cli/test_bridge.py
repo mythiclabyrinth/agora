@@ -6322,6 +6322,23 @@ class FollowupScheduleAskTests(unittest.TestCase):
         self.assertEqual(sent, ["a"])
         self.assertEqual(prompt.count("cannot manage schedules"), 2)
 
+    def test_a_coalesced_batch_with_another_author_revokes_the_grant(self):
+        text = self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, live, _ = self._run(text, newer_turn=True, newer_frame={
+            "channel_id": "c1", "turn_id": "t-newer", "author": {"type": "user", "id": "tom"},
+            "_ask_auth": (None, "mixed")})
+        b.request_schedule.assert_not_awaited()
+        self.assertEqual(live.ask_auth, (None, "mixed"))
+
+    def test_an_answer_that_asks_again_is_served_until_the_limit(self):
+        ask = self._ask({"op": "update", "id": "s1", "run_at": 1})
+        b, live, _ = self._run(ask, answer=ask)
+        self.assertEqual(b.request_schedule.await_count, bridge.SCHEDULE_MAX_OPS)
+        posted = self._posted(b)
+        self.assertEqual(len(posted), 1)
+        self.assertIn("could not finish that scheduling request", posted[0])
+        self.assertEqual(live.ask_holds, 0)
+
     def test_a_blank_answer_still_reports_what_was_done(self):
         text = "Sweep done.\n" + self._ask({"op": "update", "id": "s1", "run_at": 1})
         b, live, _ = self._run(text, answer="")
