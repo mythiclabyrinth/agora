@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterBadge, filterSchedules, type ScheduleFilter, type ScheduleList,
   describeSchedule, fmtTs, intervalParts, intervalSeconds, LOST_ACCESS_NOTE, lostChannelAccess, nextRunsLabel,
-  doneBadgeList, scheduleChannelLabel, scheduleEmptyCopy, scheduleTruncatedNote, sortSchedules, useCancelSchedule, useDoneSchedules, useGroups, useSchedules,
+  doneBadgeList, scheduleChannelLabel, scheduleEmptyCopy, scheduleGroupName, scheduleTruncatedNote, sortSchedulesByTime, useCancelSchedule, useDoneSchedules, useGroups, useSchedules,
   useUpdateSchedule,
   type IntervalUnit, type Schedule, type ScheduleSpec,
 } from "@agora/core";
@@ -188,11 +188,9 @@ function ScheduleEditor({ schedule, onDone }: { schedule: Schedule; onDone: () =
 }
 
 /** One schedule; shared by the side pane and the inbox tab. */
-export function ScheduleRow({ schedule, showThread, showChannel, groupName, onOpen }: {
+export function ScheduleRow({ schedule, groupName, onOpen }: {
   schedule: Schedule;
-  showThread?: boolean;
-  showChannel?: boolean;
-  /** With `showChannel`, the channel's group joins its label. */
+  /** The channel's group, joined to its label. */
   groupName?: string;
   onOpen?: (schedule: Schedule) => void;
 }) {
@@ -215,26 +213,24 @@ export function ScheduleRow({ schedule, showThread, showChannel, groupName, onOp
     setArmed(false);
     cancel.mutate(schedule, { onSuccess: () => toast("Schedule cancelled"), onError: fail("cancel") });
   };
-  const where = [
-    // No channel name (e.g. a channel since renamed away): the label falls
-    // back to its id rather than vanishing.
-    showChannel ? scheduleChannelLabel(schedule, groupName) : null,
-    showThread && schedule.thread_title ? schedule.thread_title : null,
-  ].filter(Boolean).join(" · ");
+  // Every card says where it posts, so one time-ordered list can mix
+  // channels. No channel name (e.g. renamed away) falls back to its id.
+  const where = scheduleChannelLabel(schedule, groupName)
+    + (schedule.thread_title ? ` › ${schedule.thread_title}` : "");
+  const pill = <span className={`ago-sched-status ${schedule.status}`}>{STATUS_LABEL[schedule.status]}</span>;
 
   return (
     <div className={`ago-sched-row ${schedule.status}`} data-schedule-id={schedule.id}>
       <div className="ago-sched-top">
-        <span className="ago-sched-cadence"><Icon name="clock" /> {describeSchedule(schedule.schedule)}</span>
-        <span className={`ago-sched-status ${schedule.status}`}>{STATUS_LABEL[schedule.status]}</span>
-      </div>
-      {where && (
-        onOpen
+        {onOpen
           ? <button className="ago-sched-where" title="Open conversation" onClick={() => onOpen(schedule)}>
-              <Icon name={schedule.thread_id != null ? "message-square" : "messages-square"} /> {where}
+              <Icon name={schedule.thread_id != null ? "message-square" : "messages-square"} /> <span>{where}</span>
             </button>
-          : <span className="ago-sched-where"><Icon name="message-square" /> {where}</span>
-      )}
+          : <span className="ago-sched-where">
+              <Icon name={schedule.thread_id != null ? "message-square" : "messages-square"} /> <span>{where}</span>
+            </span>}
+        <span className="ago-sched-cadence"><Icon name="clock" /> {describeSchedule(schedule.schedule)}</span>
+      </div>
       <div className={`ago-sched-text ${expanded || schedule.text.length <= 160 ? "expanded" : ""}`}>{schedule.text}</div>
       {schedule.text.length > 160 && <button className="ago-sched-expand" aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Read full message"}</button>}
@@ -256,30 +252,33 @@ export function ScheduleRow({ schedule, showThread, showChannel, groupName, onOp
       </div>
       {schedule.last_error && <div className="ago-sched-error">{schedule.last_error}</div>}
       {lostAccess && <div className="ago-sched-error">{LOST_ACCESS_NOTE}</div>}
-      {lostAccess && schedule.can_manage && live && (
-        <div className="ago-sched-actions">
-          {schedule.status === "active" &&
-            <button className="btn sm" disabled={update.isPending} onClick={() => setStatus("paused")}><Icon name="pause" /> Pause</button>}
-          <button className={`btn sm danger ${armed ? "armed" : ""}`} disabled={cancel.isPending}
-            title={armed ? "Click again to cancel this schedule" : "Cancel schedule"}
-            onBlur={() => setArmed(false)} onClick={remove}>
-            <Icon name="trash-2" /> {armed ? "Cancel it?" : "Cancel"}
-          </button>
-        </div>
-      )}
-      {!lostAccess && schedule.can_manage && live && !editing && (
-        <div className="ago-sched-actions">
-          {schedule.status === "active"
-            ? <button className="btn sm" disabled={update.isPending} onClick={() => setStatus("paused")}><Icon name="pause" /> Pause</button>
-            : <button className="btn sm" disabled={update.isPending} onClick={() => setStatus("active")}><Icon name="play" /> Resume</button>}
-          <button className="btn sm" onClick={() => setEditing(true)}><Icon name="pencil" /> Change time</button>
-          <button className={`btn sm danger ${armed ? "armed" : ""}`} disabled={cancel.isPending}
-            title={armed ? "Click again to cancel this schedule" : "Cancel schedule"}
-            onBlur={() => setArmed(false)} onClick={remove}>
-            <Icon name="trash-2" /> {armed ? "Cancel it?" : "Cancel"}
-          </button>
-        </div>
-      )}
+      <div className="ago-sched-foot">
+        {lostAccess && schedule.can_manage && live && (
+          <div className="ago-sched-actions">
+            {schedule.status === "active" &&
+              <button className="btn sm" disabled={update.isPending} onClick={() => setStatus("paused")}><Icon name="pause" /> Pause</button>}
+            <button className={`btn sm danger ${armed ? "armed" : ""}`} disabled={cancel.isPending}
+              title={armed ? "Click again to cancel this schedule" : "Cancel schedule"}
+              onBlur={() => setArmed(false)} onClick={remove}>
+              <Icon name="trash-2" /> {armed ? "Cancel it?" : "Cancel"}
+            </button>
+          </div>
+        )}
+        {!lostAccess && schedule.can_manage && live && !editing && (
+          <div className="ago-sched-actions">
+            {schedule.status === "active"
+              ? <button className="btn sm" disabled={update.isPending} onClick={() => setStatus("paused")}><Icon name="pause" /> Pause</button>
+              : <button className="btn sm" disabled={update.isPending} onClick={() => setStatus("active")}><Icon name="play" /> Resume</button>}
+            <button className="btn sm" onClick={() => setEditing(true)}><Icon name="pencil" /> Change time</button>
+            <button className={`btn sm danger ${armed ? "armed" : ""}`} disabled={cancel.isPending}
+              title={armed ? "Click again to cancel this schedule" : "Cancel schedule"}
+              onBlur={() => setArmed(false)} onClick={remove}>
+              <Icon name="trash-2" /> {armed ? "Cancel it?" : "Cancel"}
+            </button>
+          </div>
+        )}
+        {pill}
+      </div>
       {editing && (schedule.is_owner === false
         ? <NextRunEditor schedule={schedule} onDone={() => setEditing(false)} />
         : <ScheduleEditor schedule={schedule} onDone={() => setEditing(false)} />)}
@@ -353,10 +352,10 @@ export function SchedulesPane() {
   if (!ui.schedulesOpen || !channel) {
     return <div className="agora-files-pane" style={{ display: "none" }} />;
   }
-  const allItems = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
-  // Done keeps the server's order: latest finished first.
+  const allItems = sortSchedulesByTime((q.data?.items || []).filter(s => s.status !== "cancelled"));
+  // One time-ordered list: upcoming soonest first; Done by last run.
   const shown = showDone ? doneQ : q;
-  const items = showDone ? (doneQ.data?.items || []) : filterSchedules(allItems, filter);
+  const items = showDone ? sortSchedulesByTime(doneQ.data?.items || []) : filterSchedules(allItems, filter);
   const open = (schedule: Schedule) => {
     if (schedule.thread_id == null) return;
     // Opening a thread normally closes side panes; here the reader is
@@ -377,7 +376,7 @@ export function SchedulesPane() {
         value={filter} onChange={setFilter} />
       <div className="ago-files-body">
         {items.map(s => (
-          <ScheduleRow key={s.id} schedule={s} showThread={threadId == null} onOpen={threadId == null ? open : undefined} />
+          <ScheduleRow key={s.id} schedule={s} groupName={scheduleGroupName(s, groups)} onOpen={threadId == null && s.thread_id != null ? open : undefined} />
         ))}
         {shown.isLoading && <div className="empty">Loading schedules…</div>}
         {shown.isError && <div className="empty" role="alert">Couldn't load schedules. <button className="btn sm" onClick={() => void shown.refetch()}>Retry</button></div>}

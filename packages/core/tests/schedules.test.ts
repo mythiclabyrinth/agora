@@ -6,7 +6,7 @@ import { applyWsEvent } from "../src/ws/reducer";
 import { keys } from "../src/api/keys";
 import {
   describeCron, describeSchedule, filterSchedules, formatUtc, intervalParts, intervalSeconds, lostChannelAccess, nextRunsLabel,
-  doneBadgeList, onlyDone, SCHEDULE_FILTERS, scheduleChannelLabel, scheduleEmptyCopy, scheduleFilterBadge, scheduleGroupName, scheduleFilterCount, scheduledLabel, scheduledTitle, scheduleTruncatedNote, sortSchedules,
+  doneBadgeList, onlyDone, SCHEDULE_FILTERS, scheduleChannelLabel, scheduleEmptyCopy, scheduleFilterBadge, scheduleGroupName, scheduleFilterCount, scheduledLabel, scheduledTitle, scheduleTruncatedNote, sortSchedules, sortSchedulesByTime,
 } from "../src/lib/schedules";
 import { fixtureSchedules } from "../testing/fixtures";
 
@@ -53,6 +53,20 @@ describe("describeSchedule", () => {
   it("orders active by next run, then paused, then finished", () => {
     const order = sortSchedules(fixtureSchedules).map(s => s.status);
     expect(order).toEqual(["active", "active", "paused"]);
+  });
+
+  it("orders one flat list by next run, then finished rows by last run, newest first", () => {
+    const base = fixtureSchedules[0];
+    const row = (id: string, status: "active" | "paused" | "done", next: number | null, last: number | null, finished?: number) =>
+      ({ ...base, id, status, run_at: next ?? 0, next_runs: next == null ? [] : [next], last_run_at: last, finished_at: finished ?? null, updated_at: 1 });
+    const order = sortSchedulesByTime([
+      row("done-old", "done", null, 100),
+      row("paused-mid", "paused", 500, null),
+      row("active-late", "active", 900, null),
+      row("done-new", "done", null, null, 300),
+      row("active-soon", "active", 200, null),
+    ]).map(s => s.id);
+    expect(order).toEqual(["active-soon", "paused-mid", "active-late", "done-new", "done-old"]);
   });
 });
 

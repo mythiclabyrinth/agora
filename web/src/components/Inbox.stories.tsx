@@ -86,30 +86,58 @@ export const Schedules: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.findByRole("tab", { name: "Schedules" })).resolves.toHaveAttribute("aria-selected", "true");
     await expect(canvas.findByText("Weekdays at 07:00 UTC")).resolves.toBeVisible();
-    await expect(canvas.findByRole("region", { name: "Schedules in storybook" })).resolves.toBeVisible();
+    // No channel headings: each card names its channel (and thread).
+    expect(canvas.queryAllByRole("region", { name: /^Schedules in / })).toHaveLength(0);
+    await expect(canvas.findByText("#storybook · Product › Responsive layout loop")).resolves.toBeVisible();
   },
 };
-// Channels that each have an active and a paused schedule keep one heading
-// apiece on every tab (a global status sort would split them).
+// One flat list across channels, soonest next run first on every tab
+// (paused rows by when resuming would run), each card labelled.
 const mixedRow = (id: string, channel: string, status: "active" | "paused", runAt: number) => ({
-  ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null,
-  status, run_at: runAt, can_manage: false,
+  ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, group_id: "product", thread_id: null, thread_title: null,
+  status, run_at: runAt, next_runs: [runAt], can_manage: false,
 });
-export const SchedulesMixedChannelsGroupOnce: Story = {
+export const SchedulesFlatByNextRun: Story = {
   parameters: {
     apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/schedules": { items: [
-      mixedRow("a-act", "alpha", "active", 100), mixedRow("s-act", "storybook", "active", 200),
-      mixedRow("a-pau", "alpha", "paused", 300), mixedRow("s-pau", "storybook", "paused", 400),
+      mixedRow("a-act", "alpha", "active", 300), mixedRow("s-act", "storybook", "active", 100),
+      mixedRow("a-pau", "alpha", "paused", 200), mixedRow("s-pau", "storybook", "paused", 400),
     ] } },
     setup: () => history.replaceState(null, "", "/inbox/schedules"),
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const groups = async () => (await canvas.findAllByRole("region", { name: /^Schedules in / })).map(r => r.getAttribute("aria-label"));
-    await expect(groups()).resolves.toEqual(["Schedules in alpha", "Schedules in storybook"]);
-    for (const tab of [/^Active/, /^Paused/]) {
-      await userEvent.click(await canvas.findByRole("tab", { name: tab }));
-      await expect(groups()).resolves.toEqual(["Schedules in alpha", "Schedules in storybook"]);
+    const ids = () => [...canvasElement.querySelectorAll("[data-schedule-id]")].map(r => r.getAttribute("data-schedule-id"));
+    await waitFor(() => expect(ids()).toEqual(["s-act", "a-pau", "a-act", "s-pau"]));
+    expect([...canvasElement.querySelectorAll(".ago-sched-where")].map(e => e.textContent?.trim()))
+      .toEqual(["#storybook · Product", "#alpha · Product", "#alpha · Product", "#storybook · Product"]);
+    expect(canvas.queryAllByRole("region", { name: /^Schedules in / })).toHaveLength(0);
+    await userEvent.click(await canvas.findByRole("tab", { name: /^Active/ }));
+    await waitFor(() => expect(ids()).toEqual(["s-act", "a-act"]));
+    await userEvent.click(await canvas.findByRole("tab", { name: /^Paused/ }));
+    await waitFor(() => expect(ids()).toEqual(["a-pau", "s-pau"]));
+  },
+};
+
+// Phone width: where, then when, stacked on top; the status pill bottom
+// right inside the card; nothing spills past the card.
+export const SchedulesPhoneCard: Story = {
+  parameters: Schedules.parameters,
+  globals: { viewport: { value: "phone", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(canvasElement.ownerDocument.defaultView!.innerWidth).toBeLessThanOrEqual(640);
+    await canvas.findByText("#storybook · Product › Responsive layout loop");
+    for (const card of canvasElement.querySelectorAll<HTMLElement>(".ago-sched-row")) {
+      const box = card.getBoundingClientRect();
+      const where = card.querySelector(".ago-sched-where")!.getBoundingClientRect();
+      const when = card.querySelector(".ago-sched-cadence")!.getBoundingClientRect();
+      const pill = card.querySelector(".ago-sched-status")!.getBoundingClientRect();
+      expect(when.top).toBeGreaterThanOrEqual(where.bottom - 1);
+      expect(pill.right).toBeLessThanOrEqual(box.right);
+      expect(box.right - pill.right).toBeLessThan(24);
+      expect(box.bottom - pill.bottom).toBeLessThan(24);
+      expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
     }
   },
 };
@@ -146,8 +174,9 @@ export const SchedulesOwnerLostChannel: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const head = await canvas.findByRole("button", { name: /#ops/ });
-    await expect(head).toBeDisabled();
+    // Still labelled, but not a link: the owner can't open that channel.
+    await expect(canvas.findByText("#ops · Product › old thread")).resolves.toBeVisible();
+    expect(canvas.queryByRole("button", { name: /#ops/ })).toBeNull();
     // No "open conversation" link into a channel the owner can't load.
     await expect(canvas.queryByTitle("Open conversation")).toBeNull();
     await expect(canvas.findByText(/no longer have access/i)).resolves.toBeTruthy();
@@ -185,12 +214,11 @@ export const ReloadResetRules: Story = {
   },
 };
 
-// The inbox's Done tab is strictly latest finished first: one flat list
-// (no channel headings, which would pull a channel's older rows ahead of
-// another's newer one), each row labelled with its channel and group.
+// The inbox's Done tab is strictly latest run first: one flat list, each
+// row labelled with its channel and group.
 const doneRow = (id: string, channel: string, updatedAt: number) => ({
   ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, group_id: "product", thread_id: null, thread_title: null,
-  status: "done" as const, updated_at: updatedAt, next_runs: [], can_manage: false,
+  status: "done" as const, updated_at: updatedAt, last_run_at: updatedAt, next_runs: [], can_manage: false,
 });
 export const SchedulesDoneTab: Story = {
   parameters: {
