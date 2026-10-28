@@ -112,6 +112,16 @@ export const ResultsAndKeyboardNavigation: Story = {
   },
 };
 
+export const InboxTabCommands: Story = {
+  parameters: { apiRoutes: { ...routes, "GET /api/me": { ...fixtureMe, drafts_sync: true } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("Go to Approvals")).resolves.toBeVisible();
+    await expect(canvas.findByText("Go to Drafts")).resolves.toBeVisible();
+    await expect(canvas.findByText("Go to Schedules")).resolves.toBeVisible();
+  },
+};
+
 export const AgentDirectMessageResult: Story = {
   parameters: {
     apiRoutes: {

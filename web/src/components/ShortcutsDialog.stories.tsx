@@ -23,6 +23,22 @@ export const Mac: Story = {
     await expect(canvas.findByText("Talk to agents")).resolves.toBeVisible();
     await expect(canvas.findByText("⌘⇧2")).resolves.toBeVisible();
     await expect(canvas.findByText("⌘⇧Y")).resolves.toBeVisible();
+    const unreads = canvas.getByText("Go to Unreads").closest(".ago-shortcut-row")!;
+    expect(unreads.querySelector(".ago-shortcut-keys small")).toHaveTextContent("After Esc");
+    expect(unreads.firstElementChild?.querySelector("small")).toBeNull();
+    const focus = canvas.getByText("Focus composer").closest(".ago-shortcut-row")!;
+    expect(focus.querySelector("kbd")).not.toHaveTextContent("Type or");
+    await expect(canvas.findByText("Pan or move between images")).resolves.toBeVisible();
+    expect(canvas.queryByText("Go to Drafts")).toBeNull();
+  },
+};
+
+export const WithSyncedDrafts: Story = {
+  parameters: { apiRoutes: { "GET /api/me": { ...fixtureMe, voice_stt: true, drafts_sync: true } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("Go to Drafts")).resolves.toBeVisible();
+    await expect(canvas.findByText("G D")).resolves.toBeVisible();
   },
 };
 

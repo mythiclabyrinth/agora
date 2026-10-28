@@ -10,6 +10,11 @@ Press **⌘/** on Mac or **Ctrl+/** on Windows and Linux to open the searchable 
 | Go to Inbox (`nav.inbox`) | | | G I |
 | Go to Unreads (`nav.unreads`) | ⌘⇧U | Ctrl+Shift+U | G U |
 | Go to Threads (`nav.threads`) | ⌘⇧L | Ctrl+Shift+L | G T |
+| Go to Approvals (`nav.approvals`) | Off by default | Off by default | G A |
+| Go to Drafts (`nav.drafts`) | | | G D |
+| Go to Schedules (`nav.schedules`) | | | G S |
+| Previous Inbox tab (`inbox.prevTab`) | [ | [ | |
+| Next Inbox tab (`inbox.nextTab`) | ] | ] | |
 | All unread filter (`inbox.filter1`) | 1 | 1 | |
 | Mentions unread filter (`inbox.filter2`) | 2 | 2 | |
 | Channels unread filter (`inbox.filter3`) | 3 | 3 | |
@@ -32,9 +37,16 @@ Press **⌘/** on Mac or **Ctrl+/** on Windows and Linux to open the searchable 
 | Back (`nav.back`) | ⌘[ | Alt+← | |
 | Forward (`nav.forward`) | ⌘] | Alt+→ | |
 | Copy conversation link (`link.copy`) | ⌘⇧Y | Ctrl+Shift+Y | |
-| Settings (`settings`) | ⌘⇧, | Ctrl+Shift+, | G S |
+| Settings (`settings`) | ⌘⇧, | Ctrl+Shift+, | G , |
+| Zoom in (`image.zoomIn`) | + / = | + / = | |
+| Zoom out (`image.zoomOut`) | − | − | |
+| Reset zoom (`image.reset`) | 0 | 0 | |
+| Pan or move between images (`image.arrows`) | ← ↑ ↓ → | ← ↑ ↓ → | |
+| Close image preview (`image.close`) | Esc | Esc | |
 
-In a channel or thread composer, press Esc to leave the text box; then shortcut keys like G U work. Click in the messages or press Enter to type again. After clicking in the messages, letters such as "guys" go into the composer. If G starts a sequence but no valid second key follows within one second, it goes into the draft. A second Esc after leaving the composer marks the channel read or closes the thread. In the Inbox, 1–4 select the unread filters. In the Talk to picker, use ↑/↓ to move, Space or Enter to select, 1–9 to select an agent by position, M to switch the thread's require-mention setting, and Esc to close. Voice shortcuts appear only when voice input is enabled. ⌘J or Ctrl+J opens the Agora assistant (Jarvis mode) and appears only when an admin has set up Jarvis (Settings → Features → Jarvis, with a ChatGPT, OpenAI or Anthropic credential).
+In a channel or thread composer, press Esc to leave the text box; then shortcut keys like G U work. Click in the messages or press Enter to type again. After clicking in the messages, letters such as "guys" go into the composer. If G starts a sequence but no valid second key follows within one second, it goes into the draft. A second Esc after leaving the channel composer marks that channel read, even when a thread is open; a second Esc after leaving the thread composer closes the thread. In the Inbox, [ and ] move between tabs, skipping Drafts when syncing is off, and 1–4 select the unread filters. In the Talk to picker, use ↑/↓ to move, Space or Enter to select, 1–9 to select an agent by position, M to switch the thread's require-mention setting, and Esc to close. Voice shortcuts appear only when voice input is enabled. ⌘J or Ctrl+J opens the Agora assistant (Jarvis mode) and appears only when an admin has set up Jarvis (Settings → Features → Jarvis, with a ChatGPT, OpenAI or Anthropic credential).
+
+G S now opens Schedules; use G , or ⌘⇧, / Ctrl+Shift+, for Settings. G D appears only when synced drafts are enabled. The image preview uses + or = to zoom in, − to zoom out, 0 to reset, arrow keys to pan when zoomed or switch images, and Esc to close.
 
 On Linux, Ctrl+Shift+U may invoke IBus Unicode entry; use G U after leaving the composer instead.
 

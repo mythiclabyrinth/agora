@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { currentPlatform, formatCombo, SHORTCUTS, useMe, type Platform } from "@agora/core";
+import { currentPlatform, formatCombo, SHORTCUTS, shortcutAvailable, useMe, type Platform } from "@agora/core";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { useUiState } from "../state/ui";
@@ -19,7 +19,7 @@ export function ShortcutsDialog({ platformOverride }: { platformOverride?: Platf
   if (!open) return null;
   const platform = platformOverride ?? currentPlatform();
   const desktop = isDesktopShell();
-  const rows = SHORTCUTS.filter(s => (!s.feature || !!me?.[s.feature]) && (!s.desktopOnly || desktop) &&
+  const rows = SHORTCUTS.filter(s => shortcutAvailable(s, me) && (!s.desktopOnly || desktop) &&
     `${s.label} ${s.section} ${s.id}`.toLowerCase().includes(filter.toLowerCase()));
   const sections = [...new Set(rows.map(s => s.section))];
   return <div className="conn-overlay" onMouseDown={e => { if (e.target === e.currentTarget) setOpen(false); }}>
@@ -31,8 +31,8 @@ export function ShortcutsDialog({ platformOverride }: { platformOverride?: Platf
           {rows.filter(s => s.section === section).map(s => {
             const combo = bindingFor(s.id, platform);
             return <div className="ago-shortcut-row" key={s.id}>
-              <span>{s.label}{(s.sequence || s.id === "help.sheet") && <small>After Esc</small>}{s.scope === "thread" && <small>In thread</small>}{s.scope === "recording" && <small>While recording</small>}{s.desktopOnly && <small>Desktop</small>}</span>
-              <span className="ago-shortcut-keys">{combo ? <kbd>{s.id === "focus.composer" ? "Type or " : ""}{formatCombo(combo, platform)}</kbd> : s.rebindable ? <em>Off</em> : null}{s.sequence && <kbd>{s.sequence}</kbd>}</span>
+              <span>{s.label}{s.scope === "thread" && <small>In thread</small>}{s.scope === "recording" && <small>While recording</small>}{s.desktopOnly && <small>Desktop</small>}</span>
+              <span className="ago-shortcut-keys">{s.id === "focus.composer" && <span>Type or</span>}{s.displayOnly ? <kbd>{s.displayKeys}</kbd> : combo ? <kbd>{formatCombo(combo, platform)}</kbd> : s.rebindable ? <em>Off</em> : null}{s.sequence && <><kbd>{s.sequence}</kbd><small>After Esc</small></>}</span>
             </div>;
           })}</section>)}
         {!rows.length && <p className="dim">No matching shortcuts.</p>}

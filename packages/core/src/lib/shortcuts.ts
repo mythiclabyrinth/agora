@@ -10,7 +10,9 @@ export interface Shortcut {
   sequence?: string;
   rebindable?: boolean;
   desktopOnly?: boolean;
-  feature?: "voice_stt" | "jarvis";
+  feature?: "voice_stt" | "jarvis" | "drafts_sync";
+  displayOnly?: boolean;
+  displayKeys?: string;
 }
 
 // Mod is Command on macOS and Control elsewhere. Codes name physical keys.
@@ -21,6 +23,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "nav.inbox", section: "Navigation", label: "Go to Inbox", keys: {}, scope: "notTyping", sequence: "G I" },
   { id: "nav.unreads", section: "Navigation", label: "Go to Unreads", keys: { mac: "Mod+Shift+KeyU", other: "Mod+Shift+KeyU" }, scope: "global", sequence: "G U", rebindable: true },
   { id: "nav.threads", section: "Navigation", label: "Go to Threads", keys: { mac: "Mod+Shift+KeyL", other: "Mod+Shift+KeyL" }, scope: "global", sequence: "G T", rebindable: true },
+  { id: "nav.approvals", section: "Navigation", label: "Go to Approvals", keys: {}, scope: "global", sequence: "G A", rebindable: true },
+  { id: "nav.drafts", section: "Navigation", label: "Go to Drafts", keys: {}, scope: "notTyping", sequence: "G D", feature: "drafts_sync" },
+  { id: "nav.schedules", section: "Navigation", label: "Go to Schedules", keys: {}, scope: "notTyping", sequence: "G S" },
+  { id: "inbox.prevTab", section: "Inbox", label: "Previous Inbox tab", keys: { mac: "BracketLeft", other: "BracketLeft" }, scope: "inbox" },
+  { id: "inbox.nextTab", section: "Inbox", label: "Next Inbox tab", keys: { mac: "BracketRight", other: "BracketRight" }, scope: "inbox" },
   ...(["All", "Mentions", "Channels", "Threads"] as const).map((label, i): Shortcut => ({ id: `inbox.filter${i + 1}`, section: "Inbox", label: `${label} unread filter`, keys: { mac: `Digit${i + 1}`, other: `Digit${i + 1}` }, scope: "inbox" })),
   { id: "agents.picker", section: "Composer & agents", label: "Talk to agents", keys: { mac: "Mod+Shift+Digit2", other: "Mod+Shift+Digit2" }, scope: "composer", rebindable: true },
   { id: "thread.requireMention", section: "Composer & agents", label: "Require @mention", keys: { mac: "Mod+Shift+KeyX", other: "Mod+Shift+KeyX" }, scope: "thread", rebindable: true },
@@ -40,12 +47,19 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "nav.back", section: "Navigation", label: "Back", keys: { mac: "Mod+BracketLeft", other: "Alt+ArrowLeft" }, scope: "global", rebindable: true, desktopOnly: true },
   { id: "nav.forward", section: "Navigation", label: "Forward", keys: { mac: "Mod+BracketRight", other: "Alt+ArrowRight" }, scope: "global", rebindable: true, desktopOnly: true },
   { id: "link.copy", section: "Navigation", label: "Copy conversation link", keys: { mac: "Mod+Shift+KeyY", other: "Mod+Shift+KeyY" }, scope: "global", rebindable: true },
-  { id: "settings", section: "Navigation", label: "Settings", keys: { mac: "Mod+Shift+Comma", other: "Mod+Shift+Comma" }, scope: "global", sequence: "G S", rebindable: true },
+  { id: "settings", section: "Navigation", label: "Settings", keys: { mac: "Mod+Shift+Comma", other: "Mod+Shift+Comma" }, scope: "global", sequence: "G ,", rebindable: true },
+  { id: "image.zoomIn", section: "Image preview", label: "Zoom in", keys: {}, scope: "global", displayOnly: true, displayKeys: "+ / =" },
+  { id: "image.zoomOut", section: "Image preview", label: "Zoom out", keys: {}, scope: "global", displayOnly: true, displayKeys: "−" },
+  { id: "image.reset", section: "Image preview", label: "Reset zoom", keys: {}, scope: "global", displayOnly: true, displayKeys: "0" },
+  { id: "image.arrows", section: "Image preview", label: "Pan or move between images", keys: {}, scope: "global", displayOnly: true, displayKeys: "← ↑ ↓ →" },
+  { id: "image.close", section: "Image preview", label: "Close image preview", keys: {}, scope: "global", displayOnly: true, displayKeys: "Esc" },
 ];
 
 export const isMac = (): boolean => /Mac|iPhone|iPad/.test(navigator.platform || "");
 export const currentPlatform = (): Platform => isMac() ? "mac" : "other";
 export const shortcutById = (id: string): Shortcut | undefined => SHORTCUTS.find(s => s.id === id);
+export const shortcutAvailable = (shortcut: Shortcut, features?: Readonly<Partial<Record<NonNullable<Shortcut["feature"]>, boolean>>> | null): boolean =>
+  !shortcut.feature || features?.[shortcut.feature] === true;
 
 const punctuation: Record<string, readonly [string, string]> = {
   Slash: ["/", "?"], Comma: [",", "<"], Backslash: ["\\", "|"],

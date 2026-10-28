@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within, fn, fireEvent } from "storybook/test";
 import { fixtureGroups, fixtureMe } from "@agora/core/testing/fixtures";
-import { currentPlatform } from "@agora/core";
+import { currentPlatform, useMe, useUnreads } from "@agora/core";
 import { useShortcuts } from "../hooks/useShortcuts";
 import { leaveComposerForShortcuts } from "../state/shortcutFocus";
 import { navigateAgoraHistory, useUiState, writeHistory } from "../state/ui";
@@ -13,10 +13,19 @@ import { SearchPane } from "./SearchPane";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 
 const markRead = fn(() => ({ ok: true, last_read_id: 0 }));
+const unreadThread = {
+  kind: "thread", channel_id: "general", channel_name: "storybook", group_id: "product", group_name: "Product",
+  thread_id: 42, title: "Review", unread: 1, mentions: 0, first_unread_id: 42, ack_through_id: 42,
+  latest_ts: 1_750_000_000, previews: [],
+};
 function Harness() {
   useShortcuts();
+  const me = useMe().data;
+  const unreads = useUnreads().data;
   const [clicks, setClicks] = useState(0);
   return <div>
+    <span data-testid="drafts-sync">{me ? (me.drafts_sync ? "on" : "off") : "loading"}</span>
+    <span data-testid="unread-count">{unreads?.length ?? "loading"}</span>
     <button onClick={() => setClicks(n => n + 1)}>Action {clicks}</button>
     <div id="ago-log" style={{ padding: 16 }}>Message list</div>
     <textarea id="ago-msg" aria-label="Composer" onKeyDown={e => {
@@ -150,6 +159,106 @@ export const GoSequenceFromMessageLog: Story = {
     await userEvent.keyboard("gu");
     await waitFor(() => expect(useUiState.getState().view.kind).toBe("inbox"));
     expect(useUiState.getState().inboxTab).toBe("unreads");
+  },
+};
+
+export const NewInboxSequencesAndSettings: Story = {
+  parameters: { apiRoutes: { "GET /api/me": { ...fixtureMe, drafts_sync: true } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId("drafts-sync")).toHaveTextContent("on"));
+    const action = await canvas.findByRole("button", { name: "Action 0" });
+    await userEvent.click(action);
+    await userEvent.keyboard("ga");
+    expect(useUiState.getState().inboxTab).toBe("approvals");
+    expect(location.pathname).toBe("/inbox/approvals");
+    await userEvent.keyboard("gd");
+    expect(useUiState.getState().inboxTab).toBe("drafts");
+    await userEvent.keyboard("gs");
+    expect(useUiState.getState().inboxTab).toBe("schedules");
+    await userEvent.keyboard("g,");
+    expect(useUiState.getState().panel).toBe("settings");
+  },
+};
+
+export const DraftSequenceDisabled: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId("drafts-sync")).toHaveTextContent("off"));
+    await userEvent.click(canvas.getByRole("button", { name: "Action 0" }));
+    await userEvent.keyboard("gd");
+    expect(useUiState.getState().view.kind).toBe("channel");
+    const input = canvas.getByRole("textbox", { name: "Composer" });
+    expect(input).toHaveValue("");
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}gd");
+    await waitFor(() => expect(input).toHaveValue("gd"));
+  },
+};
+
+export const InboxTabCycling: Story = {
+  parameters: { apiRoutes: { "GET /api/me": { ...fixtureMe, drafts_sync: true } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId("drafts-sync")).toHaveTextContent("on"));
+    useUiState.setState({ view: { kind: "inbox" }, inboxTab: "approvals" });
+    await userEvent.click(canvas.getByRole("button", { name: "Action 0" }));
+    await userEvent.keyboard("]");
+    expect(useUiState.getState().inboxTab).toBe("drafts");
+    await userEvent.keyboard("[[");
+    expect(useUiState.getState().inboxTab).toBe("approvals");
+    await userEvent.keyboard("[[");
+    expect(useUiState.getState().inboxTab).toBe("threads");
+  },
+};
+
+export const InboxTabCyclingSkipsDrafts: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId("drafts-sync")).toHaveTextContent("off"));
+    useUiState.setState({ view: { kind: "inbox" }, inboxTab: "approvals" });
+    await userEvent.click(canvas.getByRole("button", { name: "Action 0" }));
+    await userEvent.keyboard("]");
+    expect(useUiState.getState().inboxTab).toBe("schedules");
+    await userEvent.keyboard("]");
+    expect(useUiState.getState().inboxTab).toBe("unreads");
+    await userEvent.keyboard("[[");
+    expect(useUiState.getState().inboxTab).toBe("schedules");
+    history.replaceState(history.state, "", "/inbox/drafts");
+    useUiState.setState({ inboxTab: "drafts" });
+    await userEvent.keyboard("[[");
+    expect(useUiState.getState().inboxTab).toBe("schedules");
+  },
+};
+
+export const ChannelReadWithThreadOpen: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox", { name: "Composer" });
+    useUiState.setState({ threadRoot: 42 });
+    markRead.mockClear();
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}");
+    expect(markRead).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(markRead).toHaveBeenCalledTimes(1));
+    expect(useUiState.getState().threadRoot).toBe(42);
+  },
+};
+
+export const UnreadThreadNavigationClearsChannelReadArm: Story = {
+  parameters: { apiRoutes: { "GET /api/unreads": { items: [unreadThread], total: 1 } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId("unread-count")).toHaveTextContent("1"));
+    const input = await canvas.findByRole("textbox", { name: "Composer" });
+    await userEvent.click(input);
+    await userEvent.keyboard("{Escape}");
+    fireEvent.keyDown(document.body, { key: "ArrowDown", code: "ArrowDown", altKey: true, shiftKey: true });
+    expect(useUiState.getState().threadRoot).toBe(42);
+    await userEvent.keyboard("{Escape}");
+    expect(useUiState.getState().threadRoot).toBeNull();
+    expect(markRead).not.toHaveBeenCalled();
   },
 };
 

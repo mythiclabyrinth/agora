@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { eventCombo, findConflicts, formatCombo, matchesCombo, nextSequence, nextUnreadIndex, parseCombo, SHORTCUTS, shortcutById } from "./shortcuts";
+import { eventCombo, findConflicts, formatCombo, matchesCombo, nextSequence, nextUnreadIndex, parseCombo, SHORTCUTS, shortcutAvailable, shortcutById } from "./shortcuts";
 
 describe("shortcut bindings", () => {
   it("matches physical keys with platform-specific Mod", () => {
@@ -27,7 +27,25 @@ describe("shortcut bindings", () => {
   it("recognizes only registered sequence prefixes", () => {
     expect(nextSequence("", "g")).toBe("G");
     expect(nextSequence("G", "t")).toBe("G T");
+    expect(nextSequence("G", "a")).toBe("G A");
+    expect(nextSequence("G", "d")).toBe("G D");
+    expect(nextSequence("G", "s")).toBe("G S");
+    expect(nextSequence("G", ",")).toBe("G ,");
     expect(nextSequence("G", "z")).toBeNull();
+  });
+
+  it("registers the Inbox tabs and keeps image controls display-only", () => {
+    expect(shortcutById("nav.approvals")).toMatchObject({ keys: {}, rebindable: true, sequence: "G A" });
+    expect(shortcutById("nav.drafts")).toMatchObject({ feature: "drafts_sync", sequence: "G D" });
+    expect(shortcutById("nav.schedules")?.sequence).toBe("G S");
+    expect(shortcutById("settings")?.sequence).toBe("G ,");
+    expect(shortcutById("inbox.prevTab")?.scope).toBe("inbox");
+    expect(shortcutById("inbox.nextTab")?.scope).toBe("inbox");
+    expect(SHORTCUTS.filter(s => s.section === "Image preview").every(s => s.displayOnly)).toBe(true);
+    expect(shortcutAvailable(shortcutById("nav.drafts")!, { drafts_sync: true })).toBe(true);
+    expect(shortcutAvailable(shortcutById("nav.drafts")!, { drafts_sync: false })).toBe(false);
+    expect(shortcutAvailable(shortcutById("nav.drafts")!, undefined)).toBe(false);
+    expect(shortcutAvailable(shortcutById("nav.schedules")!, undefined)).toBe(true);
   });
 
   it("blocks unsafe and reserved combinations and reports overlaps", () => {
@@ -67,6 +85,7 @@ describe("shortcut bindings", () => {
       if (shortcut.keys.mac) expect(line).toContain(formatCombo(shortcut.keys.mac, "mac"));
       if (shortcut.keys.other) expect(line).toContain(formatCombo(shortcut.keys.other, "other"));
       if (shortcut.sequence) expect(line).toContain(shortcut.sequence);
+      if (shortcut.displayKeys) expect(line).toContain(shortcut.displayKeys);
     }
   });
 });

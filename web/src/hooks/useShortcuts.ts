@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
-import { currentPlatform, matchesCombo, nextSequence, nextUnreadIndex, SHORTCUTS, useGroups, useMarkRead, useMarkUnreadsRead, useMe, useUnreads } from "@agora/core";
+import { currentPlatform, matchesCombo, nextSequence, nextUnreadIndex, SHORTCUTS, shortcutAvailable, useGroups, useMarkRead, useMarkUnreadsRead, useMe, useUnreads } from "@agora/core";
 import { copyDeepLink } from "../lib/deepLinks";
 import { useAddressing } from "../components/Composer";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
-import { navigateAgoraHistory, useUiState } from "../state/ui";
+import { effectiveInboxTab, navigateAgoraHistory, useUiState, visibleInboxTabs } from "../state/ui";
 import { useVoiceRec, voiceCancel } from "../state/voiceRec";
-import { getPointerZone, isShortcutMode, overlayOpen, setPointerZone, setShortcutMode } from "../state/shortcutFocus";
+import { clearChannelReadArm, getPointerZone, isChannelReadArmed, isShortcutMode, overlayOpen, setPointerZone, setShortcutMode } from "../state/shortcutFocus";
 import { isDesktopShell } from "../lib/chime";
 import { useJarvis } from "../state/jarvis";
 
@@ -64,6 +64,7 @@ export function useShortcuts(): void {
     lastComposerKey = null;
     setPointerZone(null);
     setShortcutMode(false);
+    clearChannelReadArm();
     const platform = currentPlatform();
     let sequence = "";
     let pendingText = "";
@@ -91,6 +92,9 @@ export function useShortcuts(): void {
         case "nav.inbox": state.goInbox(); return true;
         case "nav.unreads": state.goInbox("unreads"); return true;
         case "nav.threads": state.goInbox("threads"); return true;
+        case "nav.approvals": state.goInbox("approvals"); return true;
+        case "nav.drafts": if (!me?.drafts_sync) return false; state.goInbox("drafts"); return true;
+        case "nav.schedules": state.goInbox("schedules"); return true;
         case "settings": state.openPanel("settings"); return true;
         case "jarvis.open": {
           if (!me?.jarvis) return false;
@@ -122,7 +126,15 @@ export function useShortcuts(): void {
           return true;
         }
         case "voice.cancel": if (!useVoiceRec.getState().recordingKey) return false; voiceCancel(); return true;
-        case "read.markChannel": if (state.view.kind !== "channel" || !state.sel.c || state.sel.c !== channelId || state.threadRoot != null) return false; markRead.mutate(null); return true;
+        case "read.markChannel": {
+          const focused = document.activeElement as HTMLElement | null;
+          const activeThread = state.threadRoot != null && (!!focused?.closest(".agora-thread") || (focused === document.body && getPointerZone() === "thread"));
+          if (state.view.kind !== "channel" || !state.sel.c || state.sel.c !== channelId ||
+            (state.threadRoot != null && (!isChannelReadArmed() || activeThread))) return false;
+          clearChannelReadArm();
+          markRead.mutate(null);
+          return true;
+        }
         case "read.markAll": if (!unreads.data?.length) return false; markAll.mutate(unreads.data); return true;
         case "link.copy":
           if (!state.sel.g || !state.sel.c || state.view.kind !== "channel") return false;
@@ -139,6 +151,15 @@ export function useShortcuts(): void {
         if (state.view.kind !== "inbox" || state.inboxTab !== "unreads") return false;
         state.setInboxFilter((["all", "mentions", "channels", "threads"] as const)[Number(id.at(-1)) - 1]); return true;
       }
+      if (id === "inbox.prevTab" || id === "inbox.nextTab") {
+        if (state.view.kind !== "inbox") return false;
+        const draftsEnabled = me?.drafts_sync === true;
+        const tabs = visibleInboxTabs(draftsEnabled);
+        const direction = id === "inbox.nextTab" ? 1 : -1;
+        const at = tabs.indexOf(effectiveInboxTab(state.inboxTab, draftsEnabled));
+        state.goInbox(tabs[(at + direction + tabs.length) % tabs.length], "replace");
+        return true;
+      }
       if (id === "nav.prevChannel" || id === "nav.nextChannel") {
         const channels = [...document.querySelectorAll<HTMLElement>(".agora-side .ago-chan[data-channel-id]")]
           .map(row => ({ id: row.dataset.channelId!, group_id: row.dataset.groupId! }));
@@ -154,6 +175,7 @@ export function useShortcuts(): void {
         if (at < 0) return false;
         const row = items[at]; state.selectChannel(row.group_id, row.channel_id);
         if (row.thread_id != null) state.openThread(row.thread_id);
+        setPointerZone(row.thread_id != null ? "thread" : "channel");
         return true;
       }
       return false;
@@ -186,7 +208,7 @@ export function useShortcuts(): void {
         const next = !overlay && !typing && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
           ? nextSequence(sequence, event.key) : null;
         clear();
-        const match = SHORTCUTS.find(s => s.sequence === next);
+        const match = SHORTCUTS.find(s => s.sequence === next && shortcutAvailable(s, me));
         if (match) { event.preventDefault(); run(match.id); return; }
         if (forward && canType && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.length === 1) {
           if (typeIntoComposer(prefix + event.key)) { event.preventDefault(); return; }
@@ -209,8 +231,9 @@ export function useShortcuts(): void {
         event.preventDefault(); return;
       }
       for (const shortcut of SHORTCUTS) {
+        if (shortcut.displayOnly) continue;
         if (overlay && !allowedOverlay(shortcut.id)) continue;
-        if (shortcut.feature && !me?.[shortcut.feature]) continue;
+        if (!shortcutAvailable(shortcut, me)) continue;
         if (shortcut.scope === "notTyping" && typing) continue;
         if (shortcut.scope === "inbox" && (typing || state.view.kind !== "inbox")) continue;
         if (shortcut.scope === "composer" && !composerKey()) continue;
@@ -219,7 +242,8 @@ export function useShortcuts(): void {
         if (shortcut.id === "voice.cancel" && typing &&
           (event.target as HTMLElement).id !== (useVoiceRec.getState().recordingKey?.startsWith("t:") ? "ago-thread-msg" : "ago-msg")) continue;
         if (shortcut.desktopOnly && !isDesktopShell()) continue;
-        if ((shortcut.id === "read.markChannel" || shortcut.id === "read.markAll") && (recording || state.threadRoot != null)) continue;
+        if ((shortcut.id === "read.markChannel" || shortcut.id === "read.markAll") &&
+          (recording || (state.threadRoot != null && (shortcut.id === "read.markAll" || !isChannelReadArmed() || activeThread)))) continue;
         if (shortcut.id === "focus.composer" && (!typeTarget(event.target) || overlay)) continue;
         if (shortcut.id === "thread.close" && (!activeThread || typing)) continue;
         const combo = bindingFor(shortcut.id, platform);
@@ -240,13 +264,14 @@ export function useShortcuts(): void {
     const nativeCommand = (id: string) => { run(id); };
     const pointer = (event: PointerEvent) => {
       clear();
+      clearChannelReadArm();
       setShortcutMode(false);
       const target = event.target as HTMLElement;
       setPointerZone(target.closest(".agora-thread") ? "thread" : target.closest("#ago-log") ? "channel" : null);
     };
     const focus = (event: FocusEvent) => {
       const target = event.target as HTMLElement | null;
-      if (editing(target)) setShortcutMode(false);
+      if (editing(target)) { setShortcutMode(false); clearChannelReadArm(); }
       if (target?.id === "ago-msg") { lastComposerKey = `c:${useUiState.getState().sel.c}`; setPointerZone("channel"); }
       if (target?.id === "ago-thread-msg") { lastComposerKey = `t:${useUiState.getState().threadRoot}`; setPointerZone("thread"); }
     };
@@ -256,7 +281,10 @@ export function useShortcuts(): void {
     document.addEventListener("focusin", focus);
     const unsubscribe = useUiState.subscribe((next, previous) => {
       // Keyboard navigation keeps shortcut mode; pointer or editing returns to typing.
-      if (next.sel.c !== previous.sel.c || next.threadRoot !== previous.threadRoot || next.view.kind !== previous.view.kind) clear();
+      if (next.sel.c !== previous.sel.c || next.threadRoot !== previous.threadRoot || next.view.kind !== previous.view.kind) {
+        clear();
+        clearChannelReadArm();
+      }
     });
     return () => { clear(); unsubscribe(); document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", pointer, true); document.removeEventListener("focusin", focus); delete (window as Window & { __agoraShortcut?: (id: string) => void }).__agoraShortcut; };
   }, []);

@@ -7,14 +7,18 @@ export type ComposerZone = "thread" | "channel";
 
 let shortcutMode = false;
 let pointerZone: ComposerZone | null = null;
+let channelReadArmed = false;
 
 export const isShortcutMode = () => shortcutMode;
 export const setShortcutMode = (enabled: boolean) => { shortcutMode = enabled; };
 export const getPointerZone = () => pointerZone;
 export const setPointerZone = (zone: ComposerZone | null) => { pointerZone = zone; };
+export const isChannelReadArmed = () => channelReadArmed;
+export const clearChannelReadArm = () => { channelReadArmed = false; };
 export function leaveComposerForShortcuts(zone: ComposerZone) {
   pointerZone = zone;
   shortcutMode = true;
+  channelReadArmed = zone === "channel";
 }
 
 export function overlayOpen(pickerOpen = false, ignorePicker = false): boolean {
