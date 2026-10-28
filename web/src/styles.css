@@ -597,6 +597,10 @@ select {
 button.ago-sched-where { cursor: pointer; }
 button.ago-sched-where:hover { color: var(--a1); }
 .ago-sched-where svg { flex: 0 0 auto; }
+.ago-sched-thread { display: flex; align-self: flex-start; align-items: center; gap: 5px; min-width: 0; max-width: 100%; padding: 0; border: 0; color: var(--dim); background: none; font: inherit; font-size: 11px; text-align: left; overflow-wrap: anywhere; }
+button.ago-sched-thread { cursor: pointer; }
+button.ago-sched-thread:hover { color: var(--a1); }
+.ago-sched-thread svg { flex: 0 0 auto; }
 .ago-sched-text { font-size: 13px; line-height: 1.55; white-space: pre-wrap; color: var(--text); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .ago-sched-meta { display: flex; flex-direction: column; gap: 8px; color: var(--dim); font-size: 12px; line-height: 1.5; }
 .ago-sched-error { color: var(--danger); background: rgba(var(--danger-rgb),.06); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

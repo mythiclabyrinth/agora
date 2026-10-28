@@ -40,11 +40,10 @@ export const Channel: Story = {
     // Thread schedules are labelled with their thread in the channel view.
     await expect(canvas.findByText(/Responsive layout loop/)).resolves.toBeVisible();
     await expect(canvas.findByText(/via claude-cli/)).resolves.toBeVisible();
-    // Only thread schedules link anywhere; a channel-level label in its own
-    // channel's pane is plain text, not a button that does nothing.
-    const wheres = [...canvasElement.querySelectorAll(".ago-sched-where")];
-    expect(wheres.some(w => w.tagName === "SPAN")).toBe(true);
-    for (const w of wheres) expect(w.tagName === "BUTTON").toBe(w.textContent!.includes("›"));
+    // In its own channel's pane the channel label is plain text; only a
+    // thread loop's thread line links (to that thread).
+    for (const w of canvasElement.querySelectorAll(".ago-sched-where")) expect(w.tagName).toBe("SPAN");
+    expect(canvas.getByRole("button", { name: /Responsive layout loop/ })).toHaveClass("ago-sched-thread");
     const row = canvasElement.querySelector<HTMLElement>('[data-schedule-id="sch-watchdog"]')!;
     await userEvent.click(within(row).getByRole("button", { name: /Pause/ }));
     await expect(patched).toHaveBeenCalledWith({ status: "paused" });
@@ -126,8 +125,9 @@ export const ThreadOnly: Story = {
     await expect(canvas.findByText("this thread")).resolves.toBeVisible();
     await expect(canvas.findByText("Weekdays at 07:00 UTC")).resolves.toBeVisible();
     expect(canvas.queryByText("Every 6 hours")).toBeNull();
-    // Every card still names where it posts, thread included.
-    expect(canvasElement.querySelector(".ago-sched-where")).toHaveTextContent("#storybook · Product › Responsive layout loop");
+    // Every card still names its channel, with the thread on the line below.
+    expect(canvasElement.querySelector(".ago-sched-where")).toHaveTextContent("#storybook · Product");
+    expect(canvasElement.querySelector(".ago-sched-thread")).toHaveTextContent("Responsive layout loop");
   },
 };
 
