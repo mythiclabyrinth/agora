@@ -24,6 +24,7 @@ import {
   replaceMessage,
   type MessagePages,
 } from "../ws/reducer";
+import { onlyDone } from "../lib/schedules";
 import type {
   AgentInfo,
   ApprovalItem,
@@ -759,6 +760,38 @@ export function useAllSchedules() {
   });
 }
 
+/** Every finished schedule of a channel (or one thread), any age, latest
+    finished first — the Done tab. Fetch only while that tab is open. */
+export function useDoneSchedules(channelId: string, threadId: number | null = null, enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.doneSchedules(channelId, threadId),
+    queryFn: () => api.get<ScheduleList>(
+      `/api/channels/${encodeURIComponent(channelId)}/schedules?status=done` +
+      (threadId == null ? "" : `&thread_id=${threadId}`),
+    ),
+    enabled: enabled && !!channelId,
+    // Each visit to the tab reloads it (whatever the client's default):
+    // the badge waits for that rather than showing the last visit's count.
+    staleTime: 0,
+    select: onlyDone,
+  });
+}
+
+/** The inbox's Done tab: [`useDoneSchedules`] across every visible channel. */
+export function useAllDoneSchedules(enabled = true) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.allDoneSchedules,
+    queryFn: () => api.get<ScheduleList>("/api/schedules?status=done"),
+    enabled,
+    staleTime: 0,
+    select: onlyDone,
+  });
+}
+
+/** Prefix matches: a channel's lists (threads and Done included) and the
+    inbox's (its Done list included). */
 function refreshSchedules(qc: QueryClient, channelId: string): void {
   void qc.invalidateQueries({ queryKey: ["schedules", channelId] });
   void qc.invalidateQueries({ queryKey: keys.allSchedules });
@@ -847,15 +880,44 @@ function fileQuery(file?: FileFilter): string {
   return "";
 }
 
+/** Message order: "" = best match (the default), "new" = newest first.
+    Channels, groups and threads are always most recently active first. */
+export type SearchSort = "" | "new";
+
+/** `&sort=new` suffix for GET /api/search, "" for best match. */
+function sortQuery(sort?: SearchSort): string {
+  return sort ? `&sort=${sort}` : "";
+}
+
+/** Result kinds a "See all" list pages on its own. */
+export type SearchKind = "channels" | "groups" | "threads" | "messages";
+
+/** What a search screen asks for beyond the text, scope and file filter.
+    `overview` adds renamed threads and every kind's total (extra server
+    work, so opt-in); `kind` asks for one result kind only (a "See all"
+    list), paged like messages; `sort` orders messages. */
+export interface SearchOptions {
+  sort?: SearchSort;
+  kind?: SearchKind;
+  overview?: boolean;
+  /** Overview only: rows per kind (the server's default otherwise). */
+  limit?: number;
+}
+
 /** First page of GET /api/search for `q`. `keepPreviousData` holds the last
-    results on screen while a retyped query is in flight. */
-export function useSearch(q: string, scope?: SearchScope, file?: FileFilter) {
+    results on screen while a retyped query is in flight. With no options
+    this is exactly the plain request older screens (mobile) make. */
+export function useSearch(q: string, scope?: SearchScope, file?: FileFilter, opts: SearchOptions = {}) {
   const api = useApi();
+  const { sort, kind, overview, limit } = opts;
+  // A "See all" list of names counts its kind so it knows when to stop.
+  const extra = kind ? `&types=${kind}&limit=${SEARCH_PAGE}${kind === "messages" ? "" : "&totals=1"}`
+    : overview ? `&types=messages,channels,groups,threads&totals=1${limit ? `&limit=${limit}` : ""}` : "";
   return useQuery({
-    queryKey: keys.search(q, scopeKey(scope), file ?? ""),
+    queryKey: keys.search(q, scopeKey(scope), file ?? "", sort ?? "", kind ?? (overview ? `overview:${limit ?? ""}` : "")),
     queryFn: () =>
       api.get<SearchResponse>(
-        `/api/search?q=${encodeURIComponent(q)}${scopeQuery(scope)}${fileQuery(file)}`,
+        `/api/search?q=${encodeURIComponent(q)}${scopeQuery(scope)}${fileQuery(file)}${sortQuery(sort)}${extra}`,
       ),
     // A file filter alone (empty query) is a valid "browse files" search.
     enabled: q.trim().length > 0 || !!file,
@@ -864,8 +926,13 @@ export function useSearch(q: string, scope?: SearchScope, file?: FileFilter) {
   });
 }
 
+/** Rows per "See all" page (the server's cap). */
+export const SEARCH_PAGE = 50;
+
 /** Imperative "More results" page fetch; the screen accumulates the pages
-    in local state, so this is a mutation rather than a keyed query. */
+    in local state, so this is a mutation rather than a keyed query. The
+    sort must match the first page's, or the pages would interleave two
+    orders; screens drop accumulated pages when sort, scope or kind change. */
 export function useSearchMore() {
   const api = useApi();
   return useMutation({
@@ -874,12 +941,30 @@ export function useSearchMore() {
       offset: number;
       scope?: SearchScope;
       file?: FileFilter;
+      sort?: SearchSort;
+      /** Page size; a "See all" list passes [`SEARCH_PAGE`] to match its
+          first page. Unset keeps the server's default. */
+      limit?: number;
     }) =>
       (
         await api.get<SearchResponse>(
-          `/api/search?q=${encodeURIComponent(v.q)}&offset=${v.offset}&types=messages${scopeQuery(v.scope)}${fileQuery(v.file)}`,
+          `/api/search?q=${encodeURIComponent(v.q)}&offset=${v.offset}&types=messages${scopeQuery(v.scope)}${fileQuery(v.file)}${sortQuery(v.sort)}` +
+          (v.limit ? `&limit=${v.limit}` : ""),
         )
       ).messages,
+  });
+}
+
+/** Next page of one non-message kind for a "See all" list (channels, groups
+    or threads), accumulated by the screen like [`useSearchMore`]. No
+    `totals=1`: the screen keeps the first page's total. */
+export function useSearchKindMore() {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (v: { q: string; offset: number; kind: Exclude<SearchKind, "messages">; scope?: SearchScope }) =>
+      api.get<SearchResponse>(
+        `/api/search?q=${encodeURIComponent(v.q)}&offset=${v.offset}&limit=${SEARCH_PAGE}&types=${v.kind}${scopeQuery(v.scope)}`,
+      ),
   });
 }
 

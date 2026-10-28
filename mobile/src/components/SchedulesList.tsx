@@ -8,7 +8,8 @@ import React, { useMemo, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { CalendarClock, Clock, MessageSquare, Pause, Play, Trash2 } from "lucide-react-native";
 import {
-  SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterCount, filterSchedules, type ScheduleFilter,
+  SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterBadge, filterSchedules, type ScheduleFilter,
+  doneBadgeList, scheduleEmptyCopy, scheduleTruncatedNote, useDoneSchedules, type ScheduleList,
   describeSchedule,
   fmtTs,
   intervalParts,
@@ -16,7 +17,6 @@ import {
   LOST_ACCESS_NOTE,
   lostChannelAccess,
   nextRunsLabel,
-  SCHEDULES_TRUNCATED_NOTE,
   sortSchedules,
   useCancelSchedule,
   useSchedules,
@@ -79,12 +79,14 @@ export function useScheduleActions() {
   return { isBusy, setStatus, confirmCancel };
 }
 
-export function ScheduleRow({ item, showThread, showChannel = false, onOpen, onEdit, actions }: {
+export function ScheduleRow({ item, showThread, showChannel = false, channelLabel, onOpen, onEdit, actions }: {
   item: Schedule;
   /** Label the thread a schedule posts into (channel and inbox views). */
   showThread: boolean;
   /** Label the channel too (inbox view groups by channel, so off by default). */
   showChannel?: boolean;
+  /** A fuller channel label (e.g. with its group), shown instead of `# name`. */
+  channelLabel?: string;
   onOpen?: (item: Schedule) => void;
   onEdit: (item: Schedule) => void;
   actions: ReturnType<typeof useScheduleActions>;
@@ -99,7 +101,7 @@ export function ScheduleRow({ item, showThread, showChannel = false, onOpen, onE
   const cadence = describeSchedule(item.schedule);
   const [expanded, setExpanded] = useState(false);
   const [showLater, setShowLater] = useState(false);
-  const where = [showChannel && item.channel_name ? `# ${item.channel_name}` : null, showThread ? item.thread_title : null]
+  const where = [channelLabel ?? (showChannel && item.channel_name ? `# ${item.channel_name}` : null), showThread ? item.thread_title : null]
     .filter(Boolean).join(" · ");
   return (
     <View style={styles.row}>
@@ -328,23 +330,47 @@ export function ScheduleTimeSheet({ item, onClose }: { item: Schedule | null; on
   );
 }
 
-export function ScheduleFilters({ items, value, onChange }: { items: Schedule[]; value: ScheduleFilter; onChange: (value: ScheduleFilter) => void }) {
+/** Status tabs. `done` is the separately loaded Done list, which counts
+    that tab (passed only while Done is open and loaded); `items` count the
+    rest. */
+export function ScheduleFilters({ items, done, value, onChange }: {
+  items: Schedule[]; done?: ScheduleList; value: ScheduleFilter; onChange: (value: ScheduleFilter) => void;
+}) {
   const styles = useStyles();
   return <View style={styles.filters} accessibilityRole="tablist">
     {SCHEDULE_FILTERS.map(filter => {
-      const count = scheduleFilterCount(items, filter);
-      return <Pressable key={filter} accessibilityRole="tab" accessibilityLabel={`${scheduleFilterLabel[filter]}${count ? `, ${count}` : ""}`}
+      const badge = scheduleFilterBadge(items, filter, done);
+      return <Pressable key={filter} accessibilityRole="tab" accessibilityLabel={`${scheduleFilterLabel[filter]}${badge ? `, ${badge}` : ""}`}
         accessibilityState={{ selected: value === filter }} style={[styles.filter, value === filter && styles.modeActive]} onPress={() => onChange(filter)}>
-        <Text style={[styles.modeText, value === filter && styles.modeTextActive]}>{scheduleFilterLabel[filter]}</Text>
-        {count > 0 ? <Text style={[styles.filterCount, value === filter && styles.modeTextActive]}>{count.toLocaleString()}</Text> : null}
+        <Text numberOfLines={1} style={[styles.modeText, value === filter && styles.modeTextActive]}>{scheduleFilterLabel[filter]}</Text>
+        {badge ? <Text style={[styles.filterCount, value === filter && styles.modeTextActive]}>{badge}</Text> : null}
       </Pressable>;
     })}
   </View>;
 }
 
-/** Rows plus the shared editor and actions, for any list of schedules. */
-export function ScheduleRows({ items, showThread, showChannel, onOpen, header, refreshing, onRefresh, empty, truncated }: {
+/** The Done tab's own list (see `useDoneSchedules`), as a screen hands it to
+    [`ScheduleRows`]. */
+export interface DoneScheduleList {
+  data?: ScheduleList;
+  isLoading: boolean;
+  isError: boolean;
+  isRefetching: boolean;
+  dataUpdatedAt: number;
+  refetch: () => unknown;
+}
+
+/** Rows plus the shared editor and actions, for any list of schedules. The
+    screen owns the status tab: Done shows `done` (loaded only while that
+    tab is open, latest finished first), every other tab filters `items`.
+    `doneLabel` makes Done one flat list with that label on each row instead
+    of `header` groups, which would break its strict newest-first order. */
+export function ScheduleRows({ items, done, doneLabel, filter, onFilterChange, showThread, showChannel, onOpen, header, refreshing, onRefresh, empty, truncated }: {
   items: Schedule[];
+  done: DoneScheduleList;
+  doneLabel?: (item: Schedule) => string;
+  filter: ScheduleFilter;
+  onFilterChange: (filter: ScheduleFilter) => void;
   showThread: boolean;
   showChannel?: boolean;
   onOpen?: (item: Schedule) => void;
@@ -359,23 +385,34 @@ export function ScheduleRows({ items, showThread, showChannel, onOpen, header, r
   const styles = useStyles();
   const actions = useScheduleActions();
   const [editing, setEditing] = useState<Schedule | null>(null);
-  const [filter, setFilter] = useState<ScheduleFilter>("all");
-  const filtered = filterSchedules(items, filter);
+  // When Done was last selected, for its badge (doneBadgeList).
+  const [doneOpenedAt, setDoneOpenedAt] = useState<number | null>(null);
+  const pick = (next: ScheduleFilter) => { setDoneOpenedAt(next === "done" ? Date.now() : null); onFilterChange(next); };
+  const showDone = filter === "done";
+  const filtered = showDone ? done.data?.items ?? [] : filterSchedules(items, filter);
+  const flat = showDone && !!doneLabel;
+  const capped = showDone ? !!done.data?.truncated : truncated;
+  const emptyTab = filter === "all" ? empty
+    : showDone && done.isLoading ? <ActivityIndicator color={colors.a1} />
+    : showDone && done.isError ? <EmptyState icon={CalendarClock} title="Couldn’t load schedules."
+      action={{ label: "Retry", accessibilityLabel: "Retry schedules", onPress: () => void done.refetch() }} />
+    : <EmptyState icon={CalendarClock} {...scheduleEmptyCopy(filter)} />;
   return <>
-    <ScheduleFilters items={items} value={filter} onChange={setFilter} />
+    <ScheduleFilters items={items} done={doneBadgeList(done, showDone ? doneOpenedAt : null)} value={filter} onChange={pick} />
     <FlatList
       data={filtered}
       keyExtractor={item => item.id}
       contentContainerStyle={filtered.length ? styles.list : styles.emptyList}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.a1} />}
-      ListEmptyComponent={filter === "all" ? empty : <EmptyState icon={CalendarClock} title={`No ${filter} schedules`}
-        description={filter === "active" ? "Schedules ready to run will appear here." : "Schedules you pause will appear here."} />}
-      ListFooterComponent={truncated ? <Text accessibilityRole="text" style={styles.truncated}>{SCHEDULES_TRUNCATED_NOTE}</Text> : null}
+      refreshControl={<RefreshControl refreshing={showDone ? done.isRefetching : refreshing}
+        onRefresh={showDone ? () => void done.refetch() : onRefresh} tintColor={colors.a1} />}
+      ListEmptyComponent={emptyTab}
+      ListFooterComponent={capped ? <Text accessibilityRole="text" style={styles.truncated}>{scheduleTruncatedNote(filter)}</Text> : null}
       renderItem={({ item, index }) => {
-        const title = header?.(item, index, filtered) ?? null;
+        const title = flat ? null : header?.(item, index, filtered) ?? null;
         return <View style={styles.group}>
           {title ? <Text accessibilityRole="header" style={styles.groupTitle}>{title}</Text> : null}
-          <ScheduleRow item={item} showThread={showThread} showChannel={showChannel} onOpen={onOpen} onEdit={setEditing} actions={actions} />
+          <ScheduleRow item={item} showThread={showThread} showChannel={showChannel} channelLabel={flat ? doneLabel?.(item) : undefined}
+            onOpen={onOpen} onEdit={setEditing} actions={actions} />
         </View>;
       }}
     />
@@ -388,16 +425,28 @@ export function SchedulesList({ channelId, threadId, onOpen }: {
   threadId: number | null;
   onOpen?: (item: Schedule) => void;
 }) {
+  // Keyed on the scope so switching channel or thread starts back on All.
+  return <ScopedSchedulesList key={`${channelId}:${threadId}`} channelId={channelId} threadId={threadId} onOpen={onOpen} />;
+}
+
+function ScopedSchedulesList({ channelId, threadId, onOpen }: {
+  channelId: string;
+  threadId: number | null;
+  onOpen?: (item: Schedule) => void;
+}) {
   const { colors } = useAppTheme();
   const styles = useStyles();
   const query = useSchedules(channelId, threadId);
+  const [filter, setFilter] = useState<ScheduleFilter>("all");
+  const done = useDoneSchedules(channelId, threadId, filter === "done");
   const items = useMemo(() => sortSchedules(query.data?.items ?? []), [query.data]);
   if (query.isLoading) return <View style={styles.center}><ActivityIndicator color={colors.a1} /></View>;
   if (query.isError) return (
     <EmptyState icon={CalendarClock} title="Couldn’t load schedules."
       action={{ label: "Retry", accessibilityLabel: "Retry schedules", onPress: () => void query.refetch() }} />
   );
-  return <ScheduleRows key={`${channelId}:${threadId}`} items={items} showThread={threadId == null} onOpen={onOpen} truncated={!!query.data?.truncated}
+  return <ScheduleRows items={items} done={done} filter={filter} onFilterChange={setFilter}
+    showThread={threadId == null} onOpen={onOpen} truncated={!!query.data?.truncated}
     refreshing={query.isRefetching} onRefresh={() => void query.refetch()}
     empty={<EmptyState icon={CalendarClock} title={EMPTY_TITLE} description={EMPTY_DESCRIPTION} />} />;
 }
@@ -406,7 +455,8 @@ export const schedulesEmptyCopy = { title: EMPTY_TITLE, description: EMPTY_DESCR
 
 const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   filters: { flexDirection: "row", gap: 4, margin: 14, marginBottom: 0, padding: 4, borderRadius: radii.lg, backgroundColor: colors.panel, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong },
-  filter: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: radii.md },
+  // Four tabs share a 320pt-wide phone: let a label shrink before it wraps.
+  filter: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 2, borderRadius: radii.md },
   filterCount: { ...typography.caption, color: colors.dim, fontWeight: weight.semibold },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
   list: { padding: 14, gap: 10 },

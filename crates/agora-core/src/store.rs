@@ -392,6 +392,14 @@ fn migrate(conn: &Connection) {
     if !has_column("schedules", "last_due_at") {
         conn.execute("ALTER TABLE schedules ADD COLUMN last_due_at REAL", []).unwrap();
     }
+    // When a schedule finished (became done), for the Done list's order:
+    // neither its last post (a cron can end long after it last posted) nor
+    // its last change (any later write) says that. Rows already done before
+    // the column existed take their last change, the best record there is.
+    if !has_column("schedules", "finished_at") {
+        conn.execute("ALTER TABLE schedules ADD COLUMN finished_at REAL", []).unwrap();
+        conn.execute("UPDATE schedules SET finished_at = updated_at WHERE status = 'done'", []).unwrap();
+    }
     if !has_column("channels", "kind") {
         conn.execute("ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'channel'", []).unwrap();
     }
@@ -472,6 +480,13 @@ fn migrate(conn: &Connection) {
     if !has_column("messages", "thread_alias") {
         conn.execute("ALTER TABLE messages ADD COLUMN thread_alias TEXT", []).unwrap();
     }
+    // Thread-name search reads renamed roots only; a partial index keeps it
+    // from scanning every message.
+    conn.execute(
+        &format!("CREATE INDEX IF NOT EXISTS idx_messages_named_threads ON messages(thread_id, id) WHERE {}", named_thread("")),
+        [],
+    )
+    .unwrap();
     if !has_column("reactions", "reactor_type") {
         conn.execute("ALTER TABLE reactions ADD COLUMN reactor_type TEXT NOT NULL DEFAULT 'user'", []).unwrap();
     }
@@ -610,6 +625,14 @@ fn file_kind_predicate(kind: &str, alias: &str) -> Option<String> {
     })
 }
 
+/// A renamed message (only thread roots take a name), as
+/// `idx_messages_named_threads` and [`Store::search_threads`] both spell it
+/// (`t` = the table prefix, "" for the index). SQLite only uses a partial
+/// index when the query repeats its WHERE terms.
+fn named_thread(t: &str) -> String {
+    format!("{t}thread_alias IS NOT NULL AND {t}thread_alias != ''")
+}
+
 /// `%…%` LIKE pattern with the wildcards in the user's input neutralized.
 fn like_pattern(raw: &str) -> String {
     let escaped: String = raw
@@ -620,6 +643,218 @@ fn like_pattern(raw: &str) -> String {
         })
         .collect();
     format!("%{escaped}%")
+}
+
+/// Whether user `?{param}` may read channel `c` (in group `g`) in search: their
+/// own agent DMs, public groups' channels, and channels of groups they belong
+/// to (whole group or that channel). Message and thread search share it so
+/// their visibility can't drift apart.
+fn user_sees_channel(param: usize) -> String {
+    format!(
+        "((c.kind = 'agent_dm' AND c.dm_user_id = ?{param}) OR (c.kind != 'agent_dm' AND (g.is_public = 1 OR EXISTS ( \
+           SELECT 1 FROM memberships mu WHERE mu.member_type = 'user' AND mu.member_id = ?{param} \
+           AND mu.group_id = c.group_id AND (mu.channel_id = '' OR mu.channel_id = c.id)))))"
+    )
+}
+
+/// Narrows channel and group name hits to a search's scope (both unset:
+/// everywhere).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NameScope<'a> {
+    pub channel_id: Option<&'a str>,
+    pub group_id: Option<&'a str>,
+}
+
+/// A channel's latest message seq (NULL when it has none), the activity order
+/// of channel and group name hits: one `idx_messages_channel_seq` lookup per
+/// channel rather than a scan.
+fn last_seq_in(channel: &str) -> String {
+    format!("(SELECT MAX(seq) FROM messages WHERE channel_id = {channel})")
+}
+
+/// A SQL string and its positional parameters.
+type SqlWithParams = (String, Vec<Box<dyn rusqlite::ToSql>>);
+
+/// The SELECT/FROM/WHERE of a message search (no ORDER BY or LIMIT) and its
+/// parameters, shared by the page and its count so they can't disagree.
+/// `None` when there is nothing to match on: no usable text query and no
+/// attachment filter.
+#[allow(clippy::too_many_arguments)]
+fn message_search_sql(
+    query: &str,
+    match_any: bool,
+    channel_id: Option<&str>,
+    group_id: Option<&str>,
+    author: Option<&str>,
+    agent_id: Option<&str>,
+    user: Option<&str>,
+    has_files: bool,
+    file_type: Option<&str>,
+    count_only: bool,
+) -> Option<SqlWithParams> {
+    let want_attach = has_files || file_type.is_some();
+    let fts = if query.trim().is_empty() {
+        None
+    } else if match_any {
+        fts_query_any(query)
+    } else {
+        fts_query(query)
+    };
+    // Nothing to match on: no usable text query and no attachment filter.
+    if fts.is_none() && !want_attach {
+        return None;
+    }
+
+    // The attachment filter, when asked for, restricts to messages with a
+    // file (optionally of one kind). An unknown `file_type` falls back to
+    // "any attachment" rather than matching nothing.
+    let attach_clause = if want_attach {
+        let kind = file_type.and_then(|kind| file_kind_predicate(kind, "ff"));
+        let extra = kind.map(|k| format!(" AND {k}")).unwrap_or_default();
+        format!(" AND EXISTS (SELECT 1 FROM files ff WHERE ff.message_id = m.id{extra})")
+    } else {
+        String::new()
+    };
+
+    let mut p: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut sql;
+    if let Some(fts) = fts {
+        // Drive off the union of text hits (FTS) and filename hits
+        // (LIKE), then hang the ranked snippet off the text side.
+        p.push(Box::new(fts)); // ?1, used by both the union and `th`
+        p.push(Box::new(like_pattern(query))); // ?2
+        // A count needs only the hits and what scopes them: no ranking or
+        // snippet side (`th`), which is most of a page's cost.
+        let (cols, ranked) = if count_only {
+            ("m.id", "")
+        } else {
+            (
+                "m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
+                 m.author_name, m.text, m.ts, m.meta, \
+                 c.name, c.group_id, COALESCE(g.name, ''), COALESCE(th.snip, ''), c.kind",
+                " LEFT JOIN (SELECT messages_fts.rowid AS mid, rank AS score, \
+                   snippet(messages_fts, 0, char(1), char(2), '…', 16) AS snip \
+                   FROM messages_fts WHERE messages_fts MATCH ?1) th ON th.mid = m.id",
+            )
+        };
+        sql = format!(
+            "SELECT {cols} \
+             FROM (SELECT rowid AS mid FROM messages_fts WHERE messages_fts MATCH ?1 \
+                   UNION \
+                   SELECT message_id AS mid FROM files WHERE filename LIKE ?2 ESCAPE '\\') hits \
+             JOIN messages m ON m.id = hits.mid \
+             JOIN channels c ON c.id = m.channel_id \
+             LEFT JOIN groups g ON g.id = c.group_id{ranked} \
+             WHERE 1=1",
+        );
+    } else {
+        // Browse mode: no query, just messages carrying attachments.
+        let cols = if count_only {
+            "m.id"
+        } else {
+            "m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
+             m.author_name, m.text, m.ts, m.meta, \
+             c.name, c.group_id, COALESCE(g.name, ''), '', c.kind"
+        };
+        sql = format!(
+            "SELECT {cols} \
+             FROM messages m \
+             JOIN channels c ON c.id = m.channel_id \
+             LEFT JOIN groups g ON g.id = c.group_id \
+             WHERE 1=1",
+        );
+    }
+    sql.push_str(&attach_clause);
+    if let Some(cid) = channel_id {
+        sql.push_str(&format!(" AND m.channel_id = ?{}", p.len() + 1));
+        p.push(Box::new(cid.to_string()));
+    }
+    if let Some(gid) = group_id {
+        if gid == DM_GROUP_ID {
+            sql.push_str(" AND c.kind = 'agent_dm'");
+        } else {
+            sql.push_str(&format!(" AND c.group_id = ?{}", p.len() + 1));
+            p.push(Box::new(gid.to_string()));
+        }
+    }
+    if let Some(a) = author {
+        let i = p.len() + 1;
+        sql.push_str(&format!(" AND (m.author_id = ?{i} OR m.author_name = ?{i})"));
+        p.push(Box::new(a.to_string()));
+    }
+    if let Some(agent) = agent_id {
+        let i = p.len() + 1;
+        sql.push_str(&format!(
+            " AND ((c.kind = 'agent_dm' AND c.dm_agent_id = ?{i} AND EXISTS ( \
+                 SELECT 1 FROM users du WHERE du.username = c.dm_user_id AND du.disabled = 0 AND ( \
+                   du.instance_role = 'admin' OR EXISTS (SELECT 1 FROM agent_dm_policies dp WHERE dp.agent_id = c.dm_agent_id AND dp.is_public = 1) OR \
+                   EXISTS (SELECT 1 FROM agent_dm_grants dg WHERE dg.agent_id = c.dm_agent_id AND dg.username = c.dm_user_id)))) \
+               OR EXISTS (SELECT 1 FROM memberships ms \
+               WHERE ms.member_type = 'agent' AND ms.member_id = ?{i} \
+               AND ms.group_id = c.group_id \
+               AND (ms.channel_id = '' OR ms.channel_id = m.channel_id)))"
+        ));
+        p.push(Box::new(agent.to_string()));
+    }
+    // User visibility mirrors the UI: public channels stay visible;
+    // private channels require whole-group or matching channel scope.
+    if let Some(username) = user {
+        sql.push_str(&format!(" AND {}", user_sees_channel(p.len() + 1)));
+        p.push(Box::new(username.to_string()));
+    } else {
+        sql.push_str(" AND c.kind != 'agent_dm'");
+    }
+    Some((sql, p))
+}
+
+/// [`Store::search_threads`]'s count query, its page query (ordered, no
+/// LIMIT) and their shared parameters.
+fn thread_search_sql(
+    query: &str,
+    channel_id: Option<&str>,
+    group_id: Option<&str>,
+    user: Option<&str>,
+    dm_owner: Option<&str>,
+) -> (String, String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(like_pattern(query))];
+    let mut filter = format!(
+        "WHERE m.thread_id IS NULL AND {} AND m.thread_alias LIKE ?1 ESCAPE '\\'",
+        named_thread("m."),
+    );
+    if let Some(cid) = channel_id {
+        filter.push_str(&format!(" AND m.channel_id = ?{}", p.len() + 1));
+        p.push(Box::new(cid.to_string()));
+    }
+    if let Some(gid) = group_id {
+        if gid == DM_GROUP_ID {
+            filter.push_str(" AND c.kind = 'agent_dm'");
+        } else {
+            filter.push_str(&format!(" AND c.group_id = ?{}", p.len() + 1));
+            p.push(Box::new(gid.to_string()));
+        }
+    }
+    match (user, dm_owner) {
+        (Some(username), _) => {
+            filter.push_str(&format!(" AND {}", user_sees_channel(p.len() + 1)));
+            p.push(Box::new(username.to_string()));
+        }
+        (None, Some(owner)) => {
+            filter.push_str(&format!(" AND (c.kind != 'agent_dm' OR c.dm_user_id = ?{})", p.len() + 1));
+            p.push(Box::new(owner.to_string()));
+        }
+        (None, None) => filter.push_str(" AND c.kind != 'agent_dm'"),
+    }
+    let from = "FROM messages m JOIN channels c ON c.id = m.channel_id LEFT JOIN groups g ON g.id = c.group_id";
+    let count = format!("SELECT COUNT(*) {from} {filter}");
+    // One grouped join over each hit's replies (via the thread index)
+    // rather than a subquery per reply aggregate.
+    let page = format!(
+        "SELECT m.id, m.channel_id, m.thread_alias, c.name, c.group_id, COALESCE(g.name, ''), c.kind, \
+           COUNT(r.id), COALESCE(MAX(r.ts), m.ts), COALESCE(MAX(r.seq), m.seq) AS last_seq \
+         {from} LEFT JOIN messages r ON r.thread_id = m.id {filter} \
+         GROUP BY m.id ORDER BY last_seq DESC, m.id DESC"
+    );
+    (count, page, p)
 }
 
 fn message_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<Value> {
@@ -2834,111 +3069,13 @@ impl Store {
         limit: usize,
         offset: usize,
     ) -> Vec<Value> {
-        let want_attach = has_files || file_type.is_some();
-        let fts = if query.trim().is_empty() {
-            None
-        } else if match_any {
-            fts_query_any(query)
-        } else {
-            fts_query(query)
-        };
-        // Nothing to match on: no usable text query and no attachment filter.
-        if fts.is_none() && !want_attach {
+        let Some((mut sql, mut p)) =
+            message_search_sql(query, match_any, channel_id, group_id, author, agent_id, user, has_files, file_type, false)
+        else {
             return Vec::new();
-        }
-
-        // The attachment filter, when asked for, restricts to messages with a
-        // file (optionally of one kind). An unknown `file_type` falls back to
-        // "any attachment" rather than matching nothing.
-        let attach_clause = if want_attach {
-            let kind = file_type.and_then(|kind| file_kind_predicate(kind, "ff"));
-            let extra = kind.map(|k| format!(" AND {k}")).unwrap_or_default();
-            format!(" AND EXISTS (SELECT 1 FROM files ff WHERE ff.message_id = m.id{extra})")
-        } else {
-            String::new()
         };
-
         let rows: Vec<Value> = {
             let conn = self.conn.lock().unwrap();
-            let mut p: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-            let mut sql;
-            if let Some(fts) = fts {
-                // Drive off the union of text hits (FTS) and filename hits
-                // (LIKE), then hang the ranked snippet off the text side.
-                p.push(Box::new(fts)); // ?1, used by both the union and `th`
-                p.push(Box::new(like_pattern(query))); // ?2
-                sql = String::from(
-                    "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
-                       m.author_name, m.text, m.ts, m.meta, \
-                       c.name, c.group_id, COALESCE(g.name, ''), COALESCE(th.snip, ''), c.kind \
-                     FROM (SELECT rowid AS mid FROM messages_fts WHERE messages_fts MATCH ?1 \
-                           UNION \
-                           SELECT message_id AS mid FROM files WHERE filename LIKE ?2 ESCAPE '\\') hits \
-                     JOIN messages m ON m.id = hits.mid \
-                     JOIN channels c ON c.id = m.channel_id \
-                     LEFT JOIN groups g ON g.id = c.group_id \
-                     LEFT JOIN (SELECT messages_fts.rowid AS mid, rank AS score, \
-                                  snippet(messages_fts, 0, char(1), char(2), '…', 16) AS snip \
-                                FROM messages_fts WHERE messages_fts MATCH ?1) th ON th.mid = m.id \
-                     WHERE 1=1",
-                );
-            } else {
-                // Browse mode: no query, just messages carrying attachments.
-                sql = String::from(
-                    "SELECT m.id, m.seq, m.channel_id, m.thread_id, m.author_type, m.author_id, \
-                       m.author_name, m.text, m.ts, m.meta, \
-                       c.name, c.group_id, COALESCE(g.name, ''), '', c.kind \
-                     FROM messages m \
-                     JOIN channels c ON c.id = m.channel_id \
-                     LEFT JOIN groups g ON g.id = c.group_id \
-                     WHERE 1=1",
-                );
-            }
-            sql.push_str(&attach_clause);
-            if let Some(cid) = channel_id {
-                sql.push_str(&format!(" AND m.channel_id = ?{}", p.len() + 1));
-                p.push(Box::new(cid.to_string()));
-            }
-            if let Some(gid) = group_id {
-                if gid == DM_GROUP_ID {
-                    sql.push_str(" AND c.kind = 'agent_dm'");
-                } else {
-                    sql.push_str(&format!(" AND c.group_id = ?{}", p.len() + 1));
-                    p.push(Box::new(gid.to_string()));
-                }
-            }
-            if let Some(a) = author {
-                let i = p.len() + 1;
-                sql.push_str(&format!(" AND (m.author_id = ?{i} OR m.author_name = ?{i})"));
-                p.push(Box::new(a.to_string()));
-            }
-            if let Some(agent) = agent_id {
-                let i = p.len() + 1;
-                sql.push_str(&format!(
-                    " AND ((c.kind = 'agent_dm' AND c.dm_agent_id = ?{i} AND EXISTS ( \
-                         SELECT 1 FROM users du WHERE du.username = c.dm_user_id AND du.disabled = 0 AND ( \
-                           du.instance_role = 'admin' OR EXISTS (SELECT 1 FROM agent_dm_policies dp WHERE dp.agent_id = c.dm_agent_id AND dp.is_public = 1) OR \
-                           EXISTS (SELECT 1 FROM agent_dm_grants dg WHERE dg.agent_id = c.dm_agent_id AND dg.username = c.dm_user_id)))) \
-                       OR EXISTS (SELECT 1 FROM memberships ms \
-                       WHERE ms.member_type = 'agent' AND ms.member_id = ?{i} \
-                       AND ms.group_id = c.group_id \
-                       AND (ms.channel_id = '' OR ms.channel_id = m.channel_id)))"
-                ));
-                p.push(Box::new(agent.to_string()));
-            }
-            // User visibility mirrors the UI: public channels stay visible;
-            // private channels require whole-group or matching channel scope.
-            if let Some(username) = user {
-                let i = p.len() + 1;
-                sql.push_str(&format!(
-                    " AND ((c.kind = 'agent_dm' AND c.dm_user_id = ?{i}) OR (c.kind != 'agent_dm' AND (g.is_public = 1 OR EXISTS (SELECT 1 FROM memberships mu \
-                       WHERE mu.member_type = 'user' AND mu.member_id = ?{i} \
-                       AND mu.group_id = c.group_id AND (mu.channel_id = '' OR mu.channel_id = c.id)))))"
-                ));
-                p.push(Box::new(username.to_string()));
-            } else {
-                sql.push_str(" AND c.kind != 'agent_dm'");
-            }
             // Text hits first (best bm25), then filename-only hits; newest_first
             // and browse mode both just order by recency.
             if newest_first || query.trim().is_empty() {
@@ -2967,89 +3104,213 @@ impl Store {
         self.attach_files(rows)
     }
 
-    /// Channels whose name or topic contains `query` (case-insensitive).
-    /// `visible_to` limits hits to groups that user belongs to (None =
-    /// privileged caller, no filter).
-    pub fn search_channels(&self, query: &str, visible_to: Option<&str>, limit: usize) -> Vec<Value> {
-        let pattern = like_pattern(query);
-        let member_clause = if visible_to.is_some() {
-            " AND (g.is_public = 1 OR EXISTS (SELECT 1 FROM memberships mu WHERE mu.member_type = 'user' \
-               AND mu.member_id = ?3 AND mu.group_id = c.group_id \
-               AND (mu.channel_id = '' OR mu.channel_id = c.id)))"
-        } else {
-            ""
+    /// How many hits [`Store::search_messages_ext`] has in all, counting no
+    /// further than `cap` (a search header shows "1000+", and counting every
+    /// hit of a common word would cost more than the page itself).
+    #[allow(clippy::too_many_arguments)]
+    pub fn count_messages_ext(
+        &self,
+        query: &str,
+        match_any: bool,
+        channel_id: Option<&str>,
+        group_id: Option<&str>,
+        author: Option<&str>,
+        user: Option<&str>,
+        has_files: bool,
+        file_type: Option<&str>,
+        cap: usize,
+    ) -> usize {
+        let Some((sql, mut p)) =
+            message_search_sql(query, match_any, channel_id, group_id, author, None, user, has_files, file_type, true)
+        else {
+            return 0;
         };
+        let sql = format!("SELECT COUNT(*) FROM ({sql} LIMIT ?{})", p.len() + 1);
+        p.push(Box::new(cap as i64));
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT c.id, c.group_id, c.name, c.topic, c.hidden, COALESCE(g.name, '') \
-                 FROM channels c LEFT JOIN groups g ON g.id = c.group_id \
-                 WHERE c.kind != 'agent_dm' AND (c.name LIKE ?1 ESCAPE '\\' OR c.topic LIKE ?1 ESCAPE '\\'){member_clause} \
-                 ORDER BY c.name LIMIT ?2",
-            ))
-            .unwrap();
-        let map = |r: &rusqlite::Row<'_>| {
-            Ok(json!({
-                "id": r.get::<_, String>(0)?,
-                "group_id": r.get::<_, String>(1)?,
-                "name": r.get::<_, String>(2)?,
-                "topic": r.get::<_, String>(3)?,
-                "hidden": r.get::<_, i64>(4)? != 0,
-                "group_name": r.get::<_, String>(5)?,
-            }))
-        };
-        match visible_to {
-            Some(user) => stmt
-                .query_map(params![pattern, limit as i64, user], map)
-                .unwrap()
-                .filter_map(Result::ok)
-                .collect(),
-            None => stmt
-                .query_map(params![pattern, limit as i64], map)
-                .unwrap()
-                .filter_map(Result::ok)
-                .collect(),
-        }
+        conn.query_row(&sql, params_from_iter(p.iter().map(|b| b.as_ref())), |r| r.get::<_, i64>(0))
+            .map(|n| n as usize)
+            .unwrap_or(0)
     }
 
-    /// Groups whose name or description contains `query` (case-insensitive).
-    /// `visible_to` limits hits to the user's groups, like [`search_channels`].
-    pub fn search_groups(&self, query: &str, visible_to: Option<&str>, limit: usize) -> Vec<Value> {
-        let pattern = like_pattern(query);
-        let member_clause = if visible_to.is_some() {
-            " AND (groups.is_public = 1 OR EXISTS (SELECT 1 FROM memberships mu WHERE mu.member_type = 'user' \
-               AND mu.member_id = ?3 AND mu.group_id = groups.id))"
-        } else {
-            ""
-        };
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT id, name, description, hidden FROM groups \
-                 WHERE (name LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\'){member_clause} \
-                 ORDER BY name LIMIT ?2",
-            ))
-            .unwrap();
-        let map = |r: &rusqlite::Row<'_>| {
-            Ok(json!({
-                "id": r.get::<_, String>(0)?,
-                "name": r.get::<_, String>(1)?,
-                "description": r.get::<_, String>(2)?,
-                "hidden": r.get::<_, i64>(3)? != 0,
-            }))
-        };
-        match visible_to {
-            Some(user) => stmt
-                .query_map(params![pattern, limit as i64, user], map)
-                .unwrap()
-                .filter_map(Result::ok)
-                .collect(),
-            None => stmt
-                .query_map(params![pattern, limit as i64], map)
-                .unwrap()
-                .filter_map(Result::ok)
-                .collect(),
+    /// Channels whose name or topic contains `query` (case-insensitive),
+    /// most recently active first, one page of them, plus the total number of
+    /// hits when `count` asks for it (an extra query, so only on request).
+    /// `visible_to` limits hits to groups that user belongs to (None =
+    /// privileged caller, no filter); `scope` narrows them to a channel or
+    /// group.
+    pub fn search_channels_page(
+        &self, query: &str, visible_to: Option<&str>, scope: NameScope<'_>, limit: usize, offset: usize, count: bool,
+    ) -> (Vec<Value>, Option<usize>) {
+        let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(like_pattern(query))];
+        let mut filter = String::from(
+            "WHERE c.kind != 'agent_dm' AND (c.name LIKE ?1 ESCAPE '\\' OR c.topic LIKE ?1 ESCAPE '\\')",
+        );
+        if let Some(user) = visible_to {
+            filter.push_str(&format!(" AND {}", user_sees_channel(p.len() + 1)));
+            p.push(Box::new(user.to_string()));
         }
+        if let Some(cid) = scope.channel_id {
+            filter.push_str(&format!(" AND c.id = ?{}", p.len() + 1));
+            p.push(Box::new(cid.to_string()));
+        }
+        if let Some(gid) = scope.group_id {
+            // Agent DMs are never channel hits, so their group has none.
+            filter.push_str(&format!(" AND c.group_id = ?{}", p.len() + 1));
+            p.push(Box::new(gid.to_string()));
+        }
+        let from = format!("FROM channels c LEFT JOIN groups g ON g.id = c.group_id {filter}");
+        let conn = self.conn.lock().unwrap();
+        let total = count.then(|| {
+            conn.query_row(&format!("SELECT COUNT(*) {from}"), params_from_iter(p.iter().map(|b| b.as_ref())), |r| r.get::<_, i64>(0))
+                .map_or(0, |n| n as usize)
+        });
+        // Ties (channels with no messages yet) fall back to the name, then the
+        // id, so offset pages never overlap or skip.
+        let sql = format!(
+            "SELECT c.id, c.group_id, c.name, c.topic, c.hidden, COALESCE(g.name, '') {from} \
+             ORDER BY {} DESC NULLS LAST, c.name, c.id \
+             LIMIT ?{} OFFSET ?{}",
+            last_seq_in("c.id"),
+            p.len() + 1,
+            p.len() + 2,
+        );
+        p.push(Box::new(limit as i64));
+        p.push(Box::new(offset as i64));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows = stmt
+            .query_map(params_from_iter(p.iter().map(|b| b.as_ref())), |r| {
+                Ok(json!({
+                    "id": r.get::<_, String>(0)?,
+                    "group_id": r.get::<_, String>(1)?,
+                    "name": r.get::<_, String>(2)?,
+                    "topic": r.get::<_, String>(3)?,
+                    "hidden": r.get::<_, i64>(4)? != 0,
+                    "group_name": r.get::<_, String>(5)?,
+                }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        (rows, total)
+    }
+
+    /// Groups whose name or description contains `query` (case-insensitive),
+    /// most recently active first, one page of them, plus the total number of
+    /// hits when `count` asks for it. `visible_to` limits hits to the user's
+    /// groups, like [`Store::search_channels_page`]. A group's activity counts only the channels
+    /// the caller can see, so the order can't hint at traffic in a private
+    /// channel. Scoped to a channel there are no group hits; to a group, at
+    /// most that group.
+    pub fn search_groups_page(
+        &self, query: &str, visible_to: Option<&str>, scope: NameScope<'_>, limit: usize, offset: usize, count: bool,
+    ) -> (Vec<Value>, Option<usize>) {
+        if scope.channel_id.is_some() {
+            return (Vec::new(), count.then_some(0));
+        }
+        let mut p: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(like_pattern(query))];
+        let mut filter = String::from("WHERE (name LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\')");
+        let mut channel_clause = String::new();
+        if let Some(user) = visible_to {
+            let i = p.len() + 1;
+            filter.push_str(&format!(
+                " AND (groups.is_public = 1 OR EXISTS (SELECT 1 FROM memberships mu WHERE mu.member_type = 'user' \
+                   AND mu.member_id = ?{i} AND mu.group_id = groups.id))"
+            ));
+            channel_clause = format!(
+                " AND (groups.is_public = 1 OR EXISTS (SELECT 1 FROM memberships mc WHERE mc.member_type = 'user' \
+                   AND mc.member_id = ?{i} AND mc.group_id = groups.id AND (mc.channel_id = '' OR mc.channel_id = c2.id)))"
+            );
+            p.push(Box::new(user.to_string()));
+        }
+        if let Some(gid) = scope.group_id {
+            filter.push_str(&format!(" AND id = ?{}", p.len() + 1));
+            p.push(Box::new(gid.to_string()));
+        }
+        let from = format!("FROM groups {filter}");
+        let conn = self.conn.lock().unwrap();
+        let total = count.then(|| {
+            conn.query_row(&format!("SELECT COUNT(*) {from}"), params_from_iter(p.iter().map(|b| b.as_ref())), |r| r.get::<_, i64>(0))
+                .map_or(0, |n| n as usize)
+        });
+        let sql = format!(
+            "SELECT id, name, description, hidden {from} \
+             ORDER BY (SELECT MAX({}) \
+                       FROM channels c2 WHERE c2.group_id = groups.id AND c2.kind != 'agent_dm'{channel_clause}) \
+               DESC NULLS LAST, name, id \
+             LIMIT ?{} OFFSET ?{}",
+            last_seq_in("c2.id"),
+            p.len() + 1,
+            p.len() + 2,
+        );
+        p.push(Box::new(limit as i64));
+        p.push(Box::new(offset as i64));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows = stmt
+            .query_map(params_from_iter(p.iter().map(|b| b.as_ref())), |r| {
+                Ok(json!({
+                    "id": r.get::<_, String>(0)?,
+                    "name": r.get::<_, String>(1)?,
+                    "description": r.get::<_, String>(2)?,
+                    "hidden": r.get::<_, i64>(3)? != 0,
+                }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        (rows, total)
+    }
+
+    /// Threads someone has explicitly renamed whose name contains `query`
+    /// (case-insensitive), most recently active first, plus the total number
+    /// of hits when `count` asks for it. Unnamed threads are left to message search: their "name" is
+    /// just the root's text, which already matches there. Scope and
+    /// visibility follow [`Store::search_messages_ext`]: `user` = None is a
+    /// privileged caller (every regular channel, no agent DMs) unless
+    /// `dm_owner` adds that person's own DMs back.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_threads(
+        &self,
+        query: &str,
+        channel_id: Option<&str>,
+        group_id: Option<&str>,
+        user: Option<&str>,
+        dm_owner: Option<&str>,
+        limit: usize,
+        offset: usize,
+        count: bool,
+    ) -> (Vec<Value>, Option<usize>) {
+        if query.trim().is_empty() {
+            return (Vec::new(), count.then_some(0));
+        }
+        let (count_sql, page_sql, mut p) = thread_search_sql(query, channel_id, group_id, user, dm_owner);
+        let conn = self.conn.lock().unwrap();
+        let total = count.then(|| {
+            conn.query_row(&count_sql, params_from_iter(p.iter().map(|b| b.as_ref())), |r| r.get::<_, i64>(0))
+                .map_or(0, |n| n as usize)
+        });
+        let sql = format!("{page_sql} LIMIT ?{} OFFSET ?{}", p.len() + 1, p.len() + 2);
+        p.push(Box::new(limit as i64));
+        p.push(Box::new(offset as i64));
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows = stmt
+            .query_map(params_from_iter(p.iter().map(|b| b.as_ref())), |r| {
+                let is_dm = r.get::<_, String>(6)? == "agent_dm";
+                Ok(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "channel_id": r.get::<_, String>(1)?,
+                    "alias": r.get::<_, String>(2)?,
+                    "channel_name": r.get::<_, String>(3)?,
+                    "group_id": if is_dm { DM_GROUP_ID.to_string() } else { r.get::<_, String>(4)? },
+                    "group_name": if is_dm { DM_GROUP_NAME.to_string() } else { r.get::<_, String>(5)? },
+                    "reply_count": r.get::<_, i64>(7)?,
+                    "last_activity": r.get::<_, f64>(8)?,
+                }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        (rows, total)
     }
 
     // ------------------------------------------------------------- files
@@ -5225,8 +5486,8 @@ mod tests {
         assert_eq!(g["is_public"], false);
         assert!(!s.user_can_access_group("alice", gid));
         assert!(!s.user_can_see_channel("alice", cid));
-        assert!(s.search_groups("Commons", Some("alice"), 10).is_empty());
-        assert!(s.search_channels("lobby", Some("alice"), 10).is_empty());
+        assert!(s.search_groups_page("Commons", Some("alice"), NameScope::default(), 10, 0, false).0.is_empty());
+        assert!(s.search_channels_page("lobby", Some("alice"), NameScope::default(), 10, 0, false).0.is_empty());
         assert!(s
             .search_messages("welcome", false, None, None, None, None, Some("alice"), false, 10, 0)
             .is_empty());
@@ -5239,8 +5500,8 @@ mod tests {
         assert!(s.user_can_see_channel("alice", cid));
         assert!(!s.user_in_group("alice", gid));
         assert!(!s.user_is_group_admin("alice", gid));
-        assert_eq!(s.search_groups("Commons", Some("alice"), 10).len(), 1);
-        assert_eq!(s.search_channels("lobby", Some("alice"), 10).len(), 1);
+        assert_eq!(s.search_groups_page("Commons", Some("alice"), NameScope::default(), 10, 0, false).0.len(), 1);
+        assert_eq!(s.search_channels_page("lobby", Some("alice"), NameScope::default(), 10, 0, false).0.len(), 1);
         assert_eq!(
             s.search_messages("welcome", false, None, None, None, None, Some("alice"), false, 10, 0)
                 .len(),
@@ -5251,7 +5512,7 @@ mod tests {
         let g = s.set_group_public(gid, false).unwrap();
         assert_eq!(g["is_public"], false);
         assert!(!s.user_can_access_group("alice", gid));
-        assert!(s.search_groups("Commons", Some("alice"), 10).is_empty());
+        assert!(s.search_groups_page("Commons", Some("alice"), NameScope::default(), 10, 0, false).0.is_empty());
 
         // Unknown group: no row, no panic.
         assert!(s.set_group_public("nope", true).is_none());
@@ -5284,6 +5545,69 @@ mod tests {
         assert_eq!(s.thread_size(root_id), 1);
         s.delete_message(first["id"].as_i64().unwrap());
         assert_eq!(s.thread_reply_stats(root_id), Some((0, None)));
+    }
+
+    #[test]
+    fn name_hit_activity_order_reads_the_channel_seq_index() {
+        let s = store();
+        let conn = s.conn.lock().unwrap();
+        let plan = |sql: &str| -> Vec<String> {
+            conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap()
+                .query_map([], |r| r.get::<_, String>(3)).unwrap().filter_map(Result::ok).collect()
+        };
+        for sql in [
+            format!("SELECT c.id FROM channels c ORDER BY {} DESC NULLS LAST, c.name, c.id", last_seq_in("c.id")),
+            format!("SELECT id FROM groups ORDER BY (SELECT MAX({}) FROM channels c2 WHERE c2.group_id = groups.id) \
+                     DESC NULLS LAST, name, id", last_seq_in("c2.id")),
+        ] {
+            let steps = plan(&sql);
+            assert!(steps.iter().any(|st| st.contains("idx_messages_channel_seq")), "{steps:?}");
+        }
+    }
+
+    #[test]
+    fn name_hits_with_tied_order_page_deterministically() {
+        let s = store();
+        // Same name, no messages: activity and name tie, so only the id
+        // orders them. Pages of one must cover every row exactly once.
+        for i in 0..4 {
+            let g = s.create_group("Tied", "", None);
+            let gid = g["id"].as_str().unwrap().to_string();
+            s.create_channel(&gid, "tied", &format!("{i}"));
+        }
+        let page = |kind: &str, offset: usize| -> String {
+            let (rows, _) = if kind == "c" {
+                s.search_channels_page("tied", None, NameScope::default(), 1, offset, false)
+            } else {
+                s.search_groups_page("tied", None, NameScope::default(), 1, offset, false)
+            };
+            rows[0]["id"].as_str().unwrap().to_string()
+        };
+        for kind in ["c", "g"] {
+            let ids: Vec<String> = (0..4).map(|o| page(kind, o)).collect();
+            let mut sorted = ids.clone();
+            sorted.sort();
+            assert_eq!(ids, sorted, "{kind}: ties fall back to the id");
+            sorted.dedup();
+            assert_eq!(sorted.len(), 4, "{kind}: no row twice, none skipped");
+            assert_eq!(ids, (0..4).map(|o| page(kind, o)).collect::<Vec<_>>(), "{kind}: the same every time");
+        }
+    }
+
+    #[test]
+    fn thread_name_search_reads_the_named_root_index() {
+        let s = store();
+        let conn = s.conn.lock().unwrap();
+        // Both queries, unscoped, for a member and for a privileged caller.
+        for user in [Some("ana"), None] {
+            let (count, page, p) = thread_search_sql("plan", None, None, user, None);
+            for sql in [count, page] {
+                let plan: Vec<String> = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap()
+                    .query_map(params_from_iter(p.iter().map(|b| b.as_ref())), |r| r.get::<_, String>(3)).unwrap()
+                    .filter_map(Result::ok).collect();
+                assert!(plan.iter().any(|step| step.starts_with("SEARCH m USING INDEX idx_messages_named_threads")), "{plan:?}");
+            }
+        }
     }
 
     #[test]
@@ -5422,6 +5746,19 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert!(all[0]["id"].as_i64().unwrap() > all[1]["id"].as_i64().unwrap());
 
+        // Counts skip the ranking side but agree with the pages, filters,
+        // visibility and the cap included.
+        let count = |q: &str, user: Option<&str>, files: bool, kind: Option<&str>, cap: usize|
+            s.count_messages_ext(q, false, None, None, None, user, files, kind, cap);
+        assert_eq!(count("budget", None, false, None, 1000), 2);
+        assert_eq!(count("budget", None, true, None, 1000), 1);
+        assert_eq!(count("", None, false, Some("image"), 1000), 1);
+        assert_eq!(count("", None, true, None, 1000), 2);
+        assert_eq!(count("budget", None, false, None, 1), 1);
+        assert_eq!(count("budget", Some("tom"), false, None, 1000),
+            s.search_messages_ext("budget", false, None, None, None, None, Some("tom"), false, false, None, 20, 0).len());
+        assert_eq!(count("budget", Some("mallory"), false, None, 1000), 0);
+
         // Empty query with no attachment filter still matches nothing.
         assert!(s.search_messages("", false, None, None, None, None, None, false, 20, 0).is_empty());
     }
@@ -5481,19 +5818,19 @@ mod tests {
         s.create_channel(gid, "workouts", "daily training");
         s.create_channel(gid, "meals", "");
 
-        assert_eq!(s.search_channels("WORK", None, 10).len(), 1); // case-insensitive name
-        let by_topic = s.search_channels("training", None, 10);
+        assert_eq!(s.search_channels_page("WORK", None, NameScope::default(), 10, 0, false).0.len(), 1); // case-insensitive name
+        let by_topic = s.search_channels_page("training", None, NameScope::default(), 10, 0, false).0;
         assert_eq!(by_topic.len(), 1);
         assert_eq!(by_topic[0]["group_name"], "Health");
-        assert_eq!(s.search_groups("fitness", None, 10).len(), 1); // by description
+        assert_eq!(s.search_groups_page("fitness", None, NameScope::default(), 10, 0, false).0.len(), 1); // by description
         // LIKE wildcards in input are literal, not "match everything".
-        assert!(s.search_channels("%", None, 10).is_empty());
-        assert_eq!(s.search_groups("100%", None, 10).len(), 1);
+        assert!(s.search_channels_page("%", None, NameScope::default(), 10, 0, false).0.is_empty());
+        assert_eq!(s.search_groups_page("100%", None, NameScope::default(), 10, 0, false).0.len(), 1);
         // Membership scoping: only a group member sees its channels/groups.
-        assert_eq!(s.search_channels("WORK", Some("tom"), 10).len(), 1);
-        assert!(s.search_channels("WORK", Some("mallory"), 10).is_empty());
-        assert_eq!(s.search_groups("fitness", Some("tom"), 10).len(), 1);
-        assert!(s.search_groups("fitness", Some("mallory"), 10).is_empty());
+        assert_eq!(s.search_channels_page("WORK", Some("tom"), NameScope::default(), 10, 0, false).0.len(), 1);
+        assert!(s.search_channels_page("WORK", Some("mallory"), NameScope::default(), 10, 0, false).0.is_empty());
+        assert_eq!(s.search_groups_page("fitness", Some("tom"), NameScope::default(), 10, 0, false).0.len(), 1);
+        assert!(s.search_groups_page("fitness", Some("mallory"), NameScope::default(), 10, 0, false).0.is_empty());
     }
 
     #[test]
@@ -6447,7 +6784,7 @@ mod tests {
                 0,
             )
             .is_empty());
-        let channels = s.search_channels("allowed", Some("alice"), 10);
+        let channels = s.search_channels_page("allowed", Some("alice"), NameScope::default(), 10, 0, false).0;
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0]["id"], allowed_id);
     }

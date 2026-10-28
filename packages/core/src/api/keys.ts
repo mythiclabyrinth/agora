@@ -18,7 +18,12 @@ export const keys = {
      one schedules_changed event refreshes the channel and its threads. */
   schedules: (channelId: string, threadId: number | null) =>
     ["schedules", channelId, threadId ?? 0] as const,
+  /* The Done tab's lists sit under the same prefixes, so whatever refreshes a
+     channel's (or the inbox's) schedules refreshes its done list too. */
+  doneSchedules: (channelId: string, threadId: number | null) =>
+    ["schedules", channelId, threadId ?? 0, "done"] as const,
   allSchedules: ["allSchedules"] as const,
+  allDoneSchedules: ["allSchedules", "done"] as const,
   channelAgents: (channelId: string) => ["channelAgents", channelId] as const,
   activity: (channelId: string) => ["activity", channelId] as const,
   allActivity: ["allActivity"] as const,
@@ -30,7 +35,7 @@ export const keys = {
   agentUsage: (agentId: string) => ["agentUsage", agentId] as const,
   dms: ["dms"] as const,
   agentDmPolicy: (agentId: string) => ["agentDmPolicy", agentId] as const,
-  search: (q: string, scope: string, file = "") => ["search", q, scope, file] as const,
+  search: (q: string, scope: string, file = "", sort = "", kind = "") => ["search", q, scope, file, sort, kind] as const,
   connections: ["connections"] as const,
   connectionsInfo: ["connectionsInfo"] as const,
   pairing: ["pairing"] as const,

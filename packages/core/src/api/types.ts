@@ -74,6 +74,10 @@ export interface Channel {
   role?: "admin" | "member";
 }
 
+/** The synthetic group agent DMs are listed under (the server's
+    DM_GROUP_ID); DM channels themselves carry group_id "". */
+export const DM_GROUP_ID = "__dms";
+
 export interface Group {
   id: string;
   name: string;
@@ -447,6 +451,8 @@ export interface Schedule {
   next_runs: number[];
   status: ScheduleStatus;
   last_run_at: number | null;
+  /** When it became done (the Done list's order); null while live. */
+  finished_at?: number | null;
   last_error: string | null;
   created_at: number;
   updated_at: number;
@@ -495,14 +501,43 @@ export interface SearchMessagesPage {
   items: SearchMessageHit[];
   has_more: boolean;
   offset: number;
+  /** The overview's first page only (not a "See all" list): every hit,
+      counted up to 1000 ("1000+" beyond). */
+  total?: number;
 }
 
-/** GET /api/search — sections are present only for the requested `types`. */
+/** A thread someone renamed whose name matched; `id` is its root message. */
+export interface SearchThreadHit {
+  id: number;
+  channel_id: string;
+  channel_name: string;
+  group_id: string;
+  group_name: string;
+  alias: string;
+  reply_count: number;
+  /** Unix seconds of its latest message (the root when it has no replies). */
+  last_activity: number;
+}
+
+export interface SearchThreadsPage {
+  items: SearchThreadHit[];
+  has_more: boolean;
+  offset: number;
+  /** Only with `totals=1`. */
+  total?: number;
+}
+
+/** GET /api/search — sections are present only for the requested `types`.
+    Channels, groups and threads are most recently active first. */
 export interface SearchResponse {
   query: string;
   messages?: SearchMessagesPage;
   channels?: SearchChannelHit[];
+  /** Every channel hit, not just the rows returned. */
+  channels_total?: number;
   groups?: SearchGroupHit[];
+  groups_total?: number;
+  threads?: SearchThreadsPage;
 }
 
 /** POST /api/search/ask — [n] in `answer` cites sources[n-1]; a null answer

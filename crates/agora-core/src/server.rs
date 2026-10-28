@@ -1528,12 +1528,23 @@ async fn list_messages(
 }
 
 /// GET /api/search — full-text search over message text plus name/topic
-/// matches on channels and groups, for the search UIs. `q` is required.
-/// `limit` (default 20, cap 50) and `offset` page the message hits;
-/// `channel_id` / `group_id` / `author` narrow the scope; `sort=new` orders
-/// newest-first instead of best-match (bm25); `match=any` widens to
-/// any-term recall (default: all terms); `types` picks result kinds
-/// (comma list of `messages,channels,groups`, default all three).
+/// matches on channels and groups and name matches on renamed threads, for
+/// the search UIs. `q` is required.
+/// `limit` (default 20, cap 50) and `offset` page the message hits, and the
+/// channel/group/thread hits too when `types` asks for just that one kind
+/// (a "See all" list); `channel_id` / `group_id` / `author` narrow the
+/// message scope (`channel_id` / `group_id` the thread scope too);
+/// `sort=new` orders messages newest-first instead of best-match (bm25) —
+/// channels, groups and threads are always most recently active first;
+/// `match=any` widens to any-term recall (default: all terms); `types` picks
+/// result kinds (comma list of `messages,channels,groups,threads`, default
+/// `messages,channels,groups`: threads only when asked for).
+/// `totals=1` adds each kind's total hit count — `channels_total`,
+/// `groups_total`, `threads.total` — and, on an overview's first message page
+/// (more than one kind in `types`), `messages.total`, which stops counting at
+/// [`SEARCH_TOTAL_CAP`] + 1 (anything past the cap shows as "1,000+").
+/// `channel_id` / `group_id` narrow channel and group hits too. An `author`
+/// filter skips threads.
 /// `has_files=1` keeps only messages carrying an attachment and `file_type`
 /// (`image`/`video`/`audio`/`pdf`/`doc`) narrows to one kind; either one lets
 /// `q` be empty (browse every message with a matching file, newest first).
@@ -1545,6 +1556,16 @@ async fn search(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
+    // Searches, counts and the rest are synchronous store work: keep them off
+    // the async executor.
+    tokio::task::spawn_blocking(move || search_results(&state, &user, &q))
+        .await
+        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Search failed"))?
+        .map(Json)
+}
+
+/// The body of [`search`], run on a blocking thread.
+fn search_results(state: &AppState, user: &AuthedUser, q: &HashMap<String, String>) -> Result<Value, ApiError> {
     // Instance admins search everything; everyone else only what they can see.
     let scope_user = (!user.instance_admin).then_some(user.username.as_str());
     let query = q.get("q").map(|s| s.trim()).unwrap_or_default();
@@ -1567,8 +1588,18 @@ async fn search(
     let author = q.get("author").map(String::as_str).filter(|s| !s.is_empty());
     let newest_first = q.get("sort").map(String::as_str) == Some("new");
     let match_any = q.get("match").map(String::as_str) == Some("any");
+    // Threads and totals cost extra queries, so they're opt-in: a request
+    // that doesn't ask for them (mobile's) gets no thread search and no
+    // counts. Scope is not opt-in: `channel_id` / `group_id` narrow channel
+    // and group hits for every client.
     let types = q.get("types").map(String::as_str).unwrap_or("messages,channels,groups");
     let want = |t: &str| types.split(',').any(|x| x.trim() == t);
+    let totals = matches!(q.get("totals").map(String::as_str), Some("1" | "true"));
+    // A single non-message kind is a "See all" list: page it like messages.
+    // In a combined overview those kinds show their first `limit` rows only
+    // (the web asks for a few; the default, 20, is what mobile always got).
+    let single = !types.contains(',');
+    let side_offset = if single { offset } else { 0 };
     let store = &state.hub.store;
     let mut out = json!({"query": query});
     if want("messages") {
@@ -1577,6 +1608,8 @@ async fn search(
             query, match_any, channel_id, group_id, author, None, scope_user, newest_first,
             has_files, file_type, limit + 1, offset,
         );
+        // Instance admins see every regular channel but only their own DMs.
+        let owned_dms = user.instance_admin && group_id.is_none_or(|g| g == crate::store::DM_GROUP_ID);
         if user.instance_admin {
             let owned = store.search_messages_ext(query, match_any, channel_id, group_id, author, None,
                 Some(&user.username), newest_first, has_files, file_type, limit + 1, offset);
@@ -1586,12 +1619,26 @@ async fn search(
         }
         let has_more = rows.len() > limit;
         rows.truncate(limit);
+        let page_len = rows.len();
         out["messages"] = json!({"items": rows, "has_more": has_more, "offset": offset});
+        // Counting is the costly part: only an overview's first page counts
+        // (when asked), and the client labels later pages and the Messages
+        // tab with it.
+        if totals && offset == 0 && !single {
+            // One past the cap tells "exactly 1,000" from "more than 1,000".
+            let cap = SEARCH_TOTAL_CAP + 1;
+            let mut total = store.count_messages_ext(query, match_any, channel_id, group_id, author, scope_user,
+                has_files, file_type, cap);
+            if owned_dms {
+                total += store.count_messages_ext(query, match_any, channel_id, Some(crate::store::DM_GROUP_ID),
+                    author, Some(&user.username), has_files, file_type, cap);
+            }
+            out["messages"]["total"] = json!(total.min(cap).max(page_len));
+        }
     }
-    // Channel/group name matches only make sense with a text query, and are
-    // irrelevant to an attachment filter — skip them when browsing files.
+    // Channel/group/thread name matches only make sense with a text query.
     // Their `hidden` badge reflects the caller's own sidebar prefs (keep the
-    // relevance order — no positional overlay here).
+    // activity order — no positional overlay here).
     let personal_hidden = |mut hits: Vec<Value>, kind: &str| -> Vec<Value> {
         let prefs = store.user_prefs(&user.username, kind);
         for h in &mut hits {
@@ -1600,14 +1647,46 @@ async fn search(
         }
         hits
     };
-    if want("channels") && !query.is_empty() {
-        out["channels"] = json!(personal_hidden(store.search_channels(query, scope_user, 20), "channel"));
+    // An overview that counts (the web's) shows messages only under an
+    // attachment filter, so it skips name hits there; a plain request
+    // (mobile's) gets them whenever there's a query, as it always has.
+    let names = !query.is_empty() && !(attach_filter && totals);
+    // Name hits follow the scope like every other kind.
+    let name_scope = crate::store::NameScope { channel_id, group_id };
+    if want("channels") && names {
+        let (rows, total) = store.search_channels_page(query, scope_user, name_scope, limit, side_offset, totals);
+        out["channels"] = json!(personal_hidden(rows, "channel"));
+        if let Some(total) = total {
+            out["channels_total"] = json!(total);
+        }
     }
-    if want("groups") && !query.is_empty() {
-        out["groups"] = json!(personal_hidden(store.search_groups(query, scope_user, 20), "group"));
+    if want("groups") && names {
+        let (rows, total) = store.search_groups_page(query, scope_user, name_scope, limit, side_offset, totals);
+        out["groups"] = json!(personal_hidden(rows, "group"));
+        if let Some(total) = total {
+            out["groups_total"] = json!(total);
+        }
     }
-    Ok(Json(out))
+    // Thread names have no author to match, so an author filter (messages
+    // by someone) leaves them out.
+    if want("threads") && names && author.is_none() {
+        let dm_owner = user.instance_admin.then_some(user.username.as_str());
+        // One extra row decides has_more without needing the count.
+        let (mut rows, total) = store.search_threads(query, channel_id, group_id, scope_user, dm_owner,
+            limit + 1, side_offset, totals);
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        out["threads"] = json!({"items": rows, "has_more": has_more, "offset": side_offset});
+        if let Some(total) = total {
+            out["threads"]["total"] = json!(total);
+        }
+    }
+    Ok(out)
 }
+
+/// Where a search stops counting message hits: a total above it (the count
+/// goes one further to tell) shows as "1,000+".
+const SEARCH_TOTAL_CAP: usize = 1000;
 
 /// GET /api/channels/{channel_id}/attachments — individual attachment rows,
 /// optionally scoped to `thread_id` (root plus replies). Channel membership
@@ -10354,6 +10433,207 @@ mod tests {
             assert_eq!(items[0]["group_id"], crate::store::DM_GROUP_ID);
             assert_eq!(items[0]["group_name"], crate::store::DM_GROUP_NAME);
         }
+    }
+
+    #[tokio::test]
+    async fn message_totals_tell_exactly_the_cap_from_past_it() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        let g = store.create_group("Team", "", None);
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "ana", "member", None);
+        let cid = store.create_channel(gid, "main", "")["id"].as_str().unwrap().to_string();
+        for i in 0..SEARCH_TOTAL_CAP {
+            store.add_message(&cid, &format!("capword {i}"), "user", "ana", None, None, &[]);
+        }
+        let total = || async {
+            search(State(state.clone()), Query(HashMap::from([
+                ("q".to_string(), "capword".to_string()), ("totals".to_string(), "1".to_string()),
+            ])), session_headers(&state, "ana")).await.unwrap().0["messages"]["total"].as_u64().unwrap()
+        };
+        assert_eq!(total().await, SEARCH_TOTAL_CAP as u64, "exactly at the cap");
+        store.add_message(&cid, "capword one more", "user", "ana", None, None, &[]);
+        store.add_message(&cid, "capword and another", "user", "ana", None, None, &[]);
+        assert_eq!(total().await, SEARCH_TOTAL_CAP as u64 + 1, "past the cap: counted one further, no more");
+    }
+
+    #[tokio::test]
+    async fn search_finds_renamed_threads_in_scope_most_recent_first() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        store.create_user("eve", "Eve", None, "member").unwrap();
+        store.create_user("root", "Root", None, "admin").unwrap();
+        let g = store.create_group("Team", "", None);
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "ana", "member", None);
+        let main = store.create_channel(gid, "main", "")["id"].as_str().unwrap().to_string();
+        let side = store.create_channel(gid, "side", "")["id"].as_str().unwrap().to_string();
+        let thread = |cid: &str, text: &str, alias: Option<&str>| {
+            let root = store.add_message(cid, text, "user", "ana", None, None, &[]);
+            let id = root["id"].as_i64().unwrap();
+            store.rename_thread(id, alias);
+            id
+        };
+        let older = thread(&main, "first", Some("Launch plan"));
+        let newer = thread(&side, "second", Some("launch retro"));
+        // Unnamed threads stay with message search, even when the root matches.
+        thread(&main, "launch day notes", None);
+        // A reply makes the older thread the most recently active one.
+        store.add_message(&main, "bump", "user", "ana", None, Some(older), &[]);
+        // The web overview's request: threads and totals are opt-in.
+        let run = |who: &'static str, extra: &[(&str, &str)]| {
+            let mut params = HashMap::from([
+                ("q".to_string(), "launch".to_string()),
+                ("types".to_string(), "messages,channels,groups,threads".to_string()),
+                ("totals".to_string(), "1".to_string()),
+            ]);
+            for (k, v) in extra {
+                params.insert(k.to_string(), v.to_string());
+            }
+            search(State(state.clone()), Query(params), session_headers(&state, who))
+        };
+        let ids = |v: &Value| v["threads"]["items"].as_array().unwrap().iter().map(|t| t["id"].as_i64().unwrap()).collect::<Vec<_>>();
+        let all = run("ana", &[]).await.unwrap().0;
+        assert_eq!(ids(&all), [older, newer]);
+        assert_eq!(all["threads"]["total"], 2);
+        assert_eq!(all["threads"]["has_more"], false);
+        let first = &all["threads"]["items"][0];
+        assert_eq!(first["alias"], "Launch plan");
+        assert_eq!(first["channel_name"], "main");
+        assert_eq!(first["group_name"], "Team");
+        assert_eq!(first["reply_count"], 1);
+        // Scope narrows threads like messages.
+        let scoped = run("ana", &[("channel_id", side.as_str())]).await.unwrap().0;
+        assert_eq!(ids(&scoped), [newer]);
+        // A "See all" list pages one kind on its own.
+        // Mobile's request (no types, no totals) stays as before: no threads.
+        let plain = search(State(state.clone()), Query(HashMap::from([("q".to_string(), "launch".to_string())])),
+            session_headers(&state, "ana")).await.unwrap().0;
+        assert!(plain.get("threads").is_none() && plain.get("channels_total").is_none());
+        // Threads have no author, so an author filter leaves them out.
+        assert!(run("ana", &[("author", "ana")]).await.unwrap().0.get("threads").is_none());
+        let page = run("ana", &[("types", "threads"), ("limit", "1"), ("offset", "1")]).await.unwrap().0;
+        assert_eq!(ids(&page), [newer]);
+        assert_eq!(page["threads"]["total"], 2);
+        assert_eq!(page["threads"]["has_more"], false);
+        assert!(page.get("messages").is_none() && page.get("channels").is_none());
+        let page = run("ana", &[("types", "threads"), ("limit", "1")]).await.unwrap().0;
+        assert_eq!(page["threads"]["has_more"], true);
+        // Without totals=1 paging still works off has_more, uncounted.
+        let uncounted = search(State(state.clone()), Query(HashMap::from([
+            ("q".to_string(), "launch".to_string()), ("types".to_string(), "threads".to_string()), ("limit".to_string(), "1".to_string()),
+        ])), session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(uncounted["threads"]["has_more"], true);
+        assert!(uncounted["threads"].get("total").is_none());
+        // Visibility: eve isn't in the private group; an admin sees it.
+        assert!(ids(&run("eve", &[]).await.unwrap().0).is_empty());
+        assert_eq!(ids(&run("root", &[]).await.unwrap().0).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_totals_and_activity_order_for_channels_and_messages() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "Ana", None, "member").unwrap();
+        let g = store.create_group("Team", "", None);
+        let gid = g["id"].as_str().unwrap();
+        store.add_member(gid, "user", "ana", "member", None);
+        let quiet = store.create_channel(gid, "alpha-ops", "")["id"].as_str().unwrap().to_string();
+        let busy = store.create_channel(gid, "zeta-ops", "")["id"].as_str().unwrap().to_string();
+        store.create_channel(gid, "empty-ops", "");
+        store.add_message(&quiet, "ops note one", "user", "ana", None, None, &[]);
+        store.add_message(&busy, "ops note two", "user", "ana", None, None, &[]);
+        store.add_message(&busy, "ops note three", "user", "ana", None, None, &[]);
+        let run = |extra: &[(&str, &str)]| {
+            let mut params = HashMap::from([("q".to_string(), "ops".to_string()), ("totals".to_string(), "1".to_string())]);
+            for (k, v) in extra {
+                params.insert(k.to_string(), v.to_string());
+            }
+            search(State(state.clone()), Query(params), session_headers(&state, "ana"))
+        };
+        let v = run(&[("limit", "2")]).await.unwrap().0;
+        let names = |v: &Value| v["channels"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        // The limit caps every kind in an overview; totals still count all.
+        assert_eq!(names(&v), ["zeta-ops", "alpha-ops"]);
+        assert_eq!(v["channels_total"], 3);
+        // Most recently active first; never-used channels last, by name.
+        assert_eq!(names(&run(&[]).await.unwrap().0), ["zeta-ops", "alpha-ops", "empty-ops"]);
+        assert_eq!(v["groups_total"], 0);
+        assert_eq!(v["messages"]["items"].as_array().unwrap().len(), 2);
+        assert_eq!(v["messages"]["total"], 3);
+        assert_eq!(v["messages"]["has_more"], true);
+        // Only the overview counts messages: not later pages, not the tab.
+        let more = run(&[("types", "messages"), ("limit", "2"), ("offset", "2")]).await.unwrap().0;
+        assert!(more["messages"].get("total").is_none());
+        let tab = run(&[("types", "messages"), ("limit", "2")]).await.unwrap().0;
+        assert!(tab["messages"].get("total").is_none());
+        assert_eq!(tab["messages"]["items"].as_array().unwrap().len(), 2);
+        let page = run(&[("types", "channels"), ("limit", "1"), ("offset", "1")]).await.unwrap().0;
+        assert_eq!(names(&page), ["alpha-ops"]);
+        assert_eq!(page["channels_total"], 3);
+        // A plain request (mobile's) with an attachment filter still gets the
+        // name hits for its query, as before.
+        for filter in [("has_files", "1"), ("file_type", "image")] {
+            let plain = search(State(state.clone()), Query(HashMap::from([
+                ("q".to_string(), "ops".to_string()), (filter.0.to_string(), filter.1.to_string()),
+            ])), session_headers(&state, "ana")).await.unwrap().0;
+            assert_eq!(plain["channels"].as_array().unwrap().len(), 3, "{filter:?}");
+            assert!(plain["groups"].is_array(), "{filter:?}");
+        }
+        // The web's counted overview with an attachment filter leaves only
+        // messages: no name kinds, no totals.
+        let files = run(&[("has_files", "1")]).await.unwrap().0;
+        for kind in ["channels", "channels_total", "groups", "groups_total", "threads"] {
+            assert!(files.get(kind).is_none(), "{kind} with a file filter");
+        }
+        assert!(files.get("messages").is_some());
+        // Without totals=1 (mobile's request) nothing is counted and there are
+        // no threads.
+        let plain = search(State(state.clone()), Query(HashMap::from([("q".to_string(), "ops".to_string())])),
+            session_headers(&state, "ana")).await.unwrap().0;
+        assert!(plain.get("channels_total").is_none() && plain.get("groups_total").is_none());
+        assert!(plain["messages"].get("total").is_none());
+        assert!(plain.get("threads").is_none());
+        assert_eq!(plain["channels"].as_array().unwrap().len(), 3);
+        // Scoped requests narrow channel and group hits, for every client.
+        let other = store.create_group("Elsewhere", "ops desk", None);
+        let other_id = other["id"].as_str().unwrap().to_string();
+        store.add_member(&other_id, "user", "ana", "member", None);
+        store.create_channel(&other_id, "far-ops", "");
+        let in_group = run(&[("group_id", gid)]).await.unwrap().0;
+        assert_eq!(names(&in_group), ["zeta-ops", "alpha-ops", "empty-ops"]);
+        assert_eq!(in_group["channels_total"], 3);
+        assert_eq!(in_group["groups_total"], 0, "Team doesn't match \"ops\"; Elsewhere is out of scope");
+        let in_other = run(&[("group_id", other_id.as_str())]).await.unwrap().0;
+        assert_eq!(names(&in_other), ["far-ops"]);
+        assert_eq!(in_other["groups"][0]["name"], "Elsewhere");
+        let in_channel = run(&[("channel_id", quiet.as_str())]).await.unwrap().0;
+        assert_eq!(names(&in_channel), ["alpha-ops"]);
+        assert_eq!(in_channel["groups_total"], 0);
+        assert!(in_channel["groups"].as_array().unwrap().is_empty());
+        // The same without totals=1 (mobile's request).
+        let plain = search(State(state.clone()), Query(HashMap::from([
+            ("q".to_string(), "ops".to_string()), ("channel_id".to_string(), quiet.clone()),
+        ])), session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(names(&plain), ["alpha-ops"]);
+        assert!(plain["groups"].as_array().unwrap().is_empty());
+        assert!(plain.get("channels_total").is_none());
+        let plain_group = search(State(state.clone()), Query(HashMap::from([
+            ("q".to_string(), "ops".to_string()), ("group_id".to_string(), other_id.clone()),
+        ])), session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(names(&plain_group), ["far-ops"]);
+        assert_eq!(plain_group["groups"][0]["name"], "Elsewhere");
+        // Unscoped: every visible matching channel and group, as before.
+        let unscoped = search(State(state.clone()), Query(HashMap::from([("q".to_string(), "ops".to_string())])),
+            session_headers(&state, "ana")).await.unwrap().0;
+        assert_eq!(names(&unscoped).len(), 4);
+        assert_eq!(unscoped["groups"].as_array().unwrap().len(), 1);
+        // Newest-first sort reaches messages and keeps the same total.
+        let newest = run(&[("sort", "new")]).await.unwrap().0;
+        assert_eq!(newest["messages"]["items"][0]["text"], "ops note three");
+        assert_eq!(newest["messages"]["total"], 3);
     }
 
     #[tokio::test]

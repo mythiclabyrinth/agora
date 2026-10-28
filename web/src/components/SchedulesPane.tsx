@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import {
-  SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterCount, filterSchedules, type ScheduleFilter,
+  SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterBadge, filterSchedules, type ScheduleFilter, type ScheduleList,
   describeSchedule, fmtTs, intervalParts, intervalSeconds, LOST_ACCESS_NOTE, lostChannelAccess, nextRunsLabel,
-  SCHEDULES_TRUNCATED_NOTE, sortSchedules, useCancelSchedule, useGroups, useSchedules, useUpdateSchedule,
+  doneBadgeList, scheduleChannelLabel, scheduleEmptyCopy, scheduleTruncatedNote, sortSchedules, useCancelSchedule, useDoneSchedules, useGroups, useSchedules,
+  useUpdateSchedule,
   type IntervalUnit, type Schedule, type ScheduleSpec,
 } from "@agora/core";
 import { toast } from "../lib/toast";
@@ -187,10 +188,12 @@ function ScheduleEditor({ schedule, onDone }: { schedule: Schedule; onDone: () =
 }
 
 /** One schedule; shared by the side pane and the inbox tab. */
-export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
+export function ScheduleRow({ schedule, showThread, showChannel, groupName, onOpen }: {
   schedule: Schedule;
   showThread?: boolean;
   showChannel?: boolean;
+  /** With `showChannel`, the channel's group joins its label. */
+  groupName?: string;
   onOpen?: (schedule: Schedule) => void;
 }) {
   const update = useUpdateSchedule();
@@ -213,7 +216,9 @@ export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
     cancel.mutate(schedule, { onSuccess: () => toast("Schedule cancelled"), onError: fail("cancel") });
   };
   const where = [
-    showChannel && schedule.channel_name ? `#${schedule.channel_name}` : null,
+    // No channel name (e.g. a channel since renamed away): the label falls
+    // back to its id rather than vanishing.
+    showChannel ? scheduleChannelLabel(schedule, groupName) : null,
     showThread && schedule.thread_title ? schedule.thread_title : null,
   ].filter(Boolean).join(" · ");
 
@@ -282,29 +287,37 @@ export function ScheduleRow({ schedule, showThread, showChannel, onOpen }: {
   );
 }
 
-export function ScheduleFilters({ items, value, onChange }: {
-  items: Schedule[]; value: ScheduleFilter; onChange: (value: ScheduleFilter) => void;
+/** Status tabs. `done` is the separately loaded Done list, which counts
+    that tab: pass `doneBadgeList(...)`, so a cached count from an earlier
+    visit never shows. `items` count the rest. */
+export function ScheduleFilters({ items, done, value, onChange }: {
+  items: Schedule[]; done?: ScheduleList; value: ScheduleFilter; onChange: (value: ScheduleFilter) => void;
 }) {
+  const last = SCHEDULE_FILTERS.length - 1;
   return <div className="ago-sched-filters" role="tablist" aria-label="Schedule status">
     {SCHEDULE_FILTERS.map((filter, index) => {
-      const count = scheduleFilterCount(items, filter);
+      const badge = scheduleFilterBadge(items, filter, done);
       return <button key={filter} role="tab" aria-selected={value === filter}
         tabIndex={value === filter ? 0 : -1} onClick={() => onChange(filter)}
         onKeyDown={event => {
-          const next = event.key === "ArrowRight" ? (index + 1) % 3 : event.key === "ArrowLeft" ? (index + 2) % 3
-            : event.key === "Home" ? 0 : event.key === "End" ? 2 : null;
+          const next = event.key === "ArrowRight" ? (index + 1) % SCHEDULE_FILTERS.length
+            : event.key === "ArrowLeft" ? (index + last) % SCHEDULE_FILTERS.length
+            : event.key === "Home" ? 0 : event.key === "End" ? last : null;
           if (next == null) return;
           event.preventDefault(); onChange(SCHEDULE_FILTERS[next]);
           (event.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
         }}>
-        {scheduleFilterLabel[filter]}{count > 0 && <span className="ago-sched-count">{count.toLocaleString()}</span>}
+        {scheduleFilterLabel[filter]}{badge && <span className="ago-sched-count">{badge}</span>}
       </button>;
     })}
   </div>;
 }
 
 export function ScheduleEmpty({ filter = "all" }: { filter?: ScheduleFilter }) {
-  if (filter !== "all") return <div className="empty ago-sched-empty" role="status"><Icon name="clock" /><strong>No {filter} schedules</strong><span>{filter === "active" ? "Schedules ready to run will appear here." : "Schedules you pause will appear here."}</span></div>;
+  if (filter !== "all") {
+    const copy = scheduleEmptyCopy(filter);
+    return <div className="empty ago-sched-empty" role="status"><Icon name="clock" /><strong>{copy.title}</strong><span>{copy.description}</span></div>;
+  }
   return (
     <div className="empty ago-sched-empty">
       <Icon name="clock" />
@@ -323,14 +336,27 @@ export function SchedulesPane() {
   const q = useSchedules(ui.schedulesOpen ? (channel?.id || "") : "", threadId);
   // Drop a half-armed cancel or open editor when the pane closes.
   const [epoch, setEpoch] = useState(0);
-  const [filter, setFilter] = useState<ScheduleFilter>("all");
-  useEffect(() => { setFilter("all"); }, [ui.schedulesOpen, channel?.id, threadId]);
+  // Any change of open state, channel or thread starts back on All — in the
+  // same render, so Done never fetches for the new scope — and the old
+  // scope's tab isn't remembered (A → B → A lands on All too).
+  const scopeKey = `${ui.schedulesOpen}:${channel?.id ?? ""}:${threadId ?? ""}`;
+  // `openedAt`: when Done was last selected, for its badge (doneBadgeList).
+  const [picked, setPicked] = useState<{ scope: string; filter: ScheduleFilter; openedAt: number | null }>(
+    { scope: scopeKey, filter: "all", openedAt: null });
+  if (picked.scope !== scopeKey) setPicked({ scope: scopeKey, filter: "all", openedAt: null });
+  const filter = picked.scope === scopeKey ? picked.filter : "all";
+  const setFilter = (next: ScheduleFilter) =>
+    setPicked({ scope: scopeKey, filter: next, openedAt: next === "done" ? Date.now() : null });
+  const showDone = filter === "done";
+  const doneQ = useDoneSchedules(ui.schedulesOpen ? (channel?.id || "") : "", threadId, showDone);
   useEffect(() => { if (!ui.schedulesOpen) setEpoch(e => e + 1); }, [ui.schedulesOpen]);
   if (!ui.schedulesOpen || !channel) {
     return <div className="agora-files-pane" style={{ display: "none" }} />;
   }
   const allItems = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
-  const items = filterSchedules(allItems, filter);
+  // Done keeps the server's order: latest finished first.
+  const shown = showDone ? doneQ : q;
+  const items = showDone ? (doneQ.data?.items || []) : filterSchedules(allItems, filter);
   const open = (schedule: Schedule) => {
     if (schedule.thread_id == null) return;
     // Opening a thread normally closes side panes; here the reader is
@@ -347,15 +373,16 @@ export function SchedulesPane() {
         </div>
         <button className="btn sm" title="Close schedules" aria-label="Close schedules" onClick={() => ui.setSchedulesOpen(false)}><Icon name="x" /></button>
       </div>
-      <ScheduleFilters items={allItems} value={filter} onChange={setFilter} />
+      <ScheduleFilters items={allItems} done={doneBadgeList(doneQ, showDone ? picked.openedAt : null)}
+        value={filter} onChange={setFilter} />
       <div className="ago-files-body">
         {items.map(s => (
           <ScheduleRow key={s.id} schedule={s} showThread={threadId == null} onOpen={threadId == null ? open : undefined} />
         ))}
-        {q.isLoading && <div className="empty">Loading schedules…</div>}
-        {q.isError && <div className="empty" role="alert">Couldn't load schedules. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
-        {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty filter={filter} />}
-        {q.data?.truncated && <div className="ago-sched-truncated" role="status">{SCHEDULES_TRUNCATED_NOTE}</div>}
+        {shown.isLoading && <div className="empty">Loading schedules…</div>}
+        {shown.isError && <div className="empty" role="alert">Couldn't load schedules. <button className="btn sm" onClick={() => void shown.refetch()}>Retry</button></div>}
+        {!shown.isLoading && !shown.isError && !items.length && <ScheduleEmpty filter={filter} />}
+        {shown.data?.truncated && <div className="ago-sched-truncated" role="status">{scheduleTruncatedNote(filter)}</div>}
       </div>
     </aside>
   );

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { fixtureGroups, fixtureMe, fixtureSchedules, fixtureThreads } from "@agora/core/testing/fixtures";
 import { useMessageDrafts, type DraftRow, type UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
@@ -182,6 +182,42 @@ export const ReloadResetRules: Story = {
     expect(inboxPathAfterReload("/inbox/threads", "reload", null)).toBeNull();
     expect(inboxPathAfterReload("/inbox/threads", "navigate", {})).toBeNull();
     expect(inboxPathAfterReload("/inbox/unreads", "reload", {})).toBeNull();
+  },
+};
+
+// The inbox's Done tab is strictly latest finished first: one flat list
+// (no channel headings, which would pull a channel's older rows ahead of
+// another's newer one), each row labelled with its channel and group.
+const doneRow = (id: string, channel: string, updatedAt: number) => ({
+  ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, group_id: "product", thread_id: null, thread_title: null,
+  status: "done" as const, updated_at: updatedAt, next_runs: [], can_manage: false,
+});
+export const SchedulesDoneTab: Story = {
+  parameters: {
+    apiRoutes: {
+      ...meta.parameters.apiRoutes,
+      "GET /api/schedules": { items: fixtureSchedules },
+      "GET /api/schedules?status=done": { items: [
+        doneRow("z1", "zeta", 300), doneRow("a1", "alpha", 200), doneRow("z2", "zeta", 100),
+        // Agent DMs carry group_id "": still labelled with the DMs group.
+        { ...doneRow("dm1", "Claude", 50), channel_kind: "agent_dm", group_id: "" },
+        // No channel name from the server: labelled by its id.
+        { ...doneRow("nn1", "nameless-7f2a", 40), channel_name: null },
+      ], truncated: true },
+    },
+    setup: () => history.replaceState(null, "", "/inbox/schedules"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Done" }));
+    // The server capped the list (truncated): the badge says there are more.
+    await expect(canvas.findByRole("tab", { name: "Done 5+" })).resolves.toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect([...canvasElement.querySelectorAll("[data-schedule-id]")].map(r => r.getAttribute("data-schedule-id")))
+      .toEqual(["z1", "a1", "z2", "dm1", "nn1"]));
+    expect(canvas.queryAllByRole("region", { name: /^Schedules in / })).toHaveLength(0);
+    expect([...canvasElement.querySelectorAll(".ago-sched-where")].map(e => e.textContent?.trim()))
+      .toEqual(["#zeta · Product", "#alpha · Product", "#zeta · Product", "Claude · Direct messages", "#nameless-7f2a · Product"]);
+    await expect(canvas.findByText(/most recently finished/)).resolves.toBeVisible();
   },
 };
 

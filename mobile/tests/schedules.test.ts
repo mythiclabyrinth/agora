@@ -30,8 +30,21 @@ class TestApi extends ApiClient {
   readonly deletes: string[] = [];
   patchError: Error | null = null;
   truncated = false;
+  /** What `?status=done` returns: the Done tab's own list. */
+  done: Schedule[] = [];
+  /** Holds `?status=done` responses until released (a slow refetch). */
+  doneHold: Promise<void> | null = null;
+  /** The server capped the done list. */
+  doneTruncated = false;
   constructor(private readonly items: Schedule[]) { super({ baseUrl: "https://example.invalid", token: "test" }); }
-  override async get<T>(path: string) { this.gets.push(path); return (this.truncated ? { items: this.items, truncated: true } : { items: this.items }) as T; }
+  override async get<T>(path: string) {
+    this.gets.push(path);
+    if (path.includes("status=done")) {
+      if (this.doneHold) await this.doneHold;
+      return (this.doneTruncated ? { items: this.done, truncated: true } : { items: this.done }) as T;
+    }
+    return (this.truncated ? { items: this.items, truncated: true } : { items: this.items }) as T;
+  }
   override async patch<T>(path: string, body?: unknown) {
     this.patches.push({ path, body });
     if (this.patchError) throw this.patchError;
@@ -360,6 +373,117 @@ test("schedule status tabs expose counts and selection, filter rows, and return 
   expect(texts().join("\n")).toContain("Every 6 hours");
 });
 
+test("the Done tab loads every finished schedule on its own, latest finished first", async () => {
+  const api = new TestApi(fixtureSchedules);
+  const finished = (id: string, text: string): Schedule => ({ ...fixtureSchedules[1], id, text, status: "done", thread_id: null, thread_title: null });
+  api.done = [finished("d-new", "newest finished"), finished("d-old", "older finished")];
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  // Not fetched (and not counted) until the tab opens.
+  expect(api.gets.some(path => path.includes("status=done"))).toBe(false);
+  expect(byLabel("Done")).toHaveLength(1);
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  expect(api.gets).toContain("/api/channels/general/schedules?status=done");
+  expect(byLabel("Done, 2")[0].props.accessibilityState.selected).toBe(true);
+  const shown = texts().join("\n");
+  expect(shown.indexOf("newest finished")).toBeGreaterThan(-1);
+  expect(shown.indexOf("newest finished")).toBeLessThan(shown.indexOf("older finished"));
+  // The other tabs still count the default list.
+  expect(byLabel("All, 3")).toHaveLength(1);
+  // Leaving Done drops its count: the cached list may be stale by the next visit.
+  await act(async () => byLabel("All, 3")[0].props.onPress());
+  expect(byLabel("Done")).toHaveLength(1);
+  expect(byLabel("Done, 2")).toHaveLength(0);
+  // Reopening refetches; the old count stays hidden until the new list lands.
+  let release = () => {};
+  api.doneHold = new Promise(resolve => { release = resolve; });
+  api.done = [...api.done, finished("d-third", "third finished")];
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  expect(byLabel("Done")[0].props.accessibilityState.selected).toBe(true);
+  expect(byLabel("Done, 2")).toHaveLength(0);
+  await act(async () => { release(); });
+  await flush();
+  expect(byLabel("Done, 3")).toHaveLength(1);
+});
+
+test("an older server's live list on the Done tab shows only finished rows", async () => {
+  const api = new TestApi(fixtureSchedules);
+  // A server that predates ?status=done returns its live list instead.
+  api.done = [...fixtureSchedules, { ...fixtureSchedules[1], id: "d-real", text: "really finished", status: "done" }];
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  expect(byLabel("Done, 1")).toHaveLength(1);
+  const shown = texts().join("\n");
+  expect(shown).toContain("really finished");
+  expect(shown).not.toContain("@cursor weekly dependency report");
+});
+
+test("a background refetch while Done is open keeps its count", async () => {
+  const api = new TestApi(fixtureSchedules);
+  api.done = [{ ...fixtureSchedules[1], id: "d1", status: "done" }, { ...fixtureSchedules[1], id: "d2", status: "done" }];
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  expect(byLabel("Done, 2")).toHaveLength(1);
+  // schedules_changed (or pull to refresh) refetches while the tab stays open.
+  let release = () => {};
+  api.doneHold = new Promise(resolve => { release = resolve; });
+  api.done = [...api.done, { ...fixtureSchedules[1], id: "d3", status: "done" }];
+  await act(async () => { void clients.at(-1)!.invalidateQueries({ queryKey: ["schedules"] }); });
+  await flush();
+  expect(byLabel("Done, 2")).toHaveLength(1);
+  await act(async () => { release(); });
+  await flush();
+  expect(byLabel("Done, 3")).toHaveLength(1);
+});
+
+test("a capped Done list's badge says there are more", async () => {
+  const api = new TestApi(fixtureSchedules);
+  api.done = [{ ...fixtureSchedules[1], id: "d1", status: "done" }];
+  api.doneTruncated = true;
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  expect(byLabel("Done, 1+")[0].props.accessibilityState.selected).toBe(true);
+  expect(texts()).toContain("1+");
+});
+
+test("inbox Done is one flat latest-finished-first list labelled by channel", async () => {
+  useInboxTab.setState({ tab: "unreads", filter: "all" });
+  const list = { data: [], total: 0, isLoading: false, isError: false, refetch: jest.fn() };
+  (useUnreads as jest.Mock).mockReturnValue(list);
+  (useApprovals as jest.Mock).mockReturnValue(list);
+  (useMarkUnreadsRead as jest.Mock).mockReturnValue({ mutate: jest.fn(), isPending: false });
+  (useMe as jest.Mock).mockReturnValue({ data: { drafts_sync: false } });
+  (useSyncedDrafts as jest.Mock).mockReturnValue([]);
+  (useLocalSearchParams as jest.Mock).mockReturnValue({ tab: "schedules" });
+  (useAllSchedules as jest.Mock).mockReturnValue({ data: { items: fixtureSchedules }, isLoading: false, isError: false, isRefetching: false, refetch: jest.fn() });
+  const row = (id: string, channel: string, text: string): Schedule =>
+    ({ ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null, text, status: "done" });
+  const api = new TestApi([]);
+  // zeta's older row must not jump ahead of alpha's newer one.
+  api.done = [row("1", "zeta", "zeta newest"), row("2", "alpha", "alpha middle"), row("3", "zeta", "zeta oldest"),
+    { ...row("4", "Claude", "dm oldest"), channel_kind: "agent_dm", group_id: "" }];
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(InboxScreen))); });
+  await flush();
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  const headers = tree!.root.findAll(node => node.props.accessibilityRole === "header" && node.type === Text);
+  expect(headers).toHaveLength(0);
+  const shown = texts().join("\n");
+  expect(shown.indexOf("zeta newest")).toBeLessThan(shown.indexOf("alpha middle"));
+  expect(shown.indexOf("alpha middle")).toBeLessThan(shown.indexOf("zeta oldest"));
+  expect(texts().filter(t => /^#(zeta|alpha)/.test(t)).length).toBeGreaterThanOrEqual(3);
+  // An agent DM (group_id "") is labelled with the DMs group.
+  expect(texts().some(t => t.startsWith("Claude · Direct messages"))).toBe(true);
+});
+
 test("empty schedule tabs have distinct copy and no zero badge", async () => {
   await act(async () => { tree = TestRenderer.create(wrap(new TestApi([]), React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
   await flush();
@@ -368,6 +492,9 @@ test("empty schedule tabs have distinct copy and no zero badge", async () => {
   expect(texts().join("\n")).toContain("No active schedules");
   await act(async () => byLabel("Paused")[0].props.onPress());
   expect(texts().join("\n")).toContain("No paused schedules");
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  expect(texts().join("\n")).toContain("No done schedules");
 });
 
 test("inbox keeps one heading per channel on every tab when channels mix active and paused", async () => {

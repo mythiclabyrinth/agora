@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { filterSchedules, type ScheduleFilter, lostChannelAccess, SCHEDULES_TRUNCATED_NOTE, sortSchedules, useAllSchedules, useGroups, type Schedule } from "@agora/core";
+import {
+  doneBadgeList, filterSchedules, type ScheduleFilter, lostChannelAccess, scheduleChannelLabel, scheduleGroupName, scheduleTruncatedNote, sortSchedules, useAllDoneSchedules,
+  useAllSchedules, useGroups, type Schedule,
+} from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useUiState } from "../state/ui";
 import { ScheduleEmpty, ScheduleFilters, ScheduleRow } from "./SchedulesPane";
@@ -11,15 +14,23 @@ export function SchedulesInbox() {
   const ui = useUiState();
   const groups = useGroups().data || [];
   const groupName = (id: string | null) => groups.find(g => g.id === id)?.name ?? "";
-  const [filter, setFilter] = useState<ScheduleFilter>("all");
+  const [filter, pickFilter] = useState<ScheduleFilter>("all");
+  // When Done was last selected, for its badge (doneBadgeList).
+  const [doneOpenedAt, setDoneOpenedAt] = useState<number | null>(null);
+  const setFilter = (next: ScheduleFilter) => { setDoneOpenedAt(next === "done" ? Date.now() : null); pickFilter(next); };
+  const showDone = filter === "done";
+  const doneQ = useAllDoneSchedules(showDone);
+  const shown = showDone ? doneQ : q;
   const allItems = sortSchedules((q.data?.items || []).filter(s => s.status !== "cancelled"));
-  const items = filterSchedules(allItems, filter);
+  const items = showDone ? (doneQ.data?.items || []) : filterSchedules(allItems, filter);
   // One group per channel (in name order), rows inside it live-first, so a
   // channel never shows up twice when it has both active and paused rows.
+  // Done is strictly latest finished first instead: one flat list, each row
+  // labelled with its channel and group.
   const byChannel = new Map<string, Schedule[]>();
   for (const s of items) byChannel.set(s.channel_id, [...(byChannel.get(s.channel_id) || []), s]);
-  const groupLabel = (s: Schedule) => s.channel_kind === "agent_dm" ? s.channel_name ?? s.channel_id : `#${s.channel_name ?? s.channel_id}`;
-  const groupsInOrder = [...byChannel.entries()].sort(([, a], [, b]) => groupLabel(a[0]).localeCompare(groupLabel(b[0])));
+  const groupsInOrder = showDone ? []
+    : [...byChannel.entries()].sort(([, a], [, b]) => scheduleChannelLabel(a[0]).localeCompare(scheduleChannelLabel(b[0])));
   const open = (s: Schedule) => {
     // Agent DMs carry group_id "" — selectChannel maps that to the DMs group.
     if (s.group_id == null) return;
@@ -30,11 +41,16 @@ export function SchedulesInbox() {
   };
   return (
     <div className="ago-inbox-content ago-sched-inbox">
-      <ScheduleFilters items={allItems} value={filter} onChange={setFilter} />
+      <ScheduleFilters items={allItems} done={doneBadgeList(doneQ, showDone ? doneOpenedAt : null)}
+        value={filter} onChange={setFilter} />
       <div className="ago-log">
-        {q.isLoading && <div className="empty">Loading schedules…</div>}
-        {q.isError && <div className="empty">Couldn't load schedules. <button className="btn sm" onClick={() => void q.refetch()}>Retry</button></div>}
-        {!q.isLoading && !q.isError && !items.length && <ScheduleEmpty filter={filter} />}
+        {shown.isLoading && <div className="empty">Loading schedules…</div>}
+        {shown.isError && <div className="empty">Couldn't load schedules. <button className="btn sm" onClick={() => void shown.refetch()}>Retry</button></div>}
+        {!shown.isLoading && !shown.isError && !items.length && <ScheduleEmpty filter={filter} />}
+        {showDone && items.map(s => (
+          <ScheduleRow key={s.id} schedule={s} showThread showChannel groupName={scheduleGroupName(s, groups)}
+            onOpen={lostChannelAccess(s) ? undefined : open} />
+        ))}
         {groupsInOrder.map(([channelId, rows]) => {
           const first = rows[0];
           return (
@@ -49,7 +65,7 @@ export function SchedulesInbox() {
             </section>
           );
         })}
-        {q.data?.truncated && <div className="ago-sched-truncated" role="status">{SCHEDULES_TRUNCATED_NOTE}</div>}
+        {shown.data?.truncated && <div className="ago-sched-truncated" role="status">{scheduleTruncatedNote(filter)}</div>}
       </div>
     </div>
   );
