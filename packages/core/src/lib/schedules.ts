@@ -116,6 +116,25 @@ export function sortSchedules(items: Schedule[]): Schedule[] {
   return [...items].sort((a, b) => rank(a) - rank(b) || a.run_at - b.run_at);
 }
 
+/** When a schedule last posted (or, never having posted, finished). */
+export function scheduleLastRun(s: Schedule): number {
+  return s.last_run_at ?? s.finished_at ?? s.updated_at;
+}
+
+/** One time-ordered list across channels: upcoming runs soonest first,
+    then rows with nothing upcoming (finished) by last run, newest first. */
+export function sortSchedulesByTime(items: Schedule[]): Schedule[] {
+  const upcoming = (s: Schedule) =>
+    s.status === "active" || s.status === "paused" ? (s.next_runs[0] ?? s.run_at) : null;
+  return [...items].sort((a, b) => {
+    const ua = upcoming(a), ub = upcoming(b);
+    if (ua != null && ub != null) return ua - ub || a.id.localeCompare(b.id);
+    if (ua != null) return -1;
+    if (ub != null) return 1;
+    return scheduleLastRun(b) - scheduleLastRun(a) || a.id.localeCompare(b.id);
+  });
+}
+
 /** Tag for a message a schedule posted: "Scheduled", or "Scheduled · written
     by <agent>" when an agent wrote its words (it posts as the owner, so
     readers should know who actually drafted it). */
