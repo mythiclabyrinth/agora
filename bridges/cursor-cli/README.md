@@ -53,12 +53,16 @@ computer. Keep the computer awake and the bridge running for remote access.
 | `/worktree show` / `/worktree remove [shared\|force]` | Inspect or remove the thread's worktree. `shared` safely moves other conversations back to the base repo and refuses dirty or unmerged work; `force` discards uncommitted changes and can delete an unmerged branch. |
 | `/worktrees` | List worktrees managed by this bridge |
 | `/models` | Query the installed CLI for models available to the account |
-| `/model <alias \| id \| default>` | Store a model override; aliases (`grok`, `opus`, `sonnet`, `fable`, `sol`, `luna`, `terra`, `composer`, `kimi`) always use the newest version the installed CLI lists (a newer version wins over tier order, e.g. Opus 5.5 without a thinking variant beats Opus 5 thinking, but a version offering none of the alias's known tiers is skipped), while an exact id pins that model. Channels set with an alias before this behavior stored the resolved id and stay pinned; run `/model <alias>` once to make them follow new versions |
+| `/model <alias \| id \| default>` | Store a model override; aliases (`grok`, `opus`, `sonnet`, `fable`, `sol`, `luna`, `terra`, `composer`, `kimi`) always use the newest version the installed CLI lists (a newer version wins over tier order, e.g. Opus 5.5 without a thinking variant beats Opus 5 thinking, but a version offering none of the alias's known tiers is skipped), while an exact id pins that model. |
 | `/mode <plan \| ask \| agent \| force \| default>` | Select read-only or editing behavior |
 | `/tldr <on \| off \| default>` | Toggle short summaries for long replies |
 | `/stop` | Terminate this channel's in-flight Cursor process |
 | `/status` | Show the binding and execution settings |
 | `/commands` | Show the command list |
+
+Channels that ran `/model <alias>` before aliases floated stored the resolved
+id, so they stay pinned to it; run `/model <alias>` once to make them follow
+new versions.
 
 Cursor's `stream-json` output drives Agora typing, progress, final replies, and
 session-ID tracking. Attachments are staged in a temporary directory and their

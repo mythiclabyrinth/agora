@@ -294,6 +294,25 @@ class ModelSelectionTests(unittest.TestCase):
             "grok-4-8-high-fast",
         )
 
+    def test_alias_tables_agree(self):
+        self.assertEqual(set(bridge.MODEL_ALIASES), set(bridge.MODEL_FAMILIES))
+        for alias, fallback in bridge.MODEL_ALIASES.items():
+            # Each fallback must be pickable under its own family and tiers.
+            self.assertEqual(bridge.latest_for_alias(alias, [fallback]), fallback, alias)
+
+    def test_fast_only_release_still_wins_for_sonnet_and_fable(self):
+        self.assertEqual(
+            bridge.resolve_model("sonnet", ["claude-sonnet-5-thinking-high",
+                                            "claude-sonnet-6-high-fast"]),
+            "claude-sonnet-6-high-fast",
+        )
+        # Within a version the non-fast tier is still preferred.
+        self.assertEqual(
+            bridge.resolve_model("fable", ["claude-fable-5-1-thinking-high-fast",
+                                           "claude-fable-5-1-thinking-high"]),
+            "claude-fable-5-1-thinking-high",
+        )
+
     def test_date_like_segments_are_not_read_as_versions(self):
         self.assertEqual(
             bridge.resolve_model("opus", ["claude-opus-5-5-high-fast",
@@ -465,7 +484,7 @@ class ModelListCacheTests(unittest.TestCase):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         calls = []
 
-        async def slow_fetch():
+        async def slow_fetch(*_args):
             calls.append(1)
             await asyncio.sleep(0.01)
             instance._models_cache = (bridge.time.monotonic(), ["grok-4.7-high-fast"], True)
@@ -484,7 +503,7 @@ class ModelListCacheTests(unittest.TestCase):
         instance = bridge.Bridge.__new__(bridge.Bridge)
         active, peak, calls = [0], [0], []
 
-        async def slow_fetch():
+        async def slow_fetch(*_args):
             calls.append(1)
             active[0] += 1
             peak[0] = max(peak[0], active[0])
@@ -504,6 +523,27 @@ class ModelListCacheTests(unittest.TestCase):
         # /models always refreshes, but never overlaps an in-flight fetch.
         self.assertEqual(len(calls), 2)
         self.assertEqual(peak[0], 1)
+
+    def test_timed_out_listing_is_killed_and_reaped(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_bin = "agent"
+        proc = Mock(returncode=None)
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        proc.wait = AsyncMock(return_value=-9)
+        with patch.object(bridge.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
+            text, err = asyncio.run(instance._list_models_text(0.01))
+        self.assertIsNone(text)
+        self.assertIn("timed out", err)
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()
+        self.assertFalse(instance._models_cache[2])
+
+    def test_runtime_lookup_uses_the_short_timeout(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance._list_models_text = AsyncMock(return_value=(None, "boom"))
+        with patch.object(bridge, "log"):
+            asyncio.run(instance._available_model_ids())
+        instance._list_models_text.assert_awaited_once_with(bridge.MODELS_LOOKUP_TIMEOUT)
 
     def test_unparseable_listing_is_logged_and_stamped(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)

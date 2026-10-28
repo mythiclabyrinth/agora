@@ -648,8 +648,12 @@ MODEL_FAMILIES = {
     "grok": (rf"(?:cursor-)?grok-{_V}-(?P<t>.+)", ("high-fast", "high")),
     "opus": (rf"claude-opus-{_V}-(?P<t>.+)",
              ("thinking-high-fast", "high-fast", "thinking-high", "high")),
-    "sonnet": (rf"claude-sonnet-{_V}-(?P<t>.+)", ("thinking-high", "high")),
-    "fable": (rf"claude-fable-{_V}-(?P<t>.+)", ("thinking-high", "high")),
+    # Fast tiers go last: they never change today's pick, but keep a future
+    # fast-only release from being skipped.
+    "sonnet": (rf"claude-sonnet-{_V}-(?P<t>.+)",
+               ("thinking-high", "high", "thinking-high-fast", "high-fast")),
+    "fable": (rf"claude-fable-{_V}-(?P<t>.+)",
+              ("thinking-high", "high", "thinking-high-fast", "high-fast")),
     "sol": (rf"gpt-{_V}-sol-(?P<t>.+)", ("high-fast", "high")),
     "luna": (rf"gpt-{_V}-luna-(?P<t>.+)", ("high-fast", "high")),
     "terra": (rf"gpt-{_V}-terra-(?P<t>.+)", ("high-fast", "high")),
@@ -671,6 +675,10 @@ MODELS_CACHE_TTL = 600.0
 # After a failed or unparseable `agent models`, wait this long before trying
 # again so a broken CLI doesn't add a subprocess to every run.
 MODELS_RETRY_TTL = 60.0
+# Run-time lookups sit in front of agent launch, so they give up sooner than
+# an explicit /models; the cached/fallback path covers a slow CLI.
+MODELS_LOOKUP_TIMEOUT = 10.0
+MODELS_COMMAND_TIMEOUT = 30.0
 
 
 def parse_model_ids(text: str) -> list[str]:
@@ -1954,7 +1962,9 @@ class Bridge:
             return f"{setting} (not in the CLI list, so Cursor Auto)"
         return f"{setting} (currently {resolved})"
 
-    async def _list_models_text(self) -> tuple[str | None, str | None]:
+    async def _list_models_text(
+        self, timeout: float = MODELS_COMMAND_TIMEOUT,
+    ) -> tuple[str | None, str | None]:
         """Run `agent models` and refresh the cache; returns (stdout, error).
 
         Every attempt is stamped, failures included, so the next one waits
@@ -1963,14 +1973,19 @@ class Bridge:
         if not self.agent_bin:
             err = CURSOR_NOT_FOUND
         else:
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     self.agent_bin, "models",
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             except (OSError, TimeoutError) as e:
-                err = f"Could not list Cursor models: {e}"
+                if proc is not None and proc.returncode is None:
+                    # Don't leave a hung CLI behind on every retry window.
+                    proc.kill()
+                    await proc.wait()
+                err = f"Could not list Cursor models: {str(e) or f'timed out after {timeout:g}s'}"
             else:
                 if proc.returncode != 0:
                     detail = stderr.decode(errors="replace").strip()
@@ -1999,7 +2014,7 @@ class Bridge:
                 ttl = MODELS_CACHE_TTL if cache[2] else MODELS_RETRY_TTL
                 if time.monotonic() - cache[0] < ttl:
                     return cache[1]
-            _, err = await self._list_models_text()
+            _, err = await self._list_models_text(MODELS_LOOKUP_TIMEOUT)
             if err:
                 log(f"model list unavailable, using cached/fallback aliases: {err[:200]}")
             return self._cached_model_ids()
