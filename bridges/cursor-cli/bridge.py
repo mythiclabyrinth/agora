@@ -632,26 +632,87 @@ def normalize_model(raw: str) -> str | None:
     return choice if re.fullmatch(r"[A-Za-z0-9._:/-]+(?:\[[A-Za-z0-9_=,.-]+\])?", choice) else None
 
 
-# Short names for the flagship fast tier of each model family. Families with
-# no -fast variant (sonnet, fable, kimi) map to their top regular id. Anything
-# not listed here is still reachable with the exact id: /model <id>.
+# Aliases float: each one resolves to the newest version of its family that
+# the installed CLI lists (`agent models`), preferring the tiers in order.
+# Exact ids are pinned as given, so `/model cursor-grok-4.6-high-fast` keeps
+# an older model on purpose. The fallback ids are used only when the model
+# list cannot be fetched.
+MODEL_FAMILIES = {
+    "grok": (r"(?:cursor-)?grok-(?P<v>\d+(?:\.\d+)*)-(?P<t>.+)",
+             ("high-fast", "high")),
+    "opus": (r"claude-opus-(?P<v>\d+(?:-\d+)*)-(?P<t>.+)",
+             ("thinking-high-fast", "high-fast", "thinking-high", "high")),
+    "sonnet": (r"claude-sonnet-(?P<v>\d+(?:-\d+)*)-(?P<t>.+)",
+               ("thinking-high", "high")),
+    "fable": (r"claude-fable-(?P<v>\d+(?:-\d+)*)-(?P<t>.+)",
+              ("thinking-high", "high")),
+    "sol": (r"gpt-(?P<v>\d+(?:\.\d+)*)-sol-(?P<t>.+)", ("high-fast", "high")),
+    "luna": (r"gpt-(?P<v>\d+(?:\.\d+)*)-luna-(?P<t>.+)", ("high-fast", "high")),
+    "terra": (r"gpt-(?P<v>\d+(?:\.\d+)*)-terra-(?P<t>.+)", ("high-fast", "high")),
+    "composer": (r"composer-(?P<v>\d+(?:\.\d+)*)(?:-(?P<t>.+))?", ("fast", "")),
+    "kimi": (r"kimi-k(?P<v>\d+(?:\.\d+)*)-(?P<t>.+)", ("high-fast", "high")),
+}
 MODEL_ALIASES = {
-    "grok": "cursor-grok-4.6-high-fast",
-    "opus": "claude-opus-5-thinking-high-fast",
+    "grok": "grok-4.7-high-fast",
+    "opus": "claude-opus-5-5-high-fast",
     "sonnet": "claude-sonnet-5-thinking-high",
     "fable": "claude-fable-5-thinking-high",
     "sol": "gpt-5.6-sol-high-fast",
-    "luna": "gpt-5.6-luna-high-fast",
+    "luna": "gpt-5.6-luna-high",
     "terra": "gpt-5.6-terra-high-fast",
     "composer": "composer-2.5-fast",
     "kimi": "kimi-k3-high",
 }
+MODELS_CACHE_TTL = 600.0
 
 
-def resolve_model(raw: str) -> str | None:
-    """Map a friendly alias to its full model id, then validate."""
-    alias = MODEL_ALIASES.get((raw or "").strip().lower())
-    return normalize_model(alias if alias else raw)
+def parse_model_ids(text: str) -> list[str]:
+    """Pull the ids out of `agent models` output ("<id> - <name>" lines)."""
+    ids = []
+    for line in (text or "").splitlines():
+        head, sep, _ = line.strip().partition(" - ")
+        mid = normalize_model(head) if sep else None
+        if mid:
+            ids.append(mid)
+    return ids
+
+
+def latest_for_alias(alias: str, available: list[str]) -> str | None:
+    """Newest id in `available` for an alias family, in its preferred tier."""
+    family = MODEL_FAMILIES.get(alias)
+    if not family:
+        return None
+    pattern, tiers = family
+    best: dict[tuple, dict[str, str]] = {}
+    for mid in available:
+        m = re.fullmatch(pattern, mid)
+        if m:
+            version = tuple(int(p) for p in re.split(r"[.-]", m.group("v")))
+            best.setdefault(version, {})[m.group("t") or ""] = mid
+    for version in sorted(best, reverse=True):
+        for tier in tiers:
+            if tier in best[version]:
+                return best[version][tier]
+    return None
+
+
+def is_model_alias(raw: str) -> bool:
+    return (raw or "").strip().lower() in MODEL_ALIASES
+
+
+def resolve_model(raw: str, available: list[str] | None = None) -> str | None:
+    """Map an alias to the newest matching id (or its fallback); validate ids."""
+    key = (raw or "").strip().lower()
+    if key in MODEL_ALIASES:
+        return (latest_for_alias(key, available) if available else None) or MODEL_ALIASES[key]
+    return normalize_model(raw)
+
+
+def model_setting(raw: str) -> str | None:
+    """What to persist for /model: the alias itself (so it keeps floating to
+    the newest version) or the validated exact id (pinned)."""
+    key = (raw or "").strip().lower()
+    return key if key in MODEL_ALIASES else normalize_model(raw)
 
 
 MODE_RANK = {"plan": 0, "ask": 0, "agent": 1, "force": 2}
@@ -1046,7 +1107,7 @@ class Bridge:
         self.default_mode = args.mode
         self.allow_force = args.allow_force
         self.disable_sandbox = args.disable_sandbox
-        self.default_model = resolve_model(args.model) if args.model else None
+        self.default_model = model_setting(args.model) if args.model else None
         self.tldr_default = args.tldr
         self.tldr_min_chars = max(0, args.tldr_min_chars)
         self.timeout = args.timeout
@@ -1817,11 +1878,15 @@ class Bridge:
         if not b:
             return "No session bound here. Run /sessions then /use <n>."
         if not arg:
-            cur = normalize_model(b.get("model")) or self.default_model
-            aliases = "\n".join(f"  {name} -> {mid}" for name, mid in MODEL_ALIASES.items())
+            cur = self._describe_model(b.get("model") or self.default_model)
+            aliases = "\n".join(
+                f"  {name} -> {resolve_model(name, self._cached_model_ids())}"
+                for name in MODEL_ALIASES
+            )
             return (
-                f"Model: {cur or 'Cursor Auto'}\n"
+                f"Model: {cur}\n"
                 f"Usage: /model <alias | id | default>; /models lists full ids.\n"
+                f"Aliases follow the newest version the CLI lists; an exact id stays pinned.\n"
                 f"Aliases:\n{aliases}"
             )
         choice = arg.strip()
@@ -1829,19 +1894,35 @@ class Bridge:
             b.pop("model", None)
             self.bindings[key] = b
             self._save_state()
-            return f"Model reset to the bridge default ({self.default_model or 'Cursor Auto'})."
-        model = resolve_model(choice)
-        if not model:
+            return (f"Model reset to the bridge default "
+                    f"({self._describe_model(self.default_model)}).")
+        setting = model_setting(choice)
+        if not setting:
             return ("Invalid model id. Use an alias (" + ", ".join(MODEL_ALIASES)
                     + ") or run /models and copy one of the listed ids.")
-        b["model"] = model
+        b["model"] = setting
         self.bindings[key] = b
         self._save_state()
-        return f"Model set to {model} for this channel. Next messages use `agent --model {model}`."
+        if is_model_alias(setting):
+            return (f"Model set to {self._describe_model(setting)} for this channel; "
+                    f"it moves to newer {setting} versions as the CLI adds them.")
+        return f"Model pinned to {setting} for this channel. Next messages use `agent --model {setting}`."
 
-    async def _cmd_models(self) -> str:
+    def _cached_model_ids(self) -> list[str] | None:
+        cache = getattr(self, "_models_cache", None)
+        return cache[1] if cache else None
+
+    def _describe_model(self, setting: str | None) -> str:
+        if not setting:
+            return "Cursor Auto"
+        if is_model_alias(setting):
+            return f"{setting} (currently {resolve_model(setting, self._cached_model_ids())})"
+        return normalize_model(setting) or "Cursor Auto"
+
+    async def _list_models_text(self) -> tuple[str | None, str | None]:
+        """Run `agent models`; returns (stdout, error)."""
         if not self.agent_bin:
-            return CURSOR_NOT_FOUND
+            return None, CURSOR_NOT_FOUND
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.agent_bin, "models",
@@ -1849,11 +1930,40 @@ class Bridge:
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         except (OSError, TimeoutError) as e:
-            return f"Could not list Cursor models: {e}"
-        text = stdout.decode(errors="replace").strip()
+            return None, f"Could not list Cursor models: {e}"
         if proc.returncode != 0:
             detail = stderr.decode(errors="replace").strip()
-            return f"Could not list Cursor models: {detail[-800:] or f'exit {proc.returncode}'}"
+            return None, f"Could not list Cursor models: {detail[-800:] or f'exit {proc.returncode}'}"
+        text = stdout.decode(errors="replace").strip()
+        ids = parse_model_ids(text)
+        if ids:
+            self._models_cache = (time.monotonic(), ids)
+        return text, None
+
+    async def _available_model_ids(self) -> list[str] | None:
+        """Model ids from the installed CLI, cached so a CLI update is picked
+        up within MODELS_CACHE_TTL without a bridge restart. A failed fetch
+        keeps the stale list (or None, which falls back to MODEL_ALIASES)."""
+        cache = getattr(self, "_models_cache", None)
+        if cache and time.monotonic() - cache[0] < MODELS_CACHE_TTL:
+            return cache[1]
+        _, err = await self._list_models_text()
+        if err:
+            log(f"model list unavailable, using cached/fallback aliases: {err[:200]}")
+        return self._cached_model_ids()
+
+    async def _effective_model(self, binding: dict) -> str | None:
+        setting = binding.get("model") or self.default_model
+        if not setting:
+            return None
+        if is_model_alias(setting):
+            return resolve_model(setting, await self._available_model_ids())
+        return normalize_model(setting)
+
+    async def _cmd_models(self) -> str:
+        text, err = await self._list_models_text()
+        if err:
+            return err
         return text[:MAX_POST_CHARS] or "Cursor returned no models. Check `agent status`."
 
     def _cmd_mode(self, key: str, arg: str) -> str:
@@ -1957,7 +2067,7 @@ class Bridge:
         if not b:
             return "No session bound here. Run /sessions then /use <n>."
         sid = b["session_id"][:8] + "…" if b["session_id"] else "(new, not started)"
-        model = normalize_model(b.get("model")) or self.default_model
+        model = self._describe_model(b.get("model") or self.default_model)
         mode = b.get("mode") or self.default_mode
         tldr = "on" if self._tldr_enabled(b) else "off"
         busy = " — a run is in flight" if key in self.busy else ""
@@ -2563,7 +2673,7 @@ class Bridge:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             raise RunStopped
         mode = binding.get("mode") or self.default_mode
-        model = normalize_model(binding.get("model")) or self.default_model
+        model = await self._effective_model(binding)
         prompt += self._prompt_suffixes(binding)
         try:
             cmd = [

@@ -235,12 +235,66 @@ class ModelSelectionTests(unittest.TestCase):
     def test_shell_metacharacters_are_rejected(self):
         self.assertIsNone(bridge.normalize_model("gpt-5; touch /tmp/no"))
 
-    def test_aliases_resolve_to_full_ids(self):
-        self.assertEqual(bridge.resolve_model("grok"), "cursor-grok-4.6-high-fast")
-        self.assertEqual(bridge.resolve_model("OPUS"), "claude-opus-5-thinking-high-fast")
+    def test_aliases_fall_back_to_static_ids_without_a_model_list(self):
+        self.assertEqual(bridge.resolve_model("grok"), bridge.MODEL_ALIASES["grok"])
+        self.assertEqual(bridge.resolve_model("OPUS"), bridge.MODEL_ALIASES["opus"])
         # Non-alias ids pass through validation unchanged.
         self.assertEqual(bridge.resolve_model("gpt-5.5-high-fast"), "gpt-5.5-high-fast")
         self.assertIsNone(bridge.resolve_model("grok; rm -rf /"))
+
+    MODELS_OUTPUT = "\n".join([
+        "Available models", "",
+        "auto - Auto (default)",
+        "cursor-grok-4.5-high-fast - Grok 4.5 Fast",
+        "grok-4.7-high - Grok 4.7  High",
+        "grok-4.7-high-fast - Grok 4.7  High Fast​​",
+        "cursor-grok-4.6-high-fast - Grok 4.6 Fast",
+        "claude-opus-5-thinking-high-fast - Claude Opus 5 1M Thinking Fast",
+        "claude-opus-5-5-high-fast - Claude Opus 5.5 1M High Fast",
+        "claude-opus-4-8-high-fast - Claude Opus 4.8 1M Fast",
+        "gpt-5.6-luna-high - GPT-5.6 Luna 1M High",
+        "composer-2.5 - Composer 2.5",
+        "composer-2.5-fast - Composer 2.5 Fast",
+    ])
+
+    def test_parse_model_ids_reads_cli_listing(self):
+        ids = bridge.parse_model_ids(self.MODELS_OUTPUT)
+        self.assertIn("grok-4.7-high-fast", ids)
+        self.assertIn("auto", ids)
+        self.assertNotIn("Available", " ".join(ids))
+
+    def test_aliases_float_to_newest_listed_version(self):
+        ids = bridge.parse_model_ids(self.MODELS_OUTPUT)
+        # Newest version wins even when its id drops the old "cursor-" prefix.
+        self.assertEqual(bridge.resolve_model("grok", ids), "grok-4.7-high-fast")
+        # 5.5 beats 5 and 4.8; tier preference falls through to high-fast.
+        self.assertEqual(bridge.resolve_model("opus", ids), "claude-opus-5-5-high-fast")
+        # No -fast variant listed: the next preferred tier is used.
+        self.assertEqual(bridge.resolve_model("luna", ids), "gpt-5.6-luna-high")
+        self.assertEqual(bridge.resolve_model("composer", ids), "composer-2.5-fast")
+        # A family missing from the list falls back to its static id.
+        self.assertEqual(bridge.resolve_model("kimi", ids), bridge.MODEL_ALIASES["kimi"])
+        # Exact ids stay pinned even when newer versions exist.
+        self.assertEqual(
+            bridge.resolve_model("cursor-grok-4.6-high-fast", ids),
+            "cursor-grok-4.6-high-fast",
+        )
+
+    def test_run_resolves_alias_against_live_list_and_keeps_pins(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.default_model = "grok"
+        instance._models_cache = (
+            bridge.time.monotonic(), bridge.parse_model_ids(self.MODELS_OUTPUT)
+        )
+        self.assertEqual(
+            asyncio.run(instance._effective_model({})), "grok-4.7-high-fast"
+        )
+        self.assertEqual(
+            asyncio.run(instance._effective_model({"model": "cursor-grok-4.6-high-fast"})),
+            "cursor-grok-4.6-high-fast",
+        )
+        instance.default_model = None
+        self.assertIsNone(asyncio.run(instance._effective_model({})))
 
     def test_model_command_accepts_alias(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)
@@ -248,11 +302,10 @@ class ModelSelectionTests(unittest.TestCase):
         instance.default_model = None
         instance._save_state = Mock()
 
-        reply = instance._cmd_model("channel", "sonnet")
+        reply = instance._cmd_model("channel", "Sonnet")
 
-        self.assertEqual(
-            instance.bindings["channel"]["model"], "claude-sonnet-5-thinking-high"
-        )
+        # The alias itself is stored so the channel keeps following new versions.
+        self.assertEqual(instance.bindings["channel"]["model"], "sonnet")
         self.assertIn("claude-sonnet-5-thinking-high", reply)
 
     def test_model_command_persists_canonical_id(self):
