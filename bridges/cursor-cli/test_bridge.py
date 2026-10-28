@@ -267,24 +267,50 @@ class ModelSelectionTests(unittest.TestCase):
         ids = bridge.parse_model_ids(self.MODELS_OUTPUT)
         # Newest version wins even when its id drops the old "cursor-" prefix.
         self.assertEqual(bridge.resolve_model("grok", ids), "grok-4.7-high-fast")
-        # 5.5 beats 5 and 4.8; tier preference falls through to high-fast.
+        # 5.5 beats 5 and 4.8 even without a thinking tier: version beats tier.
         self.assertEqual(bridge.resolve_model("opus", ids), "claude-opus-5-5-high-fast")
         # No -fast variant listed: the next preferred tier is used.
         self.assertEqual(bridge.resolve_model("luna", ids), "gpt-5.6-luna-high")
         self.assertEqual(bridge.resolve_model("composer", ids), "composer-2.5-fast")
-        # A family missing from the list falls back to its static id.
-        self.assertEqual(bridge.resolve_model("kimi", ids), bridge.MODEL_ALIASES["kimi"])
         # Exact ids stay pinned even when newer versions exist.
         self.assertEqual(
             bridge.resolve_model("cursor-grok-4.6-high-fast", ids),
             "cursor-grok-4.6-high-fast",
         )
 
-    def test_run_resolves_alias_against_live_list_and_keeps_pins(self):
+    def test_family_absent_from_a_known_list_resolves_to_auto(self):
+        ids = bridge.parse_model_ids(self.MODELS_OUTPUT)
+        self.assertIsNone(bridge.resolve_model("kimi", ids))
+        # With no list at all, the static fallback is still used.
+        self.assertEqual(bridge.resolve_model("kimi", None), bridge.MODEL_ALIASES["kimi"])
+
+    def test_versions_match_with_either_separator(self):
+        self.assertEqual(
+            bridge.resolve_model("opus", ["claude-opus-5-5-high-fast", "claude-opus-5.6-high-fast"]),
+            "claude-opus-5.6-high-fast",
+        )
+        self.assertEqual(
+            bridge.resolve_model("grok", ["grok-4.7-high-fast", "grok-4-8-high-fast"]),
+            "grok-4-8-high-fast",
+        )
+
+    def test_prefixed_and_unprefixed_duplicates_pick_the_unprefixed_id(self):
+        for ids in (["cursor-grok-4.7-high-fast", "grok-4.7-high-fast"],
+                    ["grok-4.7-high-fast", "cursor-grok-4.7-high-fast"]):
+            self.assertEqual(bridge.resolve_model("grok", ids), "grok-4.7-high-fast")
+
+    def _instance(self, model=None):
         instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.bindings = {"channel": {"cwd": "/tmp", **({"model": model} if model else {})}}
+        instance.default_model = None
+        instance._save_state = Mock()
+        return instance
+
+    def test_run_resolves_alias_against_live_list_and_keeps_pins(self):
+        instance = self._instance()
         instance.default_model = "grok"
         instance._models_cache = (
-            bridge.time.monotonic(), bridge.parse_model_ids(self.MODELS_OUTPUT)
+            bridge.time.monotonic(), bridge.parse_model_ids(self.MODELS_OUTPUT), True
         )
         self.assertEqual(
             asyncio.run(instance._effective_model({})), "grok-4.7-high-fast"
@@ -296,42 +322,161 @@ class ModelSelectionTests(unittest.TestCase):
         instance.default_model = None
         self.assertIsNone(asyncio.run(instance._effective_model({})))
 
-    def test_model_command_accepts_alias(self):
-        instance = bridge.Bridge.__new__(bridge.Bridge)
-        instance.bindings = {"channel": {"cwd": "/tmp"}}
-        instance.default_model = None
-        instance._save_state = Mock()
+    def test_model_command_stores_alias_and_reports_live_target(self):
+        instance = self._instance()
+        instance._available_model_ids = AsyncMock(
+            return_value=bridge.parse_model_ids(self.MODELS_OUTPUT))
 
-        reply = instance._cmd_model("channel", "Sonnet")
+        reply = asyncio.run(instance._cmd_model("channel", "Grok"))
 
         # The alias itself is stored so the channel keeps following new versions.
+        self.assertEqual(instance.bindings["channel"]["model"], "grok")
+        self.assertIn("currently grok-4.7-high-fast", reply)
+
+    def test_model_command_labels_fallback_when_list_unavailable(self):
+        instance = self._instance()
+        instance._available_model_ids = AsyncMock(return_value=None)
+
+        reply = asyncio.run(instance._cmd_model("channel", "sonnet"))
+
         self.assertEqual(instance.bindings["channel"]["model"], "sonnet")
-        self.assertIn("claude-sonnet-5-thinking-high", reply)
+        self.assertIn("fallback claude-sonnet-5-thinking-high", reply)
+
+    def test_model_command_rejects_alias_missing_from_account(self):
+        instance = self._instance()
+        instance._available_model_ids = AsyncMock(
+            return_value=bridge.parse_model_ids(self.MODELS_OUTPUT))
+
+        reply = asyncio.run(instance._cmd_model("channel", "kimi"))
+
+        self.assertNotIn("model", instance.bindings["channel"])
+        self.assertIn("/models", reply)
+        instance._save_state.assert_not_called()
 
     def test_model_command_persists_canonical_id(self):
-        instance = bridge.Bridge.__new__(bridge.Bridge)
-        instance.bindings = {"channel": {"cwd": "/tmp"}}
-        instance.default_model = None
-        instance._save_state = Mock()
+        instance = self._instance()
+        instance._available_model_ids = AsyncMock(return_value=None)
 
-        reply = instance._cmd_model("channel", "gpt-5")
+        reply = asyncio.run(instance._cmd_model("channel", "gpt-5"))
 
         self.assertEqual(instance.bindings["channel"]["model"], "gpt-5")
-        self.assertIn("gpt-5", reply)
+        self.assertIn("pinned to gpt-5", reply)
+        instance._available_model_ids.assert_not_awaited()
         instance._save_state.assert_called_once()
 
-    def test_default_clears_override_and_falls_back_to_sol(self):
-        instance = bridge.Bridge.__new__(bridge.Bridge)
-        instance.bindings = {
-            "channel": {"cwd": "/tmp", "model": "gpt-5"}
-        }
-        instance.default_model = None
-        instance._save_state = Mock()
+    def test_default_clears_override_and_falls_back_to_auto(self):
+        instance = self._instance(model="gpt-5")
+        instance._available_model_ids = AsyncMock(return_value=None)
 
-        reply = instance._cmd_model("channel", "default")
+        reply = asyncio.run(instance._cmd_model("channel", "default"))
 
         self.assertNotIn("model", instance.bindings["channel"])
         self.assertIn("Cursor Auto", reply)
+
+
+class ModelListCacheTests(unittest.TestCase):
+    """_available_model_ids: TTLs, stale retention, and single-flight fetches."""
+
+    IDS_TEXT = "grok-4.7-high-fast - Grok 4.7 High Fast"
+
+    def _bridge(self, outcomes):
+        """Drive the real fetch path; outcomes are successive `agent models`
+        results: stdout text for success, or None for a failing exit."""
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_bin = "agent"
+        calls = []
+
+        async def spawn(*_args, **_kwargs):
+            calls.append(1)
+            text = outcomes[min(len(calls), len(outcomes)) - 1]
+            proc = Mock(returncode=0 if text is not None else 1)
+            proc.communicate = AsyncMock(
+                return_value=((text or "").encode(), b"" if text is not None else b"boom"))
+            return proc
+
+        patcher = patch.object(bridge.asyncio, "create_subprocess_exec", spawn)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return instance, calls
+
+    def test_fresh_cache_is_reused_within_ttl(self):
+        instance, calls = self._bridge([self.IDS_TEXT])
+        asyncio.run(instance._available_model_ids())
+        ids = asyncio.run(instance._available_model_ids())
+        self.assertEqual(ids, ["grok-4.7-high-fast"])
+        self.assertEqual(len(calls), 1)
+
+    def test_expired_cache_refetches(self):
+        instance, calls = self._bridge([self.IDS_TEXT])
+        asyncio.run(instance._available_model_ids())
+        stamp, ids, ok = instance._models_cache
+        instance._models_cache = (stamp - bridge.MODELS_CACHE_TTL - 1, ids, ok)
+        asyncio.run(instance._available_model_ids())
+        self.assertEqual(len(calls), 2)
+
+    def test_failure_keeps_stale_ids_and_waits_for_retry_ttl(self):
+        instance, calls = self._bridge([self.IDS_TEXT, None])
+        asyncio.run(instance._available_model_ids())
+        stamp, ids, ok = instance._models_cache
+        instance._models_cache = (stamp - bridge.MODELS_CACHE_TTL - 1, ids, ok)
+        with patch.object(bridge, "log"):
+            self.assertEqual(asyncio.run(instance._available_model_ids()), ["grok-4.7-high-fast"])
+            # The failed attempt is stamped: no new fetch until the retry TTL.
+            self.assertEqual(asyncio.run(instance._available_model_ids()), ["grok-4.7-high-fast"])
+        self.assertEqual(len(calls), 2)
+        stamp, ids, ok = instance._models_cache
+        self.assertFalse(ok)
+        instance._models_cache = (stamp - bridge.MODELS_RETRY_TTL - 1, ids, ok)
+        with patch.object(bridge, "log"):
+            asyncio.run(instance._available_model_ids())
+        self.assertEqual(len(calls), 3)
+
+    def test_failure_with_no_cache_returns_none_without_refetching(self):
+        instance, calls = self._bridge([None])
+        with patch.object(bridge, "log"):
+            self.assertIsNone(asyncio.run(instance._available_model_ids()))
+            self.assertIsNone(asyncio.run(instance._available_model_ids()))
+        self.assertEqual(len(calls), 1)
+
+    def test_concurrent_callers_share_one_fetch(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        calls = []
+
+        async def slow_fetch():
+            calls.append(1)
+            await asyncio.sleep(0.01)
+            instance._models_cache = (bridge.time.monotonic(), ["grok-4.7-high-fast"], True)
+            return self.IDS_TEXT, None
+
+        instance._list_models_text = slow_fetch
+
+        async def run():
+            return await asyncio.gather(*(instance._available_model_ids() for _ in range(5)))
+
+        results = asyncio.run(run())
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(r == ["grok-4.7-high-fast"] for r in results))
+
+    def test_unparseable_listing_is_logged_and_stamped(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.agent_bin = "agent"
+        proc = Mock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(b"no ids here", b""))
+        with patch.object(bridge.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)), \
+                patch.object(bridge, "log") as log:
+            text, err = asyncio.run(instance._list_models_text())
+        self.assertEqual((text, err), ("no ids here", None))
+        log.assert_called_once()
+        self.assertEqual(instance._models_cache[1:], (None, False))
+
+    def test_describe_model_labels(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        self.assertEqual(instance._describe_model(None, None), "Cursor Auto")
+        self.assertEqual(instance._describe_model("gpt-5", None), "gpt-5")
+        self.assertIn("fallback", instance._describe_model("grok", None))
+        self.assertIn("currently grok-4.7-high-fast",
+                      instance._describe_model("grok", ["grok-4.7-high-fast"]))
+        self.assertIn("Cursor Auto", instance._describe_model("kimi", ["grok-4.7-high-fast"]))
 
 
 class CursorBinaryTests(unittest.TestCase):
