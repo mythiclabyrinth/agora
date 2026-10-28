@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { filterUnreads, fmtRelative, formatUnreadCount, useApprovals, useMarkUnreadsRead, useUnreads, useMe, useSyncedDrafts, type UnreadItem } from "@agora/core";
 import { Icon } from "../lib/icons";
 import { useJump } from "../state/jump";
-import { useUiState, type InboxTab } from "../state/ui";
+import { effectiveInboxTab, useUiState, visibleInboxTabs, type InboxTab } from "../state/ui";
 import { ThreadsInbox } from "./ThreadsInbox";
 import { ApprovalsInbox } from "./ApprovalsInbox";
 import { DraftsInbox } from "./DraftsInbox";
@@ -27,11 +27,19 @@ export function Inbox() {
   const requestJump = useJump(s => s.request);
   const filter = ui.inboxFilter;
   const selectedTab = initialTab() ?? ui.inboxTab;
-  const tab = selectedTab === "drafts" && !draftsEnabled ? "unreads" : selectedTab;
+  const tabs = visibleInboxTabs(draftsEnabled);
+  const tab = effectiveInboxTab(selectedTab, draftsEnabled);
   const displayedItems = filterUnreads(unreads.data ?? [], filter);
   const limited = unreads.total > (unreads.data?.length ?? 0);
   const unreadTotal = unreads.data?.reduce((sum, item) => sum + item.unread, 0) ?? 0;
   const showTabCount = !limited && !unreads.data?.some(item => item.unread >= 100);
+  const tabLabels: Record<InboxTab, string> = {
+    unreads: showTabCount && unreadTotal ? `Unreads (${unreadTotal})` : "Unreads",
+    threads: "Threads",
+    approvals: approvals.total ? `Approvals (${approvals.total})` : "Approvals",
+    drafts: drafts.length ? `Drafts (${drafts.length})` : "Drafts",
+    schedules: "Schedules",
+  };
   useEffect(() => {
     const onPop = () => {
       const next = initialTab();
@@ -66,11 +74,7 @@ export function Inbox() {
       <div className="inbox-heading"><Icon name="messages-square" /><h1>Inbox</h1></div>
       <nav ref={tabsRef} className={`ago-inbox-tabs ${tabsScrolled ? "is-scrolled" : ""}`} role="tablist" aria-label="Inbox tabs"
         onScroll={e => setTabsScrolled(e.currentTarget.scrollLeft > 0)}>
-        <button role="tab" aria-selected={tab === "unreads"} onClick={() => switchTab("unreads")}>Unreads {showTabCount && unreadTotal ? `(${unreadTotal})` : ""}</button>
-        <button role="tab" aria-selected={tab === "threads"} onClick={() => switchTab("threads")}>Threads</button>
-        <button role="tab" aria-selected={tab === "approvals"} onClick={() => switchTab("approvals")}>Approvals{approvals.total ? ` (${approvals.total})` : ""}</button>
-        {draftsEnabled && <button role="tab" aria-selected={tab === "drafts"} onClick={() => switchTab("drafts")}>Drafts{drafts.length ? ` (${drafts.length})` : ""}</button>}
-        <button role="tab" aria-selected={tab === "schedules"} onClick={() => switchTab("schedules")}>Schedules</button>
+        {tabs.map(next => <button key={next} role="tab" aria-selected={tab === next} onClick={() => switchTab(next)}>{tabLabels[next]}</button>)}
       </nav>
     </header>
     {tab === "threads" ? <ThreadsInbox embedded /> : tab === "approvals" ? <ApprovalsInbox query={approvals} /> : tab === "drafts" && draftsEnabled ? <DraftsInbox /> : tab === "schedules" ? <SchedulesInbox /> : <div className="ago-inbox-content ago-unreads">

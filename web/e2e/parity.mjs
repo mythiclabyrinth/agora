@@ -206,6 +206,10 @@ async function main() {
     await page.keyboard.press("g"); await page.keyboard.press("t");
     await page.waitForURL(/\/inbox\/threads$/);
     if (await page.getByRole("tab", { name: "Threads" }).getAttribute("aria-selected") !== "true") throw new Error("Threads shortcut did not switch tab");
+    await page.locator(".ago-inbox-item").focus();
+    await page.keyboard.press("g"); await page.keyboard.press("s");
+    await page.waitForURL(/\/inbox\/schedules$/);
+    if (await page.getByRole("tab", { name: "Schedules" }).getAttribute("aria-selected") !== "true") throw new Error("Schedules shortcut did not switch tab");
   });
 
   await check("shortcuts: Escape leaves composer for Inbox sequence", async () => {

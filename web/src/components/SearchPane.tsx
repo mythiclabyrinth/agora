@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  currentPlatform, formatCombo, SHORTCUTS, esc, mdliteHtml, fmtTs, useAskAi, useGroups, useMe, useSearch, useSearchMore,
+  currentPlatform, formatCombo, SHORTCUTS, shortcutAvailable, esc, mdliteHtml, fmtTs, useAskAi, useGroups, useMe, useSearch, useSearchMore,
   type AskResponse, type FileFilter, type SearchMessageHit, type SearchScope,
 } from "@agora/core";
 import { Icon } from "../lib/icons";
@@ -164,10 +164,10 @@ export function SearchPane() {
     [res.data, extra],
   );
   const commands = useMemo(() => view === "results" && !scopeStr && !file && query.trim() === debouncedQ
-    ? SHORTCUTS.filter(s => (s.id === "help.sheet" || s.id.startsWith("nav.") || ["settings", "ui.sidebar", "link.copy"].includes(s.id)) && (!s.feature || !!me?.[s.feature]) && (!s.desktopOnly || isDesktopShell()) &&
+    ? SHORTCUTS.filter(s => (s.id === "help.sheet" || s.id.startsWith("nav.") || ["settings", "ui.sidebar", "link.copy"].includes(s.id)) && shortcutAvailable(s, me) && (!s.desktopOnly || isDesktopShell()) &&
       (debouncedQ ? `${s.label} ${s.id}`.toLowerCase().includes(debouncedQ.toLowerCase()) :
-        ["help.sheet", "nav.inbox", "nav.unreads", "nav.threads", "settings"].includes(s.id)))
-    : [], [view, scopeStr, file, query, debouncedQ, me?.voice_stt]);
+        ["help.sheet", "nav.inbox", "nav.unreads", "nav.threads", "nav.approvals", "nav.drafts", "nav.schedules", "settings"].includes(s.id)))
+    : [], [view, scopeStr, file, query, debouncedQ, me?.voice_stt, me?.drafts_sync, me?.jarvis]);
 
   // Build the item list in display order.
   const items: Item[] = useMemo(() => {

@@ -23,6 +23,10 @@ export type MainView =
 export type Panel = "people" | "connections" | "settings" | null;
 export type SettingsTab = "appearance" | "keyboard" | "notifications" | "workspace" | "features" | "credentials";
 export type InboxTab = "unreads" | "threads" | "approvals" | "drafts" | "schedules";
+export const visibleInboxTabs = (draftsEnabled: boolean): InboxTab[] =>
+  ["unreads", "threads", "approvals", ...(draftsEnabled ? ["drafts" as const] : []), "schedules"];
+export const effectiveInboxTab = (tab: InboxTab, draftsEnabled: boolean): InboxTab =>
+  tab === "drafts" && !draftsEnabled ? "unreads" : tab;
 
 export interface Selection { g?: string | null; c?: string | null; }
 
