@@ -213,24 +213,31 @@ export function ScheduleRow({ schedule, groupName, onOpen }: {
     setArmed(false);
     cancel.mutate(schedule, { onSuccess: () => toast("Schedule cancelled"), onError: fail("cancel") });
   };
-  // Every card says where it posts, so one time-ordered list can mix
-  // channels. No channel name (e.g. renamed away) falls back to its id.
-  const where = scheduleChannelLabel(schedule, groupName)
-    + (schedule.thread_title ? ` › ${schedule.thread_title}` : "");
+  // Every card says which channel it posts to, so one time-ordered list can
+  // mix channels; a thread loop keeps its thread on its own line beneath.
+  // No channel name (e.g. renamed away) falls back to its id.
+  const where = scheduleChannelLabel(schedule, groupName);
   const pill = <span className={`ago-sched-status ${schedule.status}`}>{STATUS_LABEL[schedule.status]}</span>;
 
   return (
     <div className={`ago-sched-row ${schedule.status}`} data-schedule-id={schedule.id}>
       <div className="ago-sched-top">
-        {onOpen
+        {/* A thread loop opens from its thread line; the channel label
+            only links when the card posts to the channel itself. */}
+        {onOpen && !schedule.thread_title
           ? <button className="ago-sched-where" title="Open conversation" onClick={() => onOpen(schedule)}>
-              <Icon name={schedule.thread_id != null ? "message-square" : "messages-square"} /> <span>{where}</span>
+              <Icon name="messages-square" /> <span>{where}</span>
             </button>
-          : <span className="ago-sched-where">
-              <Icon name={schedule.thread_id != null ? "message-square" : "messages-square"} /> <span>{where}</span>
-            </span>}
+          : <span className="ago-sched-where"><Icon name="messages-square" /> <span>{where}</span></span>}
         <span className="ago-sched-cadence"><Icon name="clock" /> {describeSchedule(schedule.schedule)}</span>
       </div>
+      {schedule.thread_title && (
+        onOpen
+          ? <button className="ago-sched-thread" title="Open thread" onClick={() => onOpen(schedule)}>
+              <Icon name="message-square" /> <span>{schedule.thread_title}</span>
+            </button>
+          : <span className="ago-sched-thread"><Icon name="message-square" /> <span>{schedule.thread_title}</span></span>
+      )}
       <div className={`ago-sched-text ${expanded || schedule.text.length <= 160 ? "expanded" : ""}`}>{schedule.text}</div>
       {schedule.text.length > 160 && <button className="ago-sched-expand" aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Read full message"}</button>}

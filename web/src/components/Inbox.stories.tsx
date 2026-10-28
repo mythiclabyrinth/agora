@@ -88,7 +88,11 @@ export const Schedules: Story = {
     await expect(canvas.findByText("Weekdays at 07:00 UTC")).resolves.toBeVisible();
     // No channel headings: each card names its channel (and thread).
     expect(canvas.queryAllByRole("region", { name: /^Schedules in / })).toHaveLength(0);
-    await expect(canvas.findByText("#storybook · Product › Responsive layout loop")).resolves.toBeVisible();
+    // Channel top-left; a thread loop's thread sits on its own line beneath.
+    const thread = await canvas.findByText("Responsive layout loop");
+    const card = thread.closest<HTMLElement>(".ago-sched-row")!;
+    expect(card.querySelector(".ago-sched-where")).toHaveTextContent("#storybook · Product");
+    expect(card.querySelector(".ago-sched-where")).not.toHaveTextContent("Responsive layout loop");
   },
 };
 // One flat list across channels, soonest next run first on every tab
@@ -127,7 +131,7 @@ export const SchedulesPhoneCard: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     expect(canvasElement.ownerDocument.defaultView!.innerWidth).toBeLessThanOrEqual(640);
-    await canvas.findByText("#storybook · Product › Responsive layout loop");
+    await canvas.findByText("Responsive layout loop");
     for (const card of canvasElement.querySelectorAll<HTMLElement>(".ago-sched-row")) {
       const box = card.getBoundingClientRect();
       const where = card.querySelector(".ago-sched-where")!.getBoundingClientRect();
@@ -175,7 +179,8 @@ export const SchedulesOwnerLostChannel: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // Still labelled, but not a link: the owner can't open that channel.
-    await expect(canvas.findByText("#ops · Product › old thread")).resolves.toBeVisible();
+    await expect(canvas.findByText("#ops · Product")).resolves.toBeVisible();
+    await expect(canvas.findByText("old thread")).resolves.toBeVisible();
     expect(canvas.queryByRole("button", { name: /#ops/ })).toBeNull();
     // No "open conversation" link into a channel the owner can't load.
     await expect(canvas.queryByTitle("Open conversation")).toBeNull();
