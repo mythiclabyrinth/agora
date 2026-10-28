@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { SCHEDULE_OFFLINE_AGENT_ERROR } from "@agora/core";
 import { fixtureGroups, fixtureSchedules } from "@agora/core/testing/fixtures";
 import { useUiState } from "../state/ui";
@@ -239,7 +239,8 @@ export const StatusTabs: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const tabs = within(await canvas.findByRole("tablist", { name: "Schedule status" }));
-    await expect(tabs.getByRole("tab", { name: "All 3" })).toHaveAttribute("aria-selected", "true");
+    // The tabs render before the list loads; wait for the counts.
+    await expect(tabs.findByRole("tab", { name: "All 3" })).resolves.toHaveAttribute("aria-selected", "true");
     const active = tabs.getByRole("tab", { name: "Active 2" });
     await userEvent.click(active);
     await expect(active).toHaveAttribute("aria-selected", "true");
@@ -251,6 +252,118 @@ export const StatusTabs: Story = {
     await userEvent.keyboard("{Home}");
     await expect(tabs.getByRole("tab", { name: "All 3" })).toHaveFocus();
     await expect(canvas.findByText("Every 6 hours")).resolves.toBeVisible();
+  },
+};
+const finished = (id: string, text: string, updatedAt: number) => ({
+  ...watchdog, id, text, status: "done" as const, thread_id: null, thread_title: null,
+  updated_at: updatedAt, last_run_at: updatedAt, next_runs: [], can_manage: false,
+});
+const doneList = [finished("d-new", "Shipped the release notes", 1_793_000_000), finished("d-old", "Posted the quarterly recap", 1_790_000_000)];
+
+/** Done loads every finished schedule on its own, latest finished first. */
+export const DoneTab: Story = {
+  parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules?status=done": { items: doneList } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tabs = within(await canvas.findByRole("tablist", { name: "Schedule status" }));
+    // Unloaded until opened, so no count yet; End reaches the new last tab.
+    (await tabs.findByRole("tab", { name: "All 3" })).focus();
+    await userEvent.keyboard("{End}");
+    const done = await tabs.findByRole("tab", { name: "Done 2" });
+    await expect(done).toHaveFocus();
+    await expect(done).toHaveAttribute("aria-selected", "true");
+    const rows = [...canvasElement.querySelectorAll("[data-schedule-id]")].map(r => r.getAttribute("data-schedule-id"));
+    expect(rows).toEqual(["d-new", "d-old"]);
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(tabs.getByRole("tab", { name: "All 3" })).toHaveFocus();
+    // Off the tab, its cached list may be stale: no count until it's reopened.
+    expect(tabs.getByRole("tab", { name: "Done" })).toBeVisible();
+  },
+};
+// Moving to another channel with Done open starts that channel on All,
+// without fetching its done list first.
+const otherDone = fn(() => ({ items: [] }));
+export const SwitchingChannelResetsToAll: Story = {
+  parameters: { apiRoutes: {
+    ...meta.parameters.apiRoutes,
+    "GET /api/channels/general/schedules?status=done": { items: doneList },
+    "GET /api/channels/responsive/schedules": { items: [] },
+    "GET /api/channels/responsive/schedules?status=done": otherDone,
+  } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Done" }));
+    await canvas.findByRole("tab", { name: "Done 2" });
+    useUiState.setState({ sel: { g: "product", c: "responsive" } });
+    await expect(canvas.findByRole("tab", { name: "All" })).resolves.toHaveAttribute("aria-selected", "true");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(otherDone).not.toHaveBeenCalled();
+  },
+};
+// Reopening Done refetches its list: the cached count from the last visit
+// stays hidden until the fresh one lands.
+let doneCalls = 0;
+let releaseDone = () => {};
+const doneRefetch = () => {
+  doneCalls += 1;
+  if (doneCalls === 1) return { items: doneList };
+  return new Promise(resolve => { releaseDone = () => resolve({ items: [...doneList, finished("d-3", "Third", 1_780_000_000)] }); });
+};
+export const ReopeningDoneHidesTheStaleCount: Story = {
+  parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules?status=done": doneRefetch } },
+  play: async ({ canvasElement }) => {
+    doneCalls = 0;
+    const canvas = within(canvasElement);
+    const tabs = within(await canvas.findByRole("tablist", { name: "Schedule status" }));
+    await userEvent.click(await tabs.findByRole("tab", { name: "Done" }));
+    await tabs.findByRole("tab", { name: "Done 2" });
+    await userEvent.click(tabs.getByRole("tab", { name: "All 3" }));
+    await userEvent.click(tabs.getByRole("tab", { name: "Done" }));
+    // Refetching: no count rather than the stale 2.
+    await expect(tabs.findByRole("tab", { name: "Done" })).resolves.toHaveAttribute("aria-selected", "true");
+    expect(tabs.queryByRole("tab", { name: "Done 2" })).toBeNull();
+    releaseDone();
+    await tabs.findByRole("tab", { name: "Done 3" });
+  },
+};
+// Done is never remembered per scope: leaving for another channel and coming
+// back, or closing and reopening, lands on All without fetching Done again.
+let generalDoneCalls = 0;
+export const LeavingAndReturningLandsOnAll: Story = {
+  parameters: { apiRoutes: {
+    ...meta.parameters.apiRoutes,
+    "GET /api/channels/general/schedules?status=done": () => { generalDoneCalls += 1; return { items: doneList }; },
+    "GET /api/channels/responsive/schedules": { items: [] },
+    "GET /api/channels/responsive/schedules?status=done": otherDone,
+  } },
+  play: async ({ canvasElement }) => {
+    generalDoneCalls = 0;
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Done" }));
+    await canvas.findByRole("tab", { name: "Done 2" });
+    expect(generalDoneCalls).toBe(1);
+    // A → B → A.
+    useUiState.setState({ sel: { g: "product", c: "responsive" } });
+    await expect(canvas.findByRole("tab", { name: "All" })).resolves.toHaveAttribute("aria-selected", "true");
+    useUiState.setState({ sel: { g: "product", c: "general" } });
+    await expect(canvas.findByRole("tab", { name: "All 3" })).resolves.toHaveAttribute("aria-selected", "true");
+    // Done again, then close and reopen.
+    await userEvent.click(canvas.getByRole("tab", { name: "Done" }));
+    await canvas.findByRole("tab", { name: "Done 2" });
+    useUiState.getState().setSchedulesOpen(false);
+    await waitFor(() => expect(canvas.queryByRole("tablist", { name: "Schedule status" })).toBeNull());
+    useUiState.getState().setSchedulesOpen(true);
+    await expect(canvas.findByRole("tab", { name: "All 3" })).resolves.toHaveAttribute("aria-selected", "true");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(generalDoneCalls).toBe(2);
+    expect(otherDone).not.toHaveBeenCalled();
+  },
+};
+export const DoneTabEmpty: Story = {
+  parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules?status=done": { items: [] } } },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("tab", { name: "Done" }));
+    await expect(within(canvasElement).findByText("No done schedules")).resolves.toBeVisible();
   },
 };
 export const ActiveTab: Story = {

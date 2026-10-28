@@ -2712,6 +2712,9 @@ mod tests {
         let old = once_at(&h, "tom", &cid, "ancient report", now() + 700.0);
         h.store.update_schedule(&old, &done, "tom", None).unwrap();
         h.store.backdate_schedule_for_test(&old, now() - 30.0 * 86_400.0);
+        // People's lists have dropped it (past the window); the agent's list
+        // below still pages it.
+        assert!(!h.store.list_visible_schedules("tom", false).iter().any(|s| s["text"] == "ancient report"));
         once_at(&h, "tom", &hidden, "elsewhere", now() + 600.0);
         once_at(&h, "bob", &cid, "not tom's", now() + 600.0);
         h.post_user_message(&cid, "what's scheduled?", "tom", Some("Tom"), None, vec![]);

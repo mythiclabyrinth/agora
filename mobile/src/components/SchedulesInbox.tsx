@@ -2,11 +2,14 @@
    channels for an admin; DMs stay owner-only on the server), grouped by
    channel with the same rows as the per-channel screen. */
 
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { router } from "expo-router";
 import { CalendarClock } from "lucide-react-native";
-import { lostChannelAccess, sortSchedules, useAllSchedules, type Schedule } from "@agora/core";
+import {
+  lostChannelAccess, scheduleChannelLabel, scheduleGroupName, sortSchedules, useAllDoneSchedules, useAllSchedules, useGroups, type Schedule,
+  type ScheduleFilter,
+} from "@agora/core";
 import { createThemedStyles, useAppTheme } from "../lib/useTheme";
 import { EmptyState } from "./EmptyState";
 import { ScheduleRows, schedulesEmptyCopy } from "./SchedulesList";
@@ -39,13 +42,20 @@ export function SchedulesInbox() {
   const { colors } = useAppTheme();
   const styles = useStyles();
   const query = useAllSchedules();
+  const [filter, setFilter] = useState<ScheduleFilter>("all");
+  const done = useAllDoneSchedules(filter === "done");
+  const groups = useGroups().data;
+  // Done is one flat, latest-finished-first list: each row names its channel.
+  const doneLabel = (item: Schedule) =>
+    scheduleChannelLabel(item, scheduleGroupName(item, groups));
   const items = useMemo(() => groupSchedulesByChannel(query.data?.items ?? []), [query.data]);
   if (query.isLoading) return <View style={styles.center}><ActivityIndicator color={colors.dim} /></View>;
   if (query.isError) return (
     <EmptyState icon={CalendarClock} title="Couldn’t load schedules."
       action={{ label: "Retry", accessibilityLabel: "Retry schedules", onPress: () => void query.refetch() }} />
   );
-  return <ScheduleRows items={items} showThread onOpen={openSchedule} truncated={!!query.data?.truncated}
+  return <ScheduleRows items={items} done={done} doneLabel={doneLabel} filter={filter} onFilterChange={setFilter}
+    showThread onOpen={openSchedule} truncated={!!query.data?.truncated}
     header={(item, index, all) => index === 0 || all[index - 1].channel_id !== item.channel_id ? channelLabel(item) : null}
     refreshing={query.isRefetching} onRefresh={() => void query.refetch()}
     empty={<EmptyState icon={CalendarClock} title={schedulesEmptyCopy.title} description={schedulesEmptyCopy.description} />} />;

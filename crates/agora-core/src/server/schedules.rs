@@ -14,9 +14,21 @@ fn viewer(user: &AuthedUser) -> Option<(&str, bool)> {
 }
 
 /// Most schedules a list endpoint returns. Rows arrive live-first (active,
-/// then paused, then finished, each soonest-due first), so a cap drops the
-/// least relevant ones; an admin's inbox can span every channel.
+/// then paused, then finished, each soonest-due first) — or, for the done
+/// view, latest finished first — so a cap drops the least relevant ones; an
+/// admin's inbox can span every channel.
 pub(super) const MAX_LISTED: usize = 1000;
+
+/// `?status=done` asks a list for every finished schedule (any age, most
+/// recently finished first) instead of the default live-first view; no
+/// other status filter exists.
+fn done_only(q: &HashMap<String, String>) -> Result<bool, ApiError> {
+    match q.get("status").map(String::as_str).filter(|s| !s.is_empty()) {
+        None => Ok(false),
+        Some("done") => Ok(true),
+        Some(_) => Err(err(StatusCode::BAD_REQUEST, "status must be \"done\"")),
+    }
+}
 
 /// `{items}` decorated, at most [`MAX_LISTED`], with `truncated: true` only
 /// when rows were left out.
@@ -29,8 +41,9 @@ fn capped_list(rows: &[Value], decorate: impl Fn(&Value) -> Value) -> Value {
     }
 }
 
-/// GET /api/channels/{channel_id}/schedules[?thread_id=] — the channel's
-/// schedules, thread ones included and labelled, or just one thread's.
+/// GET /api/channels/{channel_id}/schedules[?thread_id=][&status=done] — the
+/// channel's schedules, thread ones included and labelled, or just one
+/// thread's.
 pub(super) async fn list_channel_schedules(
     State(state): State<AppState>,
     Path(channel_id): Path<String>,
@@ -39,6 +52,7 @@ pub(super) async fn list_channel_schedules(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     require_channel_member(&state, &user, &channel_id)?;
+    let done = done_only(&q)?;
     let thread_id = match q.get("thread_id").filter(|s| !s.is_empty()) {
         Some(raw) => {
             let tid = raw.parse::<i64>().map_err(|_| err(StatusCode::BAD_REQUEST, "thread_id must be a number"))?;
@@ -49,7 +63,11 @@ pub(super) async fn list_channel_schedules(
     let items = tokio::task::spawn_blocking(move || {
         let store = &state.hub.store;
         let decorator = ScheduleDecorator::new(store, viewer(&user), now());
-        let rows = store.list_schedules_for_channel(&channel_id, thread_id);
+        let rows = if done {
+            store.list_done_schedules_for_channel(&channel_id, thread_id, MAX_LISTED + 1)
+        } else {
+            store.list_schedules_for_channel(&channel_id, thread_id)
+        };
         capped_list(&rows, |s| decorator.decorate(s))
     })
     .await
@@ -57,7 +75,7 @@ pub(super) async fn list_channel_schedules(
     Ok(Json(items))
 }
 
-/// GET /api/schedules — every schedule in channels the caller can access
+/// GET /api/schedules[?status=done] — every schedule in channels the caller can access
 /// (admins: all channels; DMs stay owner-only), for the inbox tab. The
 /// caller's own schedules are always included, even in a channel they've
 /// since lost access to (flagged `channel_access: false`), so they can still
@@ -68,10 +86,15 @@ pub(super) async fn list_schedules(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
+    let done = done_only(&q)?;
     let items = tokio::task::spawn_blocking(move || {
         let store = &state.hub.store;
         let decorator = ScheduleDecorator::new(store, viewer(&user), now());
-        let rows = store.list_visible_schedules(&user.username, user.instance_admin);
+        let rows = if done {
+            store.list_visible_done_schedules(&user.username, user.instance_admin, MAX_LISTED + 1)
+        } else {
+            store.list_visible_schedules(&user.username, user.instance_admin)
+        };
         capped_list(&rows, |s| decorator.decorate(s))
     })
     .await
@@ -537,6 +560,105 @@ mod tests {
             assert!(first_done >= 1, "live schedules lead the list");
             assert!(items[first_done..].iter().all(|i| i["status"] == "done"), "no live row after a finished one");
         }
+    }
+
+    #[tokio::test]
+    async fn the_done_view_lists_every_finished_schedule_latest_first() {
+        let f = fixture();
+        let store = &f.state.hub.store;
+        let t = now();
+        // Finished at different times, one long past the default view's week.
+        let mut ids = vec![];
+        for (text, finished) in [("old", t - 30.0 * 86_400.0), ("newest", t - 10.0), ("middle", t - 3600.0)] {
+            let id = store.create_schedule("ana", &f.cid, None, text, finished, &json!({"kind": "once", "at": finished}), "ana", None)
+                ["id"].as_str().unwrap().to_string();
+            store.set_schedule_status_for_test(&id, "done", finished);
+            ids.push(id);
+        }
+        let cancelled = store.create_schedule("ana", &f.cid, None, "cancelled", t, &json!({"kind": "once", "at": t}), "ana", None)
+            ["id"].as_str().unwrap().to_string();
+        store.set_schedule_status_for_test(&cancelled, "cancelled", t);
+        let done_q = HashMap::from([("status".to_string(), "done".to_string())]);
+        let texts = |v: &Value| v["items"].as_array().unwrap().iter()
+            .map(|i| i["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let Json(channel) = list_channel_schedules(State(f.state.clone()), Path(f.cid.clone()), Query(done_q.clone()),
+            session_headers(&f.state, "ana")).await.ok().unwrap();
+        assert_eq!(texts(&channel), ["newest", "middle", "old"]);
+        assert!(channel.get("truncated").is_none());
+        let Json(all) = list_schedules(State(f.state.clone()), Query(done_q.clone()), session_headers(&f.state, "ana"))
+            .await.ok().unwrap();
+        assert_eq!(texts(&all), ["newest", "middle", "old"]);
+        // Same visibility as the default view: bob shares the group, eve doesn't.
+        let Json(bob) = list_schedules(State(f.state.clone()), Query(done_q), session_headers(&f.state, "bob"))
+            .await.ok().unwrap();
+        assert_eq!(texts(&bob), ["newest", "middle", "old"]);
+        let Json(eve) = list_schedules(State(f.state.clone()), Query(HashMap::from([("status".to_string(), "done".to_string())])),
+            session_headers(&f.state, "eve")).await.ok().unwrap();
+        assert!(texts(&eve).is_empty(), "eve can't see the channel");
+        // The default view still hides the month-old one and keeps its
+        // live-first, soonest-slot order.
+        assert_eq!(texts(&inbox(&f, session_headers(&f.state, "ana")).await)[2..], ["middle", "newest"]);
+        // Anything but done is refused rather than silently ignored.
+        let bad = list_schedules(State(f.state.clone()), Query(HashMap::from([("status".to_string(), "paused".to_string())])),
+            session_headers(&f.state, "ana")).await;
+        assert_eq!(bad.err().unwrap().into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn the_done_view_orders_by_when_it_finished() {
+        let f = fixture();
+        let store = &f.state.hub.store;
+        let t = now();
+        let done_list = || async {
+            let Json(v) = list_schedules(State(f.state.clone()), Query(HashMap::from([("status".to_string(), "done".to_string())])),
+                session_headers(&f.state, "ana")).await.ok().unwrap();
+            v["items"].as_array().unwrap().iter().map(|i| i["text"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        };
+        // A one-off that posted (and so finished) a month ago, one yesterday.
+        let fired = |text: &str, at: f64| {
+            let id = store.create_schedule("ana", &f.cid, None, text, at, &json!({"kind": "once", "at": at}), "ana", None)
+                ["id"].as_str().unwrap().to_string();
+            store.record_fire(&id, at, "Ana", at + 1.0).posted().unwrap();
+            id
+        };
+        let old = fired("finished a month ago", t - 30.0 * 86_400.0);
+        fired("finished yesterday", t - 86_400.0);
+        assert_eq!(store.schedule(&old).unwrap()["finished_at"], t - 30.0 * 86_400.0 + 1.0);
+        // A later write to the old row bumps updated_at, not when it finished.
+        store.set_schedule_status_for_test(&old, "done", t);
+        assert_eq!(done_list().await, ["finished yesterday", "finished a month ago"]);
+        // A cron that last posted long ago but was ended today leads.
+        let at = t - 60.0 * 86_400.0;
+        let cron = store.create_schedule("ana", &f.cid, None, "cron ended today", at,
+            &json!({"kind": "interval", "seconds": 86_400}), "ana", None)["id"].as_str().unwrap().to_string();
+        store.record_fire(&cron, at, "Ana", at + 1.0).posted().unwrap();
+        store.update_schedule(&cron, &ScheduleChange { status: Some("done".into()), ..Default::default() }, "ana", None).unwrap();
+        assert_eq!(done_list().await, ["cron ended today", "finished yesterday", "finished a month ago"]);
+        // Reviving clears it; finishing again stamps the new time.
+        store.update_schedule(&old, &ScheduleChange { status: Some("paused".into()), ..Default::default() }, "ana", None).unwrap();
+        assert!(store.schedule(&old).unwrap()["finished_at"].is_null());
+    }
+
+    #[tokio::test]
+    async fn the_done_view_is_capped_and_says_so() {
+        let f = fixture();
+        let store = &f.state.hub.store;
+        let t = now();
+        for i in 0..=MAX_LISTED {
+            let id = store.create_schedule("ana", &f.cid, None, "finished", t, &json!({"kind": "once", "at": t}), "ana", None)
+                ["id"].as_str().unwrap().to_string();
+            store.set_schedule_status_for_test(&id, "done", t - i as f64);
+        }
+        let Json(v) = list_schedules(State(f.state.clone()), Query(HashMap::from([("status".to_string(), "done".to_string())])),
+            session_headers(&f.state, "ana")).await.ok().unwrap();
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), MAX_LISTED);
+        assert_eq!(v["truncated"], true);
+        // Latest finished first, and the cap drops the oldest finished one.
+        let times: Vec<f64> = items.iter().map(|i| i["finished_at"].as_f64().unwrap()).collect();
+        assert!(times.windows(2).all(|w| w[0] >= w[1]), "latest finished first");
+        assert_eq!(times[0], t);
+        assert_eq!(*times.last().unwrap(), t - (MAX_LISTED - 1) as f64);
     }
 
     #[tokio::test]

@@ -25,7 +25,7 @@ pub const MAX_LIVE_PER_OWNER: i64 = 200;
 pub const MAX_CREATES_PER_HOUR: i64 = 30;
 
 const COLS: &str = "id, owner, channel_id, thread_id, text, run_at, schedule, status, \
-     last_run_at, last_error, created_at, updated_at, created_by, updated_by, via_agent, text_agent, last_due_at";
+     last_run_at, last_error, created_at, updated_at, created_by, updated_by, via_agent, text_agent, last_due_at, finished_at";
 
 fn row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     let thread_id: i64 = r.get(3)?;
@@ -47,13 +47,15 @@ fn row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
         "via_agent": r.get::<_, Option<String>>(14)?,
         "text_agent": r.get::<_, Option<String>>(15)?,
         "last_due_at": r.get::<_, Option<f64>>(16)?,
+        "finished_at": r.get::<_, Option<f64>>(17)?,
     }))
 }
 
 /// Fields a schedule update may carry; `None` leaves a field alone.
 /// `schedule` must already be validated (see [`Spec::parse`]).
-/// Finished schedules stay in the lists this long, then drop off (the
-/// rows are kept; only listing hides them).
+/// Finished schedules stay in the lists this long after they finished
+/// (`finished_at`, else their last change), then drop off (the rows are
+/// kept; only listing hides them).
 pub(crate) const DONE_LISTED_SECS: f64 = 7.0 * 86_400.0;
 /// List order: live schedules first (active, then paused, then finished),
 /// each soonest-due first, matching the clients' `sortSchedules`. A finished
@@ -62,6 +64,21 @@ pub(crate) const DONE_LISTED_SECS: f64 = 7.0 * 86_400.0;
 /// all live schedules.
 const LIVE_FIRST: &str = "CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END";
 const LIVE_FIRST_S: &str = "CASE s.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END";
+/// The Done list's order: when a schedule finished, newest first, so a later
+/// write to a long-finished row can't lift it to the top, and a cron that
+/// last posted long ago but ended today still leads. `finished_at` is set on
+/// every move to done (and backfilled); `updated_at` covers anything else.
+const DONE_ORDER: &str = "COALESCE(finished_at, updated_at) DESC";
+const DONE_ORDER_S: &str = "COALESCE(s.finished_at, s.updated_at) DESC";
+/// Who sees a schedule row `s` (joined to its channel `c` and group `g`) in
+/// the inbox lists, for user `?1` (`?2` = instance admin): its owner, the
+/// DM's person, or anyone with access to a regular channel.
+const VISIBLE_TO: &str = "( \
+    s.owner = ?1 OR \
+    (c.kind = 'agent_dm' AND c.dm_user_id = ?1) OR \
+    (c.kind != 'agent_dm' AND g.id IS NOT NULL AND (?2 = 1 OR g.is_public = 1 OR EXISTS ( \
+      SELECT 1 FROM memberships m WHERE m.group_id = g.id AND m.member_type = 'user' \
+        AND m.member_id = ?1 AND (m.channel_id = '' OR m.channel_id = c.id)))))";
 
 #[derive(Default, Debug, Clone)]
 pub struct ScheduleChange {
@@ -146,6 +163,8 @@ fn apply_change(
         "UPDATE schedules SET text = COALESCE(?2, text), run_at = COALESCE(?3, run_at), \
          schedule = COALESCE(?4, schedule), status = COALESCE(?5, status), \
          last_error = CASE WHEN ?6 THEN NULL ELSE last_error END, \
+         finished_at = CASE WHEN ?5 = 'done' AND status != 'done' THEN ?7 \
+                            WHEN ?5 IS NOT NULL AND ?5 != 'done' THEN NULL ELSE finished_at END, \
          updated_at = ?7, updated_by = ?8, via_agent = COALESCE(?9, via_agent), \
          text_agent = CASE WHEN ?2 IS NOT NULL THEN ?9 ELSE text_agent END WHERE id = ?1",
         params![
@@ -179,7 +198,7 @@ fn advance(
         ),
         None => tx.execute(
             "UPDATE schedules SET status = 'done', last_run_at = COALESCE(?2, last_run_at), last_error = ?3, \
-             updated_at = ?4, last_due_at = COALESCE(?5, last_due_at) WHERE id = ?1",
+             updated_at = ?4, finished_at = ?4, last_due_at = COALESCE(?5, last_due_at) WHERE id = ?1",
             params![id, last_run, error, now_s, ran],
         ),
     }
@@ -415,11 +434,28 @@ impl Store {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {COLS} FROM schedules WHERE channel_id = ?1 AND status != 'cancelled' \
-                 AND (status != 'done' OR updated_at >= ?3) \
+                 AND (status != 'done' OR COALESCE(finished_at, updated_at) >= ?3) \
                  AND (?2 IS NULL OR thread_id = ?2) ORDER BY {LIVE_FIRST}, run_at, id"
             ))
             .unwrap();
         stmt.query_map(params![channel_id, thread_id, now() - DONE_LISTED_SECS], row_json)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
+    }
+
+    /// Every finished schedule in a channel (or one thread), of any age,
+    /// most recently finished first — the "Done" tab. At most `limit` rows.
+    /// See [`DONE_ORDER`] for what "finished" means.
+    pub fn list_done_schedules_for_channel(&self, channel_id: &str, thread_id: Option<i64>, limit: usize) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM schedules WHERE channel_id = ?1 AND status = 'done' \
+                 AND (?2 IS NULL OR thread_id = ?2) ORDER BY {DONE_ORDER}, id LIMIT ?3"
+            ))
+            .unwrap();
+        stmt.query_map(params![channel_id, thread_id, limit as i64], row_json)
             .unwrap()
             .filter_map(Result::ok)
             .collect()
@@ -438,16 +474,31 @@ impl Store {
             .prepare(&format!(
                 "SELECT {cols} FROM schedules s JOIN channels c ON c.id = s.channel_id \
                  LEFT JOIN groups g ON g.id = c.group_id \
-                 WHERE s.status != 'cancelled' AND (s.status != 'done' OR s.updated_at >= ?3) AND ( \
-                   s.owner = ?1 OR \
-                   (c.kind = 'agent_dm' AND c.dm_user_id = ?1) OR \
-                   (c.kind != 'agent_dm' AND g.id IS NOT NULL AND (?2 = 1 OR g.is_public = 1 OR EXISTS ( \
-                     SELECT 1 FROM memberships m WHERE m.group_id = g.id AND m.member_type = 'user' \
-                       AND m.member_id = ?1 AND (m.channel_id = '' OR m.channel_id = c.id))))) \
+                 WHERE s.status != 'cancelled' AND (s.status != 'done' OR COALESCE(s.finished_at, s.updated_at) >= ?3) AND {VISIBLE_TO} \
                  ORDER BY {LIVE_FIRST_S}, s.run_at, s.id"
             ))
             .unwrap();
         stmt.query_map(params![username, instance_admin as i64, now() - DONE_LISTED_SECS], row_json)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
+    }
+
+    /// [`Store::list_visible_schedules`]'s finished rows only, of any age,
+    /// most recently finished first — the inbox's "Done" tab. At most
+    /// `limit` rows.
+    pub fn list_visible_done_schedules(&self, username: &str, instance_admin: bool, limit: usize) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let cols: String = COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {cols} FROM schedules s JOIN channels c ON c.id = s.channel_id \
+                 LEFT JOIN groups g ON g.id = c.group_id \
+                 WHERE s.status = 'done' AND {VISIBLE_TO} \
+                 ORDER BY {DONE_ORDER_S}, s.id LIMIT ?3"
+            ))
+            .unwrap();
+        stmt.query_map(params![username, instance_admin as i64, limit as i64], row_json)
             .unwrap()
             .filter_map(Result::ok)
             .collect()
@@ -490,7 +541,11 @@ impl Store {
         self.conn
             .lock()
             .unwrap()
-            .execute("UPDATE schedules SET status = ?2, updated_at = ?3 WHERE id = ?1", params![id, status, updated_at])
+            .execute(
+                "UPDATE schedules SET finished_at = CASE WHEN ?2 = 'done' AND status != 'done' THEN ?3 \
+                   WHEN ?2 != 'done' THEN NULL ELSE finished_at END, status = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, status, updated_at],
+            )
             .unwrap();
     }
 
@@ -502,7 +557,7 @@ impl Store {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {COLS} FROM schedules WHERE owner = ?1 AND status != 'cancelled' \
-                 AND (status != 'done' OR updated_at >= ?2) ORDER BY {LIVE_FIRST}, run_at, id"
+                 AND (status != 'done' OR COALESCE(finished_at, updated_at) >= ?2) ORDER BY {LIVE_FIRST}, run_at, id"
             ))
             .unwrap();
         stmt.query_map(params![owner, now() - DONE_LISTED_SECS], row_json).unwrap().filter_map(Result::ok).collect()
@@ -632,7 +687,13 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn backdate_schedule_for_test(&self, id: &str, updated_at: f64) {
         let conn = self.conn.lock().unwrap();
-        conn.execute("UPDATE schedules SET updated_at = ?2 WHERE id = ?1", params![id, updated_at]).unwrap();
+        // A finished row's finish time goes back too, or it would stay inside
+        // the lists' recent-done window however old the test makes it.
+        conn.execute(
+            "UPDATE schedules SET updated_at = ?2, finished_at = CASE WHEN finished_at IS NULL THEN NULL ELSE ?2 END WHERE id = ?1",
+            params![id, updated_at],
+        )
+        .unwrap();
     }
 
     pub fn mark_fire_delivered(&self, schedule_id: &str, due_at: f64) {
@@ -842,6 +903,12 @@ mod tests {
         assert_eq!(texts(store.list_owner_schedules("ana")), ["recent"]);
         // The row itself is kept; only the lists hide it.
         assert_eq!(store.schedule(old["id"].as_str().unwrap()).unwrap()["status"], "done");
+        // A later write to the old row doesn't bring it back: the cutoff
+        // counts from when it finished, not its last change.
+        store.set_schedule_status_for_test(old["id"].as_str().unwrap(), "done", t);
+        assert_eq!(texts(store.list_schedules_for_channel(&cid, None)), ["recent"]);
+        assert_eq!(texts(store.list_visible_schedules("ana", false)), ["recent"]);
+        assert_eq!(texts(store.list_owner_schedules("ana")), ["recent"]);
     }
 
     #[test]

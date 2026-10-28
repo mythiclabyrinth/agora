@@ -10,7 +10,7 @@
    Threads. */
 
 import { create } from "zustand";
-import { deepLinkPath, type ThreadFilter, type ThreadSort, type UnreadFilter } from "@agora/core";
+import { deepLinkPath, DM_GROUP_ID, type ThreadFilter, type ThreadSort, type UnreadFilter } from "@agora/core";
 import { voiceCancel } from "./voiceRec";
 import { liveStop, useLiveVoice } from "./liveVoice";
 import { speakStop } from "./speak";
@@ -44,8 +44,10 @@ function loadEnum<T extends string>(key: string, allowed: readonly T[], fallback
   return allowed.includes(value as T) ? value as T : fallback;
 }
 
+export { DM_GROUP_ID };
+
 export function normalizeGroupId(g: string): string {
-  return g === "" ? "__dms" : g;
+  return g === "" ? DM_GROUP_ID : g;
 }
 
 export function normalizeSelection(sel: Selection): Selection {

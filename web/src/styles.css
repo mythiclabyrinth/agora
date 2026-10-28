@@ -2326,6 +2326,95 @@ button.ago-sched-where:hover { color: var(--a1); }
 /* The attachment filter's labels are short — keep it compact next to scope. */
 #ago-search-files { max-width: 130px; }
 .ago-search-scope option, .ago-search-scope optgroup { background: var(--surface); color: var(--text); }
+.ago-search-filters { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 0; }
+/* Search filter dropdowns (SearchPicker): the trigger keeps the select look. */
+.ago-pick-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px 5px 10px; min-height: 30px; }
+.ago-pick-trigger.set { border-color: rgba(var(--accent-rgb),.45); color: var(--accent-text); }
+.ago-pick-trigger[aria-expanded="true"] { border-color: var(--a1); }
+.ago-pick-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ago-pick-trigger svg.ico { width: 13px; height: 13px; flex-shrink: 0; color: var(--dim); }
+.ago-pick {
+  position: fixed; z-index: 85; display: flex; flex-direction: column;
+  width: min(300px, calc(100vw - 24px)); max-height: 360px; overflow: hidden;
+  background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 12px;
+  box-shadow: var(--elevation-panel); animation: rise .12s ease;
+}
+#ago-search-files + .ago-pick, .ago-pick:not(:has(.ago-pick-filter)) { width: 200px; }
+.ago-pick-filter {
+  display: flex; align-items: center; gap: 8px; margin: 8px 8px 4px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); flex-shrink: 0;
+}
+.ago-pick-filter:focus-within { border-color: var(--a1); }
+.ago-pick-filter svg.ico { width: 14px; height: 14px; color: var(--faint); flex-shrink: 0; }
+.ago-pick-filter input { flex: 1; min-width: 0; padding: 8px 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; }
+.ago-pick-list { overflow-y: auto; overscroll-behavior: contain; padding: 4px; min-height: 0; flex: 1; outline: none; }
+.ago-pick-opt {
+  display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 8px;
+  border-radius: 7px; font-size: 12.5px; color: var(--text); cursor: pointer;
+}
+.ago-pick-opt.active { background: rgba(var(--accent-rgb),.14); }
+.ago-pick-opt[aria-selected="true"] { color: var(--accent-text); font-weight: 600; }
+/* Group headings stay pinned while their channels scroll beneath them. */
+.ago-pick-opt.heading {
+  position: sticky; top: -4px; z-index: 1; margin-top: 4px;
+  background: var(--surface-raised); font-weight: 700; font-size: 11.5px; letter-spacing: .02em;
+}
+.ago-pick-opt.heading.active { background: color-mix(in srgb, var(--surface-raised) 80%, var(--a1)); }
+.ago-pick-opt.heading:first-child { margin-top: 0; }
+.ago-pick-opt.child { padding-left: 22px; }
+.ago-pick-ico { flex-shrink: 0; width: 16px; display: inline-flex; justify-content: center; color: var(--dim); }
+.ago-pick-ico.hash { font-size: 13px; }
+.ago-pick-ico svg.ico { width: 14px; height: 14px; }
+.ago-pick-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ago-pick-hint { flex-shrink: 0; color: var(--faint); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.ago-pick-check { flex-shrink: 0; display: inline-flex; color: var(--a1); }
+.ago-pick-check svg.ico { width: 14px; height: 14px; }
+.ago-pick-empty { padding: 14px 10px; color: var(--faint); font-size: 12.5px; }
+.ago-pick-scrim { position: fixed; inset: 0; z-index: 84; background: var(--scrim); }
+.ago-pick-sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 4px 16px; font-weight: 700; font-size: 14px; }
+/* Phones: a bottom sheet with thumb-sized rows instead of an anchored list. */
+.ago-pick.sheet {
+  left: 0; right: 0; bottom: 0; top: auto; width: auto; max-height: min(70vh, 70dvh);
+  border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom);
+}
+.ago-pick.sheet .ago-pick-opt { min-height: 44px; font-size: 15px; }
+.ago-pick.sheet .ago-pick-filter input { font-size: 16px; }
+/* Result kinds (All · Channels · Threads · Messages) and the message sort. */
+.ago-search-tabbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.ago-search-tabs {
+  display: flex; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none;
+}
+.ago-search-tabs::-webkit-scrollbar { display: none; }
+.ago-search-tabs button, .ago-search-sort button {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 28px; padding: 4px 10px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--dim);
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.ago-search-tabs button:hover, .ago-search-sort button:hover { color: var(--text); }
+.ago-search-tabs button.on { background: rgba(var(--accent-rgb),.14); color: var(--a1); }
+.ago-search-sort {
+  display: inline-flex; flex-shrink: 0; margin-left: auto; padding: 2px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--panel);
+}
+.ago-search-sort button { min-height: 24px; padding: 3px 9px; font-size: 11.5px; }
+.ago-search-sort button.on { background: var(--surface-raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.ago-search-count {
+  font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0;
+  padding: 1px 5px; border-radius: 5px; background: rgba(var(--ink-rgb),.07); color: var(--dim); text-transform: none;
+}
+.ago-search-section { display: flex; align-items: center; gap: 6px; }
+.ago-search-seeall {
+  display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding: 2px 6px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--a1);
+  font: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; cursor: pointer;
+}
+.ago-search-seeall svg.ico { width: 12px; height: 12px; }
+.ago-search-seeall:hover, .ago-search-seeall.sel { background: rgba(var(--accent-rgb),.14); }
+.ago-search-row.thread { align-items: center; }
+.ago-search-thread-name { min-width: 0; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ago-search-bar .ago-x { opacity: 1; }
 .ago-search-body { overflow-y: auto; overscroll-behavior: contain; padding: 6px 6px 8px; }
 .ago-search-hint { padding: 16px 12px; font-size: 12.5px; color: var(--faint); }
@@ -2412,6 +2501,17 @@ button.ago-sched-where:hover { color: var(--a1); }
   .ago-search-panel { max-height: 85vh; max-height: 85dvh; }
   .ago-search-bar input { font-size: 16px; }   /* iOS anti-zoom */
   .ago-search-scope { max-width: 34vw; }
+}
+@media (max-width: 640px) {
+  /* Too narrow for the query and both filters on one line: the filters
+     take a second row, split evenly, under the query and close button. */
+  .ago-search-bar { flex-wrap: wrap; row-gap: 10px; }
+  .ago-search-bar input { flex-basis: 0; }
+  .ago-search-filters { order: 3; flex: 1 0 100%; }
+  .ago-search-filters .ago-search-scope { flex: 1 1 0; max-width: none; min-height: 36px; }
+  .ago-search-tabbar { padding: 6px 8px; }
+  .ago-search-tabs button { min-height: 32px; }
+  .ago-search-sort button { min-height: 28px; }
 }
 
 /* ---------- thread header channel link ---------- */
