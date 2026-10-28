@@ -294,6 +294,29 @@ class ModelSelectionTests(unittest.TestCase):
             "grok-4-8-high-fast",
         )
 
+    def test_date_like_segments_are_not_read_as_versions(self):
+        self.assertEqual(
+            bridge.resolve_model("opus", ["claude-opus-5-5-high-fast",
+                                          "claude-opus-5-20250805-thinking-high"]),
+            "claude-opus-5-5-high-fast",
+        )
+
+    def test_version_without_a_known_tier_is_skipped(self):
+        # Documented behavior: an unknown tier is not guessed at.
+        self.assertEqual(
+            bridge.resolve_model("grok", ["grok-5-max", "grok-4.7-high-fast"]),
+            "grok-4.7-high-fast",
+        )
+
+    def test_stored_alias_missing_from_list_logs_and_uses_auto(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        instance.default_model = None
+        instance._available_model_ids = AsyncMock(return_value=["grok-4.7-high-fast"])
+        with patch.object(bridge, "log") as log:
+            self.assertIsNone(asyncio.run(instance._effective_model({"model": "kimi"})))
+        log.assert_called_once()
+        self.assertIn("kimi", log.call_args.args[0])
+
     def test_prefixed_and_unprefixed_duplicates_pick_the_unprefixed_id(self):
         for ids in (["cursor-grok-4.7-high-fast", "grok-4.7-high-fast"],
                     ["grok-4.7-high-fast", "cursor-grok-4.7-high-fast"]):
@@ -456,6 +479,31 @@ class ModelListCacheTests(unittest.TestCase):
         results = asyncio.run(run())
         self.assertEqual(len(calls), 1)
         self.assertTrue(all(r == ["grok-4.7-high-fast"] for r in results))
+
+    def test_models_command_refreshes_under_the_shared_lock(self):
+        instance = bridge.Bridge.__new__(bridge.Bridge)
+        active, peak, calls = [0], [0], []
+
+        async def slow_fetch():
+            calls.append(1)
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            await asyncio.sleep(0.01)
+            active[0] -= 1
+            instance._models_cache = (bridge.time.monotonic(), ["grok-4.7-high-fast"], True)
+            return self.IDS_TEXT, None
+
+        instance._list_models_text = slow_fetch
+
+        async def run():
+            return await asyncio.gather(instance._available_model_ids(), instance._cmd_models())
+
+        ids, reply = asyncio.run(run())
+        self.assertEqual(ids, ["grok-4.7-high-fast"])
+        self.assertEqual(reply, self.IDS_TEXT)
+        # /models always refreshes, but never overlaps an in-flight fetch.
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(peak[0], 1)
 
     def test_unparseable_listing_is_logged_and_stamped(self):
         instance = bridge.Bridge.__new__(bridge.Bridge)

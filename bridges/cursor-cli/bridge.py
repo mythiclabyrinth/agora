@@ -633,12 +633,17 @@ def normalize_model(raw: str) -> str | None:
 
 
 # Aliases float: each one resolves to the newest version of its family that
-# the installed CLI lists (`agent models`), preferring the tiers in order.
-# Version beats tier on purpose — "always the latest" means a newer model
-# without a thinking variant wins over an older one with it. Exact ids are
-# pinned as given, so `/model cursor-grok-4.6-high-fast` keeps an older
-# model. The fallback ids are used only when the model list is unavailable.
-_V = r"(?P<v>\d+(?:[.-]\d+)*)"  # Cursor writes versions as 4.7 or 5-5
+# the installed CLI lists (`agent models`) and that offers one of the
+# family's tiers, preferring the tiers in order. Version beats tier order on
+# purpose — "always the latest" means a newer model without a thinking
+# variant wins over an older one with it — but a version offering none of
+# the listed tiers is skipped rather than guessing at an unknown tier.
+# Exact ids are pinned as given, so `/model cursor-grok-4.6-high-fast` keeps
+# an older model. The fallback ids are used only when the model list is
+# unavailable.
+# Cursor writes versions as 4.7 or 5-5; components are capped at 3 digits so
+# a date-like segment (e.g. -1017-, -20250805-) is never read as a version.
+_V = r"(?P<v>\d{1,3}(?:[.-]\d{1,3})*)"
 MODEL_FAMILIES = {
     "grok": (rf"(?:cursor-)?grok-{_V}-(?P<t>.+)", ("high-fast", "high")),
     "opus": (rf"claude-opus-{_V}-(?P<t>.+)",
@@ -1915,6 +1920,7 @@ class Bridge:
             return (f"Model reset to the bridge default "
                     f"({self._describe_model(self.default_model, ids)}).")
         setting = model_setting(choice)
+        ids = None
         if not setting:
             return ("Invalid model id. Use an alias (" + ", ".join(MODEL_ALIASES)
                     + ") or run /models and copy one of the listed ids.")
@@ -1978,13 +1984,16 @@ class Bridge:
         self._models_cache = (time.monotonic(), ids or self._cached_model_ids(), bool(ids))
         return text, err
 
+    def _model_list_lock(self) -> asyncio.Lock:
+        if self._models_lock is None:
+            self._models_lock = asyncio.Lock()
+        return self._models_lock
+
     async def _available_model_ids(self) -> list[str] | None:
         """Model ids from the installed CLI, cached so a CLI update is picked
         up within MODELS_CACHE_TTL without a bridge restart. One fetch runs
         at a time; concurrent callers wait for it and share the result."""
-        if self._models_lock is None:
-            self._models_lock = asyncio.Lock()
-        async with self._models_lock:
+        async with self._model_list_lock():
             cache = self._models_cache
             if cache:
                 ttl = MODELS_CACHE_TTL if cache[2] else MODELS_RETRY_TTL
@@ -2000,11 +2009,21 @@ class Bridge:
         if not setting:
             return None
         if is_model_alias(setting):
-            return resolve_model(setting, await self._available_model_ids())
+            ids = await self._available_model_ids()
+            model = resolve_model(setting, ids)
+            if not model:
+                # The list changed after the alias was stored; say so rather
+                # than letting the run look like "no model configured".
+                log(f"model alias {setting!r} has no match in the CLI model list; "
+                    f"running with Cursor Auto")
+            return model
         return normalize_model(setting)
 
     async def _cmd_models(self) -> str:
-        text, err = await self._list_models_text()
+        # Always refresh, but under the same lock as run-time lookups so a
+        # /models during an in-flight fetch doesn't spawn a second CLI.
+        async with self._model_list_lock():
+            text, err = await self._list_models_text()
         if err:
             return err
         return text[:MAX_POST_CHARS] or "Cursor returned no models. Check `agent status`."
