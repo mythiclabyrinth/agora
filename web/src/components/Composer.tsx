@@ -1,6 +1,7 @@
 /* Composer (.chat-input): textarea with autogrow, Enter-to-send, mention
    autocomplete (@…), the "talk to" agent addressing picker, file chips
-   (paste/drag/pick, 5-file cap), and the thread-ask toggle. */
+   (paste/drag/pick, 5-file cap), the thread-ask toggle, and scheduling the
+   typed message for later (chevron beside Send, or long-press on touch). */
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -8,7 +9,7 @@ import {
   droppedTooLargeMessage, uploadMaxBytes,
   draftAttachmentPreviewUrl, isRequireAgentOn, materializeDroppedFile, MAX_MESSAGE_CHARS,
   mentionPrefix, threadAddressKey, useAgents, useAttachmentDrafts, useMe, useSendMessage,
-  draftSync, useAddressed, useMessageDrafts, draftKey as canonicalDraftKey,
+  draftSync, useAddressed, useMessageDrafts, draftKey as canonicalDraftKey, scheduledForLabel, useCreateSchedule,
   type ChannelAgent, type DraftAttachment, type OutgoingFile,
 } from "@agora/core";
 import { create } from "zustand";
@@ -25,6 +26,8 @@ import { leaveComposerForShortcuts, overlayOpen } from "../state/shortcutFocus";
 import { bindingFor, useShortcutState } from "../state/shortcuts";
 import { ImageLightbox } from "./ImageLightbox";
 import { TemplateControls } from "./TemplateControls";
+import { ScheduleSurfaceView, useLongPress, type ScheduleSurface } from "./ScheduleSend";
+import { useUiState } from "../state/ui";
 
 const MAX_FILES = 5;
 const ATTACHMENT_UPLOAD_TIMEOUT_MS = 120_000;
@@ -88,6 +91,8 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   isDm?: boolean;
 }) {
   const send = useSendMessage(channelId);
+  const createSchedule = useCreateSchedule();
+  const [schedSurface, setSchedSurface] = useState<ScheduleSurface>(null);
   const me = useMe().data;
   const draftKey = threadId != null ? `t:${threadId}` : `c:${channelId}`;
   const syncKey = canonicalDraftKey(channelId, threadId);
@@ -434,6 +439,50 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     taRef.current?.focus();
   };
 
+  /* Scheduling carries text only: the schedule stores a message, not files,
+     so attachments (and a voice note in progress) keep it off. */
+  const recordingHere = useVoiceRec(s => s.recordingKey === voiceRecKey(channelId, threadId));
+  const scheduleBlocked = (): string | null => {
+    if (attachments.length) return "Remove attachments to schedule — scheduled messages are text only";
+    if (recordingHere) return "Finish the voice note first";
+    if (!text.trim()) return "Type a message to schedule";
+    return null;
+  };
+  const openSchedule = (surface: Exclude<ScheduleSurface, null>) => {
+    const blocked = scheduleBlocked();
+    if (blocked) { toast(blocked, { variant: "warn" }); return; }
+    setMention(null);
+    setSchedSurface(surface);
+  };
+  const longPress = useLongPress(() => openSchedule("sheet"));
+  useEffect(() => { setSchedSurface(null); }, [draftKey]);
+  const doSchedule = (runAt: number) => {
+    // One request at a time: a second Enter while the first is in flight
+    // would schedule the same message twice.
+    if (createSchedule.isPending) return;
+    const t = text.trim();
+    if (!t || attachments.length) { setSchedSurface(null); return; }
+    const outText = addr ? `${addr}, ${t}` : t;
+    const sentText = text;
+    const sentVersion = draftSync.version(syncKey);
+    const key = syncKey;
+    createSchedule.mutate({ channelId, threadId, text: outText, runAt }, {
+      onSuccess: ({ schedule }) => {
+        setSchedSurface(null);
+        // Clear only once the server has it, and only if nothing was typed
+        // meanwhile; the empty draft then syncs like any other edit.
+        if (draftSync.version(key) === sentVersion && (useDrafts.getState().byConvo[key] ?? "") === sentText) {
+          draftSync.edit(key, "");
+        }
+        toast(scheduledForLabel(schedule.run_at), {
+          actionLabel: "View",
+          onAction: () => useUiState.getState().setSchedulesOpen(true, threadId),
+        });
+      },
+      onError: error => toast("Couldn't schedule: " + (error as Error).message, { variant: "warn" }),
+    });
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (useVoiceRec.getState().recordingKey === voiceRecKey(channelId, threadId) &&
       matchesCombo(bindingFor("voice.send", currentPlatform()), e.nativeEvent, currentPlatform())) {
@@ -658,9 +707,22 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         )}
           </div>
         </details>
-        <button className="btn primary"
-          disabled={preparingAttachments.length > 0 || sendingAttachments.length > 0}
-          onClick={doSend}>Send</button>
+        <div className="ago-send-group">
+          <button className="btn primary ago-send"
+            disabled={preparingAttachments.length > 0 || sendingAttachments.length > 0}
+            title="Send (touch: press and hold to schedule)"
+            {...longPress.handlers}
+            onClick={() => { if (!longPress.consume()) doSend(); }}>Send</button>
+          <button type="button" className="btn primary ago-send-more"
+            aria-label="Schedule message" title={scheduleBlocked() ?? "Schedule for later"}
+            aria-haspopup="dialog" aria-expanded={schedSurface === "menu"}
+            disabled={!!scheduleBlocked() || createSchedule.isPending}
+            onClick={() => schedSurface === "menu" ? setSchedSurface(null) : openSchedule("menu")}>
+            <Icon name="chevron-down" />
+          </button>
+          <ScheduleSurfaceView surface={schedSurface} onClose={() => setSchedSurface(null)}
+            onSchedule={doSchedule} pending={createSchedule.isPending} />
+        </div>
         </div>
         </div>
         {addrOpen && (

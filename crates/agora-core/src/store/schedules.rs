@@ -126,6 +126,17 @@ impl UpdateRefused {
     }
 }
 
+/// Why [`Store::purge_finished_schedule`] removed nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PurgeRefused {
+    Missing,
+    /// Still active or paused: only finished schedules can be deleted.
+    Live,
+    /// A fire's side effects (agent delivery) are still pending; deleting
+    /// now would drop the record boot redelivery replays.
+    Delivering,
+}
+
 /// What [`Store::record_fire`] did.
 #[derive(Debug)]
 pub enum Fire {
@@ -409,6 +420,37 @@ impl Store {
             tx.commit().unwrap();
         }
         Ok(self.schedule(&id).expect("schedule just inserted"))
+    }
+
+    /// Permanently remove a finished (done or cancelled) schedule and its
+    /// fire records. The status check and the delete share one transaction,
+    /// so a schedule revived in between is never lost; messages it already
+    /// posted are ordinary messages and stay. Returns the removed row.
+    pub fn purge_finished_schedule(&self, id: &str) -> Result<Value, PurgeRefused> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        let row = tx
+            .query_row(&format!("SELECT {COLS} FROM schedules WHERE id = ?1"), params![id], row_json)
+            .optional()
+            .unwrap()
+            .ok_or(PurgeRefused::Missing)?;
+        if !matches!(row["status"].as_str(), Some("done" | "cancelled")) {
+            return Err(PurgeRefused::Live);
+        }
+        let pending: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM schedule_fires WHERE schedule_id = ?1 AND delivered = 0",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if pending > 0 {
+            return Err(PurgeRefused::Delivering);
+        }
+        tx.execute("DELETE FROM schedule_fires WHERE schedule_id = ?1", params![id]).unwrap();
+        tx.execute("DELETE FROM schedules WHERE id = ?1", params![id]).unwrap();
+        tx.commit().unwrap();
+        Ok(row)
     }
 
     /// The tick found the owner can no longer post there: park it with the
@@ -977,6 +1019,36 @@ mod tests {
         assert!(store.schedule_owner_can_post("bob", &cid).unwrap_err().contains("member"));
         store.set_user_disabled("ana", true);
         assert!(store.schedule_owner_can_post("ana", &cid).unwrap_err().contains("disabled"));
+    }
+
+    #[test]
+    fn purging_removes_only_a_finished_schedule_and_keeps_its_posts() {
+        let (store, cid) = setup();
+        let once = store.create_schedule("ana", &cid, None, "hi", 1000.0,
+            &json!({"kind": "once", "at": 1000.0}), "ana", None);
+        let id = once["id"].as_str().unwrap();
+        let live = interval(&store, &cid, None, 5000.0);
+        let live_id = live["id"].as_str().unwrap();
+        assert_eq!(store.purge_finished_schedule(live_id).unwrap_err(), PurgeRefused::Live);
+        assert_eq!(store.purge_finished_schedule(id).unwrap_err(), PurgeRefused::Live, "not fired yet");
+        let (msg, after) = store.record_fire(id, 1000.0, "Ana", 1001.0).posted().unwrap();
+        assert_eq!(after["status"], "done");
+        // Not until the fire's side effects are delivered (boot redelivery needs the row).
+        assert_eq!(store.purge_finished_schedule(id).unwrap_err(), PurgeRefused::Delivering);
+        store.mark_fire_delivered(id, 1000.0);
+        let removed = store.purge_finished_schedule(id).unwrap();
+        assert_eq!(removed["id"], id);
+        assert!(store.schedule(id).is_none());
+        let fires: i64 = store.conn.lock().unwrap()
+            .query_row("SELECT COUNT(*) FROM schedule_fires WHERE schedule_id = ?1", params![id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fires, 0);
+        assert!(store.message(msg["id"].as_i64().unwrap()).is_some(), "the posted message stays");
+        assert_eq!(store.purge_finished_schedule(id).unwrap_err(), PurgeRefused::Missing);
+        assert!(store.schedule(live_id).is_some());
+        // Cancelled rows are history too.
+        store.update_schedule(live_id, &ScheduleChange { status: Some("cancelled".into()), ..Default::default() }, "ana", None);
+        assert!(store.purge_finished_schedule(live_id).is_ok());
     }
 
     #[test]

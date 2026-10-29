@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterBadge, filterSchedules, type ScheduleFilter, type ScheduleList,
   describeSchedule, fmtTs, intervalParts, intervalSeconds, LOST_ACCESS_NOTE, lostChannelAccess, nextRunsLabel,
-  doneBadgeList, scheduleChannelLabel, scheduleEmptyCopy, scheduleGroupName, scheduleTruncatedNote, sortSchedulesByTime, useCancelSchedule, useDoneSchedules, useGroups, useSchedules,
+  doneBadgeList, scheduleChannelLabel, scheduleEmptyCopy, scheduleGroupName, scheduleTruncatedNote, sortSchedulesByTime, useCancelSchedule, useDoneSchedules, useGroups, usePurgeSchedule, useSchedules,
   useUpdateSchedule,
   type IntervalUnit, type Schedule, type ScheduleSpec,
 } from "@agora/core";
@@ -10,9 +10,10 @@ import { toast } from "../lib/toast";
 import { useUiState } from "../state/ui";
 import { Icon } from "../lib/icons";
 
-/* Schedules are created and re-worded by agents acting for their owner;
-   people only look, pause/resume, cancel and retime here — so there is no
-   "new schedule" form and the message text is read-only. */
+/* Schedules are created from the composer (one message, posted later) or by
+   agents acting for their owner; here people look, pause/resume, cancel,
+   retime, and delete finished ones — so there is no "new schedule" form and
+   the message text is read-only. */
 
 const STATUS_LABEL: Record<Schedule["status"], string> = {
   active: "Active", paused: "Paused", done: "Done", cancelled: "Cancelled",
@@ -196,8 +197,10 @@ export function ScheduleRow({ schedule, groupName, onOpen }: {
 }) {
   const update = useUpdateSchedule();
   const cancel = useCancelSchedule();
+  const purge = usePurgeSchedule();
   const [editing, setEditing] = useState(false);
   const [armed, setArmed] = useState(false);
+  const [purgeArmed, setPurgeArmed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const live = schedule.status === "active" || schedule.status === "paused";
   // The owner lost the channel: it still posts in their name, so they keep
@@ -213,6 +216,14 @@ export function ScheduleRow({ schedule, groupName, onOpen }: {
     setArmed(false);
     cancel.mutate(schedule, { onSuccess: () => toast("Schedule cancelled"), onError: fail("cancel") });
   };
+  // Finished cards can be deleted for good (two taps, like cancel); what
+  // they already posted stays in the conversation.
+  const purgeable = !live && schedule.can_manage === true;
+  const deleteForGood = () => {
+    if (!purgeArmed) { setPurgeArmed(true); return; }
+    setPurgeArmed(false);
+    purge.mutate(schedule, { onSuccess: () => toast("Schedule deleted"), onError: fail("delete") });
+  };
   // Every card says which channel it posts to, so one time-ordered list can
   // mix channels; a thread loop keeps its thread on its own line beneath.
   // No channel name (e.g. renamed away) falls back to its id.
@@ -220,7 +231,15 @@ export function ScheduleRow({ schedule, groupName, onOpen }: {
   const pill = <span className={`ago-sched-status ${schedule.status}`}>{STATUS_LABEL[schedule.status]}</span>;
 
   return (
-    <div className={`ago-sched-row ${schedule.status}`} data-schedule-id={schedule.id}>
+    <div className={`ago-sched-row ${schedule.status} ${purgeable ? "purgeable" : ""}`} data-schedule-id={schedule.id}>
+      {purgeable && (
+        <button className={`ago-sched-purge ${purgeArmed ? "armed" : ""}`} disabled={purge.isPending}
+          aria-label={purgeArmed ? "Confirm delete" : "Delete schedule"}
+          title={purgeArmed ? "Tap again to delete this schedule for good" : "Delete schedule"}
+          onBlur={() => setPurgeArmed(false)} onClick={deleteForGood}>
+          <Icon name="trash-2" />{purgeArmed && <span>Delete?</span>}
+        </button>
+      )}
       <div className="ago-sched-top">
         {/* A thread loop opens from its thread line; the channel label
             only links when the card posts to the channel itself. */}
@@ -328,7 +347,7 @@ export function ScheduleEmpty({ filter = "all" }: { filter?: ScheduleFilter }) {
     <div className="empty ago-sched-empty">
       <Icon name="clock" />
       <strong>No schedules yet</strong>
-      <span>Ask an agent to schedule a message here. It will post as you at the time you choose.</span>
+      <span>Schedule a message from the composer, or ask an agent to. It will post as you at the time you choose.</span>
       <span className="ago-sched-example">Try: “Post our daily check here every weekday at 07:00 UTC.”</span>
     </div>
   );

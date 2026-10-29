@@ -81,6 +81,31 @@ async function seed() {
   }
   SEED.group = g.id;
   await seedDeepHistory(g);
+  await seedSchedules();
+}
+
+/* Scheduling from the composer, in a group of its own so its posts never
+   touch the other checks' channels. A thread to schedule into, and a
+   one-off due in seconds: it has fired (or the check waits for the tick)
+   by the time the Done-tab delete runs. */
+async function seedSchedules() {
+  let g = (await api("/api/groups")).groups.find(x => x.name === "Sched E2E");
+  if (!g) {
+    g = await api("/api/groups", { name: "Sched E2E" });
+    await api(`/api/groups/${g.id}/channels`, { name: "later" });
+    g = (await api("/api/groups")).groups.find(x => x.id === g.id);
+  }
+  const c = g.channels.find(x => x.name === "later");
+  SEED.schedGroup = g.id;
+  SEED.schedChannel = c.id;
+  const root = await api(`/api/channels/${c.id}/messages`, { text: `schedule thread ${Date.now()}` });
+  await api(`/api/channels/${c.id}/messages`, { text: "a reply", thread_id: root.id });
+  await api(`/api/threads/${root.id}`, { alias: "Schedule e2e thread" }, "PATCH");
+  SEED.schedRoot = root.id;
+  const done = await api(`/api/channels/${c.id}/schedules`, {
+    text: "parity finished schedule", run_at: Math.floor(Date.now() / 1000) + 3,
+  });
+  SEED.doneSchedule = done.schedule.id;
 }
 
 /* A channel deeper than one 50-message page, plus a long thread, for the
@@ -253,6 +278,52 @@ async function main() {
     await pane.locator(".ago-sched-row, .ago-sched-empty").first().waitFor({ timeout: 5000 });
     await pane.getByTitle("Close schedules").click();
     await pane.waitFor({ state: "detached", timeout: 5000 });
+  });
+
+  await check("schedules: a message scheduled from a thread composer lands in the scheduler under its thread", async () => {
+    await page.goto(BASE + `/g/${SEED.schedGroup}/c/${SEED.schedChannel}/t/${SEED.schedRoot}`);
+    const input = page.locator("#ago-thread-msg");
+    await input.waitFor({ timeout: 10000 });
+    await input.fill("parity scheduled reply");
+    await page.locator(`.chat-input[data-draft-key="t:${SEED.schedRoot}"] .ago-send-more`).click();
+    const menu = page.getByRole("dialog", { name: "Schedule message" });
+    await menu.getByText(/^All times in /).waitFor({ timeout: 5000 });
+    await menu.getByRole("button", { name: "In 3 hours" }).click();
+    await page.locator(".toast", { hasText: "Scheduled for" }).first().waitFor({ timeout: 5000 });
+    if (await input.inputValue() !== "") throw new Error("thread composer kept the scheduled text");
+    const live = (await api(`/api/channels/${SEED.schedChannel}/schedules`)).items
+      .find(s => s.text === "parity scheduled reply");
+    if (!live) throw new Error("schedule not created");
+    if (live.thread_id !== SEED.schedRoot) throw new Error(`scheduled into ${live.thread_id}, not the thread`);
+    if (Math.abs(live.run_at - (Date.now() / 1000 + 3 * 3600)) > 120) throw new Error(`run_at ${live.run_at} is not in 3 hours`);
+    if (await page.locator("#ago-thread-log .bubble", { hasText: "parity scheduled reply" }).count()) {
+      throw new Error("scheduling also posted the message");
+    }
+    await page.goto(BASE + "/inbox/schedules");
+    const row = page.locator(`.ago-sched-row[data-schedule-id="${live.id}"]`);
+    await row.waitFor({ timeout: 8000 });
+    await row.locator(".ago-sched-thread", { hasText: "Schedule e2e thread" }).waitFor({ timeout: 3000 });
+    await api(`/api/schedules/${live.id}`, undefined, "DELETE");
+  });
+
+  await check("schedules: a finished schedule deletes for good from the Done tab", async () => {
+    const id = SEED.doneSchedule;
+    const deadline = Date.now() + 80_000;
+    while (!(await api("/api/schedules?status=done")).items.some(s => s.id === id)) {
+      if (Date.now() > deadline) throw new Error("seeded schedule never finished");
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    await page.goto(BASE + "/inbox/schedules");
+    await page.getByRole("tab", { name: /^Done/ }).click();
+    const row = page.locator(`.ago-sched-row[data-schedule-id="${id}"]`);
+    await row.waitFor({ timeout: 8000 });
+    await row.getByRole("button", { name: "Delete schedule" }).click();
+    await row.getByRole("button", { name: "Confirm delete" }).click();
+    await row.waitFor({ state: "detached", timeout: 8000 });
+    if ((await api("/api/schedules?status=done")).items.some(s => s.id === id)) throw new Error("still listed after delete");
+    const posted = (await api(`/api/channels/${SEED.schedChannel}/messages?limit=100`)).messages
+      .some(m => m.text === "parity finished schedule");
+    if (!posted) throw new Error("the message it posted should stay");
   });
 
   await check("sidebar: group renders, expands, channel selects", async () => {

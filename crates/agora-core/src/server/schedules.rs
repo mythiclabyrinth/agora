@@ -19,6 +19,46 @@ fn viewer(user: &AuthedUser) -> Option<(&str, bool)> {
 /// admin's inbox can span every channel.
 pub(super) const MAX_LISTED: usize = 1000;
 
+/// The composer's quick "schedule in …" choices, in minutes from now.
+pub(crate) const DEFAULT_SCHEDULE_PRESETS: [u32; 2] = [60, 180];
+const MAX_SCHEDULE_PRESETS: usize = 5;
+
+/// `AGORA_SCHEDULE_PRESETS` (comma-separated minutes, e.g. `30,90,1440`):
+/// positive whole numbers, first occurrence kept, at most five, each under
+/// the 400-day schedule horizon. Anything malformed falls back to the default
+/// as a whole rather than half-applying an operator's typo.
+pub(crate) fn parse_schedule_presets(raw: Option<&str>) -> Vec<u32> {
+    let Some(raw) = raw.map(str::trim).filter(|r| !r.is_empty()) else {
+        return DEFAULT_SCHEDULE_PRESETS.to_vec();
+    };
+    let max_minutes = (crate::schedule_spec::MAX_LEAD_SECS / 60.0) as u32;
+    let mut out: Vec<u32> = Vec::new();
+    for part in raw.split(',') {
+        match part.trim().parse::<u32>() {
+            Ok(m) if m > 0 && m <= max_minutes => {
+                if !out.contains(&m) {
+                    out.push(m);
+                }
+            }
+            _ => {
+                tracing::warn!(value = raw, "AGORA_SCHEDULE_PRESETS is not a list of positive minutes; using the default");
+                return DEFAULT_SCHEDULE_PRESETS.to_vec();
+            }
+        }
+    }
+    if out.len() > MAX_SCHEDULE_PRESETS {
+        tracing::warn!(value = raw, "AGORA_SCHEDULE_PRESETS lists more than {MAX_SCHEDULE_PRESETS}; keeping the first {MAX_SCHEDULE_PRESETS}");
+        out.truncate(MAX_SCHEDULE_PRESETS);
+    }
+    out
+}
+
+/// The configured presets, read from the environment once per process.
+pub(crate) fn schedule_presets() -> &'static [u32] {
+    static PRESETS: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    PRESETS.get_or_init(|| parse_schedule_presets(std::env::var("AGORA_SCHEDULE_PRESETS").ok().as_deref()))
+}
+
 /// `?status=done` asks a list for every finished schedule (any age, most
 /// recently finished first) instead of the default live-first view; no
 /// other status filter exists.
@@ -342,7 +382,52 @@ pub(crate) fn patch_for_test(state: &AppState, user: &AuthedUser, id: &str, body
     patch_schedule(state, user, id, body)
 }
 
+/// POST /api/channels/{channel_id}/schedules — `{text, run_at, thread_id?}`:
+/// a person schedules one message of their own from the composer. It posts
+/// as them, once, in the channel or thread they wrote it in. The same checks
+/// as an agent-made schedule apply (text, caps, future time, posting rights,
+/// thread in this channel).
+pub(super) async fn create_schedule(
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    require_channel_postable(&state, &user, &channel_id)?;
+    let thread_id = match body.get("thread_id").filter(|v| !v.is_null()) {
+        Some(v) => Some(v.as_i64().ok_or_else(|| err(StatusCode::BAD_REQUEST, "thread_id must be a message id"))?),
+        None => None,
+    };
+    let run_at = body.get("run_at").filter(|v| !v.is_null()).ok_or_else(|| err(StatusCode::BAD_REQUEST, "run_at is required"))?;
+    if let Some(refusal) = state.hub.store.create_refusal(&user.username) {
+        return Err(refused(refusal, &user.username));
+    }
+    let checked = crate::hub::check_new_schedule(
+        &state.hub.store,
+        &user.username,
+        &channel_id,
+        thread_id,
+        body["text"].as_str().unwrap_or_default(),
+        &json!({"kind": "once", "at": run_at}),
+        Some(run_at),
+        now(),
+    )
+    .map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
+    let created = state
+        .hub
+        .store
+        .create_schedule_capped(&user.username, &checked.channel_id, checked.thread_id, &checked.text,
+            checked.run_at, &checked.schedule, &user.username, None)
+        .map_err(|e| refused(e, &user.username))?;
+    state.hub.publish_for(&created);
+    Ok(Json(json!({"schedule": decorate_schedule(&state.hub.store, &created, viewer(&user))})))
+}
+
 /// DELETE /api/schedules/{id} — cancel (kept as history, hidden from lists).
+/// With `?purge=1`, permanently delete a finished schedule instead; a live
+/// one is refused (409) so nothing still due is ever lost.
 pub(super) async fn delete_schedule(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -351,6 +436,19 @@ pub(super) async fn delete_schedule(
 ) -> Result<Json<Value>, ApiError> {
     let user = require_user(&state, &headers, &q)?;
     let (current, _) = require_manageable(&state, &user, &id)?;
+    if matches!(q.get("purge").map(String::as_str), Some("1" | "true")) {
+        let removed = state.hub.store.purge_finished_schedule(&id).map_err(|e| match e {
+            crate::store::PurgeRefused::Missing => err(StatusCode::NOT_FOUND, "Unknown schedule"),
+            crate::store::PurgeRefused::Live => {
+                err(StatusCode::CONFLICT, "Only a finished schedule can be deleted; cancel it first")
+            }
+            crate::store::PurgeRefused::Delivering => {
+                err(StatusCode::CONFLICT, "This schedule's last message is still being delivered; try again shortly")
+            }
+        })?;
+        state.hub.publish_for(&removed);
+        return Ok(Json(json!({"ok": true})));
+    }
     let change = cancel_change(&current).map_err(|m| err(StatusCode::CONFLICT, &m))?;
     let owner = current["owner"].as_str().unwrap_or_default();
     let updated = state
@@ -967,5 +1065,120 @@ mod tests {
             patch(&f, &f.sid, ana(), json!({"run_at": later + 60.0})).await.unwrap_err(),
             StatusCode::TOO_MANY_REQUESTS
         );
+    }
+
+    async fn create(f: &Fixture, cid: &str, headers: HeaderMap, body: Value) -> Result<Value, StatusCode> {
+        create_schedule(State(f.state.clone()), Path(cid.to_string()), Query(HashMap::new()), headers, Json(body))
+            .await
+            .map(|Json(v)| v)
+            .map_err(|e| e.into_response().status())
+    }
+
+    async fn purge(f: &Fixture, id: &str, headers: HeaderMap) -> StatusCode {
+        let q = HashMap::from([("purge".to_string(), "1".to_string())]);
+        match delete_schedule(State(f.state.clone()), Path(id.to_string()), Query(q), headers).await {
+            Ok(_) => StatusCode::OK,
+            Err(e) => e.into_response().status(),
+        }
+    }
+
+    #[tokio::test]
+    async fn people_schedule_a_one_off_message_of_their_own_where_they_wrote_it() {
+        let f = fixture();
+        let s = &f.state;
+        let store = &s.hub.store;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        s.hub.attach_socket("bob", false, tx);
+        let at = now() + 3600.0;
+        let out = create(&f, &f.cid, session_headers(s, "bob"), json!({"text": "  hi later  ", "run_at": at})).await.unwrap();
+        let sch = &out["schedule"];
+        assert_eq!(sch["owner"], "bob");
+        assert_eq!(sch["text"], "hi later");
+        assert_eq!(sch["thread_id"], Value::Null);
+        assert_eq!(sch["schedule"]["kind"], "once");
+        assert_eq!(sch["run_at"], at);
+        assert_eq!(sch["via_agent"], Value::Null);
+        assert_eq!(sch["is_owner"], true);
+        assert_eq!(drain_changes(&mut rx), 1, "channel viewers refresh their lists");
+        // In a thread: a reply id resolves to its root, like a live post.
+        let root = store.add_message(&f.cid, "root", "user", "ana", None, None, &[]);
+        let root_id = root["id"].as_i64().unwrap();
+        let reply = store.add_message(&f.cid, "reply", "user", "ana", None, Some(root_id), &[]);
+        let out = create(&f, &f.cid, session_headers(s, "bob"),
+            json!({"text": "in thread", "run_at": at, "thread_id": reply["id"]})).await.unwrap();
+        assert_eq!(out["schedule"]["thread_id"], root_id);
+        let listed = channel_list(&f, &f.cid, session_headers(s, "bob")).await.unwrap();
+        assert!(listed["items"].as_array().unwrap().iter().any(|i| i["thread_id"] == root_id && i["owner"] == "bob"));
+    }
+
+    #[tokio::test]
+    async fn scheduling_from_the_composer_is_checked_like_posting() {
+        let f = fixture();
+        let s = &f.state;
+        let at = now() + 3600.0;
+        let bob = || session_headers(s, "bob");
+        // Not a member (eve), someone else's DM (bob into ana's): refused.
+        assert_eq!(create(&f, &f.cid, session_headers(s, "eve"), json!({"text": "x", "run_at": at})).await.unwrap_err(), StatusCode::FORBIDDEN);
+        assert!(create(&f, &f.dm, bob(), json!({"text": "x", "run_at": at})).await.is_err());
+        // Bad input.
+        for body in [
+            json!({"text": "x"}),
+            json!({"text": "   ", "run_at": at}),
+            json!({"text": "x", "run_at": now() - 3600.0}),
+            json!({"text": "x", "run_at": "soon"}),
+            json!({"text": "x", "run_at": at, "thread_id": 999_999}),
+            json!({"text": "x", "run_at": at, "thread_id": "abc"}),
+        ] {
+            assert_eq!(create(&f, &f.cid, bob(), body.clone()).await.unwrap_err(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        // The hourly creation limit applies to people as it does to agents.
+        for _ in 0..crate::store::MAX_CREATES_PER_HOUR {
+            create(&f, &f.cid, bob(), json!({"text": "x", "run_at": at})).await.unwrap();
+        }
+        assert_eq!(create(&f, &f.cid, bob(), json!({"text": "x", "run_at": at})).await.unwrap_err(), StatusCode::TOO_MANY_REQUESTS);
+        // Their own agent DM works.
+        create(&f, &f.dm, session_headers(s, "ana"), json!({"text": "dm", "run_at": at})).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn purging_deletes_only_finished_schedules_for_those_who_manage_them() {
+        let f = fixture();
+        let s = &f.state;
+        let store = &s.hub.store;
+        // Live: refused, and the row survives.
+        assert_eq!(purge(&f, &f.sid, session_headers(s, "ana")).await, StatusCode::CONFLICT);
+        assert!(store.schedule(&f.sid).is_some());
+        store.update_schedule(&f.sid, &ScheduleChange { status: Some("done".into()), ..Default::default() }, "ana", None);
+        // A plain member who doesn't own it can't; an outsider learns nothing.
+        assert_eq!(purge(&f, &f.sid, session_headers(s, "bob")).await, StatusCode::FORBIDDEN);
+        assert_eq!(purge(&f, &f.sid, session_headers(s, "eve")).await, StatusCode::FORBIDDEN);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        s.hub.attach_socket("bob", false, tx);
+        // A channel admin may, like cancelling.
+        assert_eq!(purge(&f, &f.sid, session_headers(s, "cat")).await, StatusCode::OK);
+        assert!(store.schedule(&f.sid).is_none());
+        assert_eq!(drain_changes(&mut rx), 1, "lists drop it live");
+        assert_eq!(purge(&f, &f.sid, session_headers(s, "ana")).await, StatusCode::NOT_FOUND);
+        // A DM stays owner-only, even for an instance admin.
+        store.update_schedule(&f.dm_sid, &ScheduleChange { status: Some("done".into()), ..Default::default() }, "ana", None);
+        assert_eq!(purge(&f, &f.dm_sid, session_headers(s, "root")).await, StatusCode::FORBIDDEN);
+        assert_eq!(purge(&f, &f.dm_sid, session_headers(s, "ana")).await, StatusCode::OK);
+        // Without ?purge, DELETE still only cancels.
+        let live = store.create_schedule("ana", &f.cid, None, "x", now() + 600.0,
+            &json!({"kind": "once", "at": now() + 600.0}), "ana", None)["id"].as_str().unwrap().to_string();
+        assert_eq!(cancel(&f, &live, session_headers(s, "ana")).await, StatusCode::OK);
+        assert_eq!(store.schedule(&live).unwrap()["status"], "cancelled");
+    }
+
+    #[test]
+    fn schedule_presets_parse_minutes_and_fall_back_whole() {
+        assert_eq!(parse_schedule_presets(None), vec![60, 180]);
+        assert_eq!(parse_schedule_presets(Some("  ")), vec![60, 180]);
+        assert_eq!(parse_schedule_presets(Some("30, 90,120,1440")), vec![30, 90, 120, 1440]);
+        assert_eq!(parse_schedule_presets(Some("60,60,180")), vec![60, 180]);
+        assert_eq!(parse_schedule_presets(Some("1,2,3,4,5,6,7")), vec![1, 2, 3, 4, 5]);
+        for bad in ["0", "-5", "1h", "60,,180", "1.5", "99999999"] {
+            assert_eq!(parse_schedule_presets(Some(bad)), vec![60, 180], "{bad}");
+        }
     }
 }

@@ -2,8 +2,9 @@ import { SheetHeader } from "./SheetHeader";
 import { useSession } from "../state/session";
 /* Message composer: text, attachments (max 5, like the server), voice notes
    (🎤 → transcribed server-side), @mention autocomplete over the channel's
-   live agents + group members, and a "talk to" multi-select that prepends
-   the chosen agents' mentions to every message sent here. */
+   live agents + group members, a "talk to" multi-select that prepends
+   the chosen agents' mentions to every message sent here, and long-press on
+   Send to schedule the typed message for later. */
 
 import React, { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
@@ -57,6 +58,7 @@ import {
   fmtSize,
   isRequireAgentOn,
   MAX_MESSAGE_CHARS,
+  scheduledForLabel,
   slugify,
   uploadMaxBytes,
 } from "@agora/core";
@@ -72,6 +74,7 @@ import { toast, toastErr } from "./Toast";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { NATIVE_IMAGE, WEB_SAFE_IMAGE } from "../lib/files";
 import { TemplateSheet } from "./TemplateSheet";
+import { ScheduleSheet } from "./ScheduleSheet";
 
 const NONE_ADDRESSED: string[] = [];
 
@@ -195,6 +198,8 @@ export function Composer({
   initialRecording = false,
   maxFileMb,
   maxVideoMb,
+  onSchedule,
+  schedulePresets = [60, 180],
 }: {
   placeholder: string;
   mentions: MentionCandidate[];
@@ -236,6 +241,11 @@ export function Composer({
   initialRecording?: boolean;
   maxFileMb?: number;
   maxVideoMb?: number;
+  /** Schedule the typed text (with the "talk to" prefix) to post at `runAt`
+      (unix seconds) in this conversation; set to offer long-press on Send. */
+  onSchedule?: (v: { text: string; runAt: number }) => Promise<unknown>;
+  /** Quick choices in minutes from now (useSchedulePresets). */
+  schedulePresets?: number[];
 }) {
   const { colors } = useAppTheme();
   const styles = useStyles();
@@ -615,6 +625,42 @@ export function Composer({
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
+  /* Scheduling stores text only, so attachments keep it off. */
+  const [scheduleSheet, setScheduleSheet] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const openSchedule = () => {
+    if (!onSchedule) return;
+    if (files.length > 0) { toast("Remove attachments to schedule — scheduled messages are text only", "warn"); return; }
+    const body = text.trim();
+    if (!body || body === "@") { toast("Type a message to schedule", "warn"); return; }
+    setScheduleSheet(true);
+  };
+  const schedule = async (runAt: number) => {
+    if (!onSchedule || scheduling) return;
+    const body = text.trim();
+    if (!body || files.length > 0) { setScheduleSheet(false); return; }
+    const sentText = text;
+    const sentVersion = addressKey ? draftSync.version(addressKey) : 0;
+    const prefix = addressedAgents.map((a) => `@${slugify(a.name)}`).join(", ");
+    setScheduling(true);
+    try {
+      await onSchedule({ text: prefix ? `${prefix}, ${body}` : body, runAt });
+      setScheduleSheet(false);
+      // Clear only now the server has it, and only if nothing was typed since.
+      if (addressKey) {
+        if (draftSync.version(addressKey) === sentVersion
+          && (useMessageDrafts.getState().byConvo[addressKey] ?? "") === sentText) draftSync.edit(addressKey, "");
+      } else {
+        setLocalText((cur) => (cur === sentText ? "" : cur));
+      }
+      toast(scheduledForLabel(runAt));
+    } catch (e) {
+      toastErr("Couldn't schedule", e);
+    } finally {
+      setScheduling(false);
+    }
+  };
+
   const send = async () => {
     if (pasteOps > 0) return;
     const sentText = text;
@@ -839,8 +885,12 @@ export function Composer({
         {!focused && (text.trim() || files.length > 0) ? (
           <Pressable
             onPress={send}
+            onLongPress={onSchedule ? openSchedule : undefined}
+            delayLongPress={450}
+            hitSlop={4}
             disabled={sending || pasteOps > 0 || (text.trim() === "@" && files.length === 0)}
             accessibilityRole="button"
+            accessibilityHint={onSchedule ? "Press and hold to schedule" : undefined}
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
             style={[styles.sendBtn, (sending || pasteOps > 0) && styles.sendOff]}
           >
@@ -932,8 +982,12 @@ export function Composer({
           ) : null}
           <Pressable
             onPress={send}
+            onLongPress={onSchedule ? openSchedule : undefined}
+            delayLongPress={450}
+            hitSlop={4}
             disabled={sending || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)}
             accessibilityRole="button"
+            accessibilityHint={onSchedule ? "Press and hold to schedule" : undefined}
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
             style={[
               styles.sendBtn,
@@ -985,6 +1039,15 @@ export function Composer({
             </Pressable>
           </Pressable>
         </Modal>
+      ) : null}
+      {onSchedule ? (
+        <ScheduleSheet
+          visible={scheduleSheet}
+          presets={schedulePresets}
+          pending={scheduling}
+          onClose={() => setScheduleSheet(false)}
+          onSchedule={(runAt) => { void schedule(runAt); }}
+        />
       ) : null}
       {/* Outside the `focused` block on purpose: opening the sheet blurs the
           input, which collapses the toolbar the button lives in. */}
@@ -1213,10 +1276,13 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   },
   sheetBtn: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
   sheetText: { color: colors.text, fontSize: typography.body.fontSize },
+  /* 36pt so it sits level with the toolbar's icons (still the row's one
+     filled control); hitSlop keeps a 44pt tap target. */
   sendBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    margin: 4,
     backgroundColor: colors.accent,
     alignItems: "center",
     justifyContent: "center",

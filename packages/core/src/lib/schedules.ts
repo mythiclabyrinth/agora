@@ -253,3 +253,82 @@ export function scheduleEmptyCopy(filter: Exclude<ScheduleFilter, "all">): { tit
  *  agent that wasn't connected as it fired (matches hub/scheduler.rs). */
 export const SCHEDULE_OFFLINE_AGENT_ERROR =
   "An agent this message mentions wasn't connected when it posted, so it may not have received it.";
+
+/* ---------------------------------------------- scheduling from the composer */
+
+/** The composer's quick choices when the server names none: in 1 and 3 hours. */
+export const DEFAULT_SCHEDULE_PRESETS: readonly number[] = [60, 180];
+
+/** The server's `schedule_presets` (minutes) as a clean list, or the default
+    when it is missing (an older server) or malformed. */
+export function normalizeSchedulePresets(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [...DEFAULT_SCHEDULE_PRESETS];
+  const out: number[] = [];
+  for (const m of raw) {
+    if (typeof m === "number" && Number.isInteger(m) && m > 0 && !out.includes(m)) out.push(m);
+  }
+  return out.length ? out.slice(0, 5) : [...DEFAULT_SCHEDULE_PRESETS];
+}
+
+/** "In 1 hour", "In 90 minutes", "In 2 days": whole days, else whole hours,
+    else minutes. */
+export function schedulePresetLabel(minutes: number): string {
+  const plural = (n: number, unit: string) => `In ${n} ${unit}${n === 1 ? "" : "s"}`;
+  if (minutes % 1440 === 0) return plural(minutes / 1440, "day");
+  if (minutes % 60 === 0) return plural(minutes / 60, "hour");
+  return plural(minutes, "minute");
+}
+
+/** When a preset fires, from `nowMs`: whole seconds, so the toast and the
+    stored time agree. */
+export function presetRunAt(minutes: number, nowMs: number = Date.now()): number {
+  return Math.round(nowMs / 1000) + minutes * 60;
+}
+
+/** The browser's / device's own IANA time zone ("Asia/Kolkata"), which every
+    composer schedule time is picked and shown in. */
+export function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+/** "India Standard Time" for the device's zone, falling back to its IANA id
+    where the runtime has no long names. */
+export function timeZoneLongName(at: Date = new Date(), locale?: string): string {
+  try {
+    const part = new Intl.DateTimeFormat(locale, { timeZoneName: "long" })
+      .formatToParts(at)
+      .find(p => p.type === "timeZoneName");
+    if (part?.value) return part.value;
+  } catch { /* fall through */ }
+  return browserTimeZone();
+}
+
+/** "All times in India Standard Time" — the schedule sheet's subtitle. */
+export function scheduleTimeZoneNote(at: Date = new Date(), locale?: string): string {
+  return `All times in ${timeZoneLongName(at, locale)}`;
+}
+
+/** The toast after scheduling: "Scheduled for Today at 4:30 PM",
+    "Tomorrow at 9:00 AM", or "Fri, Oct 30 at 9:00 AM", in local time. */
+export function scheduledForLabel(runAt: number, nowMs: number = Date.now(), locale?: string): string {
+  const d = new Date(runAt * 1000);
+  const time = d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((dayStart(d) - dayStart(new Date(nowMs))) / 86_400_000);
+  const day = days === 0 ? "Today"
+    : days === 1 ? "Tomorrow"
+    : d.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
+  return `Scheduled for ${day} at ${time}`;
+}
+
+/** A custom time is usable only if it is still in the future (a minute of
+    slack so a picker left open briefly doesn't trip the server's check). */
+export function customRunAtError(runAt: number | null, nowMs: number = Date.now()): string | null {
+  if (runAt == null || !Number.isFinite(runAt)) return "Pick a date and time";
+  if (runAt * 1000 <= nowMs) return "Pick a time in the future";
+  return null;
+}

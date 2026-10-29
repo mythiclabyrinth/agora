@@ -1,8 +1,9 @@
 /* Scheduled messages for a channel, a thread, or (in the inbox) every
    channel the viewer can access. People only manage them here — pause,
-   resume, cancel, retime. Creating a schedule or changing its words is done
-   by asking an agent, which acts for that person; the server enforces that
-   split, so this screen simply never offers a create or text-edit path. */
+   resume, cancel, retime, delete a finished one. A schedule is created from
+   the composer (long-press Send) or by asking an agent; its words are only
+   changed by an agent, so this screen never offers a create or text-edit
+   path. */
 
 import React, { useMemo, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
@@ -19,6 +20,7 @@ import {
   nextRunsLabel,
   sortSchedules,
   useCancelSchedule,
+  usePurgeSchedule,
   useSchedules,
   useUpdateSchedule,
   type IntervalUnit,
@@ -39,7 +41,7 @@ const STATUS_LABEL: Record<Schedule["status"], string> = {
 };
 
 const EMPTY_TITLE = "No schedules yet.";
-const EMPTY_DESCRIPTION = "Ask an agent to schedule a message here. It posts as you at the time you choose.";
+const EMPTY_DESCRIPTION = "Press and hold Send to schedule a message, or ask an agent to. It posts as you at the time you choose.";
 
 /** Pause/resume and cancel for one schedule, with failures toasted. Busy is
     tracked per row: overlapping actions on two rows must not clear each
@@ -47,6 +49,7 @@ const EMPTY_DESCRIPTION = "Ask an agent to schedule a message here. It posts as 
 export function useScheduleActions() {
   const update = useUpdateSchedule();
   const cancel = useCancelSchedule();
+  const purge = usePurgeSchedule();
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
   const start = (id: string) => setBusyIds(prev => new Set(prev).add(id));
   const finish = (id: string) => setBusyIds(prev => {
@@ -76,7 +79,21 @@ export function useScheduleActions() {
       } },
     ],
   );
-  return { isBusy, setStatus, confirmCancel };
+  const confirmPurge = (item: Schedule) => Alert.alert(
+    "Delete schedule?",
+    "It's removed for good. Messages it already posted stay.",
+    [
+      { text: "Keep", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: () => {
+        start(item.id);
+        purge.mutate({ id: item.id, channel_id: item.channel_id }, {
+          onError: error => toastErr("Delete failed", error),
+          onSettled: () => finish(item.id),
+        });
+      } },
+    ],
+  );
+  return { isBusy, setStatus, confirmCancel, confirmPurge };
 }
 
 export function ScheduleRow({ item, showThread, showChannel = false, channelLabel, onOpen, onEdit, actions }: {
@@ -98,6 +115,8 @@ export function ScheduleRow({ item, showThread, showChannel = false, channelLabe
   // The owner lost the channel: keep Pause and Cancel (as the server allows),
   // nothing that would post into a conversation they can no longer see.
   const lostAccess = lostChannelAccess(item);
+  // Finished: deleted for good from the top right (what it posted stays).
+  const purgeable = item.can_manage === true && (item.status === "done" || item.status === "cancelled");
   const cadence = describeSchedule(item.schedule);
   const [expanded, setExpanded] = useState(false);
   const [showLater, setShowLater] = useState(false);
@@ -113,6 +132,14 @@ export function ScheduleRow({ item, showThread, showChannel = false, channelLabe
           <View style={[styles.chip, item.status !== "active" && styles.chipPaused]}>
             <Text maxFontSizeMultiplier={1.3} style={[styles.chipText, item.status !== "active" && styles.chipTextPaused]}>{STATUS_LABEL[item.status]}</Text>
           </View>
+          {purgeable ? (
+            busy ? <ActivityIndicator size="small" color={colors.dim} style={styles.purge} /> : (
+              <Pressable accessibilityRole="button" accessibilityLabel={`Delete schedule: ${cadence}`} hitSlop={6}
+                style={styles.purge} onPress={() => actions.confirmPurge(item)}>
+                <Icon icon={Trash2} size={18} color={colors.dim} />
+              </Pressable>
+            )
+          ) : null}
         </View>
         <Text style={styles.text} numberOfLines={expanded || item.text.length <= 160 ? undefined : 3}>{item.text}</Text>
         {where ? <View style={styles.thread}><Icon icon={MessageSquare} size={13} /><Text style={styles.meta} numberOfLines={1}>{where}</Text></View> : null}
@@ -469,6 +496,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   main: { minWidth: 0, gap: 8 },
   top: { flexDirection: "row", alignItems: "center", gap: 8 },
   cadence: { flex: 1, color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
+  purge: { width: 36, height: 36, marginVertical: -8, marginRight: -6, alignItems: "center", justifyContent: "center" },
   chip: { borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: colors.accentSoft },
   chipPaused: { backgroundColor: colors.panelStrong },
   chipText: { ...typography.caption, color: colors.accentText, fontWeight: weight.semibold },

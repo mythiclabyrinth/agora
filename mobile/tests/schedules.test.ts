@@ -523,3 +523,25 @@ test("inbox keeps one heading per channel on every tab when channels mix active 
   await act(async () => byLabel("Paused, 2")[0].props.onPress());
   expect(headers()).toEqual(["# alpha", "# storybook"]);
 });
+
+test("a finished card deletes for good from its trash icon after confirming; live cards have none", async () => {
+  const api = new TestApi(fixtureSchedules);
+  const finished: Schedule = { ...fixtureSchedules[1], id: "d-1", text: "finished one", status: "done", thread_id: null, thread_title: null };
+  api.done = [finished, { ...finished, id: "d-2", can_manage: false }];
+  await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
+  await flush();
+  expect(tree!.root.findAll(n => typeof n.props.accessibilityLabel === "string"
+    && n.props.accessibilityLabel.startsWith("Delete schedule") && typeof n.props.onPress === "function")).toHaveLength(0);
+  await act(async () => byLabel("Done")[0].props.onPress());
+  await flush();
+  // Only the one this person may manage gets the icon.
+  const trash = byLabel("Delete schedule: Every 6 hours");
+  expect(trash).toHaveLength(1);
+  const alert = jest.spyOn(Alert, "alert").mockImplementation((_title, _message, buttons) => {
+    buttons?.find(button => button.style === "destructive")?.onPress?.();
+  });
+  await act(async () => { trash[0].props.onPress(); });
+  await flush();
+  expect(alert.mock.calls[0][0]).toBe("Delete schedule?");
+  expect(api.deletes).toEqual(["/api/schedules/d-1?purge=1"]);
+});

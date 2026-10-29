@@ -28,6 +28,8 @@ import {
   useMe,
   useMessages,
   usePins,
+  useCreateSchedule,
+  useSchedulePresets,
   useSendMessage,
   useSeedActivity,
   useStars,
@@ -148,6 +150,8 @@ export default function ChannelScreen() {
   const messages = useMessages(channelId, null);
   const mergeNewestPage = useMergeNewestPage(channelId, null);
   const send = useSendMessage(channelId);
+  const createSchedule = useCreateSchedule();
+  const schedulePresets = useSchedulePresets();
   const sendVoice = useSendVoice(channelId);
   const transcribeVoice = useTranscribeVoice(channelId);
   const markRead = useMarkRead(channelId);
@@ -413,6 +417,8 @@ export default function ChannelScreen() {
           onSend={async ({ text, files, replyInThread, draftRev, clientId }) => {
             return await send.mutateAsync({ text, threadId: null, files, replyInThread, draftRev, clientId });
           }}
+          schedulePresets={schedulePresets}
+          onSchedule={({ text, runAt }) => createSchedule.mutateAsync({ channelId, threadId: null, text, runAt })}
           onSendVoice={
             sttOk
               ? async (file, mentions) => {
