@@ -18,7 +18,7 @@ pub const DM_GROUP_ID: &str = "__dms";
 pub const DM_GROUP_NAME: &str = "Direct messages";
 
 mod schedules;
-pub use schedules::{Fire, ScheduleChange, UpdateRefused, MAX_CREATES_PER_HOUR, MAX_LIVE_PER_OWNER};
+pub use schedules::{Fire, PurgeRefused, ScheduleChange, UpdateRefused, MAX_CREATES_PER_HOUR, MAX_LIVE_PER_OWNER};
 
 #[derive(Clone, Copy)]
 enum DeleteScope { Channel, Message, ThreadReplies }

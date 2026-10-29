@@ -222,8 +222,8 @@ Env key fallbacks are **not** folded into `config.json` at boot — see
 `AGORA_*` environment overrides are written into `config.json` at boot, so
 unsetting one later keeps the last value rather than reverting.
 
-`AGORA_BOT_LOOP_LIMIT`, `AGORA_BOT_LOOP_MAX`, `AGORA_STREAK_RESET_AGENTS`, and
-`AGORA_SCHEDULER_GRACE_SECS` are exceptions: they are read
+`AGORA_BOT_LOOP_LIMIT`, `AGORA_BOT_LOOP_MAX`, `AGORA_STREAK_RESET_AGENTS`,
+`AGORA_SCHEDULER_GRACE_SECS`, and `AGORA_SCHEDULE_PRESETS` are exceptions: they are read
 straight from the process env and are not persisted to `config.json`.
 `AGORA_BOT_LOOP_LIMIT` is the default consecutive-agent relay budget (`10`),
 while `AGORA_BOT_LOOP_MAX` is the safety ceiling (`50`) applied to a per-agent
@@ -235,6 +235,14 @@ ceiling are clamped. These env values are read once at server startup.
 scheduled-message tick waits after boot, and after a sleep/wake gap, before
 firing due schedules, so agent bridges and dial-out connections can reconnect
 first.
+
+`AGORA_SCHEDULE_PRESETS` sets the quick choices people get when they schedule
+a message from the composer (the Send chevron on desktop, long-press on
+touch): a comma-separated list of minutes from now, default `60,180` ("In 1
+hour", "In 3 hours"). Clients label each as days when it is a whole number of
+days, else hours when a whole number of hours, else minutes, so `30,90,1440`
+shows "In 30 minutes", "In 90 minutes", "In 1 day". At most five are used;
+anything malformed falls back to the default. Custom times are always offered.
 
 `AGORA_STREAK_RESET_AGENTS` is a comma-separated allowlist of scheduler agent
 ids. A listed agent resets the bot streak for a channel/thread only when its

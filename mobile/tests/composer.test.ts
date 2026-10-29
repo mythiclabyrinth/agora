@@ -815,3 +815,137 @@ test("iOS WebM attachments fall back to the downloadable file card", () => {
   act(() => tree.unmount());
   Object.defineProperty(Platform, "OS", { configurable: true, value: original });
 });
+
+jest.mock("@react-native-community/datetimepicker", () => {
+  const mockReact = require("react");
+  const { View: MockView } = require("react-native");
+  const Picker = (props: object) => mockReact.createElement(MockView, props);
+  return { __esModule: true, default: Picker, DateTimePickerAndroid: { open: jest.fn() } };
+});
+
+function renderSchedulable(onSchedule: jest.Mock, onSend = jest.fn(async () => undefined)) {
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    tree = TestRenderer.create(React.createElement(SafeAreaProvider,
+      { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+      React.createElement(Composer, {
+        placeholder: "Message #test", mentions: [], addressKey: "channel-s", sending: false, onSend, onSchedule,
+        schedulePresets: [30, 180],
+      }),
+    ));
+  });
+  return tree;
+}
+
+test("long-pressing Send schedules the draft from the sheet and clears it only once the server has it", async () => {
+  let resolve!: () => void;
+  const onSchedule = jest.fn(() => new Promise<void>(r => { resolve = r; }));
+  const onSend = jest.fn(async () => undefined);
+  const tree = renderSchedulable(onSchedule, onSend);
+  const input = () => tree.root.findByType(TextInput);
+  act(() => input().props.onChangeText("standup at 5"));
+  act(() => input().props.onFocus());
+  const send = labelled(tree.root, "Send message");
+  expect(send.props.delayLongPress).toBe(450);
+  act(() => send.props.onLongPress());
+  expect(onSend).not.toHaveBeenCalled();
+  const rows = tree.root.findAllByType(Text).map(t => [t.props.children].flat().join(""));
+  expect(rows).toEqual(expect.arrayContaining(["Schedule message", "In 30 minutes", "In 3 hours", "Custom time"]));
+  expect(rows.some(r => /^All times in /.test(r))).toBe(true);
+  const before = Math.round(Date.now() / 1000);
+  const preset = labelled(tree.root, "In 3 hours");
+  await act(async () => { preset.props.onPress(); preset.props.onPress(); });
+  expect(onSchedule).toHaveBeenCalledTimes(1);
+  const { text, runAt } = (onSchedule.mock.calls[0] as unknown as [{ text: string; runAt: number }])[0];
+  expect(text).toBe("standup at 5");
+  expect(runAt).toBeGreaterThanOrEqual(before + 180 * 60);
+  expect(input().props.value).toBe("standup at 5");
+  expect(labelled(tree.root, "Send message").props.disabled).toBe(true);
+  await act(async () => { send.props.onPress(); });
+  expect(onSend).not.toHaveBeenCalled();
+  await act(async () => { resolve(); });
+  expect(input().props.value).toBe("");
+  act(() => tree.unmount());
+});
+
+test("screen-reader scheduling action and close control preserve the draft", () => {
+  const onSchedule = jest.fn();
+  const tree = renderSchedulable(onSchedule);
+  const input = tree.root.findByType(TextInput);
+  act(() => input.props.onChangeText("keep this draft"));
+  const send = labelled(tree.root, "Send message");
+  expect(send.props.accessibilityActions).toContainEqual({ name: "schedule", label: "Schedule message" });
+  act(() => send.props.onAccessibilityAction({ nativeEvent: { actionName: "schedule" } }));
+  act(() => labelled(tree.root, "Close schedule options").props.onPress());
+  expect(tree.root.findByType(TextInput).props.value).toBe("keep this draft");
+  expect(onSchedule).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});
+
+test("a failed schedule keeps the draft, and attachments keep scheduling off", async () => {
+  const onSchedule = jest.fn(async () => { throw new Error("offline"); });
+  const tree = renderSchedulable(onSchedule);
+  const input = () => tree.root.findByType(TextInput);
+  act(() => input().props.onChangeText("keep me"));
+  act(() => input().props.onFocus());
+  act(() => labelled(tree.root, "Send message").props.onLongPress());
+  act(() => labelled(tree.root, "Custom time").props.onPress());
+  await act(async () => { labelled(tree.root, "Schedule message").props.onPress(); });
+  expect(onSchedule).toHaveBeenCalledTimes(1);
+  expect(input().props.value).toBe("keep me");
+  act(() => tree.unmount());
+
+  const withFiles = jest.fn();
+  let t2!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    t2 = TestRenderer.create(React.createElement(SafeAreaProvider,
+      { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+      React.createElement(Composer, {
+        placeholder: "Message", mentions: [], addressKey: "channel-f", sending: false, onSend: async () => {},
+        onSchedule: withFiles, initialFiles: [files[1]],
+      }),
+    ));
+  });
+  act(() => t2.root.findByType(TextInput).props.onChangeText("with a file"));
+  act(() => t2.root.findByType(TextInput).props.onFocus());
+  act(() => labelled(t2.root, "Send message").props.onLongPress());
+  expect(t2.root.findAllByType(Text).some(t => t.props.children === "Custom time")).toBe(false);
+  act(() => t2.unmount());
+});
+
+test("the send button is a compact 36pt square with a 44pt tap target", () => {
+  const tree = renderSchedulable(jest.fn());
+  act(() => tree.root.findByType(TextInput).props.onChangeText("hi"));
+  act(() => tree.root.findByType(TextInput).props.onFocus());
+  const send = labelled(tree.root, "Send message");
+  const style = StyleSheet.flatten(typeof send.props.style === "function" ? send.props.style({ pressed: false }) : send.props.style);
+  expect(style).toMatchObject({ width: 36, height: 36 });
+  expect(send.props.hitSlop).toBe(4);
+  act(() => tree.unmount());
+});
+
+test("reply-in-thread keeps scheduling off: a schedule can't ask for a threaded answer", () => {
+  const onSchedule = jest.fn();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    tree = TestRenderer.create(React.createElement(SafeAreaProvider,
+      { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+      React.createElement(Composer, {
+        placeholder: "Message #test", mentions: [], addressKey: "channel-r", sending: false,
+        onSend: async () => {}, onSchedule, threadToggle: true,
+      }),
+    ));
+  });
+  const input = () => tree.root.findByType(TextInput);
+  act(() => input().props.onChangeText("answer in a thread"));
+  act(() => input().props.onFocus());
+  act(() => labelled(tree.root, "Agents answer this message in a thread under it").props.onPress());
+  act(() => labelled(tree.root, "Send message").props.onLongPress());
+  expect(tree.root.findAllByType(Text).some(t => t.props.children === "Custom time")).toBe(false);
+  // Turning it off lets the sheet open again.
+  act(() => labelled(tree.root, "Agents answer this message in a thread under it").props.onPress());
+  act(() => labelled(tree.root, "Send message").props.onLongPress());
+  expect(tree.root.findAllByType(Text).some(t => t.props.children === "Custom time")).toBe(true);
+  expect(onSchedule).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});

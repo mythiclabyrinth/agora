@@ -32,6 +32,8 @@ import {
   useMe,
   useMessage,
   useMessages,
+  useCreateSchedule,
+  useSchedulePresets,
   useSendMessage,
   useStars,
 } from "@agora/core";
@@ -95,6 +97,8 @@ export default function ThreadScreen() {
   const mergeNewestPage = useMergeNewestPage(channelId, rootId);
   const topLevel = useMessages(channelId, null);
   const send = useSendMessage(channelId);
+  const createSchedule = useCreateSchedule();
+  const schedulePresets = useSchedulePresets();
   const sendVoice = useSendVoice(channelId);
   const transcribeVoice = useTranscribeVoice(channelId);
   const sttOk = useSession((s) => s.sttOk);
@@ -370,6 +374,8 @@ export default function ThreadScreen() {
           onSend={async ({ text, files, requireAgent, draftRev, clientId }) => {
             return await send.mutateAsync({ text, threadId: rootId, files, requireAgent, draftRev, clientId });
           }}
+          schedulePresets={schedulePresets}
+          onSchedule={({ text, runAt }) => createSchedule.mutateAsync({ channelId, threadId: rootId, text, runAt })}
           onSendVoice={
             sttOk
               ? async (file, mentions, requireAgent) => {

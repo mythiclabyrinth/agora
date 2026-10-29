@@ -2,7 +2,7 @@
   "expo": {
     "name": "Agora",
     "slug": "agora",
-    "version": "1.0.10",
+    "version": "1.0.11",
     "scheme": "agora",
     "orientation": "default",
     "icon": "./assets/icon.png",

@@ -24,6 +24,8 @@ export const keys = {
     ["schedules", channelId, threadId ?? 0, "done"] as const,
   allSchedules: ["allSchedules"] as const,
   allDoneSchedules: ["allSchedules", "done"] as const,
+  /* Public instance config (GET /api/auth/config), incl. schedule presets. */
+  instanceConfig: ["instanceConfig"] as const,
   channelAgents: (channelId: string) => ["channelAgents", channelId] as const,
   activity: (channelId: string) => ["activity", channelId] as const,
   allActivity: ["allActivity"] as const,

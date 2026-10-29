@@ -24,7 +24,7 @@ import {
   replaceMessage,
   type MessagePages,
 } from "../ws/reducer";
-import { onlyDone } from "../lib/schedules";
+import { onlyDone, normalizeSchedulePresets } from "../lib/schedules";
 import type {
   AgentInfo,
   ApprovalItem,
@@ -815,6 +815,44 @@ export function useCancelSchedule() {
       api.delete<{ ok: boolean }>(`/api/schedules/${encodeURIComponent(schedule.id)}`),
     onSuccess: (_res, schedule) => refreshSchedules(qc, schedule.channel_id),
   });
+}
+
+/** Schedule a one-off message as the signed-in person, in a channel or a
+    thread (`threadId`), posting at `runAt` (unix seconds). */
+export function useCreateSchedule() {
+  const api = useApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { channelId: string; threadId: number | null; text: string; runAt: number }) =>
+      api.post<{ schedule: Schedule }>(`/api/channels/${encodeURIComponent(v.channelId)}/schedules`, {
+        text: v.text, run_at: v.runAt, thread_id: v.threadId,
+      }),
+    onSuccess: ({ schedule }) => refreshSchedules(qc, schedule.channel_id),
+  });
+}
+
+/** Permanently delete a finished schedule (the server refuses a live one).
+    Messages it already posted stay. */
+export function usePurgeSchedule() {
+  const api = useApi(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (schedule: Pick<Schedule, "id" | "channel_id">) =>
+      api.delete<{ ok: boolean }>(`/api/schedules/${encodeURIComponent(schedule.id)}?purge=1`),
+    onSuccess: (_res, schedule) => refreshSchedules(qc, schedule.channel_id),
+  });
+}
+
+/** The composer's "schedule in …" choices, in minutes from now, as the
+    server configures them (AGORA_SCHEDULE_PRESETS). An older server that
+    doesn't send them, or a failed fetch, gets the default. */
+export function useSchedulePresets(): number[] {
+  const api = useApi();
+  const q = useQuery({
+    queryKey: keys.instanceConfig,
+    queryFn: () => api.get<{ schedule_presets?: unknown }>("/api/auth/config"),
+    staleTime: Infinity,
+    retry: false,
+  });
+  return normalizeSchedulePresets(q.data?.schedule_presets);
 }
 
 /** Edit the signed-in author's message. The server broadcasts the same

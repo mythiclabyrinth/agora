@@ -414,7 +414,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/channels/{channel_id}/threads/{thread_id}/replies", delete(clear_thread_replies))
         .route("/api/channels/{channel_id}/attachments", get(list_attachments))
-        .route("/api/channels/{channel_id}/schedules", get(schedules::list_channel_schedules))
+        .route(
+            "/api/channels/{channel_id}/schedules",
+            get(schedules::list_channel_schedules).post(schedules::create_schedule),
+        )
         .route("/api/schedules", get(schedules::list_schedules))
         .route(
             "/api/schedules/{schedule_id}",
@@ -6424,6 +6427,9 @@ async fn auth_config(State(state): State<AppState>) -> Json<Value> {
         "google": {"enabled": state.config.google().is_some()},
         "apple": {"enabled": state.config.apple().is_some()},
         "admin": {"enabled": state.config.admin_login_enabled()},
+        // Not auth, but public instance config every client already fetches
+        // before sign-in: the composer's "schedule in …" choices, in minutes.
+        "schedule_presets": schedules::schedule_presets(),
     }))
 }
 

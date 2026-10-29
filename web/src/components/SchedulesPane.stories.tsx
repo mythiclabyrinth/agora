@@ -223,7 +223,7 @@ export const ReArmedOneOffStartsFromNextRun: Story = {
 export const Empty: Story = {
   parameters: { apiRoutes: { ...meta.parameters.apiRoutes, "GET /api/channels/general/schedules": { items: [] } } },
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).findByText(/Ask an agent to schedule a message/)).resolves.toBeVisible();
+    await expect(within(canvasElement).findByText(/Schedule a message from the composer/)).resolves.toBeVisible();
   },
 };
 
@@ -400,3 +400,43 @@ export const ActiveDeliveryError: Story = {
 
 /** Stable overview for light/dark and narrow-width visual checks. */
 export const FilterOverview: Story = {};
+
+/** Finished cards carry a trash icon top right (for those who may manage
+    them); two clicks delete for good, live cards never offer it. */
+const purged = fn(() => ({ ok: true }));
+export const DeleteFinishedSchedule: Story = {
+  parameters: {
+    setup: () => {
+      purged.mockClear();
+      useUiState.setState({
+        sel: { g: "product", c: "general" }, schedulesOpen: true, schedulesThread: null, filesOpen: false, membersOpen: false,
+      });
+    },
+    apiRoutes: {
+      ...meta.parameters.apiRoutes,
+      "GET /api/channels/general/schedules?status=done": {
+        items: [{ ...doneList[0], can_manage: true }, doneList[1]],
+      },
+      "DELETE /api/schedules/d-new?purge=1": purged,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Every 6 hours");
+    expect(canvas.queryAllByRole("button", { name: "Delete schedule" })).toHaveLength(0);
+    await userEvent.click(within(await canvas.findByRole("tablist", { name: "Schedule status" })).getByRole("tab", { name: /^Done/ }));
+    const mine = await waitFor(() => canvasElement.querySelector<HTMLElement>('[data-schedule-id="d-new"]')!);
+    const other = canvasElement.querySelector<HTMLElement>('[data-schedule-id="d-old"]')!;
+    expect(within(other).queryByRole("button", { name: "Delete schedule" })).toBeNull();
+    const trash = within(mine).getByRole("button", { name: "Delete schedule" });
+    // Top right of the card, level with its first line.
+    const card = mine.getBoundingClientRect();
+    const box = trash.getBoundingClientRect();
+    expect(card.right - box.right).toBeLessThan(24);
+    expect(box.top - card.top).toBeLessThan(24);
+    await userEvent.click(trash);
+    expect(purged).not.toHaveBeenCalled();
+    await userEvent.click(within(mine).getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(purged).toHaveBeenCalledTimes(1));
+  },
+};

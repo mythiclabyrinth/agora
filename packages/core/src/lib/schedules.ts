@@ -253,3 +253,150 @@ export function scheduleEmptyCopy(filter: Exclude<ScheduleFilter, "all">): { tit
  *  agent that wasn't connected as it fired (matches hub/scheduler.rs). */
 export const SCHEDULE_OFFLINE_AGENT_ERROR =
   "An agent this message mentions wasn't connected when it posted, so it may not have received it.";
+
+/* ---------------------------------------------- scheduling from the composer */
+
+/** The composer's quick choices when the server names none: in 1 and 3 hours. */
+export const DEFAULT_SCHEDULE_PRESETS: readonly number[] = [60, 180];
+
+/** The server's `schedule_presets` (minutes) as a clean list, or the default
+    when it is missing (an older server) or malformed. */
+export function normalizeSchedulePresets(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [...DEFAULT_SCHEDULE_PRESETS];
+  const out: number[] = [];
+  for (const m of raw) {
+    if (typeof m === "number" && Number.isInteger(m) && m > 0 && !out.includes(m)) out.push(m);
+  }
+  return out.length ? out.slice(0, 5) : [...DEFAULT_SCHEDULE_PRESETS];
+}
+
+/** "In 1 hour", "In 90 minutes", "In 2 days": whole days, else whole hours,
+    else minutes. */
+export function schedulePresetLabel(minutes: number): string {
+  const plural = (n: number, unit: string) => `In ${n} ${unit}${n === 1 ? "" : "s"}`;
+  if (minutes % 1440 === 0) return plural(minutes / 1440, "day");
+  if (minutes % 60 === 0) return plural(minutes / 60, "hour");
+  return plural(minutes, "minute");
+}
+
+/** When a preset fires, from `nowMs`: whole seconds, so the toast and the
+    stored time agree. */
+export function presetRunAt(minutes: number, nowMs: number = Date.now()): number {
+  return Math.round(nowMs / 1000) + minutes * 60;
+}
+
+/** The browser's / device's own IANA time zone ("Asia/Kolkata"), which every
+    composer schedule time is picked and shown in. */
+export function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+/** "India Standard Time" for the device's zone, falling back to its IANA id
+    where the runtime has no long names. */
+export function timeZoneLongName(at: Date = new Date(), locale?: string): string {
+  try {
+    const part = new Intl.DateTimeFormat(locale, { timeZoneName: "long" })
+      .formatToParts(at)
+      .find(p => p.type === "timeZoneName");
+    if (part?.value) return part.value;
+  } catch { /* fall through */ }
+  return browserTimeZone();
+}
+
+/** "All times in India Standard Time" — the schedule sheet's subtitle. */
+export function scheduleTimeZoneNote(at: Date = new Date(), locale?: string): string {
+  return `All times in ${timeZoneLongName(at, locale)}`;
+}
+
+/** The toast after scheduling: "Scheduled for Today at 4:30 PM",
+    "Tomorrow at 9:00 AM", or "Fri, Oct 30 at 9:00 AM", in local time. */
+export function scheduledForLabel(runAt: number, nowMs: number = Date.now(), locale?: string): string {
+  const d = new Date(runAt * 1000);
+  const time = d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((dayStart(d) - dayStart(new Date(nowMs))) / 86_400_000);
+  const day = days === 0 ? "Today"
+    : days === 1 ? "Tomorrow"
+    : d.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
+  return `Scheduled for ${day} at ${time}`;
+}
+
+/** A custom time is usable only if it is still in the future at submit;
+    there is no slack, so a time that has just passed is refused here rather
+    than by the server. */
+export function customRunAtError(runAt: number | null, nowMs: number = Date.now()): string | null {
+  if (runAt == null || !Number.isFinite(runAt)) return "Pick a date and time";
+  if (runAt * 1000 <= nowMs) return "Pick a time in the future";
+  return null;
+}
+
+/** The custom picker's opening time: the next whole *local* hour
+    (10:10 → 11:00), so zones with a :30 or :45 offset still open on
+    the hour. */
+export function defaultCustomRunAt(nowMs: number = Date.now()): number {
+  const d = new Date(nowMs);
+  d.setMinutes(0, 0, 0);
+  d.setHours(d.getHours() + 1);
+  return Math.round(d.getTime() / 1000);
+}
+
+/** The wheel picker's four columns: day (0 = today), 12-hour clock hour,
+    minute, and AM/PM — local time, as on an iOS date-and-time wheel. */
+export interface WheelValue {
+  day: number;
+  hour12: number;
+  minute: number;
+  pm: boolean;
+}
+
+/** How many days the day column offers, today included. */
+export const WHEEL_DAYS = 366;
+
+function localDayStart(ms: number): Date {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Wheel columns → unix seconds, local time. */
+export function wheelToRunAt(v: WheelValue, nowMs: number = Date.now()): number {
+  const base = localDayStart(nowMs);
+  const hour24 = (v.hour12 % 12) + (v.pm ? 12 : 0);
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + v.day, hour24, v.minute);
+  return Math.round(d.getTime() / 1000);
+}
+
+/** Unix seconds → wheel columns; a time before today clamps to today and
+    one past the last day to that day. */
+export function runAtToWheel(runAt: number, nowMs: number = Date.now()): WheelValue {
+  const d = new Date(runAt * 1000);
+  const t0 = localDayStart(nowMs);
+  const t1 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  // Calendar-day difference, immune to a DST hour.
+  const days = Math.round((Date.UTC(t1.getFullYear(), t1.getMonth(), t1.getDate())
+    - Date.UTC(t0.getFullYear(), t0.getMonth(), t0.getDate())) / 86_400_000);
+  const h = d.getHours();
+  return {
+    day: Math.min(Math.max(days, 0), WHEEL_DAYS - 1),
+    hour12: h % 12 || 12,
+    minute: d.getMinutes(),
+    pm: h >= 12,
+  };
+}
+
+/** The day column's row: "Today", then "Fri Oct 30" (no comma, as iOS). */
+export function wheelDayLabel(day: number, nowMs: number = Date.now(), locale?: string): string {
+  if (day === 0) return "Today";
+  const base = localDayStart(nowMs);
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + day);
+  try {
+    const parts = new Intl.DateTimeFormat(locale, { weekday: "short", month: "short", day: "numeric" }).formatToParts(d);
+    const pick = (t: string) => parts.find(p => p.type === t)?.value ?? "";
+    return `${pick("weekday")} ${pick("month")} ${pick("day")}`.trim();
+  } catch {
+    return d.toDateString().slice(0, 10);
+  }
+}
