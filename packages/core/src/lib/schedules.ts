@@ -334,13 +334,12 @@ export function customRunAtError(runAt: number | null, nowMs: number = Date.now(
   return null;
 }
 
-/** The custom picker's opening time: the next whole *local* hour after one
-    from now (10:10 → 12:00), so zones with a :30 or :45 offset still open on
+/** The custom picker's opening time: the next whole *local* hour
+    (10:10 → 11:00), so zones with a :30 or :45 offset still open on
     the hour. */
 export function defaultCustomRunAt(nowMs: number = Date.now()): number {
   const d = new Date(nowMs);
   d.setMinutes(0, 0, 0);
-  if (d.getTime() < nowMs) d.setHours(d.getHours() + 1);
   d.setHours(d.getHours() + 1);
   return Math.round(d.getTime() / 1000);
 }

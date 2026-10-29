@@ -10,6 +10,7 @@ import React, { useEffect, useMemo, useRef, useState, type ReactElement } from "
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -628,22 +629,26 @@ export function Composer({
   /* Scheduling stores text only, so attachments and reply-in-thread keep it off. */
   const [scheduleSheet, setScheduleSheet] = useState(false);
   const [scheduling, setScheduling] = useState(false);
+  const schedulingRef = useRef(false);
   const openSchedule = () => {
-    if (!onSchedule) return;
+    if (!onSchedule || schedulingRef.current) return;
+    if (recPhase !== "idle") { toast("Finish the voice note first", "warn"); return; }
     if (files.length > 0) { toast("Remove attachments to schedule — scheduled messages are text only", "warn"); return; }
     // A schedule posts plain text: it can't ask agents to answer in a thread.
     if (threadToggle && replyInThread) { toast("Turn off reply-in-thread to schedule", "warn"); return; }
     const body = text.trim();
     if (!body || body === "@") { toast("Type a message to schedule", "warn"); return; }
+    Keyboard.dismiss();
     setScheduleSheet(true);
   };
   const schedule = async (runAt: number) => {
-    if (!onSchedule || scheduling) return;
+    if (!onSchedule || schedulingRef.current) return;
     const body = text.trim();
     if (!body || files.length > 0) { setScheduleSheet(false); return; }
     const sentText = text;
     const sentVersion = addressKey ? draftSync.version(addressKey) : 0;
     const prefix = addressedAgents.map((a) => `@${slugify(a.name)}`).join(", ");
+    schedulingRef.current = true;
     setScheduling(true);
     try {
       await onSchedule({ text: prefix ? `${prefix}, ${body}` : body, runAt });
@@ -659,11 +664,13 @@ export function Composer({
     } catch (e) {
       toastErr("Couldn't schedule", e);
     } finally {
+      schedulingRef.current = false;
       setScheduling(false);
     }
   };
 
   const send = async () => {
+    if (schedulingRef.current) return;
     if (pasteOps > 0) return;
     const sentText = text;
     const sentVersion = addressKey ? draftSync.version(addressKey) : 0;
@@ -890,13 +897,15 @@ export function Composer({
             onLongPress={onSchedule ? openSchedule : undefined}
             delayLongPress={450}
             hitSlop={4}
-            disabled={sending || pasteOps > 0 || (text.trim() === "@" && files.length === 0)}
+            disabled={sending || scheduling || pasteOps > 0 || (text.trim() === "@" && files.length === 0)}
             accessibilityRole="button"
             accessibilityHint={onSchedule ? "Press and hold to schedule" : undefined}
+            accessibilityActions={onSchedule ? [{ name: "schedule", label: "Schedule message" }] : undefined}
+            onAccessibilityAction={e => { if (e.nativeEvent.actionName === "schedule") openSchedule(); }}
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
-            style={[styles.sendBtn, (sending || pasteOps > 0) && styles.sendOff]}
+            style={[styles.sendBtn, (sending || scheduling || pasteOps > 0) && styles.sendOff]}
           >
-            {sending || pasteOps > 0 ? (
+            {sending || scheduling || pasteOps > 0 ? (
               <ActivityIndicator size="small" color={colors.onAccent} />
             ) : (
               <Icon icon={ArrowUp} size={20} color={colors.onAccent} strokeWidth={2.4} />
@@ -987,16 +996,18 @@ export function Composer({
             onLongPress={onSchedule ? openSchedule : undefined}
             delayLongPress={450}
             hitSlop={4}
-            disabled={sending || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)}
+            disabled={sending || scheduling || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)}
             accessibilityRole="button"
             accessibilityHint={onSchedule ? "Press and hold to schedule" : undefined}
+            accessibilityActions={onSchedule ? [{ name: "schedule", label: "Schedule message" }] : undefined}
+            onAccessibilityAction={e => { if (e.nativeEvent.actionName === "schedule") openSchedule(); }}
             accessibilityLabel={pasteOps > 0 ? "Processing pasted image" : "Send message"}
             style={[
               styles.sendBtn,
-              (sending || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)) && styles.sendOff,
+              (sending || scheduling || pasteOps > 0 || ((!text.trim() || text.trim() === "@") && files.length === 0)) && styles.sendOff,
             ]}
           >
-            {sending || pasteOps > 0 ? (
+            {sending || scheduling || pasteOps > 0 ? (
               <ActivityIndicator size="small" color={colors.onAccent} />
             ) : (
               <Icon icon={ArrowUp} size={20} color={colors.onAccent} strokeWidth={2.4} />

@@ -4059,12 +4059,19 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 /* Phones: a compact Send, about the height of the tool icons beside it,
    still the strongest colour in the row. */
 @media (max-width: 820px) {
+  .chat-input .ago-send-group { min-height: 44px; align-items: center; }
   .chat-input .ago-send-group > .btn.primary { min-height: 34px; min-width: 34px; padding: 5px 13px; font-size: 13px; }
+  .chat-input .ago-send-group > .ago-send { position: relative; min-width: 44px; }
+  .chat-input .ago-send-group > .ago-send::after { content: ""; position: absolute; inset: -5px 0; }
   .chat-input .ago-send-group > .ago-send-more { padding: 0 6px; }
 }
 
 .ago-sched-send-body { display: flex; flex-direction: column; }
-.ago-sched-send-head { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px 10px; border-bottom: 1px solid var(--border); }
+.ago-sched-send-head { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 12px 50px 10px 14px; border-bottom: 1px solid var(--border); }
+.ago-sched-send-close { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 8px; background: transparent; color: var(--dim); cursor: pointer; }
+.ago-sched-send-close:hover { background: rgba(var(--ink-rgb),.06); color: var(--text); }
+.ago-sched-send-close:focus-visible { outline: 2px solid var(--a1); outline-offset: -3px; }
+.ago-sched-send-close .ico { width: 18px; height: 18px; pointer-events: none; }
 .ago-sched-send-head strong { font-size: 14px; color: var(--text); }
 .ago-sched-send-head .dim { font-size: 12px; }
 .ago-sched-send-list { display: flex; flex-direction: column; padding: 4px 0; }
@@ -4084,16 +4091,17 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .ago-sched-send-menu {
   position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 60; width: 260px;
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised);
-  box-shadow: var(--elevation-panel); overflow: hidden;
+  box-shadow: var(--elevation-panel); overflow-y: auto; max-height: min(540px, 75dvh);
 }
 /* Phones: the same choices in a bottom sheet with thumb-sized rows. */
 .ago-sched-send-sheet {
   position: fixed; inset: auto 0 0; margin: 0; width: 100%; max-width: none; max-height: 85dvh; padding: 8px 0 max(12px, env(safe-area-inset-bottom));
   border: 1px solid var(--border); border-radius: 18px 18px 0 0; background: var(--surface-raised); box-shadow: var(--elevation-panel); color: var(--text);
+  overflow-y: auto; overscroll-behavior: contain;
 }
 .ago-sched-send-sheet::backdrop { background: rgba(0, 0, 0, .55); }
 .ago-sched-send-grip { width: 40px; height: 4px; margin: 0 auto 6px; border-radius: 2px; background: rgba(var(--ink-rgb),.25); }
-.ago-sched-send-sheet .ago-sched-send-head { padding: 8px 18px 12px; }
+.ago-sched-send-sheet .ago-sched-send-head { padding: 8px 58px 12px 18px; }
 .ago-sched-send-sheet .ago-sched-send-head strong { font-size: 17px; }
 .ago-sched-send-sheet .ago-sched-send-head .dim { font-size: 13px; }
 .ago-sched-send-sheet .ago-sched-send-opt { min-height: 48px; padding: 8px 18px; font-size: 16px; }
@@ -4108,7 +4116,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 }
 .ago-wheel-band { position: absolute; left: 0; right: 0; border-radius: 10px; background: rgba(var(--ink-rgb),.09); pointer-events: none; }
 .ago-wheel-col {
-  position: relative; flex: 1 1 0; height: 100%; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain;
+  position: relative; flex: 1 1 0; min-width: 0; height: 100%; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain;
   scroll-snap-type: y mandatory; scrollbar-width: none; outline: none; -webkit-overflow-scrolling: touch; touch-action: pan-y;
 }
 .ago-wheel-col::-webkit-scrollbar { display: none; }
@@ -4120,7 +4128,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
   font-size: 21px; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; cursor: pointer;
   transform-origin: center; will-change: transform, opacity;
 }
-.ago-wheel-col.day .ago-wheel-row { justify-content: flex-end; padding-right: 10px; }
+.ago-wheel-col.day .ago-wheel-row { justify-content: flex-end; padding-right: 10px; font-size: clamp(16px, 5vw, 21px); }
 .ago-wheel-row[aria-selected="true"] { font-weight: 500; }
 
 /* Done cards: delete for good, top right. */
@@ -4133,5 +4141,6 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .ago-sched-purge .ico { width: 14px; height: 14px; }
 .ago-sched-row.done:has(.ago-sched-purge.armed) { opacity: 1; }
 @media (max-width: 820px) {
-  .ago-sched-purge { top: 8px; right: 8px; min-width: 36px; min-height: 36px; justify-content: center; }
+  .ago-sched-purge { top: 4px; right: 4px; min-width: 44px; min-height: 44px; justify-content: center; }
+  .ago-sched-row.purgeable .ago-sched-top { padding-right: 40px; }
 }

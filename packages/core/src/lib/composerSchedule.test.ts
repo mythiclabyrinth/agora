@@ -65,8 +65,10 @@ describe("schedule wheel", () => {
   // A fixed local afternoon: Thu 29 Oct 2026, 14:10:30.
   const now = new Date(2026, 9, 29, 14, 10, 30).getTime();
 
-  it("opens on the next whole local hour after one from now", () => {
-    expect(new Date(defaultCustomRunAt(now) * 1000)).toEqual(new Date(2026, 9, 29, 16, 0));
+  it("opens on the next whole local hour, including across midnight", () => {
+    expect(new Date(defaultCustomRunAt(now) * 1000)).toEqual(new Date(2026, 9, 29, 15, 0));
+    expect(new Date(defaultCustomRunAt(new Date(2026, 9, 29, 23, 41).getTime()) * 1000))
+      .toEqual(new Date(2026, 9, 30, 0, 0));
     const onTheHour = new Date(2026, 9, 29, 14, 0).getTime();
     expect(new Date(defaultCustomRunAt(onTheHour) * 1000)).toEqual(new Date(2026, 9, 29, 15, 0));
     expect(new Date(defaultCustomRunAt(now) * 1000).getMinutes()).toBe(0);

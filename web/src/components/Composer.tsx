@@ -92,6 +92,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
 }) {
   const send = useSendMessage(channelId);
   const createSchedule = useCreateSchedule();
+  const scheduling = useRef(false);
   const [schedSurface, setSchedSurface] = useState<ScheduleSurface>(null);
   const me = useMe().data;
   const draftKey = threadId != null ? `t:${threadId}` : `c:${channelId}`;
@@ -363,6 +364,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   };
 
   const doSend = () => {
+    if (scheduling.current) return;
     if (preparingAttachments.length) {
       toast(
         preparingAttachments.length === 1
@@ -451,6 +453,7 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     return null;
   };
   const openSchedule = (surface: Exclude<ScheduleSurface, null>) => {
+    if (scheduling.current) return;
     const blocked = scheduleBlocked();
     if (blocked) { toast(blocked, { variant: "warn" }); return; }
     setMention(null);
@@ -468,14 +471,18 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const doSchedule = (runAt: number) => {
     // One request at a time: a second Enter while the first is in flight
     // would schedule the same message twice.
-    if (createSchedule.isPending) return;
+    if (scheduling.current) return;
+    const blocked = scheduleBlocked();
+    if (blocked) { toast(blocked, { variant: "warn" }); return; }
     const t = text.trim();
     if (!t || attachments.length) { setSchedSurface(null); return; }
     const outText = addr ? `${addr}, ${t}` : t;
     const sentText = text;
     const sentVersion = draftSync.version(syncKey);
     const key = syncKey;
+    scheduling.current = true;
     createSchedule.mutate({ channelId, threadId, text: outText, runAt }, {
+      onSettled: () => { scheduling.current = false; },
       onSuccess: ({ schedule }) => {
         setSchedSurface(null);
         // Clear only once the server has it, and only if nothing was typed
@@ -718,9 +725,16 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
         </details>
         <div className="ago-send-group">
           <button className="btn primary ago-send"
-            disabled={preparingAttachments.length > 0 || sendingAttachments.length > 0}
+            disabled={preparingAttachments.length > 0 || sendingAttachments.length > 0 || createSchedule.isPending}
             title="Send (touch: press and hold to schedule)"
+            aria-keyshortcuts="Shift+F10"
             {...longPress.handlers}
+            onKeyDown={e => {
+              if (e.key === "F10" && e.shiftKey) {
+                e.preventDefault();
+                openSchedule(window.matchMedia("(pointer: coarse)").matches ? "sheet" : "menu");
+              }
+            }}
             onClick={() => { if (!longPress.consume()) doSend(); }}>Send</button>
           <button type="button" className="btn primary ago-send-more"
             aria-label="Schedule message" title={scheduleBlocked() ?? "Schedule for later"}

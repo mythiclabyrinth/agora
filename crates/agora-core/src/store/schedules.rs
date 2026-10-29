@@ -447,6 +447,16 @@ impl Store {
         if pending > 0 {
             return Err(PurgeRefused::Delivering);
         }
+        // The hourly creation limit counts schedule rows; keep this one's
+        // creation on the books (the revivals table is pruned after a day)
+        // so create → cancel → purge can't reset the limit.
+        if let (Some(owner), Some(created)) = (row["owner"].as_str(), row["created_at"].as_f64()) {
+            tx.execute(
+                "INSERT INTO schedule_revivals (owner, schedule_id, at) VALUES (?1, ?2, ?3)",
+                params![owner, id, created],
+            )
+            .unwrap();
+        }
         tx.execute("DELETE FROM schedule_fires WHERE schedule_id = ?1", params![id]).unwrap();
         tx.execute("DELETE FROM schedules WHERE id = ?1", params![id]).unwrap();
         tx.commit().unwrap();
@@ -1137,6 +1147,22 @@ mod tests {
         let fresh = store.schedule(id).unwrap();
         assert_eq!(store.update_schedule_if(id, &fresh, &pause, "cat", None).unwrap()["status"], "paused");
         assert_eq!(store.update_schedule_if("nope", &fresh, &pause, "cat", None).unwrap_err(), UpdateRefused::Missing);
+    }
+
+    #[test]
+    fn purging_does_not_reset_the_hourly_create_limit() {
+        let (store, cid) = setup();
+        let at = now() + 600.0;
+        let spec = json!({"kind": "once", "at": at});
+        let cancel = ScheduleChange { status: Some("cancelled".into()), ..Default::default() };
+        for _ in 0..MAX_CREATES_PER_HOUR {
+            let s = store.create_schedule_capped("ana", &cid, None, "x", at, &spec, "ana", None).unwrap();
+            let id = s["id"].as_str().unwrap();
+            store.update_schedule(id, &cancel, "ana", None);
+            store.purge_finished_schedule(id).unwrap();
+        }
+        assert_eq!(store.create_schedule_capped("ana", &cid, None, "x", at, &spec, "ana", None).unwrap_err(),
+            UpdateRefused::Rate);
     }
 
     #[test]

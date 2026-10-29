@@ -854,14 +854,31 @@ test("long-pressing Send schedules the draft from the sheet and clears it only o
   expect(rows.some(r => /^All times in /.test(r))).toBe(true);
   const before = Math.round(Date.now() / 1000);
   const preset = labelled(tree.root, "In 3 hours");
-  await act(async () => { preset.props.onPress(); });
+  await act(async () => { preset.props.onPress(); preset.props.onPress(); });
   expect(onSchedule).toHaveBeenCalledTimes(1);
   const { text, runAt } = (onSchedule.mock.calls[0] as unknown as [{ text: string; runAt: number }])[0];
   expect(text).toBe("standup at 5");
   expect(runAt).toBeGreaterThanOrEqual(before + 180 * 60);
   expect(input().props.value).toBe("standup at 5");
+  expect(labelled(tree.root, "Send message").props.disabled).toBe(true);
+  await act(async () => { send.props.onPress(); });
+  expect(onSend).not.toHaveBeenCalled();
   await act(async () => { resolve(); });
   expect(input().props.value).toBe("");
+  act(() => tree.unmount());
+});
+
+test("screen-reader scheduling action and close control preserve the draft", () => {
+  const onSchedule = jest.fn();
+  const tree = renderSchedulable(onSchedule);
+  const input = tree.root.findByType(TextInput);
+  act(() => input.props.onChangeText("keep this draft"));
+  const send = labelled(tree.root, "Send message");
+  expect(send.props.accessibilityActions).toContainEqual({ name: "schedule", label: "Schedule message" });
+  act(() => send.props.onAccessibilityAction({ nativeEvent: { actionName: "schedule" } }));
+  act(() => labelled(tree.root, "Close schedule options").props.onPress());
+  expect(tree.root.findByType(TextInput).props.value).toBe("keep this draft");
+  expect(onSchedule).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
 
