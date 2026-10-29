@@ -325,10 +325,79 @@ export function scheduledForLabel(runAt: number, nowMs: number = Date.now(), loc
   return `Scheduled for ${day} at ${time}`;
 }
 
-/** A custom time is usable only if it is still in the future (a minute of
-    slack so a picker left open briefly doesn't trip the server's check). */
+/** A custom time is usable only if it is still in the future at submit;
+    there is no slack, so a time that has just passed is refused here rather
+    than by the server. */
 export function customRunAtError(runAt: number | null, nowMs: number = Date.now()): string | null {
   if (runAt == null || !Number.isFinite(runAt)) return "Pick a date and time";
   if (runAt * 1000 <= nowMs) return "Pick a time in the future";
   return null;
+}
+
+/** The custom picker's opening time: the next whole *local* hour after one
+    from now (10:10 → 12:00), so zones with a :30 or :45 offset still open on
+    the hour. */
+export function defaultCustomRunAt(nowMs: number = Date.now()): number {
+  const d = new Date(nowMs);
+  d.setMinutes(0, 0, 0);
+  if (d.getTime() < nowMs) d.setHours(d.getHours() + 1);
+  d.setHours(d.getHours() + 1);
+  return Math.round(d.getTime() / 1000);
+}
+
+/** The wheel picker's four columns: day (0 = today), 12-hour clock hour,
+    minute, and AM/PM — local time, as on an iOS date-and-time wheel. */
+export interface WheelValue {
+  day: number;
+  hour12: number;
+  minute: number;
+  pm: boolean;
+}
+
+/** How many days the day column offers, today included. */
+export const WHEEL_DAYS = 366;
+
+function localDayStart(ms: number): Date {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Wheel columns → unix seconds, local time. */
+export function wheelToRunAt(v: WheelValue, nowMs: number = Date.now()): number {
+  const base = localDayStart(nowMs);
+  const hour24 = (v.hour12 % 12) + (v.pm ? 12 : 0);
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + v.day, hour24, v.minute);
+  return Math.round(d.getTime() / 1000);
+}
+
+/** Unix seconds → wheel columns; a time before today clamps to today and
+    one past the last day to that day. */
+export function runAtToWheel(runAt: number, nowMs: number = Date.now()): WheelValue {
+  const d = new Date(runAt * 1000);
+  const t0 = localDayStart(nowMs);
+  const t1 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  // Calendar-day difference, immune to a DST hour.
+  const days = Math.round((Date.UTC(t1.getFullYear(), t1.getMonth(), t1.getDate())
+    - Date.UTC(t0.getFullYear(), t0.getMonth(), t0.getDate())) / 86_400_000);
+  const h = d.getHours();
+  return {
+    day: Math.min(Math.max(days, 0), WHEEL_DAYS - 1),
+    hour12: h % 12 || 12,
+    minute: d.getMinutes(),
+    pm: h >= 12,
+  };
+}
+
+/** The day column's row: "Today", then "Fri Oct 30" (no comma, as iOS). */
+export function wheelDayLabel(day: number, nowMs: number = Date.now(), locale?: string): string {
+  if (day === 0) return "Today";
+  const base = localDayStart(nowMs);
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + day);
+  try {
+    const parts = new Intl.DateTimeFormat(locale, { weekday: "short", month: "short", day: "numeric" }).formatToParts(d);
+    const pick = (t: string) => parts.find(p => p.type === t)?.value ?? "";
+    return `${pick("weekday")} ${pick("month")} ${pick("day")}`.trim();
+  } catch {
+    return d.toDateString().slice(0, 10);
+  }
 }

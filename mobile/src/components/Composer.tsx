@@ -625,12 +625,14 @@ export function Composer({
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  /* Scheduling stores text only, so attachments keep it off. */
+  /* Scheduling stores text only, so attachments and reply-in-thread keep it off. */
   const [scheduleSheet, setScheduleSheet] = useState(false);
   const [scheduling, setScheduling] = useState(false);
   const openSchedule = () => {
     if (!onSchedule) return;
     if (files.length > 0) { toast("Remove attachments to schedule — scheduled messages are text only", "warn"); return; }
+    // A schedule posts plain text: it can't ask agents to answer in a thread.
+    if (threadToggle && replyInThread) { toast("Turn off reply-in-thread to schedule", "warn"); return; }
     const body = text.trim();
     if (!body || body === "@") { toast("Type a message to schedule", "warn"); return; }
     setScheduleSheet(true);

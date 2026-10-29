@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   customRunAtError,
+  defaultCustomRunAt,
+  runAtToWheel,
+  WHEEL_DAYS,
+  wheelDayLabel,
+  wheelToRunAt,
   normalizeSchedulePresets,
   presetRunAt,
   scheduledForLabel,
@@ -53,5 +58,42 @@ describe("custom times and labels", () => {
 
   it("names the device's time zone", () => {
     expect(scheduleTimeZoneNote(new Date(now), "en-US")).toMatch(/^All times in \S/);
+  });
+});
+
+describe("schedule wheel", () => {
+  // A fixed local afternoon: Thu 29 Oct 2026, 14:10:30.
+  const now = new Date(2026, 9, 29, 14, 10, 30).getTime();
+
+  it("opens on the next whole local hour after one from now", () => {
+    expect(new Date(defaultCustomRunAt(now) * 1000)).toEqual(new Date(2026, 9, 29, 16, 0));
+    const onTheHour = new Date(2026, 9, 29, 14, 0).getTime();
+    expect(new Date(defaultCustomRunAt(onTheHour) * 1000)).toEqual(new Date(2026, 9, 29, 15, 0));
+    expect(new Date(defaultCustomRunAt(now) * 1000).getMinutes()).toBe(0);
+  });
+
+  it("maps 12 AM to midnight and 12 PM to noon", () => {
+    const at = (hour12: number, pm: boolean) => new Date(wheelToRunAt({ day: 1, hour12, minute: 5, pm }, now) * 1000);
+    expect(at(12, false)).toEqual(new Date(2026, 9, 30, 0, 5));
+    expect(at(12, true)).toEqual(new Date(2026, 9, 30, 12, 5));
+    expect(at(1, false)).toEqual(new Date(2026, 9, 30, 1, 5));
+    expect(at(11, true)).toEqual(new Date(2026, 9, 30, 23, 5));
+  });
+
+  it("round-trips through the columns and clamps to the offered days", () => {
+    for (const d of [new Date(2026, 9, 29, 16, 0), new Date(2026, 9, 31, 0, 0), new Date(2026, 10, 2, 12, 59), new Date(2027, 2, 1, 23, 30)]) {
+      const runAt = Math.round(d.getTime() / 1000);
+      expect(wheelToRunAt(runAtToWheel(runAt, now), now)).toBe(runAt);
+    }
+    expect(runAtToWheel(Math.round(new Date(2026, 9, 31, 0, 0).getTime() / 1000), now))
+      .toEqual({ day: 2, hour12: 12, minute: 0, pm: false });
+    expect(runAtToWheel(Math.round(new Date(2026, 9, 1).getTime() / 1000), now).day).toBe(0);
+    expect(runAtToWheel(Math.round(new Date(2030, 0, 1).getTime() / 1000), now).day).toBe(WHEEL_DAYS - 1);
+  });
+
+  it("labels today and later days like the iOS wheel", () => {
+    expect(wheelDayLabel(0, now, "en-US")).toBe("Today");
+    expect(wheelDayLabel(1, now, "en-US")).toBe("Fri Oct 30");
+    expect(wheelDayLabel(3, now, "en-US")).toBe("Sun Nov 1");
   });
 });

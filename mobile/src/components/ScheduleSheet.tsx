@@ -1,24 +1,26 @@
 /* Long-press Send → schedule the typed message for later: a bottom sheet with
    the server's quick presets ("In 1 hour", "In 3 hours") and a custom date
    and time, all in the device's own time zone. iOS picks the custom time on
-   an inline spinner; Android has no combined date-time spinner, so it opens
-   the system date and then time dialogs. */
+   its native date-and-time spinner; Android has no combined one, so it gets
+   the same wheel drawn in React Native (DateTimeWheel). */
 
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, Modal, Platform, Pressable, Text, View } from "react-native";
-import DateTimePicker, { DateTimePickerAndroid, type DateTimePickerEvent } from "@react-native-community/datetimepicker";
+import DateTimePicker, { type DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import {
   customRunAtError,
+  defaultCustomRunAt,
   presetRunAt,
   schedulePresetLabel,
   scheduleTimeZoneNote,
 } from "@agora/core";
 import { typography, weight } from "../lib/theme";
 import { createThemedStyles, useAppTheme } from "../lib/useTheme";
+import { DateTimeWheel } from "./DateTimeWheel";
 
-/** The custom picker opens on the next whole hour after one from now. */
+/** The custom picker opens on the next whole local hour after one from now. */
 export function defaultCustomTime(nowMs: number = Date.now()): Date {
-  return new Date((Math.ceil(nowMs / 3_600_000) + 1) * 3_600_000);
+  return new Date(defaultCustomRunAt(nowMs) * 1000);
 }
 
 export function ScheduleSheet({
@@ -52,18 +54,6 @@ export function ScheduleSheet({
     setError(null);
     onSchedule(runAt);
   };
-  const pickAndroid = (mode: "date" | "time") => {
-    DateTimePickerAndroid.open({
-      value: at,
-      mode,
-      minimumDate: mode === "date" ? new Date() : undefined,
-      onChange: (e: DateTimePickerEvent, d?: Date) => {
-        if (e.type === "set" && d) { setAt(d); setError(null); }
-      },
-    });
-  };
-  const dateLabel = at.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-  const timeLabel = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
@@ -102,16 +92,7 @@ export function ScheduleSheet({
                     onChange={(_e: DateTimePickerEvent, d?: Date) => { if (d) { setAt(d); setError(null); } }}
                   />
                 ) : (
-                  <View style={styles.androidPick}>
-                    <Pressable style={styles.androidField} accessibilityRole="button"
-                      accessibilityLabel={`Date, ${dateLabel}`} onPress={() => pickAndroid("date")}>
-                      <Text style={styles.androidText}>{dateLabel}</Text>
-                    </Pressable>
-                    <Pressable style={styles.androidField} accessibilityRole="button"
-                      accessibilityLabel={`Time, ${timeLabel}`} onPress={() => pickAndroid("time")}>
-                      <Text style={styles.androidText}>{timeLabel}</Text>
-                    </Pressable>
-                  </View>
+                  <DateTimeWheel value={at} onChange={(d) => { setAt(d); setError(null); }} />
                 )}
                 {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
                 <Pressable style={[styles.go, pending && styles.goOff]} disabled={pending} accessibilityRole="button"
@@ -139,12 +120,6 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   row: { minHeight: 50, paddingHorizontal: 20, justifyContent: "center" },
   rowText: { color: colors.text, fontSize: typography.body.fontSize },
   custom: { paddingHorizontal: 16, paddingBottom: 8, gap: 10 },
-  androidPick: { flexDirection: "row", gap: 10 },
-  androidField: {
-    flex: 1, minHeight: 46, borderRadius: 10, borderWidth: 1, borderColor: colors.borderStrong,
-    alignItems: "center", justifyContent: "center",
-  },
-  androidText: { color: colors.text, fontSize: typography.body.fontSize, fontWeight: weight.semibold },
   error: { color: colors.red, fontSize: typography.meta.fontSize },
   go: { backgroundColor: colors.accent, borderRadius: 12, minHeight: 48, alignItems: "center", justifyContent: "center" },
   goOff: { opacity: 0.5 },

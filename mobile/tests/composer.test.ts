@@ -906,3 +906,29 @@ test("the send button is a compact 36pt square with a 44pt tap target", () => {
   expect(send.props.hitSlop).toBe(4);
   act(() => tree.unmount());
 });
+
+test("reply-in-thread keeps scheduling off: a schedule can't ask for a threaded answer", () => {
+  const onSchedule = jest.fn();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    tree = TestRenderer.create(React.createElement(SafeAreaProvider,
+      { initialMetrics: { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, right: 0, bottom: 0, left: 0 } } },
+      React.createElement(Composer, {
+        placeholder: "Message #test", mentions: [], addressKey: "channel-r", sending: false,
+        onSend: async () => {}, onSchedule, threadToggle: true,
+      }),
+    ));
+  });
+  const input = () => tree.root.findByType(TextInput);
+  act(() => input().props.onChangeText("answer in a thread"));
+  act(() => input().props.onFocus());
+  act(() => labelled(tree.root, "Agents answer this message in a thread under it").props.onPress());
+  act(() => labelled(tree.root, "Send message").props.onLongPress());
+  expect(tree.root.findAllByType(Text).some(t => t.props.children === "Custom time")).toBe(false);
+  // Turning it off lets the sheet open again.
+  act(() => labelled(tree.root, "Agents answer this message in a thread under it").props.onPress());
+  act(() => labelled(tree.root, "Send message").props.onLongPress());
+  expect(tree.root.findAllByType(Text).some(t => t.props.children === "Custom time")).toBe(true);
+  expect(onSchedule).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});

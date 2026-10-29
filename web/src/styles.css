@@ -4100,6 +4100,28 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .ago-sched-send-sheet .ago-sched-send-custom { padding: 8px 18px 12px; }
 .ago-sched-send-sheet .ago-sched-send-custom input[type="datetime-local"] { font-size: 16px; min-height: 44px; }
 .ago-sched-send-sheet .ago-sched-send-go { min-height: 44px; font-size: 15px; }
+/* Phone custom time: an iOS-style date-and-time wheel. */
+.ago-wheel {
+  position: relative; display: flex; gap: 2px; overflow: hidden; user-select: none; -webkit-user-select: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 28%, #000 72%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 28%, #000 72%, transparent);
+}
+.ago-wheel-band { position: absolute; left: 0; right: 0; border-radius: 10px; background: rgba(var(--ink-rgb),.09); pointer-events: none; }
+.ago-wheel-col {
+  position: relative; flex: 1 1 0; height: 100%; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain;
+  scroll-snap-type: y mandatory; scrollbar-width: none; outline: none; -webkit-overflow-scrolling: touch; touch-action: pan-y;
+}
+.ago-wheel-col::-webkit-scrollbar { display: none; }
+.ago-wheel-col:focus-visible { box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb),.5); border-radius: 10px; }
+.ago-wheel-col.day { flex: 2.3 1 0; }
+.ago-wheel-col.hour, .ago-wheel-col.minute { flex: .9 1 0; }
+.ago-wheel-row {
+  display: flex; align-items: center; justify-content: center; height: 36px; scroll-snap-align: center;
+  font-size: 21px; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; cursor: pointer;
+  transform-origin: center; will-change: transform, opacity;
+}
+.ago-wheel-col.day .ago-wheel-row { justify-content: flex-end; padding-right: 10px; }
+.ago-wheel-row[aria-selected="true"] { font-weight: 500; }
 
 /* Done cards: delete for good, top right. */
 .ago-sched-row { position: relative; }

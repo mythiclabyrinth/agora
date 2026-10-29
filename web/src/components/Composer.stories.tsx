@@ -4,7 +4,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fireEvent, fn, userEvent, waitFor, within } from "storybook/test";
 import { Composer, useAddressing, useDrafts } from "./Composer";
 import { me, message } from "../stories/fixtures/data";
-import { useAddressed, useAttachmentDrafts } from "@agora/core";
+import { defaultCustomRunAt, runAtToWheel, useAddressed, useAttachmentDrafts, wheelToRunAt } from "@agora/core";
 import { fixtureTemplates } from "@agora/core/testing/fixtures";
 import { useVoiceRec } from "../state/voiceRec";
 import { appendDraft } from "../state/drafts";
@@ -907,19 +907,105 @@ export const LongPressSendOpensScheduleSheet: Story = {
     await waitFor(() => expect(within(document.body).queryByRole("dialog", { name: "Schedule message" })).toBeNull());
     createSchedule.mockClear();
     await userEvent.type(input, "hold me");
+    // This time the release's click never reaches Send (the sheet covers it).
     fireEvent.pointerDown(send, { pointerType: "touch", clientX: 5, clientY: 5 });
     await new Promise(r => setTimeout(r, 600));
     fireEvent.pointerUp(send, { pointerType: "touch" });
-    fireEvent.click(send);
     const reopened = await within(document.body).findByRole("dialog", { name: "Schedule message" });
     fireEvent.keyDown(reopened, { key: "Escape" });
     reopened.dispatchEvent(new Event("cancel", { cancelable: true }));
     await waitFor(() => expect(within(document.body).queryByRole("dialog", { name: "Schedule message" })).toBeNull());
-    // A short tap sends as before.
+    // A keyboard activation afterwards (no pointerdown) still sends.
+    fireEvent.click(send, { detail: 0 });
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+    // And a short tap sends as before.
+    await userEvent.type(input, "tap me");
     fireEvent.pointerDown(send, { pointerType: "touch", clientX: 5, clientY: 5 });
     fireEvent.pointerUp(send, { pointerType: "touch" });
     fireEvent.click(send);
-    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
+    expect(createSchedule).not.toHaveBeenCalled();
+  },
+};
+
+/** Phones pick a custom time on the iOS-style wheel: scrolling, arrow keys
+    and taps move day, hour, minute and AM/PM; a past pick is refused. */
+export const ScheduleSheetWheel: Story = {
+  parameters: {
+    setup: () => { createSchedule.mockClear(); sendMessage.mockClear(); },
+    apiRoutes: { ...meta.parameters.apiRoutes, ...scheduleRoutes },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByPlaceholderText("Message #general"), "wheel me");
+    const send = canvas.getByRole("button", { name: "Send" });
+    fireEvent.pointerDown(send, { pointerType: "touch", clientX: 5, clientY: 5 });
+    await new Promise(r => setTimeout(r, 600));
+    fireEvent.pointerUp(send, { pointerType: "touch" });
+    fireEvent.click(send);
+    const sheet = await within(document.body).findByRole("dialog", { name: "Schedule message" });
+    const custom = within(sheet).getByRole("button", { name: "Custom time" });
+    fireEvent.pointerDown(custom, { pointerType: "touch" });
+    fireEvent.click(custom, { detail: 1 });
+    const wheel = await within(sheet).findByRole("group", { name: "Date and time" });
+    expect(within(sheet).queryByLabelText("Date and time", { selector: "input" })).toBeNull();
+    const col = (name: string) => within(wheel).getByRole("listbox", { name });
+    const selected = (name: string) => within(col(name)).getByRole("option", { selected: true }).textContent;
+    // Opens on the next whole local hour after one from now.
+    const start = runAtToWheel(defaultCustomRunAt());
+    expect(selected("Hour")).toBe(String(start.hour12));
+    expect(selected("Minute")).toBe("00");
+    expect(selected("Day")).toEqual(start.day === 0 ? "Today" : expect.any(String));
+
+    // A past time (today, 12:00 AM) is refused on submit.
+    for (let i = 0; i < start.day; i++) fireEvent.keyDown(col("Day"), { key: "ArrowUp" });
+    fireEvent.click(within(col("Hour")).getByRole("option", { name: "12" }));
+    fireEvent.click(within(col("AM or PM")).getByRole("option", { name: "AM" }));
+    await waitFor(() => expect(selected("Day")).toBe("Today"));
+    await waitFor(() => expect(selected("AM or PM")).toBe("AM"));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Schedule message" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("Pick a time in the future");
+    expect(createSchedule).not.toHaveBeenCalled();
+
+    // Scroll the day column five rows, step one more with the keyboard, then
+    // tap 9 : 30 PM.
+    const day = col("Day");
+    day.scrollTop = 5 * 36;
+    day.dispatchEvent(new Event("scroll"));
+    await waitFor(() => expect(selected("Day")).not.toBe("Today"));
+    fireEvent.keyDown(day, { key: "ArrowDown" });
+    fireEvent.click(within(col("Hour")).getByRole("option", { name: "9" }));
+    fireEvent.click(within(col("Minute")).getByRole("option", { name: "30" }));
+    fireEvent.click(within(col("AM or PM")).getByRole("option", { name: "PM" }));
+    await waitFor(() => expect(selected("Minute")).toBe("30"));
+    await waitFor(() => expect(within(sheet).queryByRole("alert")).toBeNull());
+    fireEvent.click(within(sheet).getByRole("button", { name: "Schedule message" }));
+    await waitFor(() => expect(createSchedule).toHaveBeenCalledTimes(1));
+    expect((createSchedule.mock.calls[0][0] as { run_at: number }).run_at)
+      .toBe(wheelToRunAt({ day: 6, hour12: 9, minute: 30, pm: true }));
+  },
+};
+
+/** A schedule can't ask agents to answer in a thread: with reply-in-thread
+    on, the option is off and says why. */
+export const ScheduleOffWithReplyInThread: Story = {
+  args: { replyInThread: true },
+  parameters: {
+    setup: () => { createSchedule.mockClear(); },
+    apiRoutes: { ...meta.parameters.apiRoutes, ...scheduleRoutes },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByPlaceholderText("Message #general"), "thread me");
+    const more = canvas.getByRole("button", { name: "Schedule message" });
+    expect(more).toBeDisabled();
+    expect(more).toHaveAttribute("title", "Turn off reply-in-thread to schedule");
+    const send = canvas.getByRole("button", { name: "Send" });
+    fireEvent.pointerDown(send, { pointerType: "touch", clientX: 5, clientY: 5 });
+    await new Promise(r => setTimeout(r, 600));
+    fireEvent.pointerUp(send, { pointerType: "touch" });
+    await within(document.body).findByText("Turn off reply-in-thread to schedule");
+    expect(within(document.body).queryByRole("dialog", { name: "Schedule message" })).toBeNull();
     expect(createSchedule).not.toHaveBeenCalled();
   },
 };

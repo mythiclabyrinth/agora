@@ -445,6 +445,8 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
   const scheduleBlocked = (): string | null => {
     if (attachments.length) return "Remove attachments to schedule — scheduled messages are text only";
     if (recordingHere) return "Finish the voice note first";
+    // A schedule posts plain text: it can't ask agents to answer in a thread.
+    if (replyInThread && onSetReplyInThread && !inThread) return "Turn off reply-in-thread to schedule";
     if (!text.trim()) return "Type a message to schedule";
     return null;
   };
@@ -455,6 +457,13 @@ export function Composer({ channelId, channelName, groupId, threadId, agents = [
     setSchedSurface(surface);
   };
   const longPress = useLongPress(() => openSchedule("sheet"));
+  // Only on the sheet/menu actually closing: a blocked long press must keep
+  // its latch so the release's click still doesn't send.
+  const hadSurface = useRef(false);
+  useEffect(() => {
+    if (hadSurface.current && !schedSurface) longPress.reset();
+    hadSurface.current = !!schedSurface;
+  });
   useEffect(() => { setSchedSurface(null); }, [draftKey]);
   const doSchedule = (runAt: number) => {
     // One request at a time: a second Enter while the first is in flight

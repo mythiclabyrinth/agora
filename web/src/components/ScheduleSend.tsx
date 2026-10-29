@@ -6,8 +6,9 @@
 import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  customRunAtError, presetRunAt, schedulePresetLabel, scheduleTimeZoneNote, useSchedulePresets,
+  customRunAtError, defaultCustomRunAt, presetRunAt, schedulePresetLabel, scheduleTimeZoneNote, useSchedulePresets,
 } from "@agora/core";
+import { DateTimeWheel } from "./DateTimeWheel";
 
 /** How long a touch must rest on Send before it schedules instead. */
 export const LONG_PRESS_MS = 450;
@@ -42,6 +43,9 @@ export function useLongPress(onLongPress: () => void, ms = LONG_PRESS_MS) {
   };
   useEffect(() => clear, []);
   return {
+    /** Forget a long press whose click never reached the button (the sheet
+        opened over it), so the next keyboard activation still sends. */
+    reset: () => { fired.current = false; },
     consume: () => {
       const was = fired.current;
       fired.current = false;
@@ -74,21 +78,25 @@ export function useLongPress(onLongPress: () => void, ms = LONG_PRESS_MS) {
 }
 
 /** The choices themselves, shared by the desktop menu and the phone sheet. */
-export function ScheduleOptions({ onSchedule, pending, titleId }: {
+export function ScheduleOptions({ onSchedule, pending, titleId, wheel }: {
   onSchedule: (runAt: number) => void;
   pending?: boolean;
   titleId?: string;
+  /** Phones pick the custom time on an iOS-style wheel; desktop keeps the
+      browser's date-time field. */
+  wheel?: boolean;
 }) {
   const presets = useSchedulePresets();
   const [custom, setCustom] = useState(false);
-  // Default the custom picker to the next whole hour after one from now.
-  const [at, setAt] = useState(() => toLocalInput(Math.ceil(Date.now() / 3_600_000) * 3600 + 3600));
+  // The custom time opens on the next whole local hour after one from now.
+  const [at, setAt] = useState(() => toLocalInput(defaultCustomRunAt()));
+  const [wheelAt, setWheelAt] = useState(() => defaultCustomRunAt());
   const [error, setError] = useState<string | null>(null);
   const customRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (custom) customRef.current?.focus(); }, [custom]);
   const submitCustom = () => {
     if (pending) return;
-    const runAt = fromLocalInput(at);
+    const runAt = wheel ? wheelAt : fromLocalInput(at);
     const problem = customRunAtError(runAt);
     if (problem) { setError(problem); return; }
     setError(null);
@@ -115,10 +123,14 @@ export function ScheduleOptions({ onSchedule, pending, titleId }: {
         </button>
         {custom && (
           <div className="ago-sched-send-custom">
-            <input ref={customRef} type="datetime-local" aria-label="Date and time" value={at}
-              min={toLocalInput(Date.now() / 1000)}
-              onChange={e => { setAt(e.target.value); setError(null); }}
-              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); submitCustom(); } }} />
+            {wheel ? (
+              <DateTimeWheel runAt={wheelAt} onChange={v => { setWheelAt(v); setError(null); }} />
+            ) : (
+              <input ref={customRef} type="datetime-local" aria-label="Date and time" value={at}
+                min={toLocalInput(Date.now() / 1000)}
+                onChange={e => { setAt(e.target.value); setError(null); }}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); submitCustom(); } }} />
+            )}
             {error && <div className="ago-sched-error" role="alert">{error}</div>}
             <button type="button" className="btn primary ago-sched-send-go" disabled={pending} onClick={submitCustom}>
               {pending ? "Scheduling…" : "Schedule message"}
@@ -206,7 +218,7 @@ export function ScheduleSurfaceView({ surface, onClose, onSchedule, pending }: {
 }) {
   const titleId = useId();
   if (!surface) return null;
-  const body = <ScheduleOptions onSchedule={onSchedule} pending={pending} titleId={titleId} />;
+  const body = <ScheduleOptions onSchedule={onSchedule} pending={pending} titleId={titleId} wheel={surface === "sheet"} />;
   return surface === "menu"
     ? <ScheduleMenu onClose={onClose}>{body}</ScheduleMenu>
     : <ScheduleSheet onClose={onClose} titleId={titleId}>{body}</ScheduleSheet>;

@@ -1,6 +1,7 @@
-//! REST for scheduled messages, for people. Creating a schedule and editing
-//! its text are agent-only (an agent acting for the owner, see
-//! hub/scheduler.rs); people view, pause, resume, cancel and retime here.
+//! REST for scheduled messages, for people. People create one-off schedules
+//! from the composer, and view, pause, resume, cancel, retime and delete
+//! finished ones here. Recurring schedules and editing a schedule's text stay
+//! agent-only (an agent acting for the owner, see hub/scheduler.rs).
 //!
 //! Who may manage a schedule: its owner, a channel admin, or an instance
 //! admin — except in agent DMs, which stay owner-only for everyone.
