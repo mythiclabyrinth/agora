@@ -9,6 +9,7 @@ import { SchedulesList, ScheduleRow, editedSpec, nextRunChange, parseLocalInput,
 import { openSchedule } from "../src/components/SchedulesInbox";
 import { channelToolActions, threadToolActions } from "../src/lib/conversationTools";
 import InboxScreen from "../app/(app)/inbox";
+import { useToasts } from "../src/components/Toast";
 import { useInboxTab } from "../src/state/inboxTab";
 
 jest.mock("lucide-react-native", () => new Proxy({}, { get: () => function MockIcon() { return null; } }));
@@ -541,11 +542,22 @@ test("a finished card deletes for good from its trash icon after confirming; liv
   // Only the one this person may manage gets the icon.
   const trash = byLabel("Delete schedule: Every 6 hours");
   expect(trash).toHaveLength(1);
-  const alert = jest.spyOn(Alert, "alert").mockImplementation((_title, _message, buttons) => {
-    buttons?.find(button => button.style === "destructive")?.onPress?.();
-  });
-  await act(async () => { trash[0].props.onPress(); });
+  const alert = jest.spyOn(Alert, "alert");
+  jest.useFakeTimers();
+  try {
+    await act(async () => { trash[0].props.onPress(); });
+    expect(api.deletes).toEqual([]);
+    expect(texts()).toContain("Delete?");
+    act(() => { jest.advanceTimersByTime(3000); });
+    expect(byLabel("Confirm delete schedule: Every 6 hours")).toHaveLength(0);
+  } finally {
+    jest.useRealTimers();
+  }
+  await act(async () => { byLabel("Delete schedule: Every 6 hours")[0].props.onPress(); });
+  expect(api.deletes).toEqual([]);
+  await act(async () => { byLabel("Confirm delete schedule: Every 6 hours")[0].props.onPress(); });
   await flush();
-  expect(alert.mock.calls[0][0]).toBe("Delete schedule?");
+  expect(alert).not.toHaveBeenCalled();
   expect(api.deletes).toEqual(["/api/schedules/d-1?purge=1"]);
+  expect(useToasts.getState().items.some(item => item.message === "Schedule deleted")).toBe(true);
 });

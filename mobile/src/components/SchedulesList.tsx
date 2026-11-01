@@ -5,7 +5,7 @@
    changed by an agent, so this screen never offers a create or text-edit
    path. */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { CalendarClock, Clock, MessageSquare, MessagesSquare, Pause, Pencil, Play, Trash2 } from "lucide-react-native";
 import {
@@ -34,7 +34,7 @@ import { Icon } from "./Icon";
 import { ResponsiveText as Text } from "./ResponsiveText";
 import { SheetHeader } from "./SheetHeader";
 import { ThemedInput } from "./ThemedInput";
-import { toastErr } from "./Toast";
+import { toast, toastErr } from "./Toast";
 
 const STATUS_LABEL: Record<Schedule["status"], string> = {
   active: "Active", paused: "Paused", done: "Done", cancelled: "Cancelled",
@@ -79,21 +79,15 @@ export function useScheduleActions() {
       } },
     ],
   );
-  const confirmPurge = (item: Schedule) => Alert.alert(
-    "Delete schedule?",
-    "It's removed for good. Messages it already posted stay.",
-    [
-      { text: "Keep", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: () => {
-        start(item.id);
-        purge.mutate({ id: item.id, channel_id: item.channel_id }, {
-          onError: error => toastErr("Delete failed", error),
-          onSettled: () => finish(item.id),
-        });
-      } },
-    ],
-  );
-  return { isBusy, setStatus, confirmCancel, confirmPurge };
+  const deleteFinished = (item: Schedule) => {
+    start(item.id);
+    purge.mutate({ id: item.id, channel_id: item.channel_id }, {
+      onSuccess: () => toast("Schedule deleted"),
+      onError: error => toastErr("Delete failed", error),
+      onSettled: () => finish(item.id),
+    });
+  };
+  return { isBusy, setStatus, confirmCancel, deleteFinished };
 }
 
 export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
@@ -111,8 +105,14 @@ export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
   // The owner lost the channel: keep Pause and Cancel (as the server allows),
   // nothing that would post into a conversation they can no longer see.
   const lostAccess = lostChannelAccess(item);
-  // Finished rows keep a delete action beside their status.
+  // Only manageable finished rows offer permanent deletion.
   const purgeable = item.can_manage === true && (item.status === "done" || item.status === "cancelled");
+  const [purgeArmed, setPurgeArmed] = useState(false);
+  useEffect(() => {
+    if (!purgeArmed) return;
+    const timer = setTimeout(() => setPurgeArmed(false), 3000);
+    return () => clearTimeout(timer);
+  }, [purgeArmed]);
   const cadence = describeSchedule(item.schedule);
   const [expanded, setExpanded] = useState(false);
   const [showLater, setShowLater] = useState(false);
@@ -120,9 +120,21 @@ export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
   const threadName = item.thread_id != null ? item.thread_title || "Thread" : null;
   return (
     <View style={[styles.row, (item.status === "done" || item.status === "cancelled") && styles.finished]}>
+      {purgeable ? <Pressable accessibilityRole="button"
+        accessibilityLabel={`${purgeArmed ? "Confirm delete" : "Delete"} schedule: ${cadence}`}
+        accessibilityHint={purgeArmed ? "Tap again within three seconds to delete" : "Tap twice to delete"}
+        disabled={busy} style={styles.purge} onPress={() => {
+          if (busy) return;
+          if (!purgeArmed) { setPurgeArmed(true); return; }
+          setPurgeArmed(false);
+          actions.deleteFinished(item);
+        }}>
+        {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <Icon icon={Trash2} size={17} color={purgeArmed ? colors.red : colors.dim} />}
+        {purgeArmed ? <Text style={styles.error}>Delete?</Text> : null}
+      </Pressable> : null}
       <View style={styles.main}>
         <Pressable accessibilityRole="button" accessibilityLabel={`Open scheduled message: ${where}`}
-          disabled={!onOpen || lostAccess || !!threadName} style={styles.location}
+          disabled={!onOpen || lostAccess || !!threadName} style={[styles.location, purgeable && styles.locationWithPurge]}
           onPress={() => onOpen?.(item)}>
           <Icon icon={MessagesSquare} size={16} color={colors.dim} />
           <Text style={styles.locationText}>{where}</Text>
@@ -194,12 +206,6 @@ export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
             </Pressable>
           </>}
         </View>
-      ) : purgeable ? (
-        <Pressable accessibilityRole="button" accessibilityLabel={`Delete schedule: ${cadence}`}
-          disabled={busy} style={styles.action} onPress={() => actions.confirmPurge(item)}>
-          {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <Icon icon={Trash2} size={17} color={colors.red} />}
-          <Text style={styles.actionText}>Delete</Text>
-        </Pressable>
       ) : null}
       <View style={[styles.chip, item.status !== "active" && styles.chipPaused]}>
         <Text maxFontSizeMultiplier={1.3} style={[styles.chipText, item.status !== "active" && styles.chipTextPaused]}>{STATUS_LABEL[item.status]}</Text>
@@ -495,7 +501,8 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   locationText: { flex: 1, ...typography.bodySm, color: colors.text, fontWeight: weight.semibold },
   top: { flexDirection: "row", alignItems: "center", gap: 8 },
   cadence: { flex: 1, color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
-  purge: { width: 36, height: 36, marginVertical: -8, marginRight: -6, alignItems: "center", justifyContent: "center" },
+  locationWithPurge: { marginRight: 100 },
+  purge: { position: "absolute", top: 8, right: 8, minWidth: 44, minHeight: 44, paddingHorizontal: 8, flexDirection: "row", gap: 4, alignItems: "center", justifyContent: "center", zIndex: 1 },
   chip: { marginLeft: "auto", alignSelf: "flex-end", borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: colors.accentSoft },
   chipPaused: { backgroundColor: colors.panelStrong },
   chipText: { ...typography.caption, color: colors.accentText, fontWeight: weight.semibold },
