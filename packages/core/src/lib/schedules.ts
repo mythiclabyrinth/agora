@@ -116,8 +116,11 @@ export function sortSchedules(items: Schedule[]): Schedule[] {
   return [...items].sort((a, b) => rank(a) - rank(b) || a.run_at - b.run_at);
 }
 
-/** When a schedule last posted (or, never having posted, finished). */
+/** When a schedule last posted (or, never having posted, finished). A
+    cancelled one ranks by when it was cancelled, as the server's Done list
+    does, so a long-running schedule cancelled today isn't buried. */
 export function scheduleLastRun(s: Schedule): number {
+  if (s.status === "cancelled") return s.finished_at ?? s.updated_at;
   return s.last_run_at ?? s.finished_at ?? s.updated_at;
 }
 

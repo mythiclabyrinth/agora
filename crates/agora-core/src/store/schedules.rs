@@ -843,11 +843,9 @@ pub(super) fn delete_schedules_where<P: rusqlite::Params + Clone>(
     predicate: &str,
     params: P,
 ) -> Vec<(String, i64, String)> {
-    // Live rows only matter to open lists; cancelled ones aren't shown.
+    // Every removed row may be on an open list (cancelled ones show under Done).
     let affected: Vec<(String, i64, String)> = conn
-        .prepare(&format!(
-            "SELECT channel_id, thread_id, owner FROM schedules WHERE ({predicate}) AND status != 'cancelled'"
-        ))
+        .prepare(&format!("SELECT channel_id, thread_id, owner FROM schedules WHERE ({predicate})"))
         .unwrap()
         .query_map(params.clone(), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
@@ -1200,5 +1198,13 @@ mod tests {
         store.delete_channel(&cid);
         assert_eq!(store.take_schedule_cascades(), vec![(cid.clone(), None, "ana".to_string())]);
         assert!(store.take_schedule_cascades().is_empty());
+        // A scope holding only a cancelled schedule still reports it: Done lists it.
+        let (store, cid) = setup();
+        let root = store.add_message(&cid, "root", "user", "ana", Some("Ana"), None, &[]);
+        let tid = root["id"].as_i64().unwrap();
+        let id = store.create_schedule("ana", &cid, Some(tid), "t", at, &spec, "ana", None)["id"].as_str().unwrap().to_string();
+        store.set_schedule_status_for_test(&id, "cancelled", now());
+        assert!(store.delete_message(tid));
+        assert_eq!(store.take_schedule_cascades(), vec![(cid.clone(), Some(tid), "ana".to_string())]);
     }
 }

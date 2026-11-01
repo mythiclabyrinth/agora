@@ -67,6 +67,10 @@ describe("describeSchedule", () => {
       row("active-soon", "active", 200, null),
     ]).map(s => s.id);
     expect(order).toEqual(["active-soon", "paused-mid", "active-late", "done-new", "done-old"]);
+    // Cancelled today after running long ago: ranks by the cancel, not the last run.
+    const cancelled = { ...row("cancelled", "done", null, 50), status: "cancelled" as const, updated_at: 400 };
+    expect(sortSchedulesByTime([row("done-new", "done", null, null, 300), cancelled]).map(s => s.id))
+      .toEqual(["cancelled", "done-new"]);
   });
 });
 
