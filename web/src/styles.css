@@ -577,7 +577,7 @@ select {
 /* Schedules pane + inbox tab: rows reuse the files-pane card look. */
 .ago-sched-row { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; background: rgba(var(--ink-rgb),.025); }
 .ago-sched-row.paused { background: rgba(var(--ink-rgb),.015); }
-.ago-sched-row.done { opacity: .72; }
+.ago-sched-row.done, .ago-sched-row.cancelled { opacity: .72; }
 /* Card: where it posts (top left), when (top right); the status pill sits
    bottom right beside the actions. Phones stack where over when. */
 .ago-sched-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
@@ -4139,7 +4139,7 @@ input::placeholder, textarea::placeholder { color: var(--faint); opacity: 1; }
 .ago-sched-purge:hover, .ago-sched-purge:focus-visible { color: var(--danger); background: rgba(var(--danger-rgb),.1); }
 .ago-sched-purge.armed { color: var(--danger); background: rgba(var(--danger-rgb),.14); font-weight: 600; }
 .ago-sched-purge .ico { width: 14px; height: 14px; }
-.ago-sched-row.done:has(.ago-sched-purge.armed) { opacity: 1; }
+.ago-sched-row.done:has(.ago-sched-purge.armed), .ago-sched-row.cancelled:has(.ago-sched-purge.armed) { opacity: 1; }
 @media (max-width: 820px) {
   .ago-sched-purge { top: 4px; right: 4px; min-width: 44px; min-height: 44px; justify-content: center; }
   .ago-sched-row.purgeable .ago-sched-top { padding-right: 40px; }

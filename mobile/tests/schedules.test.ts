@@ -5,10 +5,11 @@ import { router, useLocalSearchParams } from "expo-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiClient, ApiProvider, useAllSchedules, useApprovals, useMarkUnreadsRead, useMe, useSyncedDrafts, useUnreads, type Schedule } from "@agora/core";
 import { fixtureSchedules } from "@agora/core/testing/fixtures";
-import { SchedulesList, editedSpec, nextRunChange, parseLocalInput, formatLocalInput } from "../src/components/SchedulesList";
-import { groupSchedulesByChannel, openSchedule } from "../src/components/SchedulesInbox";
+import { SchedulesList, ScheduleRow, editedSpec, nextRunChange, parseLocalInput, formatLocalInput } from "../src/components/SchedulesList";
+import { openSchedule } from "../src/components/SchedulesInbox";
 import { channelToolActions, threadToolActions } from "../src/lib/conversationTools";
 import InboxScreen from "../app/(app)/inbox";
+import { useToasts } from "../src/components/Toast";
 import { useInboxTab } from "../src/state/inboxTab";
 
 jest.mock("lucide-react-native", () => new Proxy({}, { get: () => function MockIcon() { return null; } }));
@@ -39,6 +40,7 @@ class TestApi extends ApiClient {
   constructor(private readonly items: Schedule[]) { super({ baseUrl: "https://example.invalid", token: "test" }); }
   override async get<T>(path: string) {
     this.gets.push(path);
+    if (path === "/api/groups") return { groups: [] } as T;
     if (path.includes("status=done")) {
       if (this.doneHold) await this.doneHold;
       return (this.doneTruncated ? { items: this.done, truncated: true } : { items: this.done }) as T;
@@ -76,7 +78,7 @@ test("lists a channel's schedules with cadence, thread label, owner and agent; r
   const api = new TestApi(fixtureSchedules);
   await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: null }))); });
   await flush();
-  expect(api.gets).toEqual(["/api/channels/general/schedules"]);
+  expect(api.gets).toContain("/api/channels/general/schedules");
   const all = texts().join("\n");
   expect(all).toContain("Weekdays at 07:00 UTC");
   expect(all).toContain("Every 6 hours");
@@ -92,12 +94,12 @@ test("lists a channel's schedules with cadence, thread label, owner and agent; r
   // runner can exceed jest's 5 s default (same as templates.test.ts).
 }, 20_000);
 
-test("thread view asks for that thread only and hides the thread label", async () => {
+test("thread view asks for that thread only and keeps its location on the card", async () => {
   const api = new TestApi([fixtureSchedules[0]]);
   await act(async () => { tree = TestRenderer.create(wrap(api, React.createElement(SchedulesList, { channelId: "general", threadId: 42 }))); });
   await flush();
-  expect(api.gets).toEqual(["/api/channels/general/schedules?thread_id=42"]);
-  expect(texts().join("\n")).not.toContain("Responsive layout loop");
+  expect(api.gets).toContain("/api/channels/general/schedules?thread_id=42");
+  expect(texts().join("\n")).toContain("Responsive layout loop");
 });
 
 test("pause sends a status PATCH and cancel sends DELETE after confirming", async () => {
@@ -236,7 +238,7 @@ test("channel ⋯ sheet offers Schedules right after attachments", () => {
     params: { channelId: "general", channelName: "general", groupId: "team" } });
 });
 
-test("inbox Schedules tab lists every visible schedule grouped by channel", async () => {
+test("inbox Schedules tab shows a flat list ordered by time across channels", async () => {
   useInboxTab.setState({ tab: "unreads", filter: "all" });
   const list = { data: [], total: 0, isLoading: false, isError: false, refetch: jest.fn() };
   (useUnreads as jest.Mock).mockReturnValue(list);
@@ -251,15 +253,18 @@ test("inbox Schedules tab lists every visible schedule grouped by channel", asyn
   const tab = tree!.root.findAll(node => node.props.accessibilityRole === "tab" && node.props.accessibilityLabel === "Schedules")[0];
   expect(tab.props.accessibilityState.selected).toBe(true);
   const headers = tree!.root.findAll(node => node.props.accessibilityRole === "header" && node.type === Text).map(node => node.props.children);
-  expect(headers).toEqual(["# alpha", "# storybook"]);
+  expect(headers).toEqual([]);
+  expect(tree!.root.findAllByType(ScheduleRow).map(node => node.props.item.id))
+    .toEqual(["sch-other", "sch-watchdog", "sch-loop", "sch-paused"]);
+  expect(texts().join("\n")).toContain("#alpha");
+  expect(texts().join("\n")).toContain("#storybook");
   await act(async () => byLabel("Paused, 1")[0].props.onPress());
   expect(byLabel("Paused, 1")[0].props.accessibilityState.selected).toBe(true);
   expect(texts().join("\n")).not.toContain("Every 6 hours");
   await act(async () => byLabel("Active, 3")[0].props.onPress());
   expect(texts().join("\n")).not.toContain("@cursor weekly dependency report");
 
-  expect(groupSchedulesByChannel([...fixtureSchedules, other]).map(item => item.id))
-    .toEqual(["sch-other", "sch-watchdog", "sch-loop", "sch-paused"]);
+
 });
 
 test("a paused schedule's times are labelled as what resuming would do", async () => {
@@ -454,7 +459,7 @@ test("a capped Done list's badge says there are more", async () => {
   expect(texts()).toContain("1+");
 });
 
-test("inbox Done is one flat latest-finished-first list labelled by channel", async () => {
+test("inbox Done is one flat last-run-first list labelled by channel", async () => {
   useInboxTab.setState({ tab: "unreads", filter: "all" });
   const list = { data: [], total: 0, isLoading: false, isError: false, refetch: jest.fn() };
   (useUnreads as jest.Mock).mockReturnValue(list);
@@ -465,7 +470,7 @@ test("inbox Done is one flat latest-finished-first list labelled by channel", as
   (useLocalSearchParams as jest.Mock).mockReturnValue({ tab: "schedules" });
   (useAllSchedules as jest.Mock).mockReturnValue({ data: { items: fixtureSchedules }, isLoading: false, isError: false, isRefetching: false, refetch: jest.fn() });
   const row = (id: string, channel: string, text: string): Schedule =>
-    ({ ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null, text, status: "done" });
+    ({ ...fixtureSchedules[1], id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null, text, status: "done", last_run_at: 2000 - Number(id) });
   const api = new TestApi([]);
   // zeta's older row must not jump ahead of alpha's newer one.
   api.done = [row("1", "zeta", "zeta newest"), row("2", "alpha", "alpha middle"), row("3", "zeta", "zeta oldest"),
@@ -497,7 +502,7 @@ test("empty schedule tabs have distinct copy and no zero badge", async () => {
   expect(texts().join("\n")).toContain("No done schedules");
 });
 
-test("inbox keeps one heading per channel on every tab when channels mix active and paused", async () => {
+test("inbox keeps chronological ordering across channels and statuses on every tab", async () => {
   useInboxTab.setState({ tab: "unreads", filter: "all" });
   const list = { data: [], total: 0, isLoading: false, isError: false, refetch: jest.fn() };
   (useUnreads as jest.Mock).mockReturnValue(list);
@@ -508,20 +513,20 @@ test("inbox keeps one heading per channel on every tab when channels mix active 
   (useLocalSearchParams as jest.Mock).mockReturnValue({ tab: "schedules" });
   const base = fixtureSchedules[1];
   const row = (id: string, channel: string, status: Schedule["status"], runAt: number): Schedule =>
-    ({ ...base, id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null, status, run_at: runAt, can_manage: false });
-  // Interleaved due times: a global live-first sort would split the channels.
+    ({ ...base, id, channel_id: channel, channel_name: channel, thread_id: null, thread_title: null, status, run_at: runAt, next_runs: [runAt], can_manage: false });
+  // A paused run due sooner stays ahead of a later active run on All.
   const items = [
     row("a-act", "alpha", "active", 100), row("s-act", "storybook", "active", 200),
-    row("a-pau", "alpha", "paused", 300), row("s-pau", "storybook", "paused", 400),
+    row("a-pau", "alpha", "paused", 150), row("s-pau", "storybook", "paused", 400),
   ];
   (useAllSchedules as jest.Mock).mockReturnValue({ data: { items }, isLoading: false, isError: false, isRefetching: false, refetch: jest.fn() });
   await act(async () => { tree = TestRenderer.create(wrap(new TestApi([]), React.createElement(InboxScreen))); });
-  const headers = () => tree!.root.findAll(node => node.props.accessibilityRole === "header" && node.type === Text).map(node => node.props.children);
-  expect(headers()).toEqual(["# alpha", "# storybook"]);
+  const ids = () => tree!.root.findAllByType(ScheduleRow).map(node => node.props.item.id);
+  expect(ids()).toEqual(["a-act", "a-pau", "s-act", "s-pau"]);
   await act(async () => byLabel("Active, 2")[0].props.onPress());
-  expect(headers()).toEqual(["# alpha", "# storybook"]);
+  expect(ids()).toEqual(["a-act", "s-act"]);
   await act(async () => byLabel("Paused, 2")[0].props.onPress());
-  expect(headers()).toEqual(["# alpha", "# storybook"]);
+  expect(ids()).toEqual(["a-pau", "s-pau"]);
 });
 
 test("a finished card deletes for good from its trash icon after confirming; live cards have none", async () => {
@@ -537,11 +542,22 @@ test("a finished card deletes for good from its trash icon after confirming; liv
   // Only the one this person may manage gets the icon.
   const trash = byLabel("Delete schedule: Every 6 hours");
   expect(trash).toHaveLength(1);
-  const alert = jest.spyOn(Alert, "alert").mockImplementation((_title, _message, buttons) => {
-    buttons?.find(button => button.style === "destructive")?.onPress?.();
-  });
-  await act(async () => { trash[0].props.onPress(); });
+  const alert = jest.spyOn(Alert, "alert");
+  jest.useFakeTimers();
+  try {
+    await act(async () => { trash[0].props.onPress(); });
+    expect(api.deletes).toEqual([]);
+    expect(texts()).toContain("Delete?");
+    act(() => { jest.advanceTimersByTime(3000); });
+    expect(byLabel("Confirm delete schedule: Every 6 hours")).toHaveLength(0);
+  } finally {
+    jest.useRealTimers();
+  }
+  await act(async () => { byLabel("Delete schedule: Every 6 hours")[0].props.onPress(); });
+  expect(api.deletes).toEqual([]);
+  await act(async () => { byLabel("Confirm delete schedule: Every 6 hours")[0].props.onPress(); });
   await flush();
-  expect(alert.mock.calls[0][0]).toBe("Delete schedule?");
+  expect(alert).not.toHaveBeenCalled();
   expect(api.deletes).toEqual(["/api/schedules/d-1?purge=1"]);
+  expect(useToasts.getState().items.some(item => item.message === "Schedule deleted")).toBe(true);
 });

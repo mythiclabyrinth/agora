@@ -5,9 +5,9 @@
    changed by an agent, so this screen never offers a create or text-edit
    path. */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
-import { CalendarClock, Clock, MessageSquare, Pause, Play, Trash2 } from "lucide-react-native";
+import { CalendarClock, Clock, MessageSquare, MessagesSquare, Pause, Pencil, Play, Trash2 } from "lucide-react-native";
 import {
   SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterBadge, filterSchedules, type ScheduleFilter,
   doneBadgeList, scheduleEmptyCopy, scheduleTruncatedNote, useDoneSchedules, type ScheduleList,
@@ -18,7 +18,7 @@ import {
   LOST_ACCESS_NOTE,
   lostChannelAccess,
   nextRunsLabel,
-  sortSchedules,
+  sortSchedulesByTime, scheduleChannelLabel, scheduleGroupName, useGroups,
   useCancelSchedule,
   usePurgeSchedule,
   useSchedules,
@@ -34,7 +34,7 @@ import { Icon } from "./Icon";
 import { ResponsiveText as Text } from "./ResponsiveText";
 import { SheetHeader } from "./SheetHeader";
 import { ThemedInput } from "./ThemedInput";
-import { toastErr } from "./Toast";
+import { toast, toastErr } from "./Toast";
 
 const STATUS_LABEL: Record<Schedule["status"], string> = {
   active: "Active", paused: "Paused", done: "Done", cancelled: "Cancelled",
@@ -67,7 +67,7 @@ export function useScheduleActions() {
   };
   const confirmCancel = (item: Schedule) => Alert.alert(
     "Cancel schedule?",
-    "It stops posting and leaves this list. An agent can create a new one later.",
+    "It stops posting and moves to Done with a Cancelled label.",
     [
       { text: "Keep", style: "cancel" },
       { text: "Cancel schedule", style: "destructive", onPress: () => {
@@ -79,29 +79,19 @@ export function useScheduleActions() {
       } },
     ],
   );
-  const confirmPurge = (item: Schedule) => Alert.alert(
-    "Delete schedule?",
-    "It's removed for good. Messages it already posted stay.",
-    [
-      { text: "Keep", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: () => {
-        start(item.id);
-        purge.mutate({ id: item.id, channel_id: item.channel_id }, {
-          onError: error => toastErr("Delete failed", error),
-          onSettled: () => finish(item.id),
-        });
-      } },
-    ],
-  );
-  return { isBusy, setStatus, confirmCancel, confirmPurge };
+  const deleteFinished = (item: Schedule) => {
+    start(item.id);
+    purge.mutate({ id: item.id, channel_id: item.channel_id }, {
+      onSuccess: () => toast("Schedule deleted"),
+      onError: error => toastErr("Delete failed", error),
+      onSettled: () => finish(item.id),
+    });
+  };
+  return { isBusy, setStatus, confirmCancel, deleteFinished };
 }
 
-export function ScheduleRow({ item, showThread, showChannel = false, channelLabel, onOpen, onEdit, actions }: {
+export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
   item: Schedule;
-  /** Label the thread a schedule posts into (channel and inbox views). */
-  showThread: boolean;
-  /** Label the channel too (inbox view groups by channel, so off by default). */
-  showChannel?: boolean;
   /** A fuller channel label (e.g. with its group), shown instead of `# name`. */
   channelLabel?: string;
   onOpen?: (item: Schedule) => void;
@@ -115,54 +105,74 @@ export function ScheduleRow({ item, showThread, showChannel = false, channelLabe
   // The owner lost the channel: keep Pause and Cancel (as the server allows),
   // nothing that would post into a conversation they can no longer see.
   const lostAccess = lostChannelAccess(item);
-  // Finished: deleted for good from the top right (what it posted stays).
+  // Only manageable finished rows offer permanent deletion.
   const purgeable = item.can_manage === true && (item.status === "done" || item.status === "cancelled");
+  const [purgeArmed, setPurgeArmed] = useState(false);
+  useEffect(() => {
+    if (!purgeArmed) return;
+    const timer = setTimeout(() => setPurgeArmed(false), 3000);
+    return () => clearTimeout(timer);
+  }, [purgeArmed]);
   const cadence = describeSchedule(item.schedule);
   const [expanded, setExpanded] = useState(false);
   const [showLater, setShowLater] = useState(false);
-  const where = [channelLabel ?? (showChannel && item.channel_name ? `# ${item.channel_name}` : null), showThread ? item.thread_title : null]
-    .filter(Boolean).join(" · ");
+  const where = channelLabel ?? scheduleChannelLabel(item);
+  const threadName = item.thread_id != null ? item.thread_title || "Thread" : null;
   return (
-    <View style={styles.row}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`Open scheduled message: ${cadence}`}
-        disabled={!onOpen || lostAccess} style={styles.main} onPress={() => { if (!lostAccess) onOpen?.(item); }}>
+    <View style={[styles.row, (item.status === "done" || item.status === "cancelled") && styles.finished]}>
+      {purgeable ? <Pressable accessibilityRole="button"
+        accessibilityLabel={`${purgeArmed ? "Confirm delete" : "Delete"} schedule: ${cadence}`}
+        accessibilityHint={purgeArmed ? "Tap again within three seconds to delete" : "Tap twice to delete"}
+        disabled={busy} style={styles.purge} onPress={() => {
+          if (busy) return;
+          if (!purgeArmed) { setPurgeArmed(true); return; }
+          setPurgeArmed(false);
+          actions.deleteFinished(item);
+        }}>
+        {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <Icon icon={Trash2} size={17} color={purgeArmed ? colors.red : colors.dim} />}
+        {purgeArmed ? <Text style={styles.error}>Delete?</Text> : null}
+      </Pressable> : null}
+      <View style={styles.main}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`Open scheduled message: ${where}`}
+          disabled={!onOpen || lostAccess || !!threadName} style={[styles.location, purgeable && styles.locationWithPurge]}
+          onPress={() => onOpen?.(item)}>
+          <Icon icon={MessagesSquare} size={16} color={colors.dim} />
+          <Text style={styles.locationText}>{where}</Text>
+        </Pressable>
         <View style={styles.top}>
-          <Icon icon={CalendarClock} size={16} color={colors.accentText} />
-          <Text style={styles.cadence} numberOfLines={2}>{cadence}</Text>
-          <View style={[styles.chip, item.status !== "active" && styles.chipPaused]}>
-            <Text maxFontSizeMultiplier={1.3} style={[styles.chipText, item.status !== "active" && styles.chipTextPaused]}>{STATUS_LABEL[item.status]}</Text>
-          </View>
-          {purgeable ? (
-            busy ? <ActivityIndicator size="small" color={colors.dim} style={styles.purge} /> : (
-              <Pressable accessibilityRole="button" accessibilityLabel={`Delete schedule: ${cadence}`} hitSlop={6}
-                style={styles.purge} onPress={() => actions.confirmPurge(item)}>
-                <Icon icon={Trash2} size={18} color={colors.dim} />
-              </Pressable>
-            )
-          ) : null}
+          <Icon icon={Clock} size={16} color={colors.accentText} />
+          <Text style={styles.cadence}>{cadence}</Text>
         </View>
+        {threadName ? <Pressable accessibilityRole="button" accessibilityLabel={`Open thread: ${threadName}`}
+          disabled={!onOpen || lostAccess} onPress={() => onOpen?.(item)} style={styles.thread}>
+          <Icon icon={MessageSquare} size={13} color={colors.dim} />
+          <Text style={styles.meta}>{threadName}</Text>
+        </Pressable> : null}
         <Text style={styles.text} numberOfLines={expanded || item.text.length <= 160 ? undefined : 3}>{item.text}</Text>
-        {where ? <View style={styles.thread}><Icon icon={MessageSquare} size={13} /><Text style={styles.meta} numberOfLines={1}>{where}</Text></View> : null}
+        {item.text.length > 160 ? <Pressable accessibilityRole="button" accessibilityState={{ expanded }}
+          accessibilityLabel={expanded ? "Show less" : "Read full message"} style={styles.expand} onPress={() => setExpanded(!expanded)}>
+          <Text style={styles.expandText}>{expanded ? "Show less" : "Read full message"}</Text>
+        </Pressable> : null}
         {(item.status === "active" || item.status === "paused") && item.next_runs.length ? (
           <Text style={styles.nextRun}>{nextRunsLabel(item.status)} {fmtTs(item.next_runs[0])}</Text>
+        ) : null}
+        {(item.status === "active" || item.status === "paused") && item.next_runs.length > 1 ? <View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Later runs" accessibilityState={{ expanded: showLater }}
+            style={styles.expand} onPress={() => setShowLater(!showLater)}>
+            <Text style={styles.expandText}>{showLater ? "Hide later runs" : "Later runs"}</Text>
+          </Pressable>
+          {showLater ? item.next_runs.slice(1).map((time, index) => <Text key={index} style={styles.meta}>{fmtTs(time)}</Text>) : null}
+        </View> : null}
+        {item.last_run_at != null && (item.status === "done" || item.status === "cancelled") ? (
+          <Text style={styles.meta}>Last ran {fmtTs(item.last_run_at)}</Text>
         ) : null}
         <Text style={styles.meta} numberOfLines={1}>
           Posts as {item.owner_name || item.owner}{item.via_agent ? ` · via ${item.via_agent}` : ""}
         </Text>
         {item.last_error ? <Text style={styles.error} numberOfLines={3}>{item.last_error}</Text> : null}
         {lostAccess ? <Text style={styles.error} numberOfLines={2}>{LOST_ACCESS_NOTE}</Text> : null}
-      </Pressable>
-      {(item.status === "active" || item.status === "paused") && item.next_runs.length > 1 ? <View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Later runs" accessibilityState={{ expanded: showLater }}
-          style={styles.expand} onPress={() => setShowLater(!showLater)}>
-          <Text style={styles.expandText}>{showLater ? "Hide later runs" : "Later runs"}</Text>
-        </Pressable>
-        {showLater ? item.next_runs.slice(1).map((time, index) => <Text key={index} style={styles.meta}>{fmtTs(time)}</Text>) : null}
-      </View> : null}
-      {item.text.length > 160 ? <Pressable accessibilityRole="button" accessibilityState={{ expanded }}
-        accessibilityLabel={expanded ? "Show less" : "Read full message"} style={styles.expand} onPress={() => setExpanded(!expanded)}>
-        <Text style={styles.expandText}>{expanded ? "Show less" : "Read full message"}</Text>
-      </Pressable> : null}
+      </View>
+      <View style={styles.footer}>
       {manageable && lostAccess ? (
         <View style={styles.actions}>
           {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <>
@@ -180,7 +190,7 @@ export function ScheduleRow({ item, showThread, showChannel = false, channelLabe
         <View style={styles.actions}>
           {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <>
             <Pressable accessibilityRole="button" accessibilityLabel={`Change time: ${cadence}`} style={styles.action} onPress={() => onEdit(item)}>
-              <Icon icon={Clock} size={17} /><Text style={styles.actionText}>Time</Text>
+              <Icon icon={Pencil} size={17} /><Text style={styles.actionText}>Change time</Text>
             </Pressable>
             {item.status === "active" ? (
               <Pressable accessibilityRole="button" accessibilityLabel={`Pause schedule: ${cadence}`} style={styles.action} onPress={() => actions.setStatus(item, "paused")}>
@@ -197,6 +207,10 @@ export function ScheduleRow({ item, showThread, showChannel = false, channelLabe
           </>}
         </View>
       ) : null}
+      <View style={[styles.chip, item.status !== "active" && styles.chipPaused]}>
+        <Text maxFontSizeMultiplier={1.3} style={[styles.chipText, item.status !== "active" && styles.chipTextPaused]}>{STATUS_LABEL[item.status]}</Text>
+      </View>
+      </View>
     </View>
   );
 }
@@ -387,21 +401,13 @@ export interface DoneScheduleList {
   refetch: () => unknown;
 }
 
-/** Rows plus the shared editor and actions, for any list of schedules. The
-    screen owns the status tab: Done shows `done` (loaded only while that
-    tab is open, latest finished first), every other tab filters `items`.
-    `doneLabel` makes Done one flat list with that label on each row instead
-    of `header` groups, which would break its strict newest-first order. */
-export function ScheduleRows({ items, done, doneLabel, filter, onFilterChange, showThread, showChannel, onOpen, header, refreshing, onRefresh, empty, truncated }: {
+/** A flat list on every tab; each card carries its own location. */
+export function ScheduleRows({ items, done, filter, onFilterChange, onOpen, refreshing, onRefresh, empty, truncated }: {
   items: Schedule[];
   done: DoneScheduleList;
-  doneLabel?: (item: Schedule) => string;
   filter: ScheduleFilter;
   onFilterChange: (filter: ScheduleFilter) => void;
-  showThread: boolean;
-  showChannel?: boolean;
   onOpen?: (item: Schedule) => void;
-  header?: (item: Schedule, index: number, items: Schedule[]) => string | null;
   refreshing: boolean;
   onRefresh: () => void;
   empty: React.ReactElement;
@@ -416,8 +422,8 @@ export function ScheduleRows({ items, done, doneLabel, filter, onFilterChange, s
   const [doneOpenedAt, setDoneOpenedAt] = useState<number | null>(null);
   const pick = (next: ScheduleFilter) => { setDoneOpenedAt(next === "done" ? Date.now() : null); onFilterChange(next); };
   const showDone = filter === "done";
-  const filtered = showDone ? done.data?.items ?? [] : filterSchedules(items, filter);
-  const flat = showDone && !!doneLabel;
+  const filtered = showDone ? sortSchedulesByTime(done.data?.items ?? []) : filterSchedules(items, filter);
+  const groups = useGroups().data;
   const capped = showDone ? !!done.data?.truncated : truncated;
   const emptyTab = filter === "all" ? empty
     : showDone && done.isLoading ? <ActivityIndicator color={colors.a1} />
@@ -434,14 +440,10 @@ export function ScheduleRows({ items, done, doneLabel, filter, onFilterChange, s
         onRefresh={showDone ? () => void done.refetch() : onRefresh} tintColor={colors.a1} />}
       ListEmptyComponent={emptyTab}
       ListFooterComponent={capped ? <Text accessibilityRole="text" style={styles.truncated}>{scheduleTruncatedNote(filter)}</Text> : null}
-      renderItem={({ item, index }) => {
-        const title = flat ? null : header?.(item, index, filtered) ?? null;
-        return <View style={styles.group}>
-          {title ? <Text accessibilityRole="header" style={styles.groupTitle}>{title}</Text> : null}
-          <ScheduleRow item={item} showThread={showThread} showChannel={showChannel} channelLabel={flat ? doneLabel?.(item) : undefined}
-            onOpen={onOpen} onEdit={setEditing} actions={actions} />
-        </View>;
-      }}
+      renderItem={({ item }) => (
+        <ScheduleRow item={item} channelLabel={scheduleChannelLabel(item, scheduleGroupName(item, groups))}
+          onOpen={onOpen} onEdit={setEditing} actions={actions} />
+      )}
     />
     {editing ? <ScheduleTimeSheet key={editing.id} item={editing} onClose={() => setEditing(null)} /> : null}
   </>;
@@ -466,14 +468,14 @@ function ScopedSchedulesList({ channelId, threadId, onOpen }: {
   const query = useSchedules(channelId, threadId);
   const [filter, setFilter] = useState<ScheduleFilter>("all");
   const done = useDoneSchedules(channelId, threadId, filter === "done");
-  const items = useMemo(() => sortSchedules(query.data?.items ?? []), [query.data]);
+  const items = useMemo(() => sortSchedulesByTime(query.data?.items ?? []), [query.data]);
   if (query.isLoading) return <View style={styles.center}><ActivityIndicator color={colors.a1} /></View>;
   if (query.isError) return (
     <EmptyState icon={CalendarClock} title="Couldn’t load schedules."
       action={{ label: "Retry", accessibilityLabel: "Retry schedules", onPress: () => void query.refetch() }} />
   );
   return <ScheduleRows items={items} done={done} filter={filter} onFilterChange={setFilter}
-    showThread={threadId == null} onOpen={onOpen} truncated={!!query.data?.truncated}
+    onOpen={onOpen} truncated={!!query.data?.truncated}
     refreshing={query.isRefetching} onRefresh={() => void query.refetch()}
     empty={<EmptyState icon={CalendarClock} title={EMPTY_TITLE} description={EMPTY_DESCRIPTION} />} />;
 }
@@ -493,20 +495,25 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   truncated: { ...typography.caption, color: colors.dim, textAlign: "center", paddingVertical: space.sm },
   row: { gap: 12, padding: 16, borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong, backgroundColor: colors.panel },
+  finished: { opacity: 0.72 },
   main: { minWidth: 0, gap: 8 },
+  location: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32 },
+  locationText: { flex: 1, ...typography.bodySm, color: colors.text, fontWeight: weight.semibold },
   top: { flexDirection: "row", alignItems: "center", gap: 8 },
   cadence: { flex: 1, color: colors.text, fontSize: typography.message.fontSize, fontWeight: weight.semibold },
-  purge: { width: 36, height: 36, marginVertical: -8, marginRight: -6, alignItems: "center", justifyContent: "center" },
-  chip: { borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: colors.accentSoft },
+  locationWithPurge: { marginRight: 100 },
+  purge: { position: "absolute", top: 8, right: 8, minWidth: 44, minHeight: 44, paddingHorizontal: 8, flexDirection: "row", gap: 4, alignItems: "center", justifyContent: "center", zIndex: 1 },
+  chip: { marginLeft: "auto", alignSelf: "flex-end", borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 2, backgroundColor: colors.accentSoft },
   chipPaused: { backgroundColor: colors.panelStrong },
   chipText: { ...typography.caption, color: colors.accentText, fontWeight: weight.semibold },
   chipTextPaused: { color: colors.dim },
   text: { ...typography.bodySm, color: colors.text },
   nextRun: { ...typography.bodySm, color: colors.text, fontWeight: weight.semibold },
-  thread: { flexDirection: "row", alignItems: "center", gap: 5 },
+  thread: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 44, alignSelf: "flex-start" },
   meta: { flexShrink: 1, color: colors.dim, fontSize: typography.caption.fontSize },
   error: { color: colors.red, fontSize: typography.caption.fontSize },
-  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderStrong, paddingTop: 8 },
+  footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.borderStrong, paddingTop: 12 },
+  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, flexShrink: 1 },
   action: { minHeight: 44, minWidth: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, borderRadius: radii.md, backgroundColor: colors.panelStrong },
   actionText: { ...typography.caption, color: colors.text, fontWeight: weight.semibold },
   expand: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
