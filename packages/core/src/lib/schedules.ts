@@ -192,11 +192,11 @@ export function scheduleFilterCount(items: Schedule[], filter: ScheduleFilter, d
   if (filter === "done") return done?.length ?? 0;
   return items.filter(item => filter === "all" || item.status === filter).length;
 }
-/** Keeps only finished rows of a Done response (and its `truncated`): a
- *  server that predates `?status=done` ignores it and returns the live list,
+/** Keeps only finished (done or cancelled) rows of a Done response (and its
+ *  `truncated`): a server that predates `?status=done` ignores it and returns the live list,
  *  whose active and paused rows don't belong on that tab. */
 export function onlyDone(list: ScheduleList): ScheduleList {
-  const items = list.items.filter(item => item.status === "done");
+  const items = list.items.filter(item => item.status === "done" || item.status === "cancelled");
   return items.length === list.items.length ? list : { ...list, items };
 }
 

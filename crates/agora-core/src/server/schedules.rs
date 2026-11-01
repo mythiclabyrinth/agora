@@ -60,9 +60,9 @@ pub(crate) fn schedule_presets() -> &'static [u32] {
     PRESETS.get_or_init(|| parse_schedule_presets(std::env::var("AGORA_SCHEDULE_PRESETS").ok().as_deref()))
 }
 
-/// `?status=done` asks a list for every finished schedule (any age, most
-/// recently finished first) instead of the default live-first view; no
-/// other status filter exists.
+/// `?status=done` asks a list for every finished schedule, cancelled ones
+/// included (any age, most recently finished first), instead of the default
+/// live-first view; no other status filter exists.
 fn done_only(q: &HashMap<String, String>) -> Result<bool, ApiError> {
     match q.get("status").map(String::as_str).filter(|s| !s.is_empty()) {
         None => Ok(false),
@@ -426,7 +426,7 @@ pub(super) async fn create_schedule(
     Ok(Json(json!({"schedule": decorate_schedule(&state.hub.store, &created, viewer(&user))})))
 }
 
-/// DELETE /api/schedules/{id} — cancel (kept as history, hidden from lists).
+/// DELETE /api/schedules/{id} — cancel (kept as history, listed under Done).
 /// With `?purge=1`, permanently delete a finished schedule instead; a live
 /// one is refused (409) so nothing still due is ever lost.
 pub(super) async fn delete_schedule(
@@ -682,15 +682,16 @@ mod tests {
             .map(|i| i["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
         let Json(channel) = list_channel_schedules(State(f.state.clone()), Path(f.cid.clone()), Query(done_q.clone()),
             session_headers(&f.state, "ana")).await.ok().unwrap();
-        assert_eq!(texts(&channel), ["newest", "middle", "old"]);
+        // Cancelled ones share the tab (the row's pill tells them apart).
+        assert_eq!(texts(&channel), ["cancelled", "newest", "middle", "old"]);
         assert!(channel.get("truncated").is_none());
         let Json(all) = list_schedules(State(f.state.clone()), Query(done_q.clone()), session_headers(&f.state, "ana"))
             .await.ok().unwrap();
-        assert_eq!(texts(&all), ["newest", "middle", "old"]);
+        assert_eq!(texts(&all), ["cancelled", "newest", "middle", "old"]);
         // Same visibility as the default view: bob shares the group, eve doesn't.
         let Json(bob) = list_schedules(State(f.state.clone()), Query(done_q), session_headers(&f.state, "bob"))
             .await.ok().unwrap();
-        assert_eq!(texts(&bob), ["newest", "middle", "old"]);
+        assert_eq!(texts(&bob), ["cancelled", "newest", "middle", "old"]);
         let Json(eve) = list_schedules(State(f.state.clone()), Query(HashMap::from([("status".to_string(), "done".to_string())])),
             session_headers(&f.state, "eve")).await.ok().unwrap();
         assert!(texts(&eve).is_empty(), "eve can't see the channel");

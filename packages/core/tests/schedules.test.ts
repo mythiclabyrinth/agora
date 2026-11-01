@@ -138,7 +138,7 @@ describe("schedule filters", () => {
   it("keeps only finished rows when an older server ignores ?status=done", () => {
     const mixed = { items: [at("active", "a"), at("done", "d1"), at("paused", "p"), at("done", "d2")], truncated: true };
     expect(onlyDone(mixed)).toEqual({ items: [at("done", "d1"), at("done", "d2")], truncated: true });
-    const clean = { items: [at("done", "d1")] };
+    const clean = { items: [at("done", "d1"), at("cancelled", "c1")] };
     expect(onlyDone(clean)).toBe(clean);
   });
 

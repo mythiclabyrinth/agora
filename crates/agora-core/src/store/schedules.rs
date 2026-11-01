@@ -496,14 +496,15 @@ impl Store {
             .collect()
     }
 
-    /// Every finished schedule in a channel (or one thread), of any age,
-    /// most recently finished first — the "Done" tab. At most `limit` rows.
+    /// Every finished (done or cancelled) schedule in a channel (or one
+    /// thread), of any age, most recently finished first — the "Done" tab.
+    /// At most `limit` rows.
     /// See [`DONE_ORDER`] for what "finished" means.
     pub fn list_done_schedules_for_channel(&self, channel_id: &str, thread_id: Option<i64>, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {COLS} FROM schedules WHERE channel_id = ?1 AND status = 'done' \
+                "SELECT {COLS} FROM schedules WHERE channel_id = ?1 AND status IN ('done', 'cancelled') \
                  AND (?2 IS NULL OR thread_id = ?2) ORDER BY {DONE_ORDER}, id LIMIT ?3"
             ))
             .unwrap();
@@ -536,9 +537,9 @@ impl Store {
             .collect()
     }
 
-    /// [`Store::list_visible_schedules`]'s finished rows only, of any age,
-    /// most recently finished first — the inbox's "Done" tab. At most
-    /// `limit` rows.
+    /// [`Store::list_visible_schedules`]'s finished rows only (cancelled
+    /// ones included), of any age, most recently finished first — the
+    /// inbox's "Done" tab. At most `limit` rows.
     pub fn list_visible_done_schedules(&self, username: &str, instance_admin: bool, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let cols: String = COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ");
@@ -546,7 +547,7 @@ impl Store {
             .prepare(&format!(
                 "SELECT {cols} FROM schedules s JOIN channels c ON c.id = s.channel_id \
                  LEFT JOIN groups g ON g.id = c.group_id \
-                 WHERE s.status = 'done' AND {VISIBLE_TO} \
+                 WHERE s.status IN ('done', 'cancelled') AND {VISIBLE_TO} \
                  ORDER BY {DONE_ORDER_S}, s.id LIMIT ?3"
             ))
             .unwrap();
