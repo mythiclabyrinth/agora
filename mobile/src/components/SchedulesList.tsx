@@ -7,7 +7,7 @@
 
 import React, { useMemo, useState } from "react";
 import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
-import { CalendarClock, Clock, MessageSquare, Pause, Play, Trash2 } from "lucide-react-native";
+import { CalendarClock, Clock, MessageSquare, MessagesSquare, Pause, Pencil, Play, Trash2 } from "lucide-react-native";
 import {
   SCHEDULE_FILTERS, scheduleFilterLabel, scheduleFilterBadge, filterSchedules, type ScheduleFilter,
   doneBadgeList, scheduleEmptyCopy, scheduleTruncatedNote, useDoneSchedules, type ScheduleList,
@@ -119,16 +119,16 @@ export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
   const where = channelLabel ?? scheduleChannelLabel(item);
   const threadName = item.thread_id != null ? item.thread_title || "Thread" : null;
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, (item.status === "done" || item.status === "cancelled") && styles.finished]}>
       <View style={styles.main}>
         <Pressable accessibilityRole="button" accessibilityLabel={`Open scheduled message: ${where}`}
           disabled={!onOpen || lostAccess || !!threadName} style={styles.location}
           onPress={() => onOpen?.(item)}>
-          <Icon icon={MessageSquare} size={16} color={colors.dim} />
+          <Icon icon={MessagesSquare} size={16} color={colors.dim} />
           <Text style={styles.locationText}>{where}</Text>
         </Pressable>
         <View style={styles.top}>
-          <Icon icon={CalendarClock} size={16} color={colors.accentText} />
+          <Icon icon={Clock} size={16} color={colors.accentText} />
           <Text style={styles.cadence}>{cadence}</Text>
         </View>
         {threadName ? <Pressable accessibilityRole="button" accessibilityLabel={`Open thread: ${threadName}`}
@@ -137,9 +137,20 @@ export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
           <Text style={styles.meta}>{threadName}</Text>
         </Pressable> : null}
         <Text style={styles.text} numberOfLines={expanded || item.text.length <= 160 ? undefined : 3}>{item.text}</Text>
+        {item.text.length > 160 ? <Pressable accessibilityRole="button" accessibilityState={{ expanded }}
+          accessibilityLabel={expanded ? "Show less" : "Read full message"} style={styles.expand} onPress={() => setExpanded(!expanded)}>
+          <Text style={styles.expandText}>{expanded ? "Show less" : "Read full message"}</Text>
+        </Pressable> : null}
         {(item.status === "active" || item.status === "paused") && item.next_runs.length ? (
           <Text style={styles.nextRun}>{nextRunsLabel(item.status)} {fmtTs(item.next_runs[0])}</Text>
         ) : null}
+        {(item.status === "active" || item.status === "paused") && item.next_runs.length > 1 ? <View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Later runs" accessibilityState={{ expanded: showLater }}
+            style={styles.expand} onPress={() => setShowLater(!showLater)}>
+            <Text style={styles.expandText}>{showLater ? "Hide later runs" : "Later runs"}</Text>
+          </Pressable>
+          {showLater ? item.next_runs.slice(1).map((time, index) => <Text key={index} style={styles.meta}>{fmtTs(time)}</Text>) : null}
+        </View> : null}
         {item.last_run_at != null && (item.status === "done" || item.status === "cancelled") ? (
           <Text style={styles.meta}>Last ran {fmtTs(item.last_run_at)}</Text>
         ) : null}
@@ -149,17 +160,6 @@ export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
         {item.last_error ? <Text style={styles.error} numberOfLines={3}>{item.last_error}</Text> : null}
         {lostAccess ? <Text style={styles.error} numberOfLines={2}>{LOST_ACCESS_NOTE}</Text> : null}
       </View>
-      {(item.status === "active" || item.status === "paused") && item.next_runs.length > 1 ? <View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Later runs" accessibilityState={{ expanded: showLater }}
-          style={styles.expand} onPress={() => setShowLater(!showLater)}>
-          <Text style={styles.expandText}>{showLater ? "Hide later runs" : "Later runs"}</Text>
-        </Pressable>
-        {showLater ? item.next_runs.slice(1).map((time, index) => <Text key={index} style={styles.meta}>{fmtTs(time)}</Text>) : null}
-      </View> : null}
-      {item.text.length > 160 ? <Pressable accessibilityRole="button" accessibilityState={{ expanded }}
-        accessibilityLabel={expanded ? "Show less" : "Read full message"} style={styles.expand} onPress={() => setExpanded(!expanded)}>
-        <Text style={styles.expandText}>{expanded ? "Show less" : "Read full message"}</Text>
-      </Pressable> : null}
       <View style={styles.footer}>
       {manageable && lostAccess ? (
         <View style={styles.actions}>
@@ -178,7 +178,7 @@ export function ScheduleRow({ item, channelLabel, onOpen, onEdit, actions }: {
         <View style={styles.actions}>
           {busy ? <ActivityIndicator size="small" color={colors.dim} /> : <>
             <Pressable accessibilityRole="button" accessibilityLabel={`Change time: ${cadence}`} style={styles.action} onPress={() => onEdit(item)}>
-              <Icon icon={Clock} size={17} /><Text style={styles.actionText}>Time</Text>
+              <Icon icon={Pencil} size={17} /><Text style={styles.actionText}>Change time</Text>
             </Pressable>
             {item.status === "active" ? (
               <Pressable accessibilityRole="button" accessibilityLabel={`Pause schedule: ${cadence}`} style={styles.action} onPress={() => actions.setStatus(item, "paused")}>
@@ -489,6 +489,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   truncated: { ...typography.caption, color: colors.dim, textAlign: "center", paddingVertical: space.sm },
   row: { gap: 12, padding: 16, borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderStrong, backgroundColor: colors.panel },
+  finished: { opacity: 0.72 },
   main: { minWidth: 0, gap: 8 },
   location: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32 },
   locationText: { flex: 1, ...typography.bodySm, color: colors.text, fontWeight: weight.semibold },
