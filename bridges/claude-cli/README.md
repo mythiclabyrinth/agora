@@ -370,6 +370,37 @@ no `turn_id`, so agents cannot schedule for each other, and a scheduled post's
 own run may only re-arm or cancel that one schedule. `--no-schedules` (or
 `AGORA_SCHEDULES=0`) removes the capability.
 
+### Automatic retry after usage limits (opt-in)
+
+`--limit-defer` (or `AGORA_LIMIT_DEFER=1`) lets the bridge move a scheduled
+post after a confirmed usage-limit result, without another model call. It is
+**off by default**, requires schedules enabled, and only applies to scheduled
+posts mentioning this agent with a usable scheduled-turn grant. Other errors,
+ordinary messages, stopped runs, and turns mixing people or agents never
+trigger a move.
+
+The bridge reads the current schedule and leaves paused/cancelled schedules
+and already re-armed one-offs alone. Otherwise it moves the run to the account's
+reported reset time plus five minutes. With no usable reset time (including a
+chat pinned to another account), it retries in one hour, at most six attempts
+per schedule until a successful run. The counter is in memory and resets on
+bridge restart. A partial run that used tools adds an interruption reminder
+after the stored message's first line, preserving its leading mention.
+
+Recurring schedules are only postponed when their next fire precedes the retry
+time and they have not been edited since firing. Their repeat rule survives:
+cron resumes its normal timetable after that fire; an interval continues from
+the deferred fire, so its phase shifts. No extra catch-up run is created when
+the next recurring fire is already later than the retry time.
+
+The thread gets the original error plus the outcome. The bridge must be running;
+it cannot recover an offline delivery. Scheduled grants last two hours, so a
+long run may need manual re-arming. A timed-out update is reported as uncertain
+and is never automatically replayed. The existing protocol has separate reads
+and writes, so a concurrent edit between the check and update is not protected
+by an atomic revision condition. Automatic retries do not consume the model's
+three-request allowance or change its authority.
+
 ## Options
 
 Everything is env-overridable (flags take precedence): `AGORA_URL`,

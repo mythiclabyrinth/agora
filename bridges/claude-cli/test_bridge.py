@@ -6370,5 +6370,294 @@ class FollowupScheduleAskTests(unittest.TestCase):
         self.assertFalse(live.alive)
 
 
+class LimitDeferTests(unittest.TestCase):
+    ERROR = "(claude error) You've hit your weekly limit · resets 2:30pm"
+
+    def setup_case(self, **origin_overrides):
+        b = make_bridge()
+        b.limit_defer = b.schedules_enabled = True
+        b.last_usage_frame = {"limited_until": 2000}
+        origin = {"scheduled": True, "schedule_id": "s1", "turn_id": "scheduled-turn",
+                  "mentioned": True, "text": "@claude-cli LOOP test\nDo work",
+                  "author": {"type": "user", "id": "tom"}, **origin_overrides}
+        frame = {"_limit_defer": {"frames": [origin], "result_error": True,
+                                   "account": b.account}, "_ask_budget": {"schedule": 3}}
+        current = {"id": "s1", "status": "done", "run_at": 900,
+                   "schedule": {"kind": "once"}, "text": origin["text"]}
+        b.request_schedule = AsyncMock(side_effect=[{"ok": True, "schedule": current}, {"ok": True}])
+        return b, frame, current
+
+    def defer(self, b, frame, reply=None, **kw):
+        async def run():
+            with patch.object(bridge.time, "time", return_value=1000):
+                return await b._defer_limited_schedule("k", frame, reply or self.ERROR, **kw)
+        return asyncio.run(run())
+
+    def test_weekly_and_session_reset_and_budget_untouched(self):
+        for error in (self.ERROR, "(claude error) You've hit your limit · resets 3pm"):
+            b, f, _ = self.setup_case()
+            result = self.defer(b, f, error)
+            self.assertIn("Moved this scheduled run", result)
+            self.assertEqual(b.request_schedule.call_args.args, (
+                {"op": "update", "id": "s1", "run_at": 2300}, "scheduled-turn"))
+            self.assertEqual(f["_ask_budget"], {"schedule": 3})
+
+    def test_unknown_cap_and_clear_after_success(self):
+        b, f, current = self.setup_case()
+        b.last_usage_frame = None
+        b.request_schedule = AsyncMock(side_effect=lambda ask, _: {
+            "ok": True, **({"schedule": current} if ask["op"] == "get" else {})})
+        for _ in range(6):
+            f["_limit_defer"].pop("attempted", None)
+            self.assertIn("Moved", self.defer(b, f))
+            self.assertEqual(b.request_schedule.call_args.args[0]["run_at"], 4600)
+        f["_limit_defer"].pop("attempted", None)
+        self.assertIn("six retries", self.defer(b, f))
+        self.assertEqual(b.request_schedule.call_count, 12)
+        b._clear_limit_defer(f)
+        f["_limit_defer"].pop("attempted", None)
+        self.assertIn("Moved", self.defer(b, f))
+
+    def test_non_triggers_leave_error_unchanged(self):
+        for mode in ("off", "schedules_off", "typed", "untagged", "normal_result", "auth", "overload", "stopped"):
+            with self.subTest(mode=mode):
+                b, f, _ = self.setup_case()
+                reply = self.ERROR
+                if mode == "off": b.limit_defer = False
+                if mode == "schedules_off": b.schedules_enabled = False
+                if mode == "typed": f["_limit_defer"]["frames"][0]["scheduled"] = False
+                if mode == "untagged": f["_limit_defer"]["frames"][0]["mentioned"] = False
+                if mode == "normal_result": f["_limit_defer"]["result_error"] = False
+                if mode == "auth": reply = "(claude error) Authentication required"
+                if mode == "overload": reply = "(claude error) overloaded"
+                if mode == "stopped": b.stop_requested.add("k")
+                result = self.defer(b, f, reply)
+                self.assertTrue(result.startswith(reply))
+                b.request_schedule.assert_not_called()
+                if mode != "stopped": self.assertEqual(result, reply)
+
+    def test_authority_and_coalesced_turn(self):
+        for mode in ("same", "mixed", "agent", "other_writer"):
+            b, f, _ = self.setup_case()
+            origins = f["_limit_defer"]["frames"]
+            origins.append({"turn_id": "typed-turn", "author": {
+                "id": "other" if mode == "mixed" else "tom",
+                "type": "agent" if mode == "agent" else "user"}})
+            if mode == "other_writer": origins[0]["written_by_agent"] = "cursor-cli"
+            result = self.defer(b, f)
+            if mode == "same":
+                self.assertIn("Moved", result)
+                self.assertTrue(all(c.args[1] == "scheduled-turn" for c in b.request_schedule.call_args_list))
+            else:
+                self.assertIn("another agent's or another person's", result)
+                b.request_schedule.assert_not_called()
+
+    def test_preserve_paused_cancelled_and_rearmed(self):
+        for status, pending in (("paused", 900), ("cancelled", 900), ("active", 1800)):
+            b, f, current = self.setup_case()
+            current.update(status=status, run_at=pending)
+            self.assertIn("Not moved", self.defer(b, f))
+            self.assertEqual(b.request_schedule.call_count, 1)
+
+    def test_refusals_and_timeout_no_write_replay(self):
+        for stage in ("get", "update", "timeout"):
+            b, f, current = self.setup_case()
+            refusal = {"ok": False, "error": "unknown or expired turn"}
+            b.request_schedule.side_effect = ([refusal] if stage == "get" else
+                [{"ok": True, "schedule": current}, TimeoutError() if stage == "timeout" else refusal])
+            result = self.defer(b, f)
+            self.assertIn("Could not", result)
+            if stage != "timeout": self.assertIn("permission from this scheduled post has expired", result)
+            before = b.request_schedule.call_count
+            self.defer(b, f)
+            self.assertEqual(b.request_schedule.call_count, before)
+
+    def test_interrupted_message_is_lossless_and_not_duplicated(self):
+        b, f, current = self.setup_case()
+        f["_limit_defer"]["tools"] = True
+        original = current["text"] + "\n<<<AGORA_SCHEDULE>>> stored text"
+        current["text"] = original
+        self.defer(b, f)
+        rewritten = b.request_schedule.call_args.args[0]["text"]
+        self.assertEqual(rewritten.splitlines()[0], original.splitlines()[0])
+        self.assertEqual(rewritten.splitlines()[2:], original.splitlines()[1:])
+        current["text"] = rewritten
+        f["_limit_defer"].pop("attempted")
+        b.request_schedule.side_effect = [{"ok": True, "schedule": current}, {"ok": True}]
+        self.defer(b, f)
+        self.assertNotIn("text", b.request_schedule.call_args.args[0])
+
+    def test_pinned_account_ignores_global_reset(self):
+        b, f, _ = self.setup_case()
+        f["_limit_defer"]["account"] = "other"
+        self.defer(b, f)
+        self.assertEqual(b.request_schedule.call_args.args[0]["run_at"], 4600)
+
+    def test_recurring_only_postpones_untouched_next_fire(self):
+        for kind in ("interval", "cron"):
+            for pending, edited, moved in ((1500, False, True), (3000, False, False), (1500, True, False)):
+                b, f, current = self.setup_case()
+                current.update(status="active", run_at=pending, last_run_at=900,
+                               updated_at=901 if edited else 900, schedule={"kind": kind})
+                self.defer(b, f)
+                self.assertEqual(b.request_schedule.call_count, 2 if moved else 1)
+                if moved: self.assertNotIn("schedule", b.request_schedule.call_args.args[0])
+
+    def test_stop_or_revocation_during_get_prevents_update(self):
+        for revoke in (False, True):
+            b, f, current = self.setup_case()
+            live = type("Run", (), {"alive": True, "stopping": False, "ask_auth": ("original", None)})()
+            async def get(*args):
+                if revoke: live.ask_auth = (None, "agent")
+                else: b.stop_requested.add("k")
+                return {"ok": True, "schedule": current}
+            b.request_schedule.side_effect = get
+            self.assertIn("Not moved", self.defer(b, f, live=live))
+            self.assertEqual(b.request_schedule.call_count, 1)
+
+    def test_held_background_limit_is_deferred(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            b.last_usage_frame = {"limited_until": time.time() + 3600}
+            _, frame, current = self.setup_case()
+            frame["_limit_defer"]["account"] = b.account
+            frame.update(channel_id="c1", author={"id": "tom", "type": "user"})
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth = ("scheduled-turn", None)
+            b.live["k"] = live
+            b.request_schedule = AsyncMock(side_effect=[{"ok": True, "schedule": current}, {"ok": True}])
+            b._post_reply = Mock(return_value=True)
+            proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            await asyncio.wait_for(b._followup_loop(live, []), 5)
+            self.assertEqual(b.request_schedule.call_count, 2)
+            self.assertIn("Moved", b._post_reply.call_args.args[2])
+        asyncio.run(run())
+
+    def test_limit_after_background_schedule_feedback(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            b.last_usage_frame = {"limited_until": time.time() + 3600}
+            _, frame, current = self.setup_case()
+            frame["_limit_defer"]["account"] = b.account
+            frame.update(channel_id="c1", author={"id": "tom", "type": "user"})
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth = ("scheduled-turn", None)
+            live.ask_holds = 1
+            live.reported = True
+            b.live["k"] = live
+            b.request_schedule = AsyncMock(side_effect=[
+                {"ok": True, "schedule": current}, {"ok": True, "schedule": current}, {"ok": True}])
+            b._post_reply = Mock(return_value=True)
+            async def send(*_):
+                proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            b._send_to_claude = send
+            reader = asyncio.create_task(b._followup_loop(live, []))
+            await asyncio.wait_for(b._serve_followup_schedule_asks(
+                live, bridge.SCHEDULE_SENTINEL + ' {"op":"get","id":"s1"}'), 5)
+            await asyncio.wait_for(reader, 5)
+            self.assertEqual(b.request_schedule.call_count, 3)
+            self.assertIn("Moved", b._post_reply.call_args.args[2])
+            self.assertEqual(live.ask_budget, {"schedule": 1})
+        asyncio.run(run())
+
+    def test_real_bridge_with_stub_cli_and_hub(self):
+        """Offline process/socket test: the real reader sees a rejected usage
+        event and result error; the real schedule protocol reaches a stub hub."""
+        import os
+        import sys
+        import websockets
+
+        async def run(mode):
+            with tempfile.TemporaryDirectory(prefix="limit-defer-e2e-") as tmp:
+                root = Path(tmp)
+                reset = int(time.time()) + 3600
+                stub = root / "claude-stub"
+                stub.write_text(f'#!{sys.executable}\n' +
+                    'import sys, json\n' +
+                    'if "--version" in sys.argv:\n print("2.1.0"); sys.exit()\n' +
+                    'sys.stdin.readline()\n' +
+                    'print(json.dumps(' + repr({"type": "rate_limit_event", "rate_limit_info": {
+                        "status": "rejected", "rateLimitType": "seven_day", "unifiedWindows": {
+                        "seven_day": {"utilization": 1, "resetsAt": reset}}}}) + '), flush=True)\n' +
+                    'print(json.dumps(' + repr({"type": "result", "is_error": True,
+                        "result": "You've hit your weekly limit"}) + '), flush=True)\n')
+                source = stub.read_text()
+                if mode == "tools":
+                    source = source.replace('sys.stdin.readline()\n', 'sys.stdin.readline()\n' +
+                        'print(json.dumps(' + repr({"type": "assistant", "message": {"content": [
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "true"}}]}}) + '), flush=True)\n')
+                if mode == "feedback":
+                    source = source.replace('sys.stdin.readline()\n', 'sys.stdin.readline()\n' +
+                        'from pathlib import Path\n' +
+                        'marker = Path(' + repr(str(root / "asked")) + ')\n' +
+                        'if not marker.exists():\n marker.touch()\n print(json.dumps(' +
+                        repr({"type": "result", "result": bridge.SCHEDULE_SENTINEL + ' {"op":"get","id":"s1"}'}) +
+                        '), flush=True)\n sys.exit()\n')
+                stub.write_text(source)
+                stub.chmod(0o700)
+                state = root / "state.json"
+                state.write_text(json.dumps({"c-e2e": {"session_id": None, "cwd": tmp}}))
+                done = asyncio.get_running_loop().create_future()
+                sent = []
+                async def hub(ws):
+                    await ws.recv()
+                    await ws.send(json.dumps({"type": "inbound", "agent_id": "claude-cli",
+                        "channel_id": "c-e2e", "thread_id": None, "message_id": 1,
+                        "author": {"type": "user", "id": "tom"}, "mentioned": True,
+                        "any_mention": True, "scheduled": True, "schedule_id": "s1",
+                        "turn_id": "scheduled-turn", "text": "@claude-cli LOOP test"}))
+                    async for raw in ws:
+                        f = json.loads(raw)
+                        if f["type"] == "schedule_request":
+                            sent.append(f)
+                            response = {"type": "schedule_response", "agent_id": "claude-cli",
+                                        "request_id": f["request_id"], "ok": True}
+                            if f["op"] == "get":
+                                response["schedule"] = {"id": "s1", "status": "done",
+                                    "run_at": 1, "schedule": {"kind": "once"}, "text": "@claude-cli LOOP test"}
+                            await ws.send(json.dumps(response))
+                        elif f["type"] == "post" and not done.done():
+                            done.set_result(f["text"])
+                async with websockets.serve(hub, "127.0.0.1", 0) as server:
+                    port = server.sockets[0].getsockname()[1]
+                    with (root / "bridge.log").open("w") as log_file:
+                        proc = await asyncio.create_subprocess_exec(
+                            sys.executable, str(Path(bridge.__file__)),
+                            "--url", f"ws://127.0.0.1:{port}", "--token", "test",
+                            "--agent-id", "claude-cli", "--state-file", str(state),
+                            "--env-file", str(root / "absent.env"), "--allowed-roots", tmp,
+                            "--claude-bin", str(stub), *(["--limit-defer"] if mode != "off" else []), "--timeout", "10",
+                            env={"PATH": os.environ["PATH"], "HOME": tmp},
+                            stdout=log_file, stderr=log_file)
+                        try:
+                            text = await asyncio.wait_for(done, 15)
+                            if mode == "off":
+                                self.assertEqual(text, "(claude error) You've hit your weekly limit")
+                                self.assertEqual(sent, [])
+                            else:
+                                self.assertIn("Moved this scheduled run", text)
+                                expected = ["get", "get", "update"] if mode == "feedback" else ["get", "update"]
+                                self.assertEqual([f["op"] for f in sent], expected)
+                                self.assertTrue(all(f["turn_id"] == "scheduled-turn" for f in sent))
+                                self.assertEqual(sent[-1]["run_at"], reset + 300)
+                                if mode == "tools":
+                                    self.assertTrue(sent[-1]["text"].startswith("@claude-cli LOOP test\nThe previous run was interrupted"))
+                                else:
+                                    self.assertNotIn("text", sent[-1])
+                        except Exception:
+                            print((root / "bridge.log").read_text())
+                            raise
+                        finally:
+                            if proc.returncode is None: proc.terminate()
+                            await asyncio.wait_for(proc.wait(), 5)
+        for mode in ("plain", "off", "tools", "feedback"):
+            with self.subTest(mode=mode):
+                asyncio.run(run(mode))
+
+
 if __name__ == "__main__":
     unittest.main()
