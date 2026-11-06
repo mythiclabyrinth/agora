@@ -388,6 +388,7 @@ bridge restart. A partial run that used tools adds an interruption reminder
 after the stored message's first line only for a one-off written by this agent,
 preserving its leading mention. For recurring or person-written messages, it
 leaves the text unchanged and puts the reminder in the thread instead.
+The interruption line stays in a stored message until that message is rewritten.
 
 Recurring schedules are only postponed when their next fire precedes the retry
 time and they have not been edited since firing. Their repeat rule survives:

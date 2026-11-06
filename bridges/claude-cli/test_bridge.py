@@ -6574,6 +6574,44 @@ class LimitDeferTests(unittest.TestCase):
             self.assertNotIn("The earlier run was interrupted", reply)
             self.assertNotIn("Moved", reply)
 
+    def test_authority_check_failure_still_posts_original_error_once(self):
+        async def run():
+            b, frame, _ = self.setup_case()
+            live = type("Run", (), {"key": "k", "frame": frame, "binding": {}})()
+            b._post_reply = Mock(return_value=True)
+            with patch.object(bridge, "batch_turn_id", side_effect=RuntimeError("unexpected")), patch.object(bridge, "log") as log:
+                await b._post_limited_followup(live, frame, self.ERROR)
+            b._post_reply.assert_called_once()
+            posted = b._post_reply.call_args.args[2]
+            self.assertTrue(posted.startswith(self.ERROR))
+            self.assertIn("Could not confirm the schedule move", posted)
+            self.assertTrue(any("schedule=s1 action=failed" in c.args[0] for c in log.call_args_list))
+            b.request_schedule.assert_not_called()
+            with patch.object(bridge, "batch_turn_id", side_effect=asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await b._defer_limited_schedule("k", frame, self.ERROR)
+        asyncio.run(run())
+
+    def test_non_scheduled_background_limit_keeps_direct_post_path(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            proc = _fake_proc([], returncode=None)
+            frame = {"channel_id": "c1", "_limit_defer": {"frames": [
+                {"turn_id": "human-turn", "mentioned": True, "author": {"type": "user", "id": "tom"}}]}}
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            b.live["k"] = live
+            b._spawn = Mock()
+            b._post_reply = Mock(return_value=True)
+            b.request_schedule = AsyncMock()
+            proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            await asyncio.wait_for(b._followup_loop(live, []), 2)
+            b._spawn.assert_not_called()
+            b.request_schedule.assert_not_called()
+            b._post_reply.assert_called_once()
+            self.assertEqual(b._post_reply.call_args.args[2], "(claude error) You've hit your weekly limit")
+        asyncio.run(run())
+
     def test_non_limit_background_error_keeps_direct_post_path(self):
         async def run():
             b = followup_bridge()
