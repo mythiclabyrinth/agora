@@ -140,6 +140,7 @@ export const guides = {
       ["CLAUDE_TLDR_MIN_CHARS", "Optional", "1500", "Minimum reply length eligible for a summary."],
       ["CLAUDE_AUTO_COMPACT", "Optional", "0", "Enable automatic compaction after 15 minutes idle or before a human message after one hour idle. Off by default."],
       ["CLAUDE_AUTO_COMPACT_TOKENS", "Optional", "300000", "Context threshold for automatic compaction. Applies only when CLAUDE_AUTO_COMPACT is enabled and must then be positive."],
+      ["AGORA_LIMIT_DEFER", "Optional", "Empty (off)", "Set 1 to defer scheduled runs after usage-limit errors until the reset plus five minutes. Requires schedules enabled. Unknown reset times retry hourly up to six times; expired grants need manual re-arming."],
       ["CLAUDE_TIMEOUT", "Optional", "1800", "Maximum seconds for one Claude run, including approval waits."],
       ["CLAUDE_ASYNC_FOLLOWUPS", "Optional", "0", "Let work Claude backgrounded post its findings later as their own message. Off by default; set 1 to opt in."],
       ["CLAUDE_FOLLOWUP_IDLE_TIMEOUT", "Optional", "180", "Settle window in seconds for a trailing reply once nothing is outstanding."],

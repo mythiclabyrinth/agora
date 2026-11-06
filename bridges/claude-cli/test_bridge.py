@@ -6472,6 +6472,49 @@ class LimitDeferTests(unittest.TestCase):
             self.defer(b, f)
             self.assertEqual(b.request_schedule.call_count, before)
 
+    def test_unexpected_schedule_failure_preserves_original_error(self):
+        for stage in ("get", "update"):
+            with self.subTest(stage=stage):
+                b, frame, current = self.setup_case()
+                failure = RuntimeError("sensitive diagnostic must not be posted")
+                b.request_schedule.side_effect = ([failure] if stage == "get" else
+                    [{"ok": True, "schedule": current}, failure])
+                with patch.object(bridge, "log") as log:
+                    reply = self.defer(b, frame)
+                self.assertTrue(reply.startswith(self.ERROR))
+                self.assertIn("Could not confirm the schedule move", reply)
+                self.assertIn("Check its schedule", reply)
+                self.assertNotIn("sensitive", reply)
+                self.assertTrue(any("schedule=s1 action=failed" in c.args[0] for c in log.call_args_list))
+                self.assertNotIn("s1", b.limit_defer_busy)
+                before = b.request_schedule.call_count
+                self.defer(b, frame)
+                self.assertEqual(b.request_schedule.call_count, before)
+
+    def test_first_forked_turn_defers_and_keeps_copy_failure_notice(self):
+        b, context_frame, _ = self.setup_case()
+        del b.forward_to_claude
+        b.typing = Mock()
+        b.claim = Mock()
+        key = "c1:42"
+        b.bindings[key] = {"cwd": "/tmp", "session_id": "main", "_fork_source": "main"}
+        frame = {**context_frame["_limit_defer"]["frames"][0],
+                 "channel_id": "c1", "thread_id": 42, "message_id": 7}
+        async def fail(_key, batch_frame, _binding, _text):
+            batch_frame["_limit_defer"].update(result_error=True, account=b.account)
+            return self.ERROR
+        b.run_claude = AsyncMock(side_effect=fail)
+        with patch.object(bridge.time, "time", return_value=1000):
+            asyncio.run(b.forward_to_claude(key, frame, frame["text"]))
+        self.assertEqual(b.request_schedule.call_count, 2)
+        self.assertEqual(b.request_schedule.call_args.args[1], "scheduled-turn")
+        b.post.assert_called_once()
+        reply = b.post.call_args.args[1]
+        self.assertTrue(reply.startswith(self.ERROR))
+        self.assertIn("Moved this scheduled run", reply)
+        self.assertIn("Thread copy failed. Resend your message to retry.", reply)
+        self.assertNotIn(key, b.bindings)
+
     def test_interrupted_message_is_lossless_and_not_duplicated(self):
         b, f, current = self.setup_case()
         f["_limit_defer"]["tools"] = True

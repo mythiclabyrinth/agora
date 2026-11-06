@@ -3420,8 +3420,7 @@ class Bridge:
                         entries = self._claim_pending_turns(key)
                         continue
                     if reply.startswith("(claude error)"):
-                        if not is_fork:
-                            reply = await self._defer_limited_schedule(key, batch_frame, reply)
+                        reply = await self._defer_limited_schedule(key, batch_frame, reply)
                         if is_fork and self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
                             fork_failed = True
@@ -3781,6 +3780,11 @@ class Bridge:
                 note("moved", f"Moved this scheduled run to {when} ({detail}).")
             except (TimeoutError, ConnectionError, OSError):
                 note("failed", "Could not confirm the schedule move: the server did not answer. Check its schedule before retrying.")
+            except Exception:
+                # Recovery is best-effort: an unexpected failure must never
+                # swallow the original usage error or replay an uncertain write.
+                # Do not expose exception text, which may contain stored data.
+                note("failed", "Could not confirm the schedule move due to an unexpected failure. Check its schedule before retrying.")
             finally:
                 self.limit_defer_busy.discard(sid)
         return reply + ("\n\n" + "\n".join(notes) if notes else "")
