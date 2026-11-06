@@ -6370,5 +6370,499 @@ class FollowupScheduleAskTests(unittest.TestCase):
         self.assertFalse(live.alive)
 
 
+class LimitDeferTests(unittest.TestCase):
+    ERROR = "(claude error) You've hit your weekly limit · resets 2:30pm"
+
+    def setup_case(self, **origin_overrides):
+        b = make_bridge()
+        b.limit_defer = b.schedules_enabled = True
+        b.last_usage_frame = {"limited_until": 2000}
+        origin = {"scheduled": True, "schedule_id": "s1", "turn_id": "scheduled-turn",
+                  "mentioned": True, "text": "@claude-cli LOOP test\nDo work",
+                  "author": {"type": "user", "id": "tom"}, **origin_overrides}
+        frame = {"_limit_defer": {"frames": [origin], "result_error": True,
+                                   "account": b.account}, "_ask_budget": {"schedule": 3}}
+        current = {"id": "s1", "status": "done", "run_at": 900,
+                   "schedule": {"kind": "once"}, "text": origin["text"], "text_agent": b.agent_id}
+        b.request_schedule = AsyncMock(side_effect=[{"ok": True, "schedule": current}, {"ok": True}])
+        return b, frame, current
+
+    def defer(self, b, frame, reply=None, **kw):
+        async def run():
+            with patch.object(bridge.time, "time", return_value=1000):
+                return await b._defer_limited_schedule("k", frame, reply or self.ERROR, **kw)
+        return asyncio.run(run())
+
+    def test_weekly_and_session_reset_and_budget_untouched(self):
+        for error in (self.ERROR, "(claude error) You've hit your limit · resets 3pm"):
+            b, f, _ = self.setup_case()
+            result = self.defer(b, f, error)
+            self.assertIn("Moved this scheduled run", result)
+            self.assertEqual(b.request_schedule.call_args.args, (
+                {"op": "update", "id": "s1", "run_at": 2300}, "scheduled-turn"))
+            self.assertEqual(f["_ask_budget"], {"schedule": 3})
+
+    def test_unknown_cap_and_clear_after_success(self):
+        b, f, current = self.setup_case()
+        b.last_usage_frame = None
+        b.request_schedule = AsyncMock(side_effect=lambda ask, _: {
+            "ok": True, **({"schedule": current} if ask["op"] == "get" else {})})
+        for _ in range(6):
+            f["_limit_defer"].pop("attempted", None)
+            self.assertIn("Moved", self.defer(b, f))
+            self.assertEqual(b.request_schedule.call_args.args[0]["run_at"], 4600)
+        f["_limit_defer"].pop("attempted", None)
+        self.assertIn("six retries", self.defer(b, f))
+        self.assertEqual(b.request_schedule.call_count, 12)
+        b._clear_limit_defer(f)
+        f["_limit_defer"].pop("attempted", None)
+        self.assertIn("Moved", self.defer(b, f))
+
+    def test_non_triggers_leave_error_unchanged(self):
+        for mode in ("off", "schedules_off", "typed", "untagged", "normal_result", "auth", "overload", "stopped"):
+            with self.subTest(mode=mode):
+                b, f, _ = self.setup_case()
+                reply = self.ERROR
+                if mode == "off": b.limit_defer = False
+                if mode == "schedules_off": b.schedules_enabled = False
+                if mode == "typed": f["_limit_defer"]["frames"][0]["scheduled"] = False
+                if mode == "untagged": f["_limit_defer"]["frames"][0]["mentioned"] = False
+                if mode == "normal_result": f["_limit_defer"]["result_error"] = False
+                if mode == "auth": reply = "(claude error) Authentication required"
+                if mode == "overload": reply = "(claude error) overloaded"
+                if mode == "stopped": b.stop_requested.add("k")
+                result = self.defer(b, f, reply)
+                self.assertTrue(result.startswith(reply))
+                b.request_schedule.assert_not_called()
+                if mode != "stopped": self.assertEqual(result, reply)
+
+    def test_authority_and_coalesced_turn(self):
+        for mode in ("same", "mixed", "agent", "other_writer"):
+            b, f, _ = self.setup_case()
+            origins = f["_limit_defer"]["frames"]
+            origins.append({"turn_id": "typed-turn", "author": {
+                "id": "other" if mode == "mixed" else "tom",
+                "type": "agent" if mode == "agent" else "user"}})
+            if mode == "other_writer": origins[0]["written_by_agent"] = "cursor-cli"
+            result = self.defer(b, f)
+            if mode == "same":
+                self.assertIn("Moved", result)
+                self.assertTrue(all(c.args[1] == "scheduled-turn" for c in b.request_schedule.call_args_list))
+            else:
+                self.assertIn("another agent's or another person's", result)
+                b.request_schedule.assert_not_called()
+
+    def test_preserve_paused_cancelled_and_rearmed(self):
+        for status, pending in (("paused", 900), ("cancelled", 900), ("active", 1800)):
+            b, f, current = self.setup_case()
+            current.update(status=status, run_at=pending)
+            self.assertIn("Not moved", self.defer(b, f))
+            self.assertEqual(b.request_schedule.call_count, 1)
+
+    def test_refusals_and_timeout_no_write_replay(self):
+        for stage in ("get", "update", "timeout"):
+            b, f, current = self.setup_case()
+            refusal = {"ok": False, "error": "unknown or expired turn"}
+            b.request_schedule.side_effect = ([refusal] if stage == "get" else
+                [{"ok": True, "schedule": current}, TimeoutError() if stage == "timeout" else refusal])
+            result = self.defer(b, f)
+            self.assertIn("Could not", result)
+            if stage != "timeout": self.assertIn("permission from this scheduled post has expired", result)
+            before = b.request_schedule.call_count
+            self.defer(b, f)
+            self.assertEqual(b.request_schedule.call_count, before)
+
+    def test_unexpected_schedule_failure_preserves_original_error(self):
+        for stage in ("get", "update"):
+            with self.subTest(stage=stage):
+                b, frame, current = self.setup_case()
+                failure = RuntimeError("sensitive diagnostic must not be posted")
+                b.request_schedule.side_effect = ([failure] if stage == "get" else
+                    [{"ok": True, "schedule": current}, failure])
+                with patch.object(bridge, "log") as log:
+                    reply = self.defer(b, frame)
+                self.assertTrue(reply.startswith(self.ERROR))
+                self.assertIn("Could not confirm the schedule move", reply)
+                self.assertIn("Check its schedule", reply)
+                self.assertNotIn("sensitive", reply)
+                self.assertTrue(any("schedule=s1 action=failed" in c.args[0] for c in log.call_args_list))
+                self.assertNotIn("s1", b.limit_defer_busy)
+                before = b.request_schedule.call_count
+                self.defer(b, frame)
+                self.assertEqual(b.request_schedule.call_count, before)
+
+    def test_first_forked_turn_defers_and_keeps_copy_failure_notice(self):
+        b, context_frame, _ = self.setup_case()
+        del b.forward_to_claude
+        b.typing = Mock()
+        b.claim = Mock()
+        key = "c1:42"
+        b.bindings[key] = {"cwd": "/tmp", "session_id": "main", "_fork_source": "main"}
+        frame = {**context_frame["_limit_defer"]["frames"][0],
+                 "channel_id": "c1", "thread_id": 42, "message_id": 7}
+        async def fail(_key, batch_frame, _binding, _text):
+            batch_frame["_limit_defer"].update(result_error=True, account=b.account)
+            return self.ERROR
+        b.run_claude = AsyncMock(side_effect=fail)
+        with patch.object(bridge.time, "time", return_value=1000):
+            asyncio.run(b.forward_to_claude(key, frame, frame["text"]))
+        self.assertEqual(b.request_schedule.call_count, 2)
+        self.assertEqual(b.request_schedule.call_args.args[1], "scheduled-turn")
+        b.post.assert_called_once()
+        reply = b.post.call_args.args[1]
+        self.assertTrue(reply.startswith(self.ERROR))
+        self.assertIn("Moved this scheduled run", reply)
+        self.assertIn("Thread copy failed. Resend your message to retry.", reply)
+        self.assertNotIn(key, b.bindings)
+
+    def test_interrupted_message_is_lossless_and_not_duplicated(self):
+        b, f, current = self.setup_case()
+        f["_limit_defer"]["tools"] = True
+        original = current["text"] + "\n<<<AGORA_SCHEDULE>>> stored text"
+        current["text"] = original
+        self.defer(b, f)
+        rewritten = b.request_schedule.call_args.args[0]["text"]
+        self.assertEqual(rewritten.splitlines()[0], original.splitlines()[0])
+        self.assertEqual(rewritten.splitlines()[2:], original.splitlines()[1:])
+        current["text"] = rewritten
+        f["_limit_defer"].pop("attempted")
+        b.request_schedule.side_effect = [{"ok": True, "schedule": current}, {"ok": True}]
+        self.defer(b, f)
+        self.assertNotIn("text", b.request_schedule.call_args.args[0])
+
+    def test_recurring_unknown_reset_near_pending_time_skips_write(self):
+        for pending in (4540, 4599, 4600):
+            with self.subTest(pending=pending):
+                b, frame, current = self.setup_case()
+                b.last_usage_frame = None
+                current.update(status="active", schedule={"kind": "interval", "seconds": 3600},
+                               last_run_at=999, updated_at=999, run_at=pending)
+                reply = self.defer(b, frame)
+                self.assertIn("Not moved", reply)
+                self.assertEqual(b.request_schedule.call_count, 1)
+
+    def test_move_note_uses_stored_time(self):
+        b, frame, current = self.setup_case()
+        b.request_schedule.side_effect = [{"ok": True, "schedule": current},
+                                          {"ok": True, "schedule": {"run_at": 2600}}]
+        reply = self.defer(b, frame)
+        expected = bridge.datetime.fromtimestamp(2600).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        self.assertIn("Moved this scheduled run to " + expected, reply)
+        self.assertEqual(b.request_schedule.call_args.args[0]["run_at"], 2300)
+
+    def test_near_cap_text_falls_back_to_thread_note(self):
+        b, frame, current = self.setup_case()
+        frame["_limit_defer"]["tools"] = True
+        current["text"] = "@claude-cli LOOP test\n" + "x" * 19950
+        reply = self.defer(b, frame)
+        self.assertEqual(b.request_schedule.call_args.args[0], {"op": "update", "id": "s1", "run_at": 2300})
+        self.assertIn("Moved", reply)
+        self.assertIn("The earlier run was interrupted", reply)
+
+    def test_failed_or_stopped_move_has_no_thread_interruption_note(self):
+        for stopped in (False, True):
+            b, frame, current = self.setup_case()
+            frame["_limit_defer"]["tools"] = True
+            current["text_agent"] = None
+            async def request(ask, _turn):
+                if ask["op"] == "get":
+                    if stopped: b.stop_requested.add("k")
+                    return {"ok": True, "schedule": current}
+                return {"ok": False, "error": "refused"}
+            b.request_schedule.side_effect = request
+            reply = self.defer(b, frame)
+            self.assertNotIn("The earlier run was interrupted", reply)
+            self.assertNotIn("Moved", reply)
+
+    def test_authority_check_failure_still_posts_original_error_once(self):
+        async def run():
+            b, frame, _ = self.setup_case()
+            live = type("Run", (), {"key": "k", "frame": frame, "binding": {}})()
+            b._post_reply = Mock(return_value=True)
+            with patch.object(bridge, "batch_turn_id", side_effect=RuntimeError("unexpected")), patch.object(bridge, "log") as log:
+                await b._post_limited_followup(live, frame, self.ERROR)
+            b._post_reply.assert_called_once()
+            posted = b._post_reply.call_args.args[2]
+            self.assertTrue(posted.startswith(self.ERROR))
+            self.assertIn("Could not confirm the schedule move", posted)
+            self.assertTrue(any("schedule=s1 action=failed" in c.args[0] for c in log.call_args_list))
+            b.request_schedule.assert_not_called()
+            with patch.object(bridge, "batch_turn_id", side_effect=asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await b._defer_limited_schedule("k", frame, self.ERROR)
+        asyncio.run(run())
+
+    def test_non_scheduled_background_limit_keeps_direct_post_path(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            proc = _fake_proc([], returncode=None)
+            frame = {"channel_id": "c1", "_limit_defer": {"frames": [
+                {"turn_id": "human-turn", "mentioned": True, "author": {"type": "user", "id": "tom"}}]}}
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            b.live["k"] = live
+            b._spawn = Mock()
+            b._post_reply = Mock(return_value=True)
+            b.request_schedule = AsyncMock()
+            proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            await asyncio.wait_for(b._followup_loop(live, []), 2)
+            b._spawn.assert_not_called()
+            b.request_schedule.assert_not_called()
+            b._post_reply.assert_called_once()
+            self.assertEqual(b._post_reply.call_args.args[2], "(claude error) You've hit your weekly limit")
+        asyncio.run(run())
+
+    def test_non_limit_background_error_keeps_direct_post_path(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", {"channel_id": "c1"}, b.bindings["k"],
+                                  (None, "acceptEdits", b.account), [])
+            b.live["k"] = live
+            b._spawn = Mock()
+            b._post_reply = Mock(return_value=True)
+            b.request_schedule = AsyncMock()
+            proc.stdout.feed_data((_result("Authentication required", is_error=True) + "\n").encode())
+            await asyncio.wait_for(b._followup_loop(live, []), 2)
+            b._spawn.assert_not_called()
+            b.request_schedule.assert_not_called()
+            b._post_reply.assert_called_once()
+            self.assertEqual(b._post_reply.call_args.args[2], "(claude error) Authentication required")
+        asyncio.run(run())
+
+    def test_tools_preserve_person_written_and_recurring_text(self):
+        for kind, writer in (("once", None), ("interval", "claude-cli"), ("cron", "claude-cli")):
+            with self.subTest(kind=kind):
+                b, frame, current = self.setup_case()
+                frame["_limit_defer"]["tools"] = True
+                current.update(schedule={"kind": kind}, text_agent=writer)
+                if kind != "once":
+                    current.update(status="active", last_run_at=900, updated_at=900, run_at=1500)
+                reply = self.defer(b, frame)
+                self.assertEqual(b.request_schedule.call_args.args[0], {"op": "update", "id": "s1", "run_at": 2300})
+                self.assertIn("The earlier run was interrupted; check what it already did before redoing it.", reply)
+
+    def test_limit_wording_variants(self):
+        for wording in ("You've hit your weekly limit", "You've hit your session limit",
+                        "You've hit your usage limit", "You've hit your 5-hour limit",
+                        "You've hit your five-hour limit", "You've hit your limit",
+                        "Usage limit reached", "Usage limit exceeded",
+                        "Claude AI usage limit reached", "Claude AI usage limit reached|1794000000"):
+            with self.subTest(wording=wording):
+                b, frame, _ = self.setup_case()
+                self.assertIn("Moved", self.defer(b, frame, "(claude error) " + wording))
+
+    def test_background_reader_continues_while_recovery_waits(self):
+        async def run():
+            b = followup_bridge()
+            b.send = Mock()
+            b.limit_defer = b.schedules_enabled = True
+            b.last_usage_frame = {"limited_until": time.time() + 3600}
+            _, frame, current = self.setup_case()
+            frame["_limit_defer"]["account"] = b.account
+            frame.update(channel_id="c1", author={"id": "tom", "type": "user"})
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth = ("scheduled-turn", None)
+            live.tasks = [{"task_id": "t0", "description": "work"}]
+            b.live["k"] = live
+            pending, release = asyncio.Event(), asyncio.Event()
+            async def request(ask, _turn):
+                if ask["op"] == "get":
+                    pending.set()
+                    await release.wait()
+                    return {"ok": True, "schedule": current}
+                return {"ok": True}
+            b.request_schedule = AsyncMock(side_effect=request)
+            b._post_reply = Mock(return_value=True)
+            reader = asyncio.create_task(b._followup_loop(live, []))
+            proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            await asyncio.wait_for(pending.wait(), 2)
+            proc.stdout.feed_data((_tasks() + "\n" + _result("Still reading") + "\n").encode())
+            await asyncio.wait_for(reader, 2)
+            self.assertEqual(b._post_reply.call_args.args[2], "Still reading")
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*b._detached), 2)
+            errors = [c.args[2] for c in b._post_reply.call_args_list if c.args[2].startswith("(claude error)")]
+            self.assertEqual(len(errors), 1)
+            self.assertIn("Moved this scheduled run", errors[0])
+            self.assertEqual(b.request_schedule.call_count, 2)
+        asyncio.run(run())
+
+    def test_pinned_account_ignores_global_reset(self):
+        b, f, _ = self.setup_case()
+        f["_limit_defer"]["account"] = "other"
+        self.defer(b, f)
+        self.assertEqual(b.request_schedule.call_args.args[0]["run_at"], 4600)
+
+    def test_recurring_only_postpones_untouched_next_fire(self):
+        for kind in ("interval", "cron"):
+            for pending, edited, moved in ((1500, False, True), (3000, False, False), (1500, True, False)):
+                b, f, current = self.setup_case()
+                current.update(status="active", run_at=pending, last_run_at=900,
+                               updated_at=901 if edited else 900, schedule={"kind": kind})
+                self.defer(b, f)
+                self.assertEqual(b.request_schedule.call_count, 2 if moved else 1)
+                if moved: self.assertNotIn("schedule", b.request_schedule.call_args.args[0])
+
+    def test_stop_or_revocation_during_get_prevents_update(self):
+        for revoke in (False, True):
+            b, f, current = self.setup_case()
+            live = type("Run", (), {"alive": True, "stopping": False, "ask_auth": ("original", None)})()
+            async def get(*args):
+                if revoke: live.ask_auth = (None, "agent")
+                else: b.stop_requested.add("k")
+                return {"ok": True, "schedule": current}
+            b.request_schedule.side_effect = get
+            self.assertIn("Not moved", self.defer(b, f, live=live))
+            self.assertEqual(b.request_schedule.call_count, 1)
+
+    def test_held_background_limit_is_deferred(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            b.last_usage_frame = {"limited_until": time.time() + 3600}
+            _, frame, current = self.setup_case()
+            frame["_limit_defer"]["account"] = b.account
+            frame.update(channel_id="c1", author={"id": "tom", "type": "user"})
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth = ("scheduled-turn", None)
+            b.live["k"] = live
+            b.request_schedule = AsyncMock(side_effect=[{"ok": True, "schedule": current}, {"ok": True}])
+            b._post_reply = Mock(return_value=True)
+            proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            await asyncio.wait_for(b._followup_loop(live, []), 5)
+            await asyncio.gather(*b._detached)
+            self.assertEqual(b.request_schedule.call_count, 2)
+            self.assertIn("Moved", b._post_reply.call_args.args[2])
+        asyncio.run(run())
+
+    def test_limit_after_background_schedule_feedback(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            b.last_usage_frame = {"limited_until": time.time() + 3600}
+            _, frame, current = self.setup_case()
+            frame["_limit_defer"]["account"] = b.account
+            frame.update(channel_id="c1", author={"id": "tom", "type": "user"})
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth = ("scheduled-turn", None)
+            live.ask_holds = 1
+            live.reported = True
+            b.live["k"] = live
+            b.request_schedule = AsyncMock(side_effect=[
+                {"ok": True, "schedule": current}, {"ok": True, "schedule": current}, {"ok": True}])
+            b._post_reply = Mock(return_value=True)
+            async def send(*_):
+                proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            b._send_to_claude = send
+            reader = asyncio.create_task(b._followup_loop(live, []))
+            await asyncio.wait_for(b._serve_followup_schedule_asks(
+                live, bridge.SCHEDULE_SENTINEL + ' {"op":"get","id":"s1"}'), 5)
+            await asyncio.wait_for(reader, 5)
+            self.assertEqual(b.request_schedule.call_count, 3)
+            self.assertIn("Moved", b._post_reply.call_args.args[2])
+            self.assertEqual(live.ask_budget, {"schedule": 1})
+        asyncio.run(run())
+
+    def test_real_bridge_with_stub_cli_and_hub(self):
+        """Offline process/socket test: the real reader sees a rejected usage
+        event and result error; the real schedule protocol reaches a stub hub."""
+        import os
+        import sys
+        import websockets
+
+        async def run(mode):
+            with tempfile.TemporaryDirectory(prefix="limit-defer-e2e-") as tmp:
+                root = Path(tmp)
+                reset = int(time.time()) + 3600
+                stub = root / "claude-stub"
+                stub.write_text(f'#!{sys.executable}\n' +
+                    'import sys, json\n' +
+                    'if "--version" in sys.argv:\n print("2.1.0"); sys.exit()\n' +
+                    'sys.stdin.readline()\n' +
+                    'print(json.dumps(' + repr({"type": "rate_limit_event", "rate_limit_info": {
+                        "status": "rejected", "rateLimitType": "seven_day", "unifiedWindows": {
+                        "seven_day": {"utilization": 1, "resetsAt": reset}}}}) + '), flush=True)\n' +
+                    'print(json.dumps(' + repr({"type": "result", "is_error": True,
+                        "result": "You've hit your weekly limit"}) + '), flush=True)\n')
+                source = stub.read_text()
+                if mode == "tools":
+                    source = source.replace('sys.stdin.readline()\n', 'sys.stdin.readline()\n' +
+                        'print(json.dumps(' + repr({"type": "assistant", "message": {"content": [
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "true"}}]}}) + '), flush=True)\n')
+                if mode == "feedback":
+                    source = source.replace('sys.stdin.readline()\n', 'sys.stdin.readline()\n' +
+                        'from pathlib import Path\n' +
+                        'marker = Path(' + repr(str(root / "asked")) + ')\n' +
+                        'if not marker.exists():\n marker.touch()\n print(json.dumps(' +
+                        repr({"type": "result", "result": bridge.SCHEDULE_SENTINEL + ' {"op":"get","id":"s1"}'}) +
+                        '), flush=True)\n sys.exit()\n')
+                stub.write_text(source)
+                stub.chmod(0o700)
+                state = root / "state.json"
+                state.write_text(json.dumps({"c-e2e": {"session_id": None, "cwd": tmp}}))
+                done = asyncio.get_running_loop().create_future()
+                sent = []
+                async def hub(ws):
+                    await ws.recv()
+                    await ws.send(json.dumps({"type": "inbound", "agent_id": "claude-cli",
+                        "channel_id": "c-e2e", "thread_id": None, "message_id": 1,
+                        "author": {"type": "user", "id": "tom"}, "mentioned": True,
+                        "any_mention": True, "scheduled": True, "schedule_id": "s1",
+                        "turn_id": "scheduled-turn", "text": "@claude-cli LOOP test"}))
+                    async for raw in ws:
+                        f = json.loads(raw)
+                        if f["type"] == "schedule_request":
+                            sent.append(f)
+                            response = {"type": "schedule_response", "agent_id": "claude-cli",
+                                        "request_id": f["request_id"], "ok": True}
+                            if f["op"] == "get":
+                                response["schedule"] = {"id": "s1", "status": "done",
+                                    "run_at": 1, "schedule": {"kind": "once"}, "text": "@claude-cli LOOP test",
+                                    "text_agent": "claude-cli"}
+                            await ws.send(json.dumps(response))
+                        elif f["type"] == "post" and not done.done():
+                            done.set_result(f["text"])
+                async with websockets.serve(hub, "127.0.0.1", 0) as server:
+                    port = server.sockets[0].getsockname()[1]
+                    with (root / "bridge.log").open("w") as log_file:
+                        proc = await asyncio.create_subprocess_exec(
+                            sys.executable, str(Path(bridge.__file__)),
+                            "--url", f"ws://127.0.0.1:{port}", "--token", "test",
+                            "--agent-id", "claude-cli", "--state-file", str(state),
+                            "--env-file", str(root / "absent.env"), "--allowed-roots", tmp,
+                            "--claude-bin", str(stub), *(["--limit-defer"] if mode != "off" else []), "--timeout", "10",
+                            env={"PATH": os.environ["PATH"], "HOME": tmp},
+                            stdout=log_file, stderr=log_file)
+                        try:
+                            text = await asyncio.wait_for(done, 15)
+                            if mode == "off":
+                                self.assertEqual(text, "(claude error) You've hit your weekly limit")
+                                self.assertEqual(sent, [])
+                            else:
+                                self.assertIn("Moved this scheduled run", text)
+                                expected = ["get", "get", "update"] if mode == "feedback" else ["get", "update"]
+                                self.assertEqual([f["op"] for f in sent], expected)
+                                self.assertTrue(all(f["turn_id"] == "scheduled-turn" for f in sent))
+                                self.assertEqual(sent[-1]["run_at"], reset + 300)
+                                if mode == "tools":
+                                    self.assertTrue(sent[-1]["text"].startswith("@claude-cli LOOP test\nThe previous run was interrupted"))
+                                else:
+                                    self.assertNotIn("text", sent[-1])
+                        except Exception:
+                            print((root / "bridge.log").read_text())
+                            raise
+                        finally:
+                            if proc.returncode is None: proc.terminate()
+                            await asyncio.wait_for(proc.wait(), 5)
+        for mode in ("plain", "off", "tools", "feedback"):
+            with self.subTest(mode=mode):
+                asyncio.run(run(mode))
+
+
 if __name__ == "__main__":
     unittest.main()

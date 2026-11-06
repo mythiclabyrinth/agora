@@ -1490,6 +1490,9 @@ class Bridge:
         # the matching history_response (or dropped on timeout).
         self.pending_history: dict[str, asyncio.Future] = {}
         self.schedules_enabled = getattr(args, "schedules", True)
+        self.limit_defer = getattr(args, "limit_defer", False)
+        self.limit_defer_attempts: dict[str, int] = {}
+        self.limit_defer_busy: set[str] = set()
         # In-flight schedule_request frames, resolved like pending_history.
         self.pending_schedule: dict[str, asyncio.Future] = {}
         self.bot_loop_limit = getattr(args, "bot_loop_limit", None)
@@ -3366,6 +3369,10 @@ class Bridge:
                 batch_frame["_ask_auth"] = batch_turn_id(
                     [q["frame"] for q in entries], self.agent_id)
                 batch_frame["_ask_budget"] = {}
+                batch_frame["_limit_defer"] = {
+                    "frames": [q["frame"] for q in entries], "tools": False,
+                    "attempted": set(), "result_error": False,
+                }
                 # A scheduled post's writer learns which schedule it may re-arm; any
                 # other agent learns an agent wrote it, not the person it posts as.
                 if not batch_text.lstrip().startswith("/"):
@@ -3413,6 +3420,7 @@ class Bridge:
                         entries = self._claim_pending_turns(key)
                         continue
                     if reply.startswith("(claude error)"):
+                        reply = await self._defer_limited_schedule(key, batch_frame, reply)
                         if is_fork and self.bindings.get(key) is binding:
                             self.bindings.pop(key, None)
                             fork_failed = True
@@ -3441,12 +3449,14 @@ class Bridge:
                         reply = await self._serve_asks(
                             key, batch_frame, binding, reply, [q["frame"] for q in entries])
                     if reply.startswith("(claude error)"):
+                        reply = await self._defer_limited_schedule(key, batch_frame, reply)
                         self.post(batch_frame, reply)
                         for queued in entries:
                             self.clear_reaction(queued["frame"])
                         self.active_message_ids.difference_update(active_ids)
                         entries = self._claim_pending_turns(key)
                         continue
+                    self._clear_limit_defer(batch_frame)
                     notice = ("Claude answered, but returned no new session ID; this thread was not saved. Resend your next message to retry the copy."
                               if missing_fork_id else
                               "The thread and main chat share project files. /worktree <repo> makes a separate folder and starts a fresh Claude session there."
@@ -3657,6 +3667,169 @@ class Bridge:
                     "conversation. Ask me again with the details you need me "
                     "to have.")
         return reply
+
+    # ------------------------------------------------ usage-limit recovery
+
+    def _clear_limit_defer(self, frame: dict) -> None:
+        for origin in frame.get("_limit_defer", {}).get("frames", []):
+            if origin.get("scheduled"):
+                getattr(self, "limit_defer_attempts", {}).pop(origin.get("schedule_id"), None)
+
+    @staticmethod
+    def _is_usage_limit_error(reply: str) -> bool:
+        return bool(re.match(
+            r"^\(claude error\)\s*(?:you['’]ve hit your (?:weekly |session |usage |5[- ]hour |five[- ]hour )?limit\b|usage limit (?:reached|exceeded)\b|Claude AI usage limit reached(?:\|[0-9]+)?\b)",
+            reply, re.IGNORECASE))
+
+    @staticmethod
+    def _limit_defer_origins(frame: dict) -> list[dict]:
+        return [f for f in frame.get("_limit_defer", {}).get("frames", [])
+                if f.get("scheduled") and f.get("schedule_id")
+                and f.get("turn_id") and f.get("mentioned")]
+
+    async def _defer_limited_schedule(self, key: str, frame: dict, reply: str,
+                                      *, live=None) -> str:
+        """Retry delivery, never model work. Use the scheduled post's grant,
+        not a newer typed message's grant, and never consume the model budget.
+        The raw get response is used so rewriting a message is lossless.
+        """
+        ctx = frame.get("_limit_defer", {})
+        if (not getattr(self, "limit_defer", False) or not self.schedules_enabled
+                or not ctx.get("result_error")
+                or not self._is_usage_limit_error(reply)):
+            return reply
+        origins = ctx.get("frames", [])
+        scheduled = self._limit_defer_origins(frame)
+        if not scheduled:
+            return reply
+        if not hasattr(self, "limit_defer_attempts"):
+            self.limit_defer_attempts = {}
+            self.limit_defer_busy = set()
+        notes = []
+        sid, target = None, None
+        try:
+            for origin in scheduled:
+                sid = origin["schedule_id"]
+                target = None
+                def note(action, reason):
+                    log(f"limit defer: schedule={sid} action={action} target={target} reason={reason}")
+                    notes.append(reason)
+
+                def permitted():
+                    why = batch_turn_id(origins, self.agent_id)[1]
+                    auth = live.ask_auth if live is not None else frame.get("_ask_auth", (None, None))
+                    if key in self.stop_requested or key in self.stopped_processes or (live is not None and live.stopping):
+                        return "Not moved: the run was stopped."
+                    if (ctx.get("revoked") or why in ("agent", "mixed")
+                            or auth[1] in ("agent", "mixed") or agent_written(origin, self.agent_id)):
+                        return "Not moved: this run includes another agent's or another person's words."
+                    return None
+
+                if reason := permitted():
+                    note("skip", reason)
+                    continue
+                if sid in ctx.setdefault("attempted", set()) or sid in self.limit_defer_busy:
+                    continue
+                ctx["attempted"].add(sid)
+                self.limit_defer_busy.add(sid)
+                try:
+                    now = time.time()
+                    reset = (getattr(self, "last_usage_frame", None) or {}).get("limited_until")
+                    known = (ctx.get("account") == self.account and isinstance(reset, (int, float))
+                             and not isinstance(reset, bool) and now < reset <= now + 8 * 86400)
+                    target = reset + 300 if known else now + 3600
+                    if not known and self.limit_defer_attempts.get(sid, 0) >= 6:
+                        note("skip", "Not moved: six retries without a known reset time were used. It needs re-arming by hand.")
+                        continue
+                    response = await self.request_schedule({"op": "get", "id": sid}, origin["turn_id"])
+                    if not response.get("ok"):
+                        note("failed", self._limit_defer_failure(response))
+                        continue
+                    current = response.get("schedule") or {}
+                    status = current.get("status")
+                    if status not in ("active", "done"):
+                        note("skip", "Not moved: the schedule is paused, cancelled, or unavailable.")
+                        continue
+                    pending = current.get("run_at", 0)
+                    recurring = (current.get("schedule") or {}).get("kind") in ("cron", "interval")
+                    if recurring:
+                        # Firing sets both timestamps to the same instant. Any later
+                        # edit (including a partial run's re-arm) belongs to its editor.
+                        fired, updated = current.get("last_run_at"), current.get("updated_at")
+                        if not isinstance(fired, (int, float)) or updated != fired:
+                            note("skip", "Not moved: the recurring schedule was edited since firing, or its state cannot be verified.")
+                            continue
+                        if pending + 60 >= target:
+                            note("skip", "Not moved: its next recurring run is already after the retry time.")
+                            continue
+                    elif status == "active" and pending > now:
+                        note("skip", "Not moved: the schedule already has a future run.")
+                        continue
+                    ask = {"op": "update", "id": sid, "run_at": target}
+                    interrupted_note = None
+                    if ctx.get("tools") and ((current.get("schedule") or {}).get("kind") != "once"
+                                             or current.get("text_agent") != self.agent_id):
+                        interrupted_note = "The earlier run was interrupted; check what it already did before redoing it."
+                    elif ctx.get("tools"):
+                        text = current.get("text")
+                        if not isinstance(text, str):
+                            note("skip", "Not moved: the stored message is unavailable.")
+                            continue
+                        interruption = "The previous run was interrupted by a usage limit; check what it already did before redoing it."
+                        if interruption not in text.splitlines():
+                            first, sep, rest = text.partition("\n")
+                            rewritten = first + "\n" + interruption + (sep + rest if sep else "")
+                            if len(rewritten) <= 20_000:
+                                ask["text"] = rewritten
+                            else:
+                                interrupted_note = "The earlier run was interrupted; check what it already did before redoing it."
+                    if reason := permitted():
+                        note("skip", reason)
+                        continue
+                    # Count attempts before sending: a lost reply may still mean the
+                    # write succeeded. Never retry an uncertain write in this turn.
+                    if not known:
+                        self.limit_defer_attempts[sid] = self.limit_defer_attempts.get(sid, 0) + 1
+                    response = await self.request_schedule(ask, origin["turn_id"])
+                    if not response.get("ok"):
+                        note("failed", self._limit_defer_failure(response))
+                        continue
+                    if interrupted_note:
+                        notes.append(interrupted_note)
+                    stored_run_at = (response.get("schedule") or {}).get("run_at", target)
+                    when = datetime.fromtimestamp(stored_run_at).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+                    detail = ("limit resets " + datetime.fromtimestamp(reset).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+                              if known else "reset time unknown; retrying in one hour")
+                    note("moved", f"Moved this scheduled run to {when} ({detail}).")
+                except (TimeoutError, ConnectionError, OSError):
+                    note("failed", "Could not confirm the schedule move: the server did not answer. Check its schedule before retrying.")
+                except Exception:
+                    # Recovery is best-effort: an unexpected failure must never
+                    # swallow the original usage error or replay an uncertain write.
+                    # Do not expose exception text, which may contain stored data.
+                    note("failed", "Could not confirm the schedule move due to an unexpected failure. Check its schedule before retrying.")
+                finally:
+                    self.limit_defer_busy.discard(sid)
+        except Exception:
+            reason = "Could not confirm the schedule move due to an unexpected failure. Check its schedule before retrying."
+            log(f"limit defer: schedule={sid} action=failed target={target} reason={reason}")
+            notes.append(reason)
+        return reply + ("\n\n" + "\n".join(notes) if notes else "")
+
+    async def _post_limited_followup(self, live: LiveRun, frame: dict, text: str) -> None:
+        """Own the error post while recovery waits on the hub, off the reader."""
+        reply = await self._defer_limited_schedule(live.key, frame, text, live=live)
+        self._post_reply(live.frame, live.binding, reply)
+
+    @staticmethod
+    def _limit_defer_failure(response: dict) -> str:
+        error = str(response.get("error") or "").lower()
+        if "expired" in error:
+            return ("Could not move it: the permission from this scheduled post has expired. "
+                    "It needs re-arming by hand.")
+        # Server errors may contain stored text; keep diagnostics out of the
+        # channel and never turn untrusted text into another request.
+        return "Could not move it: the server refused the schedule request. It needs checking by hand."
 
     # ------------------------------------------------------- schedule asks
 
@@ -3929,6 +4102,8 @@ class Bridge:
         # back later — see LiveRun.spawned_with.
         run_account = self.binding_account(binding)
         spawned_with = (model, mode, run_account)
+        defer = frame.get("_limit_defer", {})
+        defer["account"] = run_account
         sys_args = self._append_system_args(binding)
         try:
             # A child still working through background tasks already holds this
@@ -4078,6 +4253,9 @@ class Bridge:
                             bg_tasks = listed if isinstance(listed, list) else []
                             saw_background_tasks = saw_background_tasks or bool(bg_tasks)
                         elif kind == "assistant":
+                            if any(b.get("type") == "tool_use" for b in
+                                   ((event.get("message") or {}).get("content") or []) if isinstance(b, dict)):
+                                defer["tools"] = True
                             snippet = self._progress_snippet(event)
                             if snippet and time.monotonic() - last_progress > PROGRESS_THROTTLE:
                                 last_progress = time.monotonic()
@@ -4090,6 +4268,7 @@ class Bridge:
                             self._cancel_request(event.get("request_id") or "",
                                                  "Claude withdrew the request.")
                         elif kind == "result":
+                            defer["result_error"] = bool(event.get("is_error"))
                             text = event.get("result") or ""
                             if event.get("is_error"):
                                 result_text = f"(claude error) {text}"
@@ -4239,6 +4418,9 @@ class Bridge:
                                 self._cancel_request(event.get("request_id") or "",
                                                      "Claude withdrew the request.")
                             elif kind == "assistant":
+                                if any(b.get("type") == "tool_use" for b in
+                                       ((event.get("message") or {}).get("content") or []) if isinstance(b, dict)):
+                                    defer["tools"] = True
                                 if (self.async_followups and not stdin_closed
                                         and key not in self.stop_requested):
                                     handed_off = True
@@ -4252,6 +4434,7 @@ class Bridge:
                                 if saw_background_tasks:
                                     tail_deadline = time.monotonic() + RESULT_TAIL_BG_GRACE
                             elif kind == "result":
+                                defer["result_error"] = bool(event.get("is_error"))
                                 text = event.get("result") or ""
                                 if text.strip():
                                     if event.get("is_error"):
@@ -4431,6 +4614,9 @@ class Bridge:
                         and auth[0] is None and auth[1] in ("agent", "mixed")):
                     live.ask_auth = (None, auth[1])
                     break
+        if live.ask_auth[1] in ("agent", "mixed"):
+            live.frame.get("_limit_defer", {})["revoked"] = True
+            frame.get("_limit_defer", {})["revoked"] = True
         if on_queued is not None:
             on_queued(waiter)
         try:
@@ -4514,6 +4700,11 @@ class Bridge:
                     held = True
                     continue
                 break
+            if reply.startswith("(claude error)"):
+                deferred = await self._defer_limited_schedule(live.key, live.frame, reply, live=live)
+                if deferred != reply:
+                    self._post_reply(live.frame, live.binding, deferred + ("\n" + "\n".join(outcomes) if outcomes else ""))
+                    return
             if reply.startswith("(claude error)") or not reply.strip():
                 raise RuntimeError(reply or "blank answer to the schedule results")
             if parse_schedule_ask(reply) is not None:
@@ -4686,6 +4877,8 @@ class Bridge:
                     for block in (event.get("message") or {}).get("content") or []:
                         if not isinstance(block, dict) or block.get("type") != "tool_use":
                             continue
+                        live.frame.get("_limit_defer", {})["tools"] = True
+                        target.get("_limit_defer", {})["tools"] = True
                         name, args = block.get("name"), block.get("input") or {}
                         if not isinstance(args, dict):
                             continue
@@ -4758,6 +4951,10 @@ class Bridge:
                                [live.waiters[0]] if live.waiters and live.waiters[0]["ahead"] == 0
                                else [])
                     claims_waiter = bool(claimed)
+                    for result_frame in ([w["frame"] for w in claimed] if claimed else [live.frame]):
+                        result_frame.get("_limit_defer", {})["result_error"] = bool(event.get("is_error"))
+                    if not claims_waiter and not event.get("is_error"):
+                        self._clear_limit_defer(live.frame)
                     if claims_waiter and live.replay_supported:
                         if any(w.get("merged_with_report") for w in claimed):
                             self._settle_report(live)
@@ -4822,7 +5019,18 @@ class Bridge:
                                 f"owed={sorted(live.owed_reports)} "
                                 f"ahead={[w['ahead'] for w in live.waiters]}")
                             live.reported = True
-                            if self._followup_wants_schedule(live, text):
+                            if (event.get("is_error") and getattr(self, "limit_defer", False)
+                                    and self._is_usage_limit_error(text)
+                                    and self._limit_defer_origins(live.frame)):
+                                # Snapshot result/tool state before the reader sees
+                                # another result. Share deduplication, and keep live
+                                # authority/stop checks in the recovery task.
+                                ctx = live.frame.get("_limit_defer", {})
+                                ctx.setdefault("attempted", set())
+                                recovery_frame = {**live.frame, "_limit_defer": dict(ctx)}
+                                self._spawn(self._post_limited_followup(live, recovery_frame, text))
+                                progress_pending = False
+                            elif self._followup_wants_schedule(live, text):
                                 # Served off the reader (it must keep reading to
                                 # deliver the model's answer); the hold keeps the
                                 # child until the results have gone back in.
@@ -5703,6 +5911,9 @@ def main() -> None:
                     default=schedules_enabled(os.environ.get("AGORA_SCHEDULES")),
                     help="let Claude create and manage scheduled messages for the "
                          "person it is answering (--no-schedules removes the capability)")
+    ap.add_argument("--limit-defer", action=argparse.BooleanOptionalAction,
+                    default=os.environ.get("AGORA_LIMIT_DEFER", "").strip().lower() in ("1", "true", "yes", "on"),
+                    help="defer a scheduled run after a usage-limit error (requires schedules; off by default)")
     ap.add_argument("--bot-loop-limit", default=os.environ.get("AGORA_BOT_LOOP_LIMIT"),
                     help="per-agent relay cap (unset inherits the Agora server default)")
     ap.add_argument("--peer-agents", default=os.environ.get("AGORA_PEER_AGENTS", ""),
