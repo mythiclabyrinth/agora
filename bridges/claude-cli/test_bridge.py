@@ -6383,7 +6383,7 @@ class LimitDeferTests(unittest.TestCase):
         frame = {"_limit_defer": {"frames": [origin], "result_error": True,
                                    "account": b.account}, "_ask_budget": {"schedule": 3}}
         current = {"id": "s1", "status": "done", "run_at": 900,
-                   "schedule": {"kind": "once"}, "text": origin["text"]}
+                   "schedule": {"kind": "once"}, "text": origin["text"], "text_agent": b.agent_id}
         b.request_schedule = AsyncMock(side_effect=[{"ok": True, "schedule": current}, {"ok": True}])
         return b, frame, current
 
@@ -6530,6 +6530,65 @@ class LimitDeferTests(unittest.TestCase):
         self.defer(b, f)
         self.assertNotIn("text", b.request_schedule.call_args.args[0])
 
+    def test_tools_preserve_person_written_and_recurring_text(self):
+        for kind, writer in (("once", None), ("interval", "claude-cli"), ("cron", "claude-cli")):
+            with self.subTest(kind=kind):
+                b, frame, current = self.setup_case()
+                frame["_limit_defer"]["tools"] = True
+                current.update(schedule={"kind": kind}, text_agent=writer)
+                if kind != "once":
+                    current.update(status="active", last_run_at=900, updated_at=900, run_at=1500)
+                reply = self.defer(b, frame)
+                self.assertEqual(b.request_schedule.call_args.args[0], {"op": "update", "id": "s1", "run_at": 2300})
+                self.assertIn("The earlier run was interrupted; check what it already did before redoing it.", reply)
+
+    def test_limit_wording_variants(self):
+        for wording in ("You've hit your weekly limit", "You've hit your session limit",
+                        "You've hit your usage limit", "You've hit your 5-hour limit",
+                        "You've hit your five-hour limit", "You've hit your limit",
+                        "Usage limit reached", "Usage limit exceeded",
+                        "Claude AI usage limit reached", "Claude AI usage limit reached|1794000000"):
+            with self.subTest(wording=wording):
+                b, frame, _ = self.setup_case()
+                self.assertIn("Moved", self.defer(b, frame, "(claude error) " + wording))
+
+    def test_background_reader_continues_while_recovery_waits(self):
+        async def run():
+            b = followup_bridge()
+            b.send = Mock()
+            b.limit_defer = b.schedules_enabled = True
+            b.last_usage_frame = {"limited_until": time.time() + 3600}
+            _, frame, current = self.setup_case()
+            frame["_limit_defer"]["account"] = b.account
+            frame.update(channel_id="c1", author={"id": "tom", "type": "user"})
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", frame, b.bindings["k"], (None, "acceptEdits", b.account), [])
+            live.ask_auth = ("scheduled-turn", None)
+            live.tasks = [{"task_id": "t0", "description": "work"}]
+            b.live["k"] = live
+            pending, release = asyncio.Event(), asyncio.Event()
+            async def request(ask, _turn):
+                if ask["op"] == "get":
+                    pending.set()
+                    await release.wait()
+                    return {"ok": True, "schedule": current}
+                return {"ok": True}
+            b.request_schedule = AsyncMock(side_effect=request)
+            b._post_reply = Mock(return_value=True)
+            reader = asyncio.create_task(b._followup_loop(live, []))
+            proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
+            await asyncio.wait_for(pending.wait(), 2)
+            proc.stdout.feed_data((_tasks() + "\n" + _result("Still reading") + "\n").encode())
+            await asyncio.wait_for(reader, 2)
+            self.assertEqual(b._post_reply.call_args.args[2], "Still reading")
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*b._detached), 2)
+            errors = [c.args[2] for c in b._post_reply.call_args_list if c.args[2].startswith("(claude error)")]
+            self.assertEqual(len(errors), 1)
+            self.assertIn("Moved this scheduled run", errors[0])
+            self.assertEqual(b.request_schedule.call_count, 2)
+        asyncio.run(run())
+
     def test_pinned_account_ignores_global_reset(self):
         b, f, _ = self.setup_case()
         f["_limit_defer"]["account"] = "other"
@@ -6574,6 +6633,7 @@ class LimitDeferTests(unittest.TestCase):
             b._post_reply = Mock(return_value=True)
             proc.stdout.feed_data((_result("You've hit your weekly limit", is_error=True) + "\n").encode())
             await asyncio.wait_for(b._followup_loop(live, []), 5)
+            await asyncio.gather(*b._detached)
             self.assertEqual(b.request_schedule.call_count, 2)
             self.assertIn("Moved", b._post_reply.call_args.args[2])
         asyncio.run(run())
@@ -6661,7 +6721,8 @@ class LimitDeferTests(unittest.TestCase):
                                         "request_id": f["request_id"], "ok": True}
                             if f["op"] == "get":
                                 response["schedule"] = {"id": "s1", "status": "done",
-                                    "run_at": 1, "schedule": {"kind": "once"}, "text": "@claude-cli LOOP test"}
+                                    "run_at": 1, "schedule": {"kind": "once"}, "text": "@claude-cli LOOP test",
+                                    "text_agent": "claude-cli"}
                             await ws.send(json.dumps(response))
                         elif f["type"] == "post" and not done.done():
                             done.set_result(f["text"])

@@ -385,7 +385,9 @@ reported reset time plus five minutes. With no usable reset time (including a
 chat pinned to another account), it retries in one hour, at most six attempts
 per schedule until a successful run. The counter is in memory and resets on
 bridge restart. A partial run that used tools adds an interruption reminder
-after the stored message's first line, preserving its leading mention.
+after the stored message's first line only for a one-off written by this agent,
+preserving its leading mention. For recurring or person-written messages, it
+leaves the text unchanged and puts the reminder in the thread instead.
 
 Recurring schedules are only postponed when their next fire precedes the retry
 time and they have not been edited since firing. Their repeat rule survives:

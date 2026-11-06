@@ -3684,7 +3684,7 @@ class Bridge:
         ctx = frame.get("_limit_defer", {})
         if (not getattr(self, "limit_defer", False) or not self.schedules_enabled
                 or not ctx.get("result_error")
-                or not re.match(r"^\(claude error\)\s*(?:you['’]ve hit your (?:weekly |session |usage |5[- ]hour |five[- ]hour )?limit\b|usage limit (?:reached|exceeded)\b)",
+                or not re.match(r"^\(claude error\)\s*(?:you['’]ve hit your (?:weekly |session |usage |5[- ]hour |five[- ]hour )?limit\b|usage limit (?:reached|exceeded)\b|Claude AI usage limit reached(?:\|[0-9]+)?\b)",
                                 reply, re.IGNORECASE)):
             return reply
         origins = ctx.get("frames", [])
@@ -3754,7 +3754,11 @@ class Bridge:
                     note("skip", "Not moved: the schedule already has a future run.")
                     continue
                 ask = {"op": "update", "id": sid, "run_at": target}
-                if ctx.get("tools"):
+                interrupted_note = None
+                if ctx.get("tools") and ((current.get("schedule") or {}).get("kind") != "once"
+                                         or current.get("text_agent") != self.agent_id):
+                    interrupted_note = "The earlier run was interrupted; check what it already did before redoing it."
+                elif ctx.get("tools"):
                     text = current.get("text")
                     if not isinstance(text, str):
                         note("skip", "Not moved: the stored message is unavailable.")
@@ -3763,6 +3767,8 @@ class Bridge:
                     if interruption not in text.splitlines():
                         first, sep, rest = text.partition("\n")
                         ask["text"] = first + "\n" + interruption + (sep + rest if sep else "")
+                if interrupted_note:
+                    notes.append(interrupted_note)
                 if reason := permitted():
                     note("skip", reason)
                     continue
@@ -3788,6 +3794,11 @@ class Bridge:
             finally:
                 self.limit_defer_busy.discard(sid)
         return reply + ("\n\n" + "\n".join(notes) if notes else "")
+
+    async def _post_limited_followup(self, live: LiveRun, frame: dict, text: str) -> None:
+        """Own the error post while recovery waits on the hub, off the reader."""
+        reply = await self._defer_limited_schedule(live.key, frame, text, live=live)
+        self._post_reply(live.frame, live.binding, reply)
 
     @staticmethod
     def _limit_defer_failure(response: dict) -> str:
@@ -4921,11 +4932,8 @@ class Bridge:
                     claims_waiter = bool(claimed)
                     for result_frame in ([w["frame"] for w in claimed] if claimed else [live.frame]):
                         result_frame.get("_limit_defer", {})["result_error"] = bool(event.get("is_error"))
-                    if not claims_waiter:
-                        if event.get("is_error"):
-                            text = await self._defer_limited_schedule(key, live.frame, text, live=live)
-                        else:
-                            self._clear_limit_defer(live.frame)
+                    if not claims_waiter and not event.get("is_error"):
+                        self._clear_limit_defer(live.frame)
                     if claims_waiter and live.replay_supported:
                         if any(w.get("merged_with_report") for w in claimed):
                             self._settle_report(live)
@@ -4990,7 +4998,16 @@ class Bridge:
                                 f"owed={sorted(live.owed_reports)} "
                                 f"ahead={[w['ahead'] for w in live.waiters]}")
                             live.reported = True
-                            if self._followup_wants_schedule(live, text):
+                            if event.get("is_error") and getattr(self, "limit_defer", False):
+                                # Snapshot result/tool state before the reader sees
+                                # another result. Share deduplication, and keep live
+                                # authority/stop checks in the recovery task.
+                                ctx = live.frame.get("_limit_defer", {})
+                                ctx.setdefault("attempted", set())
+                                recovery_frame = {**live.frame, "_limit_defer": dict(ctx)}
+                                self._spawn(self._post_limited_followup(live, recovery_frame, text))
+                                progress_pending = False
+                            elif self._followup_wants_schedule(live, text):
                                 # Served off the reader (it must keep reading to
                                 # deliver the model's answer); the hold keeps the
                                 # child until the results have gone back in.
