@@ -3675,6 +3675,12 @@ class Bridge:
             if origin.get("scheduled"):
                 getattr(self, "limit_defer_attempts", {}).pop(origin.get("schedule_id"), None)
 
+    @staticmethod
+    def _is_usage_limit_error(reply: str) -> bool:
+        return bool(re.match(
+            r"^\(claude error\)\s*(?:you['’]ve hit your (?:weekly |session |usage |5[- ]hour |five[- ]hour )?limit\b|usage limit (?:reached|exceeded)\b|Claude AI usage limit reached(?:\|[0-9]+)?\b)",
+            reply, re.IGNORECASE))
+
     async def _defer_limited_schedule(self, key: str, frame: dict, reply: str,
                                       *, live=None) -> str:
         """Retry delivery, never model work. Use the scheduled post's grant,
@@ -3684,8 +3690,7 @@ class Bridge:
         ctx = frame.get("_limit_defer", {})
         if (not getattr(self, "limit_defer", False) or not self.schedules_enabled
                 or not ctx.get("result_error")
-                or not re.match(r"^\(claude error\)\s*(?:you['’]ve hit your (?:weekly |session |usage |5[- ]hour |five[- ]hour )?limit\b|usage limit (?:reached|exceeded)\b|Claude AI usage limit reached(?:\|[0-9]+)?\b)",
-                                reply, re.IGNORECASE)):
+                or not self._is_usage_limit_error(reply)):
             return reply
         origins = ctx.get("frames", [])
         scheduled = [f for f in origins if f.get("scheduled") and f.get("schedule_id")
@@ -3747,7 +3752,7 @@ class Bridge:
                     if not isinstance(fired, (int, float)) or updated != fired:
                         note("skip", "Not moved: the recurring schedule was edited since firing, or its state cannot be verified.")
                         continue
-                    if pending >= target:
+                    if pending + 60 >= target:
                         note("skip", "Not moved: its next recurring run is already after the retry time.")
                         continue
                 elif status == "active" and pending > now:
@@ -3766,9 +3771,11 @@ class Bridge:
                     interruption = "The previous run was interrupted by a usage limit; check what it already did before redoing it."
                     if interruption not in text.splitlines():
                         first, sep, rest = text.partition("\n")
-                        ask["text"] = first + "\n" + interruption + (sep + rest if sep else "")
-                if interrupted_note:
-                    notes.append(interrupted_note)
+                        rewritten = first + "\n" + interruption + (sep + rest if sep else "")
+                        if len(rewritten) <= 20_000:
+                            ask["text"] = rewritten
+                        else:
+                            interrupted_note = "The earlier run was interrupted; check what it already did before redoing it."
                 if reason := permitted():
                     note("skip", reason)
                     continue
@@ -3780,7 +3787,10 @@ class Bridge:
                 if not response.get("ok"):
                     note("failed", self._limit_defer_failure(response))
                     continue
-                when = datetime.fromtimestamp(target).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+                if interrupted_note:
+                    notes.append(interrupted_note)
+                stored_run_at = (response.get("schedule") or {}).get("run_at", target)
+                when = datetime.fromtimestamp(stored_run_at).astimezone().strftime("%Y-%m-%d %H:%M %Z")
                 detail = ("limit resets " + datetime.fromtimestamp(reset).astimezone().strftime("%Y-%m-%d %H:%M %Z")
                           if known else "reset time unknown; retrying in one hour")
                 note("moved", f"Moved this scheduled run to {when} ({detail}).")
@@ -4998,7 +5008,8 @@ class Bridge:
                                 f"owed={sorted(live.owed_reports)} "
                                 f"ahead={[w['ahead'] for w in live.waiters]}")
                             live.reported = True
-                            if event.get("is_error") and getattr(self, "limit_defer", False):
+                            if (event.get("is_error") and getattr(self, "limit_defer", False)
+                                    and self._is_usage_limit_error(text)):
                                 # Snapshot result/tool state before the reader sees
                                 # another result. Share deduplication, and keep live
                                 # authority/stop checks in the recovery task.

@@ -6530,6 +6530,69 @@ class LimitDeferTests(unittest.TestCase):
         self.defer(b, f)
         self.assertNotIn("text", b.request_schedule.call_args.args[0])
 
+    def test_recurring_unknown_reset_near_pending_time_skips_write(self):
+        for pending in (4540, 4599, 4600):
+            with self.subTest(pending=pending):
+                b, frame, current = self.setup_case()
+                b.last_usage_frame = None
+                current.update(status="active", schedule={"kind": "interval", "seconds": 3600},
+                               last_run_at=999, updated_at=999, run_at=pending)
+                reply = self.defer(b, frame)
+                self.assertIn("Not moved", reply)
+                self.assertEqual(b.request_schedule.call_count, 1)
+
+    def test_move_note_uses_stored_time(self):
+        b, frame, current = self.setup_case()
+        b.request_schedule.side_effect = [{"ok": True, "schedule": current},
+                                          {"ok": True, "schedule": {"run_at": 2600}}]
+        reply = self.defer(b, frame)
+        expected = bridge.datetime.fromtimestamp(2600).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        self.assertIn("Moved this scheduled run to " + expected, reply)
+        self.assertEqual(b.request_schedule.call_args.args[0]["run_at"], 2300)
+
+    def test_near_cap_text_falls_back_to_thread_note(self):
+        b, frame, current = self.setup_case()
+        frame["_limit_defer"]["tools"] = True
+        current["text"] = "@claude-cli LOOP test\n" + "x" * 19950
+        reply = self.defer(b, frame)
+        self.assertEqual(b.request_schedule.call_args.args[0], {"op": "update", "id": "s1", "run_at": 2300})
+        self.assertIn("Moved", reply)
+        self.assertIn("The earlier run was interrupted", reply)
+
+    def test_failed_or_stopped_move_has_no_thread_interruption_note(self):
+        for stopped in (False, True):
+            b, frame, current = self.setup_case()
+            frame["_limit_defer"]["tools"] = True
+            current["text_agent"] = None
+            async def request(ask, _turn):
+                if ask["op"] == "get":
+                    if stopped: b.stop_requested.add("k")
+                    return {"ok": True, "schedule": current}
+                return {"ok": False, "error": "refused"}
+            b.request_schedule.side_effect = request
+            reply = self.defer(b, frame)
+            self.assertNotIn("The earlier run was interrupted", reply)
+            self.assertNotIn("Moved", reply)
+
+    def test_non_limit_background_error_keeps_direct_post_path(self):
+        async def run():
+            b = followup_bridge()
+            b.limit_defer = b.schedules_enabled = True
+            proc = _fake_proc([], returncode=None)
+            live = bridge.LiveRun(proc, "k", {"channel_id": "c1"}, b.bindings["k"],
+                                  (None, "acceptEdits", b.account), [])
+            b.live["k"] = live
+            b._spawn = Mock()
+            b._post_reply = Mock(return_value=True)
+            b.request_schedule = AsyncMock()
+            proc.stdout.feed_data((_result("Authentication required", is_error=True) + "\n").encode())
+            await asyncio.wait_for(b._followup_loop(live, []), 2)
+            b._spawn.assert_not_called()
+            b.request_schedule.assert_not_called()
+            b._post_reply.assert_called_once()
+            self.assertEqual(b._post_reply.call_args.args[2], "(claude error) Authentication required")
+        asyncio.run(run())
+
     def test_tools_preserve_person_written_and_recurring_text(self):
         for kind, writer in (("once", None), ("interval", "claude-cli"), ("cron", "claude-cli")):
             with self.subTest(kind=kind):
