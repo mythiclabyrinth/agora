@@ -248,8 +248,9 @@ for edits, …) rather than dumped as raw JSON. "Always allow" is remembered
 per session in `state.json` (owner-only mode `0600`) and survives bridge
 restarts and automatic session-id rotation. Starting or selecting another session
 (`/new`, `/use`, account switches, or a new worktree) clears it; new threads and
-forks do not inherit it. Model and permission-mode changes keep it for the same
-session. **Always allow Bash covers all shell commands for that session and is
+forks do not inherit it. Model changes keep it for the same session. Lowering the effective permission
+mode (including through `reset`) clears approvals; raising it or keeping the
+same mode retains them. **Always allow Bash covers all shell commands for that session and is
 now persisted on disk.** Before the first session ID arrives, approvals apply
 only to that running process and are not saved. A successful result attaches
 those approvals to the new ID, including approvals given in a fork's own first

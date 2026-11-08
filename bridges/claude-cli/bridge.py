@@ -1605,6 +1605,8 @@ class Bridge:
         try:
             with os.fdopen(fd, "w") as state:
                 state.write(payload)
+                state.flush()
+                os.fsync(state.fileno())
             os.replace(temporary, self.state_file)
         finally:
             Path(temporary).unlink(missing_ok=True)
@@ -2941,14 +2943,17 @@ class Bridge:
         if not b:
             return "No session bound here. Run /sessions then /use <n>."
         default = self.default_permission_mode
+        current = b.get("permission_mode") or default
         if not arg:
-            cur = b.get("permission_mode") or default
+            cur = current
             return (
                 f"Permission mode: {cur} (bridge default: {default})\n"
                 "Usage: /permissions <plan | acceptEdits | bypass | default | reset>"
             )
         choice = arg.strip().lower()
         if choice == "reset":
+            if PERMISSION_RANK[default] < PERMISSION_RANK[current]:
+                b.pop("session_allows", None)
             b.pop("permission_mode", None)
             self.bindings[key] = b
             self._save_state()
@@ -2963,6 +2968,8 @@ class Bridge:
                 "CLAUDE_ALLOW_PERMISSION_ESCALATION=1 to allow it. You can always "
                 "lower privilege (e.g. /permissions plan)."
             )
+        if PERMISSION_RANK[mode] < PERMISSION_RANK[current]:
+            b.pop("session_allows", None)
         b["permission_mode"] = mode
         self.bindings[key] = b
         self._save_state()

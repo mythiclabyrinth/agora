@@ -137,8 +137,10 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
      persisted on disk in `state.json`, written with owner-only mode `0600`.
      They survive bridge restarts and automatic session-id rotation, but are
      cleared by explicit session changes (`/new`, `/use`, account switches,
-     new worktrees). New threads/forks inherit no grants. Model and permission
-     mode changes keep grants for the same session. Before the first session
+     new worktrees). New threads/forks inherit no grants. Model changes keep
+     grants for the same session. Lowering the effective
+     permission mode, including through `reset`, clears grants; raising or
+     keeping the same mode retains them. Before the first session
      ID arrives, grants are run-local and excluded from saved state. Successful
      ID adoption keeps that run's own grants, including in a new fork. Atomic
      file replacement keeps the previous state intact if a write fails.

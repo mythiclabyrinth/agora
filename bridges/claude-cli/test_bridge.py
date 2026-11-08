@@ -599,7 +599,7 @@ class SessionApprovalTests(unittest.TestCase):
             b._release_missing_pins()
             self.assertEqual(b._session_tools(b.bindings["c1"]), [])
 
-    def test_model_permissions_and_metadata_keep_grant(self):
+    def test_model_and_metadata_keep_grant(self):
         b = make_bridge()
         b.default_model = None
         b.default_permission_mode = "acceptEdits"
@@ -607,9 +607,57 @@ class SessionApprovalTests(unittest.TestCase):
         bound = b.bindings["c1"] = {"session_id": "s", "cwd": "/tmp"}
         self.grant(bound)
         b._cmd_model("c1", "sonnet")
-        b._cmd_permissions("c1", "plan")
         b._attach_worktree("c1", Path("/tmp"), "branch", Path("/tmp"))
         self.assertEqual(b._session_tools(bound), ["Bash"])
+
+    def test_permission_mode_lowering_clears_grants_including_reset(self):
+        for current, default, command, kept in (
+            ("acceptEdits", "acceptEdits", "plan", False),
+            ("bypassPermissions", "acceptEdits", "reset", False),
+            ("plan", "acceptEdits", "acceptEdits", True),
+            ("plan", "acceptEdits", "reset", True),
+            ("acceptEdits", "acceptEdits", "acceptEdits", True),
+            ("acceptEdits", "acceptEdits", "reset", True),
+        ):
+            with self.subTest(current=current, command=command):
+                b = make_bridge()
+                b.default_permission_mode = default
+                b.allow_escalation = True
+                bound = b.bindings["c1"] = {"session_id": "s", "permission_mode": current}
+                self.grant(bound)
+                b._cmd_permissions("c1", command)
+                self.assertEqual(b._session_tools(bound), ["Bash"] if kept else [])
+                b._save_state.assert_called_once()
+
+    def test_state_is_flushed_and_synced_before_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            b._save_state()
+            before = b.state_file.read_bytes()
+            b.bindings["c1"]["session_id"] = "changed"
+            real_fsync = bridge.os.fsync
+            real_replace = bridge.os.replace
+            events = []
+            def sync(fd):
+                # Reading the temporary file sees the complete payload only
+                # after the Python buffer has been flushed.
+                temporary = next(Path(tmp).glob(".state.json.*"))
+                self.assertEqual(json.loads(temporary.read_text())["bindings"]["c1"]["session_id"], "changed")
+                events.append("sync")
+                real_fsync(fd)
+            def replace(source, target):
+                self.assertEqual(events, ["sync"])
+                self.assertEqual(b.state_file.read_bytes(), before)
+                events.append("replace")
+                real_replace(source, target)
+            with patch.object(bridge.os, "fsync", side_effect=sync), patch.object(bridge.os, "replace", side_effect=replace):
+                b._save_state()
+            self.assertEqual(events, ["sync", "replace"])
+            saved = b.state_file.read_bytes()
+            with patch.object(bridge.os, "fsync", side_effect=OSError("sync failed")), self.assertRaises(OSError):
+                b._save_state()
+            self.assertEqual(b.state_file.read_bytes(), saved)
+            self.assertEqual(list(Path(tmp).iterdir()), [b.state_file])
 
     def test_result_rotation_keeps_grant_in_foreground_and_tail(self):
         for lines, expected in (([_result("answer", session_id="new")], "new"),
