@@ -133,8 +133,12 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
    - Approval authority equals channel membership (see #2); there is no
      approver allowlist and no distinction between who prompted and who taps.
    - **Always allow** grants the whole tool (e.g. all of `Bash`) for that
-     channel/thread binding until the bridge restarts. It is deliberately
-     memory-only and never persisted to `state.json`.
+     session: **Always allow Bash covers all shell commands**. Grants are now
+     persisted on disk in `state.json`, written with owner-only mode `0600`.
+     They survive bridge restarts and automatic session-id rotation, but are
+     cleared by explicit session changes (`/new`, `/use`, account switches,
+     new worktrees). New threads/forks inherit no grants. Model and permission
+     mode changes keep grants for the same session.
    - Unanswered requests **deny** after `--permission-timeout` (default 600 s),
      and requests still pending when a run dies are denied and their buttons
      locked, so a stale button can never answer a later run (ids are keyed by

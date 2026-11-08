@@ -245,7 +245,12 @@ relays your tap back to the CLI, so headless runs no longer silently deny (or
 require blanket `--dangerously-skip-permissions`). The request is summarized
 per tool (the command for Bash, the URL and prompt for WebFetch, the file path
 for edits, …) rather than dumped as raw JSON. "Always allow" is remembered
-per channel/thread binding, in memory only — a bridge restart re-asks. If
+per session in `state.json` (owner-only mode `0600`) and survives bridge
+restarts and automatic session-id rotation. Starting or selecting another session
+(`/new`, `/use`, account switches, or a new worktree) clears it; new threads and
+forks do not inherit it. Model and permission-mode changes keep it for the same
+session. **Always allow Bash covers all shell commands for that session and is
+now persisted on disk.** If
 nobody taps within `--permission-timeout` (`CLAUDE_PERMISSION_TIMEOUT`, default
 600 s) the request is denied and the buttons lock with a note; the wait counts
 against the overall run `--timeout`. The default permission mode is still

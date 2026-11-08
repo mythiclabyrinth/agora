@@ -1501,9 +1501,6 @@ class Bridge:
         # Unanswered AskUserQuestion entries per binding key, oldest first, so
         # a plain channel message can answer one as free text while a run is busy.
         self.pending_questions: dict[str, list[dict]] = {}
-        # "Always allow" tool names granted per binding key; memory-only so a
-        # bridge restart re-asks rather than silently trusting old grants.
-        self.session_allows: dict[str, set[str]] = {}
         # Per-binding backlog of messages we saw but stayed silent on (someone
         # else was @mentioned). Flushed into the prompt as context the next time
         # we're actually addressed, so a late @mention arrives already caught up.
@@ -1581,7 +1578,7 @@ class Bridge:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         account = self.account if self._account_state_valid else self._saved_account
         config_dir = self.config_dir if self._account_state_valid else self._previous_config_dir
-        self.state_file.write_text(json.dumps({
+        payload = json.dumps({
             "_v": 2, "account": account,
             "config_dir": str(config_dir) if config_dir is not None else None,
             "bindings": {key: value for key, value in self.bindings.items()
@@ -1590,7 +1587,37 @@ class Bridge:
                 key: [sid, tokens]
                 for key, (sid, tokens) in getattr(self, "warm_compacted_sizes", {}).items()
                 if (self.bindings.get(key) or {}).get("session_id") == sid},
-        }, indent=2))
+        }, indent=2)
+        # Restrict existing files too, before writing persisted tool approvals.
+        fd = os.open(self.state_file, os.O_WRONLY | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "w") as state:
+            os.fchmod(state.fileno(), 0o600)
+            state.truncate(0)
+            state.write(payload)
+
+    @staticmethod
+    def _session_tools(binding: dict | None) -> list[str]:
+        if not isinstance(binding, dict):
+            return []
+        grant = binding.get("session_allows")
+        if not isinstance(grant, dict) or "session_id" not in grant:
+            return []
+        sid, tools = grant["session_id"], grant.get("tools")
+        if (sid is not None and not isinstance(sid, str)) or sid != binding.get("session_id"):
+            return []
+        if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
+            return []
+        return tools
+
+    @classmethod
+    def _adopt_session_id(cls, binding: dict, session_id: str) -> None:
+        # A result can rotate the id of the same conversation. Forks are new
+        # conversations and must not inherit the source's tool approvals.
+        tools = cls._session_tools(binding) if not binding.get("_fork_source") else []
+        binding.pop("session_allows", None)
+        binding["session_id"] = session_id
+        if tools:
+            binding["session_allows"] = {"session_id": session_id, "tools": list(tools)}
 
     def _release_missing_pins(self) -> bool:
         changed = False
@@ -1599,6 +1626,7 @@ class Bridge:
                 log(f"binding names missing account {binding['account']!r}; releasing its session")
                 binding.pop("account", None)
                 binding["session_id"] = None
+                binding.pop("session_allows", None)
                 binding.pop("_fork_source", None)
                 binding.pop("roster_note", None)
                 changed = True
@@ -3060,6 +3088,7 @@ class Bridge:
             if binding.get("session_id"):
                 binding["session_id"] = None
                 dropped += 1
+            binding.pop("session_allows", None)
             binding.pop("_fork_source", None)
             binding.pop("roster_note", None)
         for key in list(self.listings):
@@ -3138,6 +3167,7 @@ class Bridge:
             else:
                 binding["account"] = target
             binding["session_id"] = None
+            binding.pop("session_allows", None)
             binding.pop("_fork_source", None)
             binding.pop("roster_note", None)
             self.listings.pop(key, None)
@@ -3299,6 +3329,7 @@ class Bridge:
             if not source.get("session_id"):
                 return True
             binding = json.loads(json.dumps(source))
+            binding.pop("session_allows", None)
             binding.pop("roster_note", None)
             binding["_fork_source"] = source["session_id"]
             self.bindings[key] = binding
@@ -4400,7 +4431,7 @@ class Bridge:
                                 self.progress(frame, snippet)
                         elif kind == "control_request":
                             perm_tasks.append(asyncio.create_task(
-                                self._handle_control_request(key, frame, proc, event, perm_ids)
+                                self._handle_control_request(key, frame, proc, event, perm_ids, binding)
                             ))
                         elif kind == "control_cancel_request":
                             self._cancel_request(event.get("request_id") or "",
@@ -4421,7 +4452,7 @@ class Bridge:
                                 binding["_fork_reused_source"] = True
                             if (new_sid and new_sid != binding.get("session_id")
                                     and (key not in self.bindings or self.bindings.get(key) is binding)):
-                                binding["session_id"] = new_sid
+                                self._adopt_session_id(binding, new_sid)
                                 binding.pop("_fork_source", None)
                                 binding.pop("_fork_reused_source", None)
                                 self.bindings[key] = binding
@@ -4543,7 +4574,7 @@ class Bridge:
                             elif kind == "control_request":
                                 perm_tasks.append(asyncio.create_task(
                                     self._handle_control_request(
-                                        key, frame, proc, event, perm_ids)
+                                        key, frame, proc, event, perm_ids, binding)
                                 ))
                                 # Let the handler post the approval prompt before
                                 # an already-buffered EOF can trigger tail cleanup.
@@ -4586,7 +4617,7 @@ class Bridge:
                                         if (new_sid and new_sid != binding.get("session_id")
                                                 and (key not in self.bindings
                                                      or self.bindings.get(key) is binding)):
-                                            binding["session_id"] = new_sid
+                                            self._adopt_session_id(binding, new_sid)
                                             binding.pop("_fork_source", None)
                                             binding.pop("_fork_reused_source", None)
                                             self.bindings[key] = binding
@@ -5043,7 +5074,7 @@ class Bridge:
                             progress_pending = True
                 elif kind == "control_request":
                     perm_tasks.append(asyncio.create_task(
-                        self._handle_control_request(key, target, proc, event, live.perm_ids)
+                        self._handle_control_request(key, target, proc, event, live.perm_ids, live.binding)
                     ))
                 elif kind == "control_cancel_request":
                     self._cancel_request(event.get("request_id") or "",
@@ -5087,7 +5118,7 @@ class Bridge:
                             and binding is live.binding
                             and (key not in self.bindings
                                  or self.bindings.get(key) is binding)):
-                        binding["session_id"] = new_sid
+                        self._adopt_session_id(binding, new_sid)
                         self.bindings[key] = binding
                         self._save_state()
                     # Replay is emitted when the CLI takes an injected message
@@ -5551,7 +5582,8 @@ class Bridge:
             fut.set_result(("option", frame.get("option_id"), who))
 
     async def _handle_control_request(self, key: str, frame: dict, proc,
-                                      event: dict, perm_ids: list[str]) -> None:
+                                      event: dict, perm_ids: list[str],
+                                      binding: dict | None = None) -> None:
         """Relay one CLI permission ask to the channel as approval buttons."""
         req_id = event.get("request_id") or ""
         req = event.get("request") or {}
@@ -5576,9 +5608,10 @@ class Bridge:
             # the questions as choice buttons instead of Approve/Reject.
             await self._ask_user_question(key, frame, proc, req_id, tool_input, perm_ids)
             return
-        if tool in self.session_allows.get(key, set()):
+        if tool in self._session_tools(binding):
             await self._send_to_claude(proc, self._perm_response(req_id, True, tool_input))
             return
+        request_sid = binding.get("session_id") if binding is not None else None
         options_id = f"perm-{req_id}"
         fut = asyncio.get_running_loop().create_future()
         self.pending_perms[options_id] = (fut, frame["channel_id"], frame.get("thread_id"))
@@ -5611,8 +5644,18 @@ class Bridge:
                                        f"No decision within {self.permission_timeout}s — denied.")
         finally:
             self.pending_perms.pop(options_id, None)
-        if option_id == "allow_always":
-            self.session_allows.setdefault(key, set()).add(tool)
+        if (option_id == "allow_always" and binding is not None
+                and self.bindings.get(key) is binding
+                and binding.get("session_id") == request_sid):
+            binding["session_allows"] = {
+                "session_id": request_sid,
+                "tools": sorted(set(self._session_tools(binding)) | {tool}),
+            }
+            try:
+                self._save_state()
+            except OSError as exc:
+                # A disk failure must not swallow the answer to this request.
+                log(f"could not persist session approval: {exc}")
         allow = option_id in ("allow", "allow_always")
         deny_msg = (f"Denied by {who} via Agora" if who
                     else f"No approval within {self.permission_timeout}s")
