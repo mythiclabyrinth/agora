@@ -34,6 +34,7 @@ import argparse
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -762,6 +764,13 @@ class CompactionDeferred(Exception):
     """A real turn took the binding before an idle compaction could start."""
 
 
+# Why a held child was retired when its conversation was rebound. Named because
+# the channel notice keys off it and _stopped_message prints it.
+BINDING_CHANGED = "the binding changed"
+# Why one was retired because it could not read a new message's files.
+ATTACHMENTS_UNREADABLE = "the running process could not read a new message's files"
+
+
 class LiveRun:
     """A `claude -p` child kept alive past the reply, because it still owns
     background work that will re-invoke the model.
@@ -815,7 +824,15 @@ class LiveRun:
         self.reported = False  # produced at least one follow-up of its own
         self.notice_posted = False
         self.started = time.monotonic()
-        self.tmpdir: str | None = None  # --add-dir staging, removed at retirement
+        # Turn dirs under the conversation's --add-dir root that must stay
+        # readable while this child runs: its own turn's, and those of turns
+        # injected into it (it may still read them after answering, from
+        # background work or a queued turn). All removed at retirement.
+        self.tmpdir: str | None = None
+        self.injected_dirs: list[str] = []
+        # What this child got as --add-dir: files staged anywhere else are
+        # out of its reach.
+        self.add_dir: str | None = None
         self.reader: asyncio.Task | None = None
         # Schedule authority of the turn this child was started for, fixed at
         # spawn: (turn_id, why) from batch_turn_id, and that turn's request
@@ -1456,6 +1473,8 @@ class Bridge:
         # Children kept alive past their reply because background work is still
         # theirs to report (see LiveRun). At most one per binding key.
         self.live: dict[str, LiveRun] = {}
+        self._att_root: str | None = None  # see _conversation_att_dir
+        self._att_root_id: tuple | None = None
         self.async_followups = args.async_followups
         self.followup_idle_timeout = args.followup_idle_timeout
         self.followup_task_idle_timeout = args.followup_task_idle_timeout
@@ -3656,8 +3675,7 @@ class Bridge:
             else:
                 prompt = self._format_history(page, ask, set(self.active_message_ids))
             # A follow-up must not re-stage this turn's attachments: they are
-            # already in the session, and restaging would re-download them and
-            # retire the live child over a --add-dir change.
+            # already in the session, and restaging would re-download them.
             reply = await self.run_claude(
                 key, {**frame, "attachments": []}, binding, prompt)
         # Out of hops (or the capability is off) and the model is still asking:
@@ -4032,33 +4050,78 @@ class Bridge:
                                 "data_b64": base64.b64encode(data).decode("ascii")})
         return "\n".join(kept).rstrip(), attachments, notices
 
-    def _stage_attachments(self, frame: dict, text: str) -> tuple[str, list[str], str | None]:
-        """Drop any inbound attachments to a temp dir and build the prompt.
+    def _conversation_att_dir(self, key: str) -> str:
+        """This conversation's attachments root, the ``--add-dir`` of every
+        child spawned for it.
 
-        Returns ``(prompt, extra_args, tmpdir)``. Bytes are written to a fresh
-        temp dir which is exposed to Claude via ``--add-dir`` (so its Read tool
-        can open them without prompting), and every saved path is named in the
-        prompt so the model knows to look at them. ``tmpdir`` is ``None`` when
-        there's nothing to stage; the caller removes it after the run.
-        """
+        Fixed per conversation (for the life of the bridge) rather than fresh
+        per run, for two reasons. ``--add-dir`` can only be set when a process
+        starts, so a child later held for background work must already be able
+        to read files a mid-run message brings: each turn stages into its own
+        subdir of this root, which the held child can read without a respawn.
+        And Claude lists added directories in its system prompt, so a path
+        that changed every run would defeat prompt caching on every resume.
+        It lives under a private mkdtemp root, never a guessable shared path.
+        Per-conversation roots scope a child's file-tool grant only; they are
+        not an OS boundary (see SECURITY.md)."""
+        root = self._att_root
+        if root is not None and self._dir_identity(root) != self._att_root_id:
+            # A tmp cleaner took it. Restore the same path: held children
+            # were granted it, and a new one would strand them all. mkdir
+            # fails if anything is there now, so a path another local user
+            # claimed in the meantime is never trusted.
+            try:
+                os.mkdir(root, 0o700)
+            except OSError:
+                root = None
+            else:
+                self._att_root_id = self._dir_identity(root)
+        if root is None:
+            root = self._att_root = tempfile.mkdtemp(prefix="agora-att-")
+            self._att_root_id = self._dir_identity(root)
+        path = os.path.join(root, hashlib.sha256(key.encode()).hexdigest()[:16])
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+        return path
+
+    @staticmethod
+    def _dir_identity(path: str) -> tuple | None:
+        """Who a directory is, for telling ours from a replacement: compared
+        rather than checking mode bits, which some filesystems (WSL drvfs,
+        SMB) report oddly. The owner is included because inode numbers get
+        reused. None for anything that is not a real directory."""
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino, st.st_uid) if stat.S_ISDIR(st.st_mode) else None
+
+    @staticmethod
+    def _drop_turn_dir(tmpdir: str | None) -> None:
+        """Remove a turn dir. The conversation root above it stays (empty)
+        until shutdown: a child may be starting with it as --add-dir right
+        now, and a root missing at that moment would fail the spawn."""
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _stage_attachments(self, frame: dict, text: str, tmpdir: str | None) -> str:
+        """Drop any inbound files into this turn's attachments dir ``tmpdir``
+        and return the prompt, naming every saved path so the model knows to
+        look at them. The caller owns ``tmpdir`` and removes it when the run
+        (or the child held past it) ends."""
         attachments = frame.get("attachments") or []
         if not attachments:
-            return text, [], None
-        tmpdir = tempfile.mkdtemp(prefix="agora-att-")
-        saved, notes = materialize_attachments(
+            return text
+        _saved, notes = materialize_attachments(
             attachments, Path(tmpdir), self.http_base, self.token, self.agent_id
         )
         prompt = text
         if notes:
             block = "The Agora message included these attachments:\n" + "\n".join(notes)
             prompt = f"{text}\n\n{block}".strip() if text else block
-        extra_args = ["--add-dir", tmpdir] if saved else []
-        if not saved:
-            # Nothing landed on disk (all oversized/undecodable) — no point
-            # keeping an empty dir around or widening Claude's read scope.
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            tmpdir = None
-        return prompt, extra_args, tmpdir
+        return prompt
 
     def _append_system_args(self, binding: dict) -> list[str]:
         """Standing instructions for a run, as a single --append-system-prompt:
@@ -4082,14 +4145,37 @@ class Bridge:
         return ["--append-system-prompt", "\n\n".join(blocks)]
 
     async def run_claude(self, key: str, frame: dict, binding: dict, text: str) -> str:
-        prompt, extra_args, tmpdir = await asyncio.to_thread(self._stage_attachments, frame, text)
-        roster_prefix, roster_note = roster_prompt(frame, binding, text)
+        # Created here, not in the staging thread: a cancel during the
+        # to_thread hop would otherwise strand a dir nobody holds a path to.
+        # The root is the --add-dir of every run, files or not; only a turn
+        # that brings files gets a dir of its own under it.
+        try:
+            att_root = self._conversation_att_dir(key)
+            tmpdir = (tempfile.mkdtemp(prefix="turn-", dir=att_root)
+                      if frame.get("attachments") else None)
+        except OSError as e:
+            # A full or read-only tempdir must not cost a text message its
+            # reply; only a turn with files to write actually needs the disk.
+            if frame.get("attachments"):
+                raise
+            log(f"attachments dir unavailable for {key}: {e!r}")
+            att_root, tmpdir = None, None
+        extra_args = ["--add-dir", att_root] if att_root else []
+        try:
+            prompt = await asyncio.to_thread(self._stage_attachments, frame, text, tmpdir)
+            roster_prefix, roster_note = roster_prompt(frame, binding, text)
+            if tmpdir and not any(Path(tmpdir).iterdir()):
+                # Nothing landed (all oversized/undecodable): nothing to keep.
+                self._drop_turn_dir(tmpdir)
+                tmpdir = None
+        except BaseException:
+            self._drop_turn_dir(tmpdir)
+            raise
         context_epoch = binding.get("_context_epoch", 0)
         prompt = roster_prefix + prompt
         if key in self.stop_requested:
             self.stop_requested.discard(key)
-            if tmpdir:
-                shutil.rmtree(tmpdir, ignore_errors=True)
+            self._drop_turn_dir(tmpdir)
             raise RunStopped
         perm_tasks: list[asyncio.Task] = []
         perm_ids: list[str] = []
@@ -4108,12 +4194,16 @@ class Bridge:
         try:
             # A child still working through background tasks already holds this
             # conversation; feed the new turn to it rather than resuming the
-            # same session id in a second process. Two exceptions retire it
-            # instead: attachments arrive via --add-dir, which only a fresh
-            # spawn can widen, and a binding that is no longer the one the child
-            # started on means /new, /use, /worktree, /model or /permissions has
-            # changed what this conversation points at — the held child would
-            # silently ignore it.
+            # same session id in a second process. Attachments do not change
+            # that: every child is spawned with --add-dir on the conversation's
+            # attachments root, and this turn's files were staged under it, so
+            # the held child can already read them. Killing the child for them
+            # used to kill its background work too. It is retired only for a
+            # binding that is no longer the one the child started on (a command
+            # such as /new, /use, /worktree, /model or /permissions, or a
+            # bridge-wide default, has changed what this conversation points
+            # at, and the held child would ignore it) or, rarely, files it was
+            # never granted (see the add_dir check below).
             #
             # This lives inside the try so an injected turn leaves through the
             # same finally as a spawned one. /stop routes around the live child
@@ -4126,10 +4216,20 @@ class Bridge:
                 current = self.bindings.get(key)
                 if (current is not live.binding
                         or self._resolved_spawn(current) != live.spawned_with):
-                    await self._end_live_run(key, "the binding changed")
-                elif extra_args:
-                    await self._end_live_run(key, "a new message brought attachments")
+                    await self._end_live_run(key, BINDING_CHANGED)
+                elif tmpdir and live.add_dir != att_root:
+                    # Rare (the root had to be recreated, or the child started
+                    # while the tempdir was unavailable): this child was never
+                    # granted these files, so only a fresh spawn can read them.
+                    await self._end_live_run(key, ATTACHMENTS_UNREADABLE)
                 else:
+                    # The child may read these files after this turn answers
+                    # (background work, a timed-out turn still queued on its
+                    # stdin), so they live as long as it does. Synchronous
+                    # with the alive check above: no retirement can slip in.
+                    if tmpdir:
+                        live.injected_dirs.append(tmpdir)
+                        tmpdir = None  # the held child owns it now
                     return await self._inject_into_live(live, frame, prompt, roster_note,
                                                         context_epoch)
                 # Retirement awaits, and /stop can land inside that window —
@@ -4316,7 +4416,7 @@ class Bridge:
                         handed_off = True
                         self._start_live_run(key, frame, binding, spawned_with,
                                              proc, bg_tasks, perm_ids,
-                                             perm_tasks, tmpdir, replay_supported)
+                                             perm_tasks, tmpdir, replay_supported, att_root)
                     else:
                         # A background task can finish at the same instant as
                         # the foreground result. In that race the CLI may
@@ -4395,7 +4495,7 @@ class Bridge:
                                         self._start_live_run(
                                             key, frame, binding, spawned_with, proc,
                                             listed, perm_ids, perm_tasks, tmpdir,
-                                            replay_supported,
+                                            replay_supported, att_root,
                                         )
                                         break
                                 if saw_background_tasks:
@@ -4427,7 +4527,7 @@ class Bridge:
                                     self._start_live_run(
                                         key, frame, binding, spawned_with, proc,
                                         [], perm_ids, perm_tasks, tmpdir,
-                                        replay_supported,
+                                        replay_supported, att_root,
                                     )
                                     self.live[key].last_event_was_result = False
                                     break
@@ -4511,10 +4611,12 @@ class Bridge:
                 self._save_state()
             return self._annotate_slash_failure(prompt, result_text, slash_commands)
         finally:
-            # A handed-off child is still running and its --add-dir points here,
-            # so the staging dir has to outlive this turn; retirement removes it.
-            if tmpdir and not handed_off:
-                shutil.rmtree(tmpdir, ignore_errors=True)
+            # A child held past this turn may still read the files, so its dir
+            # outlives the turn and retirement removes it (an injected turn
+            # gave its dir to the held child above). Every other exit (reply,
+            # error, failed spawn, /stop) removes it here.
+            if not handed_off:
+                self._drop_turn_dir(tmpdir)
             was_stopped = key in self.stopped_processes
             self.stop_requested.discard(key)
             self.stopped_processes.discard(key)
@@ -4560,12 +4662,18 @@ class Bridge:
             log(f"killed {len(held)} held child process(es) on shutdown")
         self.live.clear()
         self.procs.clear()
+        # Every child is dead, so nothing still reads the attachment roots.
+        root = self._att_root
+        if root:
+            shutil.rmtree(root, ignore_errors=True)
+            self._att_root = self._att_root_id = None
 
     def _start_live_run(self, key: str, frame: dict, binding: dict,
                         spawned_with: tuple, proc, tasks: list[dict],
                         perm_ids: list[str], perm_tasks: list[asyncio.Task],
                         tmpdir: str | None = None,
-                        replay_supported: bool = False) -> None:
+                        replay_supported: bool = False,
+                        add_dir: str | None = None) -> None:
         """Keep a replied-to child alive so its background work can report in."""
         live = LiveRun(proc, key, frame, binding, spawned_with, perm_ids)
         live.tasks = list(tasks)
@@ -4576,6 +4684,7 @@ class Bridge:
         live.ask_budget = budget if isinstance(budget, dict) else {}
         live.replay_supported = replay_supported
         live.tmpdir = tmpdir
+        live.add_dir = add_dir
         # stderr is a pipe nobody else reads for the life of the hold; once its
         # buffer fills the child blocks on write() and stops producing stdout
         # entirely, so it would never report and would be reaped as a timeout.
@@ -5088,11 +5197,12 @@ class Bridge:
                     else RuntimeError("the background run ended before replying"))
         if live.stderr_drain is not None:
             live.stderr_drain.cancel()
-        if live.tmpdir:
-            # Held past its turn precisely so --add-dir stayed readable; the
-            # child is dead now, so this is the last chance to clean up.
-            shutil.rmtree(live.tmpdir, ignore_errors=True)
-            live.tmpdir = None
+        # Its own turn's dir and those of turns injected into it, kept so the
+        # files stayed readable. It is dead now: the last chance to clean up.
+        for d in [live.tmpdir, *live.injected_dirs]:
+            self._drop_turn_dir(d)
+        live.tmpdir = None
+        live.injected_dirs = []
         for oid in live.perm_ids:
             self._cancel_perm(oid, "The run ended before a decision.")
         if perm_tasks:
@@ -5119,7 +5229,7 @@ class Bridge:
         current = self.bindings.get(key)
         if (current is not live.binding
                 or self._resolved_spawn(current) != live.spawned_with):
-            await self._end_live_run(key, "the binding changed")
+            await self._end_live_run(key, BINDING_CHANGED)
 
     async def _end_live_run(self, key: str, why: str) -> None:
         """Retire a live child early. Killing it gives the reader EOF, so the
@@ -5197,6 +5307,21 @@ class Bridge:
                           for t in live.tasks)
         minutes = max(1, round(waited / 60))
         what = f" for: {names}" if names else ""
+        # Ended on purpose, not by a timeout: say why, or a reader takes the
+        # minutes as how long the bridge chose to wait. Other internal reasons
+        # ("follow-up schedule asks done") are not phrased for people, so they
+        # keep the generic wording below.
+        why = {
+            BINDING_CHANGED: ("this conversation's session or settings changed "
+                              "(for example /new, /model or /permissions)"),
+            ATTACHMENTS_UNREADABLE: ("the running process could not read the "
+                                     "files in a new message"),
+        }.get(live.ended_reason or "") if live.stopping else None
+        if why:
+            return self.post(live.frame, (
+                f"Ended the background work{what} because {why}, so nothing "
+                "further will be reported here. Ask again if you still need it."
+            ))
         return self.post(live.frame, (
             f"Stopped watching background work after {minutes} min, so nothing "
             f"further will be reported here{what}. Message me if you want me to "

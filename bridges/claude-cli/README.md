@@ -43,8 +43,12 @@ told that watching has stopped rather than being left waiting on silence.
 
 A message sent while work is outstanding is fed to that same live child rather
 than starting a second `claude --resume` against the same session, so the
-conversation never forks. Two things retire the held child instead: attachments,
-which need `--add-dir` and so only a fresh run can carry, and anything that
+conversation never forks. That includes messages with attachments: every child
+is started with `--add-dir` on its conversation's attachments directory, so a
+mid-run message's files are saved under it and the turn is injected without
+stopping the background work. A held child is retired only in two cases: rarely, when it was never granted
+the attachments directory (the temp directory was unavailable or replaced), and
+for anything that
 rebinds the conversation or changes what it may do (`/new`, `/use`,
 `/worktree`, `/model`, `/permissions`). Rebinding retires it **immediately**, not on your next message — a
 `/permissions plan` has to reach the process that is actually running, not just
@@ -265,7 +269,9 @@ the hub inlines each one (up to 8 MB) into the inbound frame, and the bridge
 writes them to a temporary directory it exposes to Claude via `--add-dir`, then
 names the saved paths in the prompt so Claude reads them. A message that is
 *only* an image — no caption — is still forwarded. The temp dir is deleted after
-the run. Files larger than the hub's inline cap can't be read (they arrive as a
+the run, or, when the run is held for background work, once that held process
+ends (files sent while it is held get their own directory beside it, kept
+until then too). Files larger than the hub's inline cap can't be read (they arrive as a
 name-only note). See [SECURITY.md](SECURITY.md) for the trust caveats.
 
 Bindings are per channel (and per thread), persisted in `state.json` next to
