@@ -2225,12 +2225,12 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
             if compact_before_inject:
                 original_inject = b._inject_into_live
 
-                async def compact_then_inject(*args):
+                async def compact_then_inject(*args, **kwargs):
                     # Compaction lands after run_claude builds the prefix but
                     # before _inject_into_live begins sending it.
                     b.bindings["k"].pop("roster_note", None)
                     b.bindings["k"]["_context_epoch"] = b.bindings["k"].get("_context_epoch", 0) + 1
-                    return await original_inject(*args)
+                    return await original_inject(*args, **kwargs)
 
                 b._inject_into_live = compact_then_inject
             # Answer the injected turn only once it is actually waiting, so the
@@ -3678,7 +3678,7 @@ class AsyncFollowupTests(unittest.TestCase):
                                        + _result("I see the image") + "\n").encode())
                 reply = await asyncio.wait_for(turn, 1)
                 turn_dir_left = Path(made[-1]).exists()
-                owned = [path for path, _ in held.injected_dirs]
+                owned = [entry[0] for entry in held.injected_dirs]
                 alive = held.alive
                 proc.stdout.feed_eof()
                 await asyncio.wait_for(held.reader, 2)
@@ -3705,8 +3705,9 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual(owned, [made[-1]])
         self.assertFalse(Path(made[-1]).exists())
 
-    def test_files_kept_for_a_held_child_are_capped_oldest_first(self):
-        """Files outlive their turn during a hold, which can last hours."""
+    def test_files_kept_for_a_held_child_are_capped_answered_oldest_first(self):
+        """Files outlive their turn during a hold, which can last hours, but a
+        turn still waiting for its answer may not have been read yet."""
         def turn_dir(root, name, size):
             d = Path(root) / name
             d.mkdir()
@@ -3718,27 +3719,85 @@ class AsyncFollowupTests(unittest.TestCase):
             await hand_off(b, [_tasks("research"), _result("started")])
             held = b.live["k"]
             root = b._conversation_att_dir("k")
+            loop = asyncio.get_running_loop()
+            answered = loop.create_future()
+            answered.set_result("done")
+            timed_out = loop.create_future()
+            timed_out.cancel()  # what asyncio.timeout leaves behind
+
+            def kept():
+                return [entry[0] for entry in held.injected_dirs]
+
             with patch.object(bridge, "MAX_HELD_ATTACHMENT_BYTES", 100):
-                old, mid, new = (turn_dir(root, n, 40) for n in ("a", "b", "c"))
-                for d in (old, mid, new):
-                    b._keep_injected_dir(held, d)
-                kept_after_three = [p for p, _ in held.injected_dirs]
-                huge = turn_dir(root, "d", 500)
-                b._keep_injected_dir(held, huge)
-                kept_after_huge = [p for p, _ in held.injected_dirs]
-            result = (old, mid, new, huge, kept_after_three, kept_after_huge,
-                      Path(old).exists(), Path(new).exists())
+                queued = turn_dir(root, "queued", 60)
+                old = turn_dir(root, "old", 40)
+                b._keep_injected_dir(held, queued, timed_out)
+                b._keep_injected_dir(held, old, answered)
+                new = turn_dir(root, "new", 40)
+                b._keep_injected_dir(held, new, loop.create_future())
+                after_new = kept()
+                huge = turn_dir(root, "huge", 500)
+                b._keep_injected_dir(held, huge, loop.create_future())
+                after_huge = kept()
+            result = (queued, old, new, huge, after_new, after_huge,
+                      Path(queued).exists(), Path(old).exists())
             held.proc.kill()
             await asyncio.wait_for(held.reader, 2)
             return result
 
-        (old, mid, new, huge, kept_three, kept_huge, old_left,
-         new_left) = asyncio.run(main())
-        self.assertEqual(kept_three, [mid, new])
+        (queued, old, new, huge, after_new, after_huge, queued_left,
+         old_left) = asyncio.run(main())
+        # The answered turn goes; the older one that timed out may still be
+        # queued on the child's stdin, so it stays.
+        self.assertEqual(after_new, [queued, new])
         self.assertFalse(old_left)
-        # The newest stays even alone over the cap: its turn is about to read it.
-        self.assertEqual(kept_huge, [huge])
-        self.assertFalse(new_left)
+        self.assertTrue(queued_left)
+        # Over the cap with nothing answered: nothing can be dropped.
+        self.assertEqual(after_huge, [queued, new, huge])
+
+    def test_a_held_child_keeps_its_grant_after_a_tmp_cleaner_wipe(self):
+        """The root comes back at the same path, so a file message is still
+        injected rather than killing the background work."""
+        import shutil
+
+        async def main():
+            b = followup_bridge(idle=5.0)
+            self._real_staging(b)
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("fresh")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+                held = b.live["k"]
+                held.replay_supported = True
+                shutil.rmtree(b._att_root)
+                b._send_to_claude = AsyncMock()
+                turn = asyncio.create_task(b.run_claude(
+                    "k", self._image_frame(), b.bindings["k"], "look"))
+                for _ in range(200):
+                    if b._send_to_claude.await_args is not None:
+                        break
+                    await asyncio.sleep(0.01)
+                sent = b._send_to_claude.await_args.args[1]
+                proc.stdout.feed_data((_replay(sent["uuid"]) + "\n"
+                                       + _result("still held") + "\n").encode())
+                reply = await asyncio.wait_for(turn, 1)
+                alive = held.alive
+                proc.stdout.feed_eof()
+                await asyncio.wait_for(held.reader, 2)
+            finally:
+                asyncio.create_subprocess_exec = original
+            return reply, spawned, alive
+
+        reply, spawned, alive = asyncio.run(main())
+        self.assertEqual(reply, "still held")
+        self.assertEqual(spawned, [])
+        self.assertTrue(alive)
 
     def test_add_dir_is_the_same_path_on_every_run(self):
         """Claude lists added dirs in its system prompt: a fresh path per run

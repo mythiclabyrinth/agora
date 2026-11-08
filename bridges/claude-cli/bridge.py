@@ -278,7 +278,8 @@ MAX_QUEUED_PEER_TURNS = 5
 FORK_WAIT_SECONDS = 90
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
 # Files from turns injected into a held child stay readable until it exits,
-# which can be hours away. Past this total the oldest turns' files go.
+# which can be hours away. Past this total the oldest answered turns' files go;
+# a turn the child may not have read yet is never touched, so it can be exceeded.
 MAX_HELD_ATTACHMENT_BYTES = 256 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
@@ -832,7 +833,8 @@ class LiveRun:
         # injected into it (it may still read them after answering, from
         # background work or a queued turn). All removed at retirement.
         self.tmpdir: str | None = None
-        self.injected_dirs: list[tuple[str, int]] = []  # (path, bytes), oldest first
+        # (path, bytes, the turn's reply future), oldest first.
+        self.injected_dirs: list[tuple[str, int, asyncio.Future]] = []
         # What this child got as --add-dir: files staged anywhere else are
         # out of its reach.
         self.add_dir: str | None = None
@@ -4101,10 +4103,11 @@ class Bridge:
             return None
         return (st.st_dev, st.st_ino, st.st_uid) if stat.S_ISDIR(st.st_mode) else None
 
-    def _keep_injected_dir(self, live: LiveRun, tmpdir: str) -> None:
+    def _keep_injected_dir(self, live: LiveRun, tmpdir: str, fut: asyncio.Future) -> None:
         """Give a held child an injected turn's dir, keeping what it holds
-        under MAX_HELD_ATTACHMENT_BYTES by dropping the oldest turns' files.
-        The newest always stays, however large: its turn is about to read it."""
+        under MAX_HELD_ATTACHMENT_BYTES by dropping the oldest answered turns'
+        files. A turn still waiting for its answer is never touched: the child
+        may not have read its prompt yet, so its paths must still resolve."""
         size = 0
         try:
             with os.scandir(tmpdir) as entries:
@@ -4115,13 +4118,20 @@ class Bridge:
                         pass  # one unreadable entry must not zero the rest
         except OSError:
             pass  # only sizes the cap; the turn can still use whatever is there
-        live.injected_dirs.append((tmpdir, size))
-        total = sum(n for _, n in live.injected_dirs)
-        while total > MAX_HELD_ATTACHMENT_BYTES and len(live.injected_dirs) > 1:
-            oldest, freed = live.injected_dirs.pop(0)
+        live.injected_dirs.append((tmpdir, size, fut))
+        total = sum(entry[1] for entry in live.injected_dirs)
+        for entry in list(live.injected_dirs):
+            if total <= MAX_HELD_ATTACHMENT_BYTES:
+                break
+            path, freed, reply = entry
+            # done() alone is not enough: a turn that timed out is cancelled,
+            # yet its prompt can still be queued on the child's stdin.
+            if not reply.done() or reply.cancelled():
+                continue
+            live.injected_dirs.remove(entry)
             total -= freed
             log(f"dropped {freed} bytes of older attachments for {live.key}: over the hold cap")
-            self._drop_turn_dir(oldest)
+            self._drop_turn_dir(path)
 
     @staticmethod
     def _drop_turn_dir(tmpdir: str | None) -> None:
@@ -4252,11 +4262,14 @@ class Bridge:
                     # (background work, a timed-out turn still queued on its
                     # stdin), so they live as long as it does. Synchronous
                     # with the alive check above: no retirement can slip in.
-                    if tmpdir:
-                        self._keep_injected_dir(live, tmpdir)
+                    def hand_dir_to_child(waiter: dict) -> None:
+                        nonlocal tmpdir
+                        self._keep_injected_dir(live, tmpdir, waiter["fut"])
                         tmpdir = None  # the held child owns it now
-                    return await self._inject_into_live(live, frame, prompt, roster_note,
-                                                        context_epoch)
+
+                    return await self._inject_into_live(
+                        live, frame, prompt, roster_note, context_epoch,
+                        on_queued=hand_dir_to_child if tmpdir else None)
                 # Retirement awaits, and /stop can land inside that window —
                 # before this turn has spawned anything for it to kill.
                 if key in self.stop_requested:
@@ -5224,7 +5237,7 @@ class Bridge:
             live.stderr_drain.cancel()
         # Its own turn's dir and those of turns injected into it, kept so the
         # files stayed readable. It is dead now: the last chance to clean up.
-        for d in [live.tmpdir, *(path for path, _ in live.injected_dirs)]:
+        for d in [live.tmpdir, *(entry[0] for entry in live.injected_dirs)]:
             self._drop_turn_dir(d)
         live.tmpdir = None
         live.injected_dirs = []

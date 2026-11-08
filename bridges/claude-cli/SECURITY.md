@@ -110,9 +110,11 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
      collisions get a numeric suffix. Each run's dir is removed in a `finally`
      when the run ends; a run held for background work keeps its dir until the
      held child exits (up to `--followup-max-wait`), with files from messages sent
-     during the hold limited to about 256 MB per held child: past that the
-     oldest are removed first, but the newest message's files always stay,
-     however large. `--add-dir` grants a child's
+     during the hold limited to about 256 MB per held child on a best-effort
+     basis: when a new message's files take it over, the oldest answered
+     messages' files are removed first. Files for a message still waiting for
+     its answer, or one that timed out, always stay, so disk use during a hold
+     can exceed the limit by an unbounded amount. `--add-dir` grants a child's
      file tools its own conversation's root only, but this is not an OS
      boundary: every conversation's root is owned by the same user under one
      parent, so a child allowed to run shell commands can still read them. The

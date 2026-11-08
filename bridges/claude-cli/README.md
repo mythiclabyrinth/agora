@@ -271,8 +271,11 @@ names the saved paths in the prompt so Claude reads them. A message that is
 *only* an image — no caption — is still forwarded. The temp dir is deleted after
 the run, or, when the run is held for background work, once that held process
 ends. Files sent while it is held get their own directory beside it, kept
-until then too. Past 256 MB per held child, the oldest messages' files are
-removed; the newest message's files are always kept, however large. Files larger than the hub's inline cap can't be read (they arrive as a
+until then too. The limit is best-effort, about 256 MB per held child: when a
+new message's files take it over, the oldest answered messages' files are
+removed, even if background work is still reading them. Files for a message
+still waiting for its answer, or one that timed out, are kept, so a hold can
+exceed the limit. Files larger than the hub's inline cap can't be read (they arrive as a
 name-only note). See [SECURITY.md](SECURITY.md) for the trust caveats.
 
 Bindings are per channel (and per thread), persisted in `state.json` next to
