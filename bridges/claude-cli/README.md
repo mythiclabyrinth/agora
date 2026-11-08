@@ -121,7 +121,7 @@ follow-up machinery.
 | `/use <n \| session-id>` | bind this channel/thread to a session |
 | `/new <dir>` | bind to a fresh session started in `<dir>` — **`<dir>` must be under an allowed root** (see below); disabled entirely when no roots are configured |
 | `/model <opus\|sonnet\|haiku\|fable\|…\|default>` | set the model for this channel (`default` clears the override); persists in the binding and is passed as `claude --model` on every run |
-| `/permissions <plan\|acceptEdits\|bypass\|default\|reset>` | set the permission mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CLAUDE_ALLOW_PERMISSION_ESCALATION`** |
+| `/permissions <plan\|acceptEdits\|bypass\|default\|reset\|revoke>` | show the mode and always-allowed tools without arguments; set the mode with an argument (`reset` clears the override, `revoke` clears approvals without changing the session or mode). Lowering privilege is always allowed; **raising it above the bridge default requires `CLAUDE_ALLOW_PERMISSION_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override). When on, Claude is asked to end a long reply with a summary the bridge lifts into the message's `tldr`; clients show a TL;DR toggle |
 | `/switch [account]` | list configured Claude accounts, or change the bridge-wide account (see [Multiple accounts](#multiple-accounts)) |
 | `/switch <account> --here` | use an account only in this chat |

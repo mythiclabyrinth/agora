@@ -1582,7 +1582,8 @@ class Bridge:
         return raw
 
     def _save_state(self) -> None:
-        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file = self.state_file.resolve()
+        state_file.parent.mkdir(parents=True, exist_ok=True)
         account = self.account if self._account_state_valid else self._saved_account
         config_dir = self.config_dir if self._account_state_valid else self._previous_config_dir
         payload = json.dumps({
@@ -1600,14 +1601,14 @@ class Bridge:
         }, indent=2)
         # A partial write must not destroy the last saved sessions. mkstemp
         # creates a private file, and replacement preserves its 0600 mode.
-        fd, temporary = tempfile.mkstemp(prefix=f".{self.state_file.name}.",
-                                         dir=self.state_file.parent)
+        fd, temporary = tempfile.mkstemp(prefix=f".{state_file.name}.",
+                                         dir=state_file.parent)
         try:
             with os.fdopen(fd, "w") as state:
                 state.write(payload)
                 state.flush()
                 os.fsync(state.fileno())
-            os.replace(temporary, self.state_file)
+            os.replace(temporary, state_file)
         finally:
             Path(temporary).unlink(missing_ok=True)
 
@@ -2948,11 +2949,18 @@ class Bridge:
             cur = current
             return (
                 f"Permission mode: {cur} (bridge default: {default})\n"
-                "Usage: /permissions <plan | acceptEdits | bypass | default | reset>"
+                f"Always allowed tools (this session): {', '.join(sorted(self._session_tools(b))) or 'none'}\n"
+                "Usage: /permissions <plan | acceptEdits | bypass | default | reset | revoke>"
             )
         choice = arg.strip().lower()
+        if choice == "revoke":
+            tools = sorted(self._session_tools(b))
+            b.pop("session_allows", None)
+            self._save_state()
+            return (f"Cleared always-allow approvals: {', '.join(tools) or 'none'}. "
+                    "Session and permission mode unchanged.")
         if choice == "reset":
-            if PERMISSION_RANK[default] < PERMISSION_RANK[current]:
+            if PERMISSION_RANK[default] < PERMISSION_RANK.get(current, PERMISSION_RANK[default]):
                 b.pop("session_allows", None)
             b.pop("permission_mode", None)
             self.bindings[key] = b
@@ -2960,7 +2968,7 @@ class Bridge:
             return f"Permission mode reset to the bridge default ({default})."
         mode = normalize_permission_mode(choice)
         if not mode:
-            return "Unknown mode. Options: plan, acceptEdits, bypass, default, reset."
+            return "Unknown mode. Options: plan, acceptEdits, bypass, default, reset, revoke."
         if PERMISSION_RANK[mode] > PERMISSION_RANK[default] and not self.allow_escalation:
             return (
                 f"Refusing to escalate from {default} to {mode}: privilege escalation "
@@ -2968,7 +2976,7 @@ class Bridge:
                 "CLAUDE_ALLOW_PERMISSION_ESCALATION=1 to allow it. You can always "
                 "lower privilege (e.g. /permissions plan)."
             )
-        if PERMISSION_RANK[mode] < PERMISSION_RANK[current]:
+        if PERMISSION_RANK[mode] < PERMISSION_RANK.get(current, PERMISSION_RANK[default]):
             b.pop("session_allows", None)
         b["permission_mode"] = mode
         self.bindings[key] = b

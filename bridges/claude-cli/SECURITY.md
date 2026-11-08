@@ -183,8 +183,12 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
 
 4. **Credential/state at rest.**
    - `state.json` (channel→session bindings, working dirs, optional model /
-     permission overrides) is written with the default umask and can be
-     world-readable. `chmod 600` it, or point `STATE_FILE` at a private location.
+     permission overrides and session tool approvals) is saved atomically with
+     owner-only mode `0600`. A symlinked state path keeps its link and updates
+     the resolved target. Files written by older versions may retain their old
+     permissions until the next save. Processes running as the same OS user
+     can still read or modify it. `/permissions` lists current grants;
+     `/permissions revoke` clears them without changing the session or mode.
    - The README's launchd fallback puts a plaintext `ANTHROPIC_API_KEY` in a
      plist under `~/Library/LaunchAgents/`. Prefer the OAuth keychain login where
      possible; if you must use a key file, restrict its permissions.
@@ -202,4 +206,5 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
 | RCE / no sandbox (1) | Open | operational (run Claude confined) |
 | Token in query string, unscoped, no expiry (3) | Open | hub (`server.rs`, `config.rs`) |
 | `/sessions` / `/status` disclosure (privacy 1, 3) | Open | `format_sessions`, `_cmd_status` |
-| `state.json` perms, plaintext API key (privacy 4) | Open | operational |
+| `state.json` perms (privacy 4) | Fixed on save (0600) | `_save_state` |
+| Plaintext API key (privacy 4) | Open | operational |

@@ -610,6 +610,44 @@ class SessionApprovalTests(unittest.TestCase):
         b._attach_worktree("c1", Path("/tmp"), "branch", Path("/tmp"))
         self.assertEqual(b._session_tools(bound), ["Bash"])
 
+    def test_permissions_lists_and_revokes_grants_then_prompts_again(self):
+        b = make_bridge()
+        b.default_permission_mode = "acceptEdits"
+        bound = b.bindings["c1"] = {"session_id": "s", "permission_mode": "plan"}
+        self.assertIn("Always allowed tools (this session): none", b._cmd_permissions("c1", ""))
+        self.grant(bound, ["Write", "Bash"])
+        self.assertIn("Always allowed tools (this session): Bash, Write", b._cmd_permissions("c1", ""))
+        self.assertIn("Cleared always-allow approvals: Bash, Write", b._cmd_permissions("c1", "revoke"))
+        self.assertEqual(bound, {"session_id": "s", "permission_mode": "plan"})
+        b._save_state.assert_called_once()
+        asyncio.run(self.ask(b, bound, choice="deny"))
+        b.send.assert_called()
+        self.assertIn("Cleared always-allow approvals: none", b._cmd_permissions("c1", "revoke"))
+
+    def test_permissions_tolerates_unknown_saved_mode(self):
+        for command in ("plan", "reset"):
+            b = make_bridge()
+            b.default_permission_mode = "acceptEdits"
+            b.allow_escalation = False
+            bound = b.bindings["c1"] = {"session_id": "s", "permission_mode": "unknown-mode"}
+            self.grant(bound)
+            b._cmd_permissions("c1", command)
+            self.assertEqual(b._session_tools(bound), [] if command == "plan" else ["Bash"])
+            b._save_state.assert_called_once()
+
+    def test_state_save_preserves_symlink_and_updates_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            target = Path(tmp) / "private" / "target.json"
+            target.parent.mkdir()
+            target.write_text("{}")
+            b.state_file.symlink_to(target)
+            b._save_state()
+            self.assertTrue(b.state_file.is_symlink())
+            self.assertEqual(json.loads(target.read_text())["bindings"], b.bindings)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
     def test_permission_mode_lowering_clears_grants_including_reset(self):
         for current, default, command, kept in (
             ("acceptEdits", "acceptEdits", "plan", False),
