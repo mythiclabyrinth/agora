@@ -1,4 +1,5 @@
 import argparse
+import base64
 import ast
 import asyncio
 import json
@@ -17,6 +18,22 @@ SPEC = importlib.util.spec_from_file_location(
 bridge = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
 SPEC.loader.exec_module(bridge)
+
+_TMP = None
+
+
+def setUpModule():
+    # Every run_claude stages into a per-bridge attachments root; keep the
+    # suite's under one dir so a test run leaves nothing in the real tempdir.
+    global _TMP
+    _TMP = tempfile.mkdtemp(prefix="agora-bridge-tests-")
+    tempfile.tempdir = _TMP
+
+
+def tearDownModule():
+    import shutil
+    tempfile.tempdir = None
+    shutil.rmtree(_TMP, ignore_errors=True)
 
 
 class RosterPromptTests(unittest.TestCase):
@@ -270,6 +287,7 @@ class AttachmentFetchTests(unittest.TestCase):
 def make_bridge(peer_agents="", peer_commands=""):
     """A Bridge with just enough state to drive handle_inbound."""
     instance = bridge.Bridge.__new__(bridge.Bridge)
+    instance._att_root = instance._att_root_id = None
     instance.agent_id = "claude-cli"
     instance.agent_name = "Claude"
     instance.accounts = {"test": Path("/tmp")}
@@ -1924,7 +1942,7 @@ def run_bridge(lines, grace=None, timeout=10, feed_delay=0.0, binding=None,
     b.stop_requested = set()
     b.progress = Mock()
     b._append_system_args = Mock(return_value=[])
-    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._stage_attachments = Mock(return_value="hi")
     b.live_start_states = []
     if control_handler is not None:
         b._handle_control_request = control_handler
@@ -2008,7 +2026,7 @@ def make_forward_bridge():
     b.typing = Mock()
     b._ensure_thread_fork = AsyncMock(return_value=True)
     b._append_system_args = Mock(return_value=[])
-    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._stage_attachments = Mock(return_value="hi")
     b.allowed_roots = []
     b.max_attachment_bytes = 1024
     b.tldr_default = False
@@ -2124,7 +2142,7 @@ def followup_bridge(idle=5.0):
     b.bindings = {"k": {"cwd": "/tmp", "session_id": "sess-old"}}
     b.progress = Mock()
     b._append_system_args = Mock(return_value=[])
-    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._stage_attachments = Mock(return_value="hi")
     b._save_state = Mock()
     return b
 
@@ -2178,7 +2196,7 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
     if sibling_live_channel is not None:
         b.live["sibling"] = Mock(frame={"channel_id": sibling_live_channel}, alive=True)
     b._append_system_args = Mock(return_value=[])
-    b._stage_attachments = Mock(return_value=("hi", [], None))
+    b._stage_attachments = Mock(return_value="hi")
     b._save_state = Mock()
 
     async def main():
@@ -2207,12 +2225,12 @@ def run_bridge_with_followups(lines, inject=None, feed_delay=0.0, idle=5.0,
             if compact_before_inject:
                 original_inject = b._inject_into_live
 
-                async def compact_then_inject(*args):
+                async def compact_then_inject(*args, **kwargs):
                     # Compaction lands after run_claude builds the prefix but
                     # before _inject_into_live begins sending it.
                     b.bindings["k"].pop("roster_note", None)
                     b.bindings["k"]["_context_epoch"] = b.bindings["k"].get("_context_epoch", 0) + 1
-                    return await original_inject(*args)
+                    return await original_inject(*args, **kwargs)
 
                 b._inject_into_live = compact_then_inject
             # Answer the injected turn only once it is actually waiting, so the
@@ -3187,7 +3205,7 @@ class AsyncFollowupTests(unittest.TestCase):
         b.timeout = 10
         b.progress = Mock()
         b._append_system_args = Mock(return_value=[])
-        b._stage_attachments = Mock(return_value=("hi", [], None))
+        b._stage_attachments = Mock(return_value="hi")
         b._save_state = Mock()
 
         async def main():
@@ -3599,35 +3617,466 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertIn("Already stopping", message)
         self.assertIsInstance(fut.exception(), bridge.RunStopped)
 
-    def test_attachments_retire_the_held_child_and_spawn_fresh(self):
-        """--add-dir can only be widened by a new process."""
+    @staticmethod
+    def _real_staging(b):
+        """Swap the mock back for the real _stage_attachments, recording every
+        turn dir it is given so a test can check what was left on disk."""
+        b.http_base, b.token = "", ""
+        made = []
+        real = bridge.Bridge._stage_attachments.__get__(b)
+
+        def stage(frame, text, tmpdir):
+            made.append(tmpdir)
+            return real(frame, text, tmpdir)
+
+        b._stage_attachments = stage
+        return made
+
+    @staticmethod
+    def _image_frame(message_id=42):
+        return {"channel_id": "c1", "message_id": message_id, "attachments": [{
+            "filename": "shot.png", "mime": "image/png",
+            "data_b64": base64.b64encode(b"\x89PNG fake").decode()}]}
+
+    @staticmethod
+    def _add_dir(cmd) -> str:
+        cmd = list(cmd)
+        return cmd[cmd.index("--add-dir") + 1]
+
+    def test_attachments_reach_the_held_child_without_a_respawn(self):
+        """A screenshot sent mid-run used to kill the held child, and every
+        background task with it. Its files are now staged under the
+        conversation root the child was started with, and the turn is
+        injected like any other."""
         async def main():
-            b = followup_bridge()
-            await hand_off(b, [_tasks("research"), _result("started")])
-            held = b.live["k"]
-            b._stage_attachments = Mock(
-                return_value=("look at this", ["--add-dir", "/tmp/att"], None))
+            b = followup_bridge(idle=5.0)
+            made = self._real_staging(b)
             spawned = []
 
             async def fake_exec(*a, **_kw):
                 spawned.append(a)
-                return _fake_proc([_result("I see the image")])
+                return _fake_proc([_result("fresh")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+                held = b.live["k"]
+                held.replay_supported = True
+                b._send_to_claude = AsyncMock()
+                turn = asyncio.create_task(b.run_claude(
+                    "k", self._image_frame(), b.bindings["k"], "look"))
+                for _ in range(200):  # staging runs on a real thread
+                    if b._send_to_claude.await_args is not None:
+                        break
+                    await asyncio.sleep(0.01)
+                sent = b._send_to_claude.await_args.args[1]
+                prompt = sent["message"]["content"][0]["text"]
+                files = sorted(Path(made[-1]).glob("shot*.png"))
+                content = [f.read_bytes() for f in files]
+                proc.stdout.feed_data((_replay(sent["uuid"]) + "\n"
+                                       + _result("I see the image") + "\n").encode())
+                reply = await asyncio.wait_for(turn, 1)
+                turn_dir_left = Path(made[-1]).exists()
+                owned = [entry[0] for entry in held.injected_dirs]
+                alive = held.alive
+                proc.stdout.feed_eof()
+                await asyncio.wait_for(held.reader, 2)
+            finally:
+                asyncio.create_subprocess_exec = original
+            return (b, reply, spawned, files, content, prompt, turn_dir_left,
+                    alive, owned, made)
+
+        (b, reply, spawned, files, content, prompt, turn_dir_left, alive,
+         owned, made) = asyncio.run(main())
+        self.assertEqual(reply, "I see the image")
+        self.assertEqual(spawned, [])
+        self.assertTrue(alive)
+        self.assertEqual(content, [b"\x89PNG fake"])
+        self.assertIn(str(files[0]), prompt)
+        # The held child can read it: the turn dir sits under the root it
+        # was started with.
+        root = b._conversation_att_dir("k")
+        self.assertEqual(Path(made[-1]).parent, Path(root))
+        # The held child may still read the files after answering (background
+        # work, a queued turn), so the dir survives the reply, owned by the
+        # child, and goes when the child retires.
+        self.assertTrue(turn_dir_left)
+        self.assertEqual(owned, [made[-1]])
+        self.assertFalse(Path(made[-1]).exists())
+
+    def test_files_kept_for_a_held_child_are_capped_answered_oldest_first(self):
+        """Files outlive their turn during a hold, which can last hours, but a
+        turn still waiting for its answer may not have been read yet."""
+        def turn_dir(root, name, size):
+            d = Path(root) / name
+            d.mkdir()
+            (d / "f.bin").write_bytes(b"x" * size)
+            return str(d)
+
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            held = b.live["k"]
+            root = b._conversation_att_dir("k")
+            loop = asyncio.get_running_loop()
+            answered = loop.create_future()
+            answered.set_result("done")
+            timed_out = loop.create_future()
+            timed_out.cancel()  # what asyncio.timeout leaves behind
+
+            def kept():
+                return [entry[0] for entry in held.injected_dirs]
+
+            with patch.object(bridge, "MAX_HELD_ATTACHMENT_BYTES", 100):
+                queued = turn_dir(root, "queued", 60)
+                old = turn_dir(root, "old", 40)
+                b._keep_injected_dir(held, queued, timed_out)
+                b._keep_injected_dir(held, old, answered)
+                new = turn_dir(root, "new", 40)
+                b._keep_injected_dir(held, new, loop.create_future())
+                after_new = kept()
+                huge = turn_dir(root, "huge", 500)
+                b._keep_injected_dir(held, huge, loop.create_future())
+                after_huge = kept()
+            result = (queued, old, new, huge, after_new, after_huge,
+                      Path(queued).exists(), Path(old).exists())
+            held.proc.kill()
+            await asyncio.wait_for(held.reader, 2)
+            return result
+
+        (queued, old, new, huge, after_new, after_huge, queued_left,
+         old_left) = asyncio.run(main())
+        # The answered turn goes; the older one that timed out may still be
+        # queued on the child's stdin, so it stays.
+        self.assertEqual(after_new, [queued, new])
+        self.assertFalse(old_left)
+        self.assertTrue(queued_left)
+        # Over the cap with nothing answered: nothing can be dropped.
+        self.assertEqual(after_huge, [queued, new, huge])
+
+    def test_a_held_child_keeps_its_grant_after_a_tmp_cleaner_wipe(self):
+        """The root comes back at the same path, so a file message is still
+        injected rather than killing the background work."""
+        import shutil
+
+        async def main():
+            b = followup_bridge(idle=5.0)
+            self._real_staging(b)
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("fresh")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+                held = b.live["k"]
+                held.replay_supported = True
+                shutil.rmtree(b._att_root)
+                b._send_to_claude = AsyncMock()
+                turn = asyncio.create_task(b.run_claude(
+                    "k", self._image_frame(), b.bindings["k"], "look"))
+                for _ in range(200):
+                    if b._send_to_claude.await_args is not None:
+                        break
+                    await asyncio.sleep(0.01)
+                sent = b._send_to_claude.await_args.args[1]
+                proc.stdout.feed_data((_replay(sent["uuid"]) + "\n"
+                                       + _result("still held") + "\n").encode())
+                reply = await asyncio.wait_for(turn, 1)
+                alive = held.alive
+                proc.stdout.feed_eof()
+                await asyncio.wait_for(held.reader, 2)
+            finally:
+                asyncio.create_subprocess_exec = original
+            return reply, spawned, alive
+
+        reply, spawned, alive = asyncio.run(main())
+        self.assertEqual(reply, "still held")
+        self.assertEqual(spawned, [])
+        self.assertTrue(alive)
+
+    def test_add_dir_is_the_same_path_on_every_run(self):
+        """Claude lists added dirs in its system prompt: a fresh path per run
+        would miss the prompt cache on every resume."""
+        async def main():
+            b = followup_bridge()
+            made = self._real_staging(b)
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("done")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                for _ in range(2):
+                    await b.run_claude("k", {"channel_id": "c1"}, b.bindings["k"], "hi")
+                await b.run_claude("k", self._image_frame(), b.bindings["k"], "hi")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return b, spawned, made
+
+        b, spawned, made = asyncio.run(main())
+        dirs = {self._add_dir(cmd) for cmd in spawned}
+        self.assertEqual(dirs, {b._conversation_att_dir("k")})
+        self.assertNotEqual(b._conversation_att_dir("k"), b._conversation_att_dir("other"))
+        # Only the run that brought files got a dir of its own, removed
+        # when that run ended.
+        self.assertEqual([d is None for d in made], [True, True, False])
+        self.assertFalse(Path(made[2]).exists())
+
+    def test_files_go_to_a_fresh_child_when_the_held_one_cannot_read_them(self):
+        """A held child whose --add-dir is not this turn's root was never
+        granted the files: injecting would hand it paths it cannot open."""
+        async def main():
+            b = followup_bridge()
+            self._real_staging(b)
+            await hand_off(b, [_tasks("research"), _result("started")])
+            held = b.live["k"]
+            held.add_dir = "/somewhere/else"
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("fresh saw it")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                reply = await b.run_claude("k", self._image_frame(),
+                                           b.bindings["k"], "look")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return held, reply, spawned
+
+        held, reply, spawned = asyncio.run(main())
+        self.assertEqual(reply, "fresh saw it")
+        self.assertEqual(len(spawned), 1)
+        self.assertFalse(held.alive)
+        self.assertEqual(held.ended_reason, bridge.ATTACHMENTS_UNREADABLE)
+
+    def test_a_turn_whose_files_all_failed_keeps_no_dir(self):
+        async def main():
+            b = followup_bridge()
+            made = self._real_staging(b)
+
+            async def fake_exec(*_a, **_kw):
+                return _fake_proc([_result("ok")])
+
+            frame = {"channel_id": "c1", "message_id": 9, "attachments": [
+                {"filename": "x.png", "mime": "image/png", "data_b64": "!!not base64"}]}
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                await b.run_claude("k", frame, b.bindings["k"], "hi")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return made
+
+        made = asyncio.run(main())
+        self.assertFalse(Path(made[0]).exists())
+
+    def test_text_message_survives_an_unwritable_tempdir(self):
+        """Only a turn with files to write needs the disk."""
+        async def main():
+            b = followup_bridge()
+            b._conversation_att_dir = Mock(side_effect=OSError("read-only"))
+            spawned = []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                return _fake_proc([_result("still answered")])
 
             original = asyncio.create_subprocess_exec
             asyncio.create_subprocess_exec = fake_exec
             try:
                 reply = await b.run_claude("k", {"channel_id": "c1"},
-                                           b.bindings["k"], "look")
+                                           b.bindings["k"], "hi")
+                with self.assertRaises(OSError):
+                    await b.run_claude("k", self._image_frame(), b.bindings["k"], "hi")
             finally:
                 asyncio.create_subprocess_exec = original
-            return b, held, reply, spawned
+            return reply, spawned
 
-        b, held, reply, spawned = asyncio.run(main())
-        self.assertEqual(reply, "I see the image")
+        reply, spawned = asyncio.run(main())
+        self.assertEqual(reply, "still answered")
         self.assertEqual(len(spawned), 1)
-        self.assertIn("--add-dir", spawned[0])
-        self.assertFalse(held.alive)
-        self.assertEqual(b.live, {})
+        self.assertNotIn("--add-dir", spawned[0])
+
+    def test_a_vanished_root_comes_back_at_the_same_path(self):
+        """A tmp cleaner must not strand held children on a stale --add-dir."""
+        import shutil
+        b = followup_bridge()
+        first = b._conversation_att_dir("k")
+        shutil.rmtree(Path(first).parent)
+        self.assertEqual(b._conversation_att_dir("k"), first)
+        self.assertTrue(Path(first).is_dir())
+
+    def test_a_root_someone_else_claimed_is_not_trusted(self):
+        """On a shared /tmp another user can recreate a vanished root."""
+        import shutil
+        b = followup_bridge()
+        first = Path(b._conversation_att_dir("k")).parent
+        shutil.rmtree(first)
+        first.mkdir()
+        # Stands in for another user's dir: inode numbers get reused, so
+        # identity must differ by owner too.
+        b._att_root_id = ("someone", "else", "entirely")
+        second = Path(b._conversation_att_dir("k")).parent
+        self.assertNotEqual(second, first)
+        self.assertEqual(b._att_root, str(second))
+
+    def test_a_loose_mode_on_our_own_root_does_not_abandon_it(self):
+        """Some filesystems report modes other than 0700; the root must stay
+        put or every message would get a new --add-dir."""
+        import os
+        b = followup_bridge()
+        first = b._conversation_att_dir("k")
+        os.chmod(Path(first).parent, 0o755)
+        self.assertEqual(b._conversation_att_dir("k"), first)
+
+    def test_shutdown_removes_the_attachments_root(self):
+        b = followup_bridge()
+        root = Path(b._conversation_att_dir("k")).parent
+        self.assertTrue(root.exists())
+        b.kill_children()
+        self.assertFalse(root.exists())
+
+    def test_attachments_dir_is_removed_when_the_spawn_fails(self):
+        async def main():
+            b = followup_bridge()
+            made = self._real_staging(b)
+
+            async def fake_exec(*_a, **_kw):
+                raise OSError("no claude binary")
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                with self.assertRaises(OSError):
+                    await b.run_claude("k", self._image_frame(), b.bindings["k"], "hi")
+            finally:
+                asyncio.create_subprocess_exec = original
+            return made
+
+        made = asyncio.run(main())
+        self.assertFalse(Path(made[0]).exists())
+
+    def test_attachments_dir_is_removed_when_stopped_before_spawn(self):
+        async def main():
+            b = followup_bridge()
+            made = self._real_staging(b)
+            b.stop_requested.add("k")
+            with self.assertRaises(bridge.RunStopped):
+                await b.run_claude("k", self._image_frame(), b.bindings["k"], "hi")
+            return made
+
+        made = asyncio.run(main())
+        self.assertFalse(Path(made[0]).exists())
+
+    def test_attachments_dir_is_removed_when_staging_fails(self):
+        """The dir is created before the staging hop, so a failure (or a
+        cancel) there cannot strand it."""
+        async def main():
+            b = followup_bridge()
+            made = []
+
+            def boom(_frame, _text, tmpdir):
+                made.append(tmpdir)
+                raise OSError("disk full")
+
+            b._stage_attachments = boom
+            with self.assertRaises(OSError):
+                await b.run_claude("k", self._image_frame(), b.bindings["k"], "hi")
+            return made
+
+        made = asyncio.run(main())
+        self.assertEqual(len(made), 1)
+        self.assertFalse(Path(made[0]).exists())
+
+    def test_held_child_retiring_during_staging_spawns_fresh_with_the_files(self):
+        """Staging runs off the loop, so the held child can finish meanwhile.
+        The turn then goes to a new child that can read the files, and the
+        old child's retirement must not delete them."""
+        async def main():
+            b = followup_bridge()
+            made = self._real_staging(b)
+            spawned, seen = [], []
+
+            async def fake_exec(*a, **_kw):
+                spawned.append(a)
+                seen.extend(Path(self._add_dir(a)).glob("turn-*/shot*.png"))
+                return _fake_proc([_result("fresh child saw it")])
+
+            original = asyncio.create_subprocess_exec
+            asyncio.create_subprocess_exec = fake_exec
+            try:
+                _, proc = await hand_off(b, [_tasks("research"), _result("started")])
+                held = b.live["k"]
+                stage = b._stage_attachments
+
+                def stage_then_retire(frame, text, tmpdir):
+                    out = stage(frame, text, tmpdir)
+                    held.closing = True  # what the reader sets on its way out
+                    return out
+
+                b._stage_attachments = stage_then_retire
+                b._send_to_claude = AsyncMock(wraps=b._send_to_claude)
+                spawned.clear()
+                reply = await b.run_claude("k", self._image_frame(),
+                                           b.bindings["k"], "look")
+                sent_to_held = [c for c in b._send_to_claude.await_args_list
+                                if c.args[0] is proc]
+                proc.kill()
+                await asyncio.wait_for(held.reader, 2)
+            finally:
+                asyncio.create_subprocess_exec = original
+            return reply, spawned, seen, sent_to_held, made
+
+        reply, spawned, seen, sent_to_held, made = asyncio.run(main())
+        self.assertEqual(reply, "fresh child saw it")
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(sent_to_held, [])
+        self.assertTrue(all(not Path(d).exists() for d in made if d))
+
+    def test_notice_names_the_reason_when_a_held_child_is_ended_on_purpose(self):
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            live = b.live["k"]
+            b.post = Mock(return_value=True)
+            b._post_timeout_notice(live, 360)
+            timeout_text = b.post.call_args.args[1]
+            live.stopping = True
+            live.ended_reason = "the binding changed"
+            b._post_timeout_notice(live, 360)
+            ended_text = b.post.call_args.args[1]
+            # Internal reasons are not phrased for people: generic wording.
+            live.ended_reason = "follow-up schedule asks done"
+            b._post_timeout_notice(live, 360)
+            internal_text = b.post.call_args.args[1]
+            live.ended_reason = bridge.ATTACHMENTS_UNREADABLE
+            b._post_timeout_notice(live, 360)
+            unreadable_text = b.post.call_args.args[1]
+            live.proc.kill()
+            await asyncio.wait_for(live.reader, 2)
+            return timeout_text, ended_text, internal_text, unreadable_text
+
+        timeout_text, ended_text, internal_text, unreadable_text = asyncio.run(main())
+        self.assertIn("could not read the files in a new message", unreadable_text)
+        self.assertNotIn("after 6 min", unreadable_text)
+        self.assertIn("Stopped watching background work after 6 min", timeout_text)
+        self.assertIn("Ended the background work for: research because this "
+                      "conversation's session or settings changed", ended_text)
+        self.assertNotIn("after 6 min", ended_text)
+        self.assertNotIn("schedule asks", internal_text)
+        self.assertIn("Stopped watching background work", internal_text)
 
     def test_a_timeout_with_work_still_listed_tells_the_channel(self):
         """Otherwise a dropped follow-up is indistinguishable from a slow one."""
@@ -3881,7 +4330,7 @@ class QueueLifecycleTests(unittest.TestCase):
         reply = instance._cmd_stop("c1")
         self.assertIn("Stopping", reply)
         self.assertIn("c1", instance.stop_requested)
-        with patch.object(bridge.asyncio, "to_thread", AsyncMock(return_value=("prompt", [], None))):
+        with patch.object(bridge.asyncio, "to_thread", AsyncMock(return_value="prompt")):
             with self.assertRaises(bridge.RunStopped):
                 asyncio.run(instance.run_claude("c1", {"channel_id": "c1"}, {}, "text"))
         self.assertNotIn("c1", instance.stop_requested)
@@ -3972,7 +4421,7 @@ class OutboundAttachmentTests(unittest.TestCase):
         instance.default_permission_mode = "acceptEdits"
         instance.default_model = None
         instance.base_claude_args = []
-        instance._stage_attachments = Mock(return_value=("prompt", [], None))
+        instance._stage_attachments = Mock(return_value="prompt")
         instance._append_system_args = Mock(return_value=[])
         instance.stopped_processes = {"c1"}
         instance.stop_requested = set()
@@ -5737,7 +6186,7 @@ class RosterDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.b.stop_requested = set()
         self.b.progress = Mock()
         self.b._append_system_args = Mock(return_value=[])
-        self.b._stage_attachments = Mock(side_effect=lambda _frame, text: (text, [], None))
+        self.b._stage_attachments = Mock(side_effect=lambda _frame, text, _dir: text)
         self.b._send_to_claude = AsyncMock()
         self.b._save_state = Mock()
         self.b.bindings = {"k": {"cwd": "/tmp"}}

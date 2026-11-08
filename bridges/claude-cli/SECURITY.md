@@ -99,14 +99,27 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
 
 6. **Attachment bytes written to disk from channel input.** Inbound messages can
    carry files (the hub inlines those up to 8 MB as base64); the bridge decodes
-   each into a fresh `tempfile.mkdtemp()` dir and exposes it to Claude with
-   `--add-dir` so its Read tool can open images/files.
+   each into a fresh per-run `tempfile.mkdtemp()` dir. That dir sits under a
+   per-conversation root (inside a private `mkdtemp` root created by the
+   bridge), and the root is what's exposed to Claude with `--add-dir`, so its
+   Read tool can open images/files, including those a message brings while a
+   child is held for background work.
    - *Addressed:* filenames are reduced to a sanitized basename
      (`_safe_filename` strips directory components and shell/path metacharacters)
      so a sender can't traverse out of the temp dir or influence the path;
-     collisions get a numeric suffix; the temp dir is removed in a `finally`
-     after every run. Undecodable/oversized entries are noted in the prompt, not
-     written.
+     collisions get a numeric suffix. Each run's dir is removed in a `finally`
+     when the run ends; a run held for background work keeps its dir until the
+     held child exits (up to `--followup-max-wait`), with files from messages sent
+     during the hold limited to about 256 MB per held child on a best-effort
+     basis: when a new message's files take it over, the oldest answered
+     messages' files are removed first. Files for a message still waiting for
+     its answer, or one that timed out, always stay, so disk use during a hold
+     can exceed the limit by an unbounded amount. `--add-dir` grants a child's
+     file tools its own conversation's root only, but this is not an OS
+     boundary: every conversation's root is owned by the same user under one
+     parent, so a child allowed to run shell commands can still read them. The
+     whole parent is removed on clean bridge shutdown. Undecodable/oversized entries
+     are noted in the prompt, not written.
    - *Still open:* the bytes themselves are untrusted content fed to an
      autonomous agent (a hostile image/file could carry a prompt-injection
      payload the model then acts on). Bounded only by the permission mode
