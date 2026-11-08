@@ -3678,7 +3678,7 @@ class AsyncFollowupTests(unittest.TestCase):
                                        + _result("I see the image") + "\n").encode())
                 reply = await asyncio.wait_for(turn, 1)
                 turn_dir_left = Path(made[-1]).exists()
-                owned = list(held.injected_dirs)
+                owned = [path for path, _ in held.injected_dirs]
                 alive = held.alive
                 proc.stdout.feed_eof()
                 await asyncio.wait_for(held.reader, 2)
@@ -3704,6 +3704,41 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertTrue(turn_dir_left)
         self.assertEqual(owned, [made[-1]])
         self.assertFalse(Path(made[-1]).exists())
+
+    def test_files_kept_for_a_held_child_are_capped_oldest_first(self):
+        """Files outlive their turn during a hold, which can last hours."""
+        def turn_dir(root, name, size):
+            d = Path(root) / name
+            d.mkdir()
+            (d / "f.bin").write_bytes(b"x" * size)
+            return str(d)
+
+        async def main():
+            b = followup_bridge()
+            await hand_off(b, [_tasks("research"), _result("started")])
+            held = b.live["k"]
+            root = b._conversation_att_dir("k")
+            with patch.object(bridge, "MAX_HELD_ATTACHMENT_BYTES", 100):
+                old, mid, new = (turn_dir(root, n, 40) for n in ("a", "b", "c"))
+                for d in (old, mid, new):
+                    b._keep_injected_dir(held, d)
+                kept_after_three = [p for p, _ in held.injected_dirs]
+                huge = turn_dir(root, "d", 500)
+                b._keep_injected_dir(held, huge)
+                kept_after_huge = [p for p, _ in held.injected_dirs]
+            result = (old, mid, new, huge, kept_after_three, kept_after_huge,
+                      Path(old).exists(), Path(new).exists())
+            held.proc.kill()
+            await asyncio.wait_for(held.reader, 2)
+            return result
+
+        (old, mid, new, huge, kept_three, kept_huge, old_left,
+         new_left) = asyncio.run(main())
+        self.assertEqual(kept_three, [mid, new])
+        self.assertFalse(old_left)
+        # The newest stays even alone over the cap: its turn is about to read it.
+        self.assertEqual(kept_huge, [huge])
+        self.assertFalse(new_left)
 
     def test_add_dir_is_the_same_path_on_every_run(self):
         """Claude lists added dirs in its system prompt: a fresh path per run

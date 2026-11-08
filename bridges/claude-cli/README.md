@@ -46,10 +46,10 @@ than starting a second `claude --resume` against the same session, so the
 conversation never forks. That includes messages with attachments: every child
 is started with `--add-dir` on its conversation's attachments directory, so a
 mid-run message's files are saved under it and the turn is injected without
-stopping the background work. A held child is retired only in two cases: rarely, when it was never granted
-the attachments directory (the temp directory was unavailable or replaced), and
-for anything that
-rebinds the conversation or changes what it may do (`/new`, `/use`,
+stopping the background work. A held child is retired in only two cases. One
+is rare: it was never granted the attachments directory, because the temp
+directory was unavailable or replaced. The other is anything that rebinds the
+conversation or changes what it may do (`/new`, `/use`,
 `/worktree`, `/model`, `/permissions`). Rebinding retires it **immediately**, not on your next message — a
 `/permissions plan` has to reach the process that is actually running, not just
 the one your next message would start. `/worktree remove` likewise refuses while
@@ -270,8 +270,9 @@ writes them to a temporary directory it exposes to Claude via `--add-dir`, then
 names the saved paths in the prompt so Claude reads them. A message that is
 *only* an image — no caption — is still forwarded. The temp dir is deleted after
 the run, or, when the run is held for background work, once that held process
-ends (files sent while it is held get their own directory beside it, kept
-until then too). Files larger than the hub's inline cap can't be read (they arrive as a
+ends. Files sent while it is held get their own directory beside it, kept
+until then too. Past 256 MB per held child, the oldest messages' files are
+removed; the newest message's files are always kept, however large. Files larger than the hub's inline cap can't be read (they arrive as a
 name-only note). See [SECURITY.md](SECURITY.md) for the trust caveats.
 
 Bindings are per channel (and per thread), persisted in `state.json` next to

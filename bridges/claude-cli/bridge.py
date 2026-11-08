@@ -277,6 +277,9 @@ MAX_QUEUED_TURNS = 20
 MAX_QUEUED_PEER_TURNS = 5
 FORK_WAIT_SECONDS = 90
 MAX_INBOUND_ATTACHMENT_BYTES = 512 * 1024 * 1024
+# Files from turns injected into a held child stay readable until it exits,
+# which can be hours away. Past this total the oldest turns' files go.
+MAX_HELD_ATTACHMENT_BYTES = 256 * 1024 * 1024
 ATTACHMENT_FETCH_TIMEOUT = 30
 MIN_DOWNLOAD_RATE_BYTES_PER_SECOND = 1024 * 1024
 ATTACH_SENTINEL = "<<<AGORA_ATTACH>>>"
@@ -829,7 +832,7 @@ class LiveRun:
         # injected into it (it may still read them after answering, from
         # background work or a queued turn). All removed at retirement.
         self.tmpdir: str | None = None
-        self.injected_dirs: list[str] = []
+        self.injected_dirs: list[tuple[str, int]] = []  # (path, bytes), oldest first
         # What this child got as --add-dir: files staged anywhere else are
         # out of its reach.
         self.add_dir: str | None = None
@@ -4098,6 +4101,28 @@ class Bridge:
             return None
         return (st.st_dev, st.st_ino, st.st_uid) if stat.S_ISDIR(st.st_mode) else None
 
+    def _keep_injected_dir(self, live: LiveRun, tmpdir: str) -> None:
+        """Give a held child an injected turn's dir, keeping what it holds
+        under MAX_HELD_ATTACHMENT_BYTES by dropping the oldest turns' files.
+        The newest always stays, however large: its turn is about to read it."""
+        size = 0
+        try:
+            with os.scandir(tmpdir) as entries:
+                for entry in entries:
+                    try:
+                        size += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass  # one unreadable entry must not zero the rest
+        except OSError:
+            pass  # only sizes the cap; the turn can still use whatever is there
+        live.injected_dirs.append((tmpdir, size))
+        total = sum(n for _, n in live.injected_dirs)
+        while total > MAX_HELD_ATTACHMENT_BYTES and len(live.injected_dirs) > 1:
+            oldest, freed = live.injected_dirs.pop(0)
+            total -= freed
+            log(f"dropped {freed} bytes of older attachments for {live.key}: over the hold cap")
+            self._drop_turn_dir(oldest)
+
     @staticmethod
     def _drop_turn_dir(tmpdir: str | None) -> None:
         """Remove a turn dir. The conversation root above it stays (empty)
@@ -4228,7 +4253,7 @@ class Bridge:
                     # stdin), so they live as long as it does. Synchronous
                     # with the alive check above: no retirement can slip in.
                     if tmpdir:
-                        live.injected_dirs.append(tmpdir)
+                        self._keep_injected_dir(live, tmpdir)
                         tmpdir = None  # the held child owns it now
                     return await self._inject_into_live(live, frame, prompt, roster_note,
                                                         context_epoch)
@@ -5199,7 +5224,7 @@ class Bridge:
             live.stderr_drain.cancel()
         # Its own turn's dir and those of turns injected into it, kept so the
         # files stayed readable. It is dead now: the last chance to clean up.
-        for d in [live.tmpdir, *live.injected_dirs]:
+        for d in [live.tmpdir, *(path for path, _ in live.injected_dirs)]:
             self._drop_turn_dir(d)
         live.tmpdir = None
         live.injected_dirs = []
@@ -5313,7 +5338,7 @@ class Bridge:
         # keep the generic wording below.
         why = {
             BINDING_CHANGED: ("this conversation's session or settings changed "
-                              "(for example /new, /model or /permissions)"),
+                              "(for example /new or /model, or a bridge default)"),
             ATTACHMENTS_UNREADABLE: ("the running process could not read the "
                                      "files in a new message"),
         }.get(live.ended_reason or "") if live.stopping else None
