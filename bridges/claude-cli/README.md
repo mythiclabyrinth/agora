@@ -121,7 +121,7 @@ follow-up machinery.
 | `/use <n \| session-id>` | bind this channel/thread to a session |
 | `/new <dir>` | bind to a fresh session started in `<dir>` — **`<dir>` must be under an allowed root** (see below); disabled entirely when no roots are configured |
 | `/model <opus\|sonnet\|haiku\|fable\|…\|default>` | set the model for this channel (`default` clears the override); persists in the binding and is passed as `claude --model` on every run |
-| `/permissions <plan\|acceptEdits\|bypass\|default\|reset>` | set the permission mode for this channel (`reset` clears the override). Lowering privilege is always allowed; **raising it above the bridge default requires `CLAUDE_ALLOW_PERMISSION_ESCALATION`** |
+| `/permissions <plan\|acceptEdits\|bypass\|default\|reset\|revoke>` | show the mode and always-allowed tools without arguments; set the mode with an argument (`reset` clears the override, `revoke` clears approvals without changing the session or mode). Lowering privilege is always allowed; **raising it above the bridge default requires `CLAUDE_ALLOW_PERMISSION_ESCALATION`** |
 | `/tldr <on\|off\|default>` | add a toggleable short summary to long replies for this channel (`default` clears the override). When on, Claude is asked to end a long reply with a summary the bridge lifts into the message's `tldr`; clients show a TL;DR toggle |
 | `/switch [account]` | list configured Claude accounts, or change the bridge-wide account (see [Multiple accounts](#multiple-accounts)) |
 | `/switch <account> --here` | use an account only in this chat |
@@ -245,7 +245,17 @@ relays your tap back to the CLI, so headless runs no longer silently deny (or
 require blanket `--dangerously-skip-permissions`). The request is summarized
 per tool (the command for Bash, the URL and prompt for WebFetch, the file path
 for edits, …) rather than dumped as raw JSON. "Always allow" is remembered
-per channel/thread binding, in memory only — a bridge restart re-asks. If
+per session in `state.json` (owner-only mode `0600`) and survives bridge
+restarts and automatic session-id rotation. Starting or selecting another session
+(`/new`, `/use`, account switches, or a new worktree) clears it; new threads and
+forks do not inherit it. Model changes keep it for the same session. Lowering the effective permission
+mode (including through `reset`) clears approvals; raising it or keeping the
+same mode retains them. **Always allow Bash covers all shell commands for that session and is
+now persisted on disk.** Before the first session ID arrives, approvals apply
+only to that running process and are not saved. A successful result attaches
+those approvals to the new ID, including approvals given in a fork's own first
+turn. State saves replace the previous file atomically, so a failed write leaves
+it intact. If
 nobody taps within `--permission-timeout` (`CLAUDE_PERMISSION_TIMEOUT`, default
 600 s) the request is denied and the buttons lock with a note; the wait counts
 against the overall run `--timeout`. The default permission mode is still

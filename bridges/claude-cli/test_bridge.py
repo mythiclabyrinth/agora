@@ -353,11 +353,377 @@ def peer_frame(**overrides):
     return frame
 
 
+
+class SessionApprovalTests(unittest.TestCase):
+    def grant(self, binding, tools=None):
+        binding["session_allows"] = {"session_id": binding.get("session_id"),
+                                     "tools": tools or ["Bash"]}
+
+    async def ask(self, b, binding, tool="Bash", choice="allow_always", before_answer=None):
+        b.pending_perms = {}
+        b.permission_timeout = 0.01
+        b._send_to_claude = AsyncMock()
+        def answer(post):
+            if "options_id" not in post:
+                return
+            if before_answer:
+                before_answer()
+            if choice is not None:
+                b.pending_perms[post["options_id"]][0].set_result(("option", choice, "tom"))
+        b.send = Mock(side_effect=answer)
+        await b._handle_control_request("c1", {"channel_id": "c1"}, Mock(), {
+            "request_id": "approval", "request": {"subtype": "can_use_tool",
+                "tool_name": tool, "input": {"command": "pwd"}},
+        }, [], binding)
+
+    def test_approval_survives_reload_and_state_is_private_on_every_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            asyncio.run(self.ask(b, b.bindings["c1"]))
+            self.assertEqual(b.state_file.stat().st_mode & 0o777, 0o600)
+            b.state_file.chmod(0o644)
+            b._save_state()
+            self.assertEqual(b.state_file.stat().st_mode & 0o777, 0o600)
+            restarted = ClaudeAccountTests()._bridge(tmp)
+            restarted.bindings = restarted._load_state()
+            asyncio.run(self.ask(restarted, restarted.bindings["c1"]))
+            restarted.send.assert_not_called()
+            restarted._send_to_claude.assert_awaited_once()
+
+    async def approval_run(self, b, result):
+        b.pending_perms = {}
+        b.permission_timeout = 1
+        b._send_to_claude = AsyncMock()
+        prompts = []
+        def answer(post):
+            if post.get("options_id", "").startswith("perm-"):
+                prompts.append(post)
+                b.pending_perms[post["options_id"]][0].set_result(
+                    ("option", "allow_always", "tom"))
+        b.send = Mock(side_effect=answer)
+        ask = json.dumps({"type": "control_request", "request_id": "first",
+                          "request": {"subtype": "can_use_tool", "tool_name": "Bash",
+                                      "input": {"command": "pwd"}}})
+        await hand_off(b, [ask, result], feed_delay=0.01)
+        return prompts
+
+    def test_failed_first_run_cannot_authorize_the_next_run(self):
+        async def run():
+            b = followup_bridge()
+            b.bindings["k"]["session_id"] = None
+            first = await self.approval_run(b, _result("failed", is_error=True, session_id=None))
+            self.assertEqual(len(first), 1)
+            self.assertIsNone(b.bindings["k"]["session_id"])
+            self.assertEqual(b._session_tools(b.bindings["k"]), ["Bash"])
+            second = await self.approval_run(b, _result("done", session_id="new"))
+            self.assertEqual(len(second), 1)
+            self.assertEqual(b.bindings["k"]["session_allows"],
+                             {"session_id": "new", "tools": ["Bash"]})
+        asyncio.run(run())
+
+    def test_first_run_grant_survives_successful_null_or_fork_id_adoption(self):
+        async def run():
+            for fork in (False, True):
+                b = followup_bridge()
+                bound = b.bindings["k"]
+                bound["session_id"] = "source" if fork else None
+                if fork:
+                    # _ensure_thread_fork removes inherited grants (covered below).
+                    bound["_fork_source"] = "source"
+                self.assertEqual(b._session_tools(bound), [])
+                prompts = await self.approval_run(b, _result("done", session_id="new"))
+                self.assertEqual(len(prompts), 1)
+                self.assertEqual(bound["session_allows"],
+                                 {"session_id": "new", "tools": ["Bash"]})
+                prompts = await self.approval_run(b, _result("again", session_id="new"))
+                self.assertEqual(prompts, [])
+        asyncio.run(run())
+
+    def test_null_grant_is_not_saved_or_restored_from_old_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            bound = b.bindings["c1"]
+            bound["session_id"] = None
+            self.grant(bound)
+            b._save_state()
+            saved = json.loads(b.state_file.read_text())
+            self.assertNotIn("session_allows", saved["bindings"]["c1"])
+            self.assertEqual(b._session_tools(bound), ["Bash"])  # live run unchanged
+            restarted = ClaudeAccountTests()._bridge(tmp)
+            restarted.bindings = restarted._load_state()
+            asyncio.run(self.ask(restarted, restarted.bindings["c1"], choice="deny"))
+            restarted.send.assert_called()
+            for legacy in (False, True):
+                old = {"c1": dict(bound)} if legacy else {**saved, "bindings": {"c1": dict(bound)}}
+                b.state_file.write_text(json.dumps(old))
+                restarted.bindings = restarted._load_state()
+                self.assertNotIn("session_allows", restarted.bindings["c1"])
+                asyncio.run(self.ask(restarted, restarted.bindings["c1"], choice="deny"))
+                restarted.send.assert_called()
+
+    def test_failed_atomic_save_preserves_previous_state_and_removes_temporary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            b._save_state()
+            before = b.state_file.read_bytes()
+            b.bindings["c1"]["session_id"] = "changed"
+            real_fdopen = bridge.os.fdopen
+            def broken_write(fd, mode):
+                stream = real_fdopen(fd, mode)
+                proxy = Mock(wraps=stream)
+                def fail(payload):
+                    stream.write(payload[:20])
+                    raise OSError("disk full")
+                proxy.write.side_effect = fail
+                context = Mock()
+                context.__enter__ = Mock(return_value=proxy)
+                context.__exit__ = Mock(side_effect=lambda *_: stream.close())
+                return context
+            for failure in (patch.object(bridge.os, "fdopen", side_effect=broken_write),
+                            patch.object(bridge.os, "replace", side_effect=OSError("replace failed"))):
+                with failure, self.assertRaises(OSError):
+                    b._save_state()
+                self.assertEqual(b.state_file.read_bytes(), before)
+                self.assertEqual(b.state_file.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(list(Path(tmp).iterdir()), [b.state_file])
+
+    def test_save_failure_still_answers_the_current_request(self):
+        b = make_bridge()
+        bound = b.bindings["c1"] = {"session_id": "s"}
+        b._save_state.side_effect = OSError("disk full")
+        asyncio.run(self.ask(b, bound))
+        b._send_to_claude.assert_awaited_once()
+        self.assertEqual(b._send_to_claude.await_args.args[1]["response"]["response"]["behavior"], "allow")
+
+    def test_other_tools_reject_and_timeout_do_not_store_approval(self):
+        for choice in ("deny", None):
+            with self.subTest(choice=choice):
+                b = make_bridge()
+                bound = b.bindings["c1"] = {"session_id": "s"}
+                self.grant(bound)
+                asyncio.run(self.ask(b, bound, tool="Write", choice=choice))
+                self.assertEqual(b._session_tools(bound), ["Bash"])
+                b._save_state.assert_not_called()
+                self.assertEqual(b._send_to_claude.await_args.args[1]["response"]["response"]["behavior"], "deny")
+
+    def test_late_answer_does_not_grant_to_rebound_or_rotated_session(self):
+        for change in ("replace", "rotate", "unbound"):
+            with self.subTest(change=change):
+                b = make_bridge()
+                bound = b.bindings["c1"] = {"session_id": "s"}
+                def mutate():
+                    if change == "replace":
+                        b._set_binding("c1", "s", "/tmp")
+                    elif change == "rotate":
+                        b._adopt_session_id(bound, "new")
+                    else:
+                        b.bindings.pop("c1")
+                asyncio.run(self.ask(b, bound, before_answer=mutate))
+                self.assertNotIn("session_allows", bound)
+                self.assertNotIn("session_allows", b.bindings.get("c1", {}))
+                self.assertEqual(b._send_to_claude.await_args.args[1]["response"]["response"]["behavior"], "allow")
+
+    def test_unbound_run_and_current_binding_cannot_supply_each_others_grants(self):
+        b = make_bridge()
+        bound = b.bindings["c1"] = {"session_id": "new"}
+        self.grant(bound)
+        asyncio.run(self.ask(b, {"session_id": "old"}, choice="deny"))
+        b.send.assert_called()
+        asyncio.run(self.ask(b, None))
+        self.assertEqual(b._session_tools(bound), ["Bash"])
+        b._save_state.assert_not_called()
+
+    def test_malformed_saved_grants_do_not_allow_or_crash(self):
+        malformed = [None, [], "Bash", 1, {}, {"tools": ["Bash"]},
+                     {"session_id": "s", "tools": "Bash"},
+                     {"session_id": "s", "tools": ["Bash", 1]},
+                     {"session_id": [], "tools": ["Bash"]},
+                     {"session_id": "other", "tools": ["Bash"]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            for value in malformed:
+                with self.subTest(value=value):
+                    b = ClaudeAccountTests()._bridge(tmp)
+                    b.bindings["c1"].update(session_id="s", session_allows=value)
+                    b._save_state()
+                    b.bindings = b._load_state()
+                    asyncio.run(self.ask(b, b.bindings["c1"], choice="deny"))
+                    b.send.assert_called()
+
+    def test_null_grant_migrates_to_first_id_but_explicit_drop_clears_it(self):
+        b = make_bridge()
+        b.listings = {}
+        bound = b.bindings["c1"] = {"session_id": None}
+        asyncio.run(self.ask(b, bound))
+        b._adopt_session_id(bound, "first")
+        self.assertEqual(b._session_tools(bound), ["Bash"])
+        bound["session_id"] = None
+        self.grant(bound)
+        b._drop_bound_sessions()
+        self.assertNotIn("session_allows", bound)
+        b._adopt_session_id(bound, "next")
+        self.assertEqual(b._session_tools(bound), [])
+
+    def test_new_use_and_worktree_rebinding_clear_approval(self):
+        b = make_bridge()
+        b.allowed_roots = [Path("/tmp").resolve()]
+        b.auto_worktree = False
+        b.listings = {}
+        b.sessions_limit = 10
+        for command in ("new", "use", "worktree"):
+            with self.subTest(command=command):
+                bound = b.bindings["c1"] = {"session_id": "s", "cwd": "/tmp"}
+                self.grant(bound)
+                if command == "new":
+                    b._cmd_new("c1", "/tmp")
+                elif command == "use":
+                    with patch.object(bridge, "find_session", return_value={"session_id": "s", "cwd": "/tmp", "last_prompt": "hi"}):
+                        b._cmd_use("c1", "s")
+                else:
+                    # Worktree creation/removal both reset via this entry point.
+                    b._set_binding("c1", None, "/tmp")
+                self.assertEqual(b._session_tools(b.bindings["c1"]), [])
+
+    def test_account_switches_and_missing_account_clear_but_pins_keep_grant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for command in ("personal", "personal --here"):
+                b = ClaudeAccountTests()._bridge(tmp)
+                self.grant(b.bindings["c1"])
+                pinned = b.bindings["pinned"] = {"session_id": "p", "account": "work"}
+                self.grant(pinned)
+                b.account_status = AsyncMock(return_value={"ok": True})
+                asyncio.run(b._cmd_switch(command, "c1"))
+                self.assertEqual(b._session_tools(b.bindings["c1"]), [])
+                self.assertEqual(b._session_tools(pinned), ["Bash"])
+            b.bindings["c1"]["account"] = "removed"
+            self.grant(b.bindings["c1"])
+            b._release_missing_pins()
+            self.assertEqual(b._session_tools(b.bindings["c1"]), [])
+
+    def test_model_and_metadata_keep_grant(self):
+        b = make_bridge()
+        b.default_model = None
+        b.default_permission_mode = "acceptEdits"
+        b.allow_escalation = False
+        bound = b.bindings["c1"] = {"session_id": "s", "cwd": "/tmp"}
+        self.grant(bound)
+        b._cmd_model("c1", "sonnet")
+        b._attach_worktree("c1", Path("/tmp"), "branch", Path("/tmp"))
+        self.assertEqual(b._session_tools(bound), ["Bash"])
+
+    def test_permissions_lists_and_revokes_grants_then_prompts_again(self):
+        b = make_bridge()
+        b.default_permission_mode = "acceptEdits"
+        bound = b.bindings["c1"] = {"session_id": "s", "permission_mode": "plan"}
+        self.assertIn("Always allowed tools (this session): none", b._cmd_permissions("c1", ""))
+        self.grant(bound, ["Write", "Bash"])
+        self.assertIn("Always allowed tools (this session): Bash, Write", b._cmd_permissions("c1", ""))
+        self.assertIn("Cleared always-allow approvals: Bash, Write", b._cmd_permissions("c1", "revoke"))
+        self.assertEqual(bound, {"session_id": "s", "permission_mode": "plan"})
+        b._save_state.assert_called_once()
+        asyncio.run(self.ask(b, bound, choice="deny"))
+        b.send.assert_called()
+        self.assertIn("Cleared always-allow approvals: none", b._cmd_permissions("c1", "revoke"))
+
+    def test_permissions_tolerates_unknown_saved_mode(self):
+        for command in ("plan", "reset"):
+            b = make_bridge()
+            b.default_permission_mode = "acceptEdits"
+            b.allow_escalation = False
+            bound = b.bindings["c1"] = {"session_id": "s", "permission_mode": "unknown-mode"}
+            self.grant(bound)
+            b._cmd_permissions("c1", command)
+            self.assertEqual(b._session_tools(bound), [] if command == "plan" else ["Bash"])
+            b._save_state.assert_called_once()
+
+    def test_state_save_preserves_symlink_and_updates_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            target = Path(tmp) / "private" / "target.json"
+            target.parent.mkdir()
+            target.write_text("{}")
+            b.state_file.symlink_to(target)
+            b._save_state()
+            self.assertTrue(b.state_file.is_symlink())
+            self.assertEqual(json.loads(target.read_text())["bindings"], b.bindings)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(target.parent.iterdir()), [target])
+
+    def test_permission_mode_lowering_clears_grants_including_reset(self):
+        for current, default, command, kept in (
+            ("acceptEdits", "acceptEdits", "plan", False),
+            ("bypassPermissions", "acceptEdits", "reset", False),
+            ("plan", "acceptEdits", "acceptEdits", True),
+            ("plan", "acceptEdits", "reset", True),
+            ("acceptEdits", "acceptEdits", "acceptEdits", True),
+            ("acceptEdits", "acceptEdits", "reset", True),
+        ):
+            with self.subTest(current=current, command=command):
+                b = make_bridge()
+                b.default_permission_mode = default
+                b.allow_escalation = True
+                bound = b.bindings["c1"] = {"session_id": "s", "permission_mode": current}
+                self.grant(bound)
+                b._cmd_permissions("c1", command)
+                self.assertEqual(b._session_tools(bound), ["Bash"] if kept else [])
+                b._save_state.assert_called_once()
+
+    def test_state_is_flushed_and_synced_before_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            b._save_state()
+            before = b.state_file.read_bytes()
+            b.bindings["c1"]["session_id"] = "changed"
+            real_fsync = bridge.os.fsync
+            real_replace = bridge.os.replace
+            events = []
+            def sync(fd):
+                # Reading the temporary file sees the complete payload only
+                # after the Python buffer has been flushed.
+                temporary = next(Path(tmp).glob(".state.json.*"))
+                self.assertEqual(json.loads(temporary.read_text())["bindings"]["c1"]["session_id"], "changed")
+                events.append("sync")
+                real_fsync(fd)
+            def replace(source, target):
+                self.assertEqual(events, ["sync"])
+                self.assertEqual(b.state_file.read_bytes(), before)
+                events.append("replace")
+                real_replace(source, target)
+            with patch.object(bridge.os, "fsync", side_effect=sync), patch.object(bridge.os, "replace", side_effect=replace):
+                b._save_state()
+            self.assertEqual(events, ["sync", "replace"])
+            saved = b.state_file.read_bytes()
+            with patch.object(bridge.os, "fsync", side_effect=OSError("sync failed")), self.assertRaises(OSError):
+                b._save_state()
+            self.assertEqual(b.state_file.read_bytes(), saved)
+            self.assertEqual(list(Path(tmp).iterdir()), [b.state_file])
+
+    def test_result_rotation_keeps_grant_in_foreground_and_tail(self):
+        for lines, expected in (([_result("answer", session_id="new")], "new"),
+                                ([_result("answer", session_id="s"),
+                                  _result("later", session_id="tail")], "tail")):
+            bound = {"session_id": "s", "cwd": "/tmp"}
+            self.grant(bound)
+            _, b = run_bridge(lines, binding=bound)
+            self.assertEqual(bound["session_id"], expected)
+            self.assertEqual(b._session_tools(bound), ["Bash"])
+
+    def test_background_result_rotation_keeps_grant(self):
+        async def run():
+            b = followup_bridge(idle=0.03)
+            self.grant(b.bindings["k"])
+            _, proc = await hand_off(b, [_tasks("research"), _result("working", session_id="sess-old")])
+            proc.stdout.feed_data((_result("finished", session_id="rotated") + "\n").encode())
+            proc.stdout.feed_eof()
+            await b.live["k"].reader
+            self.assertEqual(b.bindings["k"]["session_id"], "rotated")
+            self.assertEqual(b._session_tools(b.bindings["k"]), ["Bash"])
+        asyncio.run(run())
+
+
 class NotificationApprovalTests(unittest.TestCase):
     def test_tool_approval_keeps_detail_and_supplies_explicit_notification_label(self):
         async def run():
             b = make_bridge()
-            b.session_allows = {}
             b.pending_perms = {}
             b.permission_timeout = 1
             b._send_to_claude = AsyncMock()
@@ -371,13 +737,14 @@ class NotificationApprovalTests(unittest.TestCase):
                 fut = b.pending_perms[post["options_id"]][0]
                 fut.set_result(("option", "allow_always", "ana"))
 
+            b.bindings["c1"] = {"session_id": "s1", "cwd": "/tmp"}
             b.send = Mock(side_effect=choose)
             await b._handle_control_request("c1", {"channel_id": "c1"}, Mock(), {
                 "request_id": "ask-42", "request": {
                     "subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "pwd"},
                 },
-            }, [])
-            self.assertIn("Bash", b.session_allows["c1"])
+            }, [], b.bindings["c1"])
+            self.assertIn("Bash", b._session_tools(b.bindings["c1"]))
             b._send_to_claude.assert_awaited_once()
 
         asyncio.run(run())
@@ -405,7 +772,6 @@ class NotificationApprovalTests(unittest.TestCase):
     def test_long_timeout_omits_server_expiry_for_tools_and_questions(self):
         async def run():
             b = make_bridge()
-            b.session_allows = {}
             b.pending_perms = {}
             b.pending_questions = {}
             b.permission_timeout = 86401
@@ -2718,7 +3084,7 @@ class AsyncFollowupTests(unittest.TestCase):
         self.assertEqual(handler.await_args.args[3]["request_id"], "tail-approval")
 
     def test_pending_approval_does_not_delay_foreground_reply(self):
-        async def pending_handler(key, frame, proc, event, perm_ids):
+        async def pending_handler(key, frame, proc, event, perm_ids, binding):
             options_id = f"perm-{event['request_id']}"
             future = asyncio.get_running_loop().create_future()
             pending_handler.bridge.pending_perms[options_id] = (
@@ -6141,8 +6507,11 @@ class ThreadForkTests(unittest.TestCase):
                             "worktree": {"path": "/tmp/project", "branch": "feature", "base": "/tmp"}}
         frame = {"channel_id": "c1", "thread_id": 42, "message_id": 100,
                  "author": {"type": "user"}}
+        SessionApprovalTests().grant(b.bindings["c1"])
+        self.assertNotIn("session_allows", b.switch_binding("c1:42"))
         self.assertTrue(asyncio.run(b._ensure_thread_fork("c1:42", frame)))
         child = b.bindings["c1:42"]
+        self.assertNotIn("session_allows", child)
         self.assertEqual(child["_fork_source"], "main-id")
         self.assertEqual(child["cwd"], "/tmp/project")
         self.assertEqual(child["permission_mode"], "plan")
