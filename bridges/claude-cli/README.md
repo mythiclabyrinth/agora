@@ -250,7 +250,11 @@ restarts and automatic session-id rotation. Starting or selecting another sessio
 (`/new`, `/use`, account switches, or a new worktree) clears it; new threads and
 forks do not inherit it. Model and permission-mode changes keep it for the same
 session. **Always allow Bash covers all shell commands for that session and is
-now persisted on disk.** If
+now persisted on disk.** Before the first session ID arrives, approvals apply
+only to that running process and are not saved. A successful result attaches
+those approvals to the new ID, including approvals given in a fork's own first
+turn. State saves replace the previous file atomically, so a failed write leaves
+it intact. If
 nobody taps within `--permission-timeout` (`CLAUDE_PERMISSION_TIMEOUT`, default
 600 s) the request is denied and the buttons lock with a note; the wait counts
 against the overall run `--timeout`. The default permission mode is still

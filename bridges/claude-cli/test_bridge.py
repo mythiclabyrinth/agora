@@ -390,6 +390,103 @@ class SessionApprovalTests(unittest.TestCase):
             restarted.send.assert_not_called()
             restarted._send_to_claude.assert_awaited_once()
 
+    async def approval_run(self, b, result):
+        b.pending_perms = {}
+        b.permission_timeout = 1
+        b._send_to_claude = AsyncMock()
+        prompts = []
+        def answer(post):
+            if post.get("options_id", "").startswith("perm-"):
+                prompts.append(post)
+                b.pending_perms[post["options_id"]][0].set_result(
+                    ("option", "allow_always", "tom"))
+        b.send = Mock(side_effect=answer)
+        ask = json.dumps({"type": "control_request", "request_id": "first",
+                          "request": {"subtype": "can_use_tool", "tool_name": "Bash",
+                                      "input": {"command": "pwd"}}})
+        await hand_off(b, [ask, result], feed_delay=0.01)
+        return prompts
+
+    def test_failed_first_run_cannot_authorize_the_next_run(self):
+        async def run():
+            b = followup_bridge()
+            b.bindings["k"]["session_id"] = None
+            first = await self.approval_run(b, _result("failed", is_error=True, session_id=None))
+            self.assertEqual(len(first), 1)
+            self.assertIsNone(b.bindings["k"]["session_id"])
+            self.assertEqual(b._session_tools(b.bindings["k"]), ["Bash"])
+            second = await self.approval_run(b, _result("done", session_id="new"))
+            self.assertEqual(len(second), 1)
+            self.assertEqual(b.bindings["k"]["session_allows"],
+                             {"session_id": "new", "tools": ["Bash"]})
+        asyncio.run(run())
+
+    def test_first_run_grant_survives_successful_null_or_fork_id_adoption(self):
+        async def run():
+            for fork in (False, True):
+                b = followup_bridge()
+                bound = b.bindings["k"]
+                bound["session_id"] = "source" if fork else None
+                if fork:
+                    # _ensure_thread_fork removes inherited grants (covered below).
+                    bound["_fork_source"] = "source"
+                self.assertEqual(b._session_tools(bound), [])
+                prompts = await self.approval_run(b, _result("done", session_id="new"))
+                self.assertEqual(len(prompts), 1)
+                self.assertEqual(bound["session_allows"],
+                                 {"session_id": "new", "tools": ["Bash"]})
+                prompts = await self.approval_run(b, _result("again", session_id="new"))
+                self.assertEqual(prompts, [])
+        asyncio.run(run())
+
+    def test_null_grant_is_not_saved_or_restored_from_old_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            bound = b.bindings["c1"]
+            bound["session_id"] = None
+            self.grant(bound)
+            b._save_state()
+            saved = json.loads(b.state_file.read_text())
+            self.assertNotIn("session_allows", saved["bindings"]["c1"])
+            self.assertEqual(b._session_tools(bound), ["Bash"])  # live run unchanged
+            restarted = ClaudeAccountTests()._bridge(tmp)
+            restarted.bindings = restarted._load_state()
+            asyncio.run(self.ask(restarted, restarted.bindings["c1"], choice="deny"))
+            restarted.send.assert_called()
+            for legacy in (False, True):
+                old = {"c1": dict(bound)} if legacy else {**saved, "bindings": {"c1": dict(bound)}}
+                b.state_file.write_text(json.dumps(old))
+                restarted.bindings = restarted._load_state()
+                self.assertNotIn("session_allows", restarted.bindings["c1"])
+                asyncio.run(self.ask(restarted, restarted.bindings["c1"], choice="deny"))
+                restarted.send.assert_called()
+
+    def test_failed_atomic_save_preserves_previous_state_and_removes_temporary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = ClaudeAccountTests()._bridge(tmp)
+            b._save_state()
+            before = b.state_file.read_bytes()
+            b.bindings["c1"]["session_id"] = "changed"
+            real_fdopen = bridge.os.fdopen
+            def broken_write(fd, mode):
+                stream = real_fdopen(fd, mode)
+                proxy = Mock(wraps=stream)
+                def fail(payload):
+                    stream.write(payload[:20])
+                    raise OSError("disk full")
+                proxy.write.side_effect = fail
+                context = Mock()
+                context.__enter__ = Mock(return_value=proxy)
+                context.__exit__ = Mock(side_effect=lambda *_: stream.close())
+                return context
+            for failure in (patch.object(bridge.os, "fdopen", side_effect=broken_write),
+                            patch.object(bridge.os, "replace", side_effect=OSError("replace failed"))):
+                with failure, self.assertRaises(OSError):
+                    b._save_state()
+                self.assertEqual(b.state_file.read_bytes(), before)
+                self.assertEqual(b.state_file.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(list(Path(tmp).iterdir()), [b.state_file])
+
     def test_save_failure_still_answers_the_current_request(self):
         b = make_bridge()
         bound = b.bindings["c1"] = {"session_id": "s"}

@@ -138,7 +138,10 @@ can *do*) and privacy (what an attacker can *learn*) are kept separate.
      They survive bridge restarts and automatic session-id rotation, but are
      cleared by explicit session changes (`/new`, `/use`, account switches,
      new worktrees). New threads/forks inherit no grants. Model and permission
-     mode changes keep grants for the same session.
+     mode changes keep grants for the same session. Before the first session
+     ID arrives, grants are run-local and excluded from saved state. Successful
+     ID adoption keeps that run's own grants, including in a new fork. Atomic
+     file replacement keeps the previous state intact if a write fails.
    - Unanswered requests **deny** after `--permission-timeout` (default 600 s),
      and requests still pending when a run dies are denied and their buttons
      locked, so a stale button can never answer a later run (ids are keyed by

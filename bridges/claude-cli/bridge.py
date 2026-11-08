@@ -1554,6 +1554,13 @@ class Bridge:
             return {}
         if not isinstance(raw, dict):
             return {}
+        bindings = raw.get("bindings") if raw.get("_v") == 2 else raw
+        if isinstance(bindings, dict):
+            for binding in bindings.values():
+                if isinstance(binding, dict) and binding.get("session_id") is None:
+                    # Older state may contain a grant made before an ID existed.
+                    # It cannot authorize a new process after restart.
+                    binding.pop("session_allows", None)
         if raw.get("_v") == 2 and isinstance(raw.get("bindings"), dict):
             saved_sizes = raw.get("warm_compacted_sizes")
             for key, value in (saved_sizes if isinstance(saved_sizes, dict) else {}).items():
@@ -1581,19 +1588,26 @@ class Bridge:
         payload = json.dumps({
             "_v": 2, "account": account,
             "config_dir": str(config_dir) if config_dir is not None else None,
-            "bindings": {key: value for key, value in self.bindings.items()
-                         if isinstance(value, dict) and not value.get("_fork_source")},
+            "bindings": {
+                key: {field: item for field, item in value.items()
+                      if field != "session_allows" or value.get("session_id") is not None}
+                for key, value in self.bindings.items()
+                if isinstance(value, dict) and not value.get("_fork_source")},
             "warm_compacted_sizes": {
                 key: [sid, tokens]
                 for key, (sid, tokens) in getattr(self, "warm_compacted_sizes", {}).items()
                 if (self.bindings.get(key) or {}).get("session_id") == sid},
         }, indent=2)
-        # Restrict existing files too, before writing persisted tool approvals.
-        fd = os.open(self.state_file, os.O_WRONLY | os.O_CREAT, 0o600)
-        with os.fdopen(fd, "w") as state:
-            os.fchmod(state.fileno(), 0o600)
-            state.truncate(0)
-            state.write(payload)
+        # A partial write must not destroy the last saved sessions. mkstemp
+        # creates a private file, and replacement preserves its 0600 mode.
+        fd, temporary = tempfile.mkstemp(prefix=f".{self.state_file.name}.",
+                                         dir=self.state_file.parent)
+        try:
+            with os.fdopen(fd, "w") as state:
+                state.write(payload)
+            os.replace(temporary, self.state_file)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     @staticmethod
     def _session_tools(binding: dict | None) -> list[str]:
@@ -1611,9 +1625,9 @@ class Bridge:
 
     @classmethod
     def _adopt_session_id(cls, binding: dict, session_id: str) -> None:
-        # A result can rotate the id of the same conversation. Forks are new
-        # conversations and must not inherit the source's tool approvals.
-        tools = cls._session_tools(binding) if not binding.get("_fork_source") else []
+        # Fork creation already removes inherited grants. Any grant now present
+        # belongs to this run, including the fork's own first-turn approval.
+        tools = cls._session_tools(binding)
         binding.pop("session_allows", None)
         binding["session_id"] = session_id
         if tools:
@@ -4211,6 +4225,10 @@ class Bridge:
         return ["--append-system-prompt", "\n\n".join(blocks)]
 
     async def run_claude(self, key: str, frame: dict, binding: dict, text: str) -> str:
+        if binding.get("session_id") is None:
+            # An unfinished first run may never report an ID. Its provisional
+            # approvals belong only to that process, not the next conversation.
+            binding.pop("session_allows", None)
         # Created here, not in the staging thread: a cancel during the
         # to_thread hop would otherwise strand a dir nobody holds a path to.
         # The root is the --add-dir of every run, files or not; only a turn
