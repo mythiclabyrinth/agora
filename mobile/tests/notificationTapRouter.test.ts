@@ -21,6 +21,12 @@ jest.mock(
   () => new Proxy({}, { get: () => () => null }),
 );
 
+// The layout's Speak banner pulls in expo-audio, which has no jest shim.
+jest.mock("../src/components/SpeakingBanner", () => ({
+  SpeakingBanner: () => null,
+  SpeakingScreen: ({ children }: { children: unknown }) => children,
+}));
+
 jest.mock("expo-router", () => ({
   Redirect: () => null,
   Stack: () => null,

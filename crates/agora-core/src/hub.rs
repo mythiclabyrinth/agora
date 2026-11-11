@@ -674,6 +674,31 @@ impl Hub {
         self.ui_active.store(active, Ordering::Relaxed);
     }
 
+    /// The rename of the thread a reply belongs to, if it has one. Top-level
+    /// posts (which tap through to the channel), a missing root, a root from
+    /// another channel, or a blank alias all yield None so the notification
+    /// keeps its group / channel title.
+    fn thread_alias_in(&self, channel_id: &str, thread_id: Option<i64>) -> Option<String> {
+        let root = self.store.message(thread_id?)?;
+        if root["channel_id"].as_str() != Some(channel_id) { return None; }
+        normalize_thread_alias(root["alias"].as_str()?)
+    }
+
+    /// Where a notification says the message is: a DM, a renamed thread
+    /// (`#chan / thread`), or `group / #chan`. None for an unknown channel.
+    fn notification_place(&self, channel_id: &str, message: &Value) -> Option<String> {
+        let channel = self.store.channel(channel_id)?;
+        let chan_name = channel["name"].as_str().unwrap_or("?").to_string();
+        Some(if channel["kind"] == "agent_dm" { format!("Direct message with {chan_name}") }
+        else if let Some(thread) = self.thread_alias_in(channel_id, message["thread_id"].as_i64()) {
+            format!("#{chan_name} / {thread}")
+        }
+        else { match self.store.group(channel["group_id"].as_str().unwrap_or_default()) {
+            Some(g) => format!("{} / #{}", g["name"].as_str().unwrap_or("?"), chan_name),
+            None => format!("#{chan_name}"),
+        }})
+    }
+
     /// Notify about a freshly posted agent message when nobody is looking.
     ///
     /// Desktop: banners only while the window is unfocused (and a notifier
@@ -714,17 +739,7 @@ impl Hub {
                 st.last_notified.insert(channel_id.to_string(), Instant::now());
             }
         }
-        let place = match self.store.channel(channel_id) {
-            Some(channel) => {
-                let chan_name = channel["name"].as_str().unwrap_or("?").to_string();
-                if channel["kind"] == "agent_dm" { format!("Direct message with {chan_name}") }
-                else { match self.store.group(channel["group_id"].as_str().unwrap_or_default()) {
-                    Some(g) => format!("{} / #{}", g["name"].as_str().unwrap_or("?"), chan_name),
-                    None => format!("#{chan_name}"),
-                }}
-            }
-            None => return,
-        };
+        let Some(place) = self.notification_place(channel_id, message) else { return };
         let author = message["author_name"]
             .as_str()
             .or(message["author_id"].as_str())
@@ -3813,6 +3828,76 @@ mod tests {
         // A user's own post never notifies.
         h.post_user_message(&cid, "back!", "tom", None, None, vec![]);
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn notification_title_names_a_renamed_thread_instead_of_the_group() {
+        let h = hub();
+        let _rx = add_agent(&h, "bot-a", "Bot A", false);
+        let cid = setup_channel(&h, &["bot-a"]);
+        let seen: Arc<Mutex<Vec<NotifyEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        h.set_notifier(move |ev| sink.lock().unwrap().push(ev));
+        h.set_ui_active(false);
+        let root = h.post_user_message(&cid, "kick off", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        let title = |text: &str| {
+            // Clear the per-channel throttle so every post here notifies.
+            h.state.lock().unwrap().last_notified.clear();
+            h.post_agent_message("bot-a", "Bot A", &cid, text, Some(root_id));
+            seen.lock().unwrap().last().unwrap().title.clone()
+        };
+
+        // Unrenamed and blank-renamed threads keep the group / channel title.
+        assert_eq!(title("one"), "Bot A — G / #main");
+        h.store.rename_thread(root_id, Some("   "));
+        assert_eq!(title("two"), "Bot A — G / #main");
+
+        h.store.rename_thread(root_id, Some(" Fix login bug "));
+        assert_eq!(title("three"), "Bot A — #main / Fix login bug");
+
+        // Top-level messages keep the channel title (their tap opens the
+        // channel), even a root an agent named as it posted.
+        h.state.lock().unwrap().last_notified.clear();
+        h.maybe_notify(&json!({
+            "id": 99, "channel_id": cid, "author_type": "agent", "author_name": "Bot A",
+            "text": "new thread", "thread_id": null, "alias": "Deploy plan",
+        }));
+        assert_eq!(seen.lock().unwrap().last().unwrap().title, "Bot A — G / #main");
+        h.state.lock().unwrap().last_notified.clear();
+        h.post_agent_message("bot-a", "Bot A", &cid, "top", None);
+        assert_eq!(seen.lock().unwrap().last().unwrap().title, "Bot A — G / #main");
+    }
+
+    #[test]
+    fn renamed_threads_in_a_dm_keep_the_direct_message_title() {
+        let h = hub();
+        let dm = h.store.open_agent_dm("tom", "bot-a", "Bot A");
+        let dm_id = dm["id"].as_str().unwrap().to_string();
+        let root = h.post_user_message(&dm_id, "plan", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        h.store.rename_thread(root_id, Some("Deploy plan"));
+        let reply = json!({"channel_id": dm_id, "thread_id": root_id});
+        let place = h.notification_place(&dm_id, &reply).unwrap();
+        assert!(place.starts_with("Direct message with "), "{place}");
+        assert!(!place.contains("Deploy plan"), "{place}");
+    }
+
+    #[test]
+    fn thread_alias_lookup_ignores_missing_and_foreign_roots() {
+        let h = hub();
+        let cid = setup_channel(&h, &[]);
+        let gid = h.store.channel(&cid).unwrap()["group_id"].as_str().unwrap().to_string();
+        let other = h.store.create_channel(&gid, "other", "");
+        let other_id = other["id"].as_str().unwrap();
+        let root = h.post_user_message(other_id, "elsewhere", "tom", None, None, vec![]);
+        let root_id = root["id"].as_i64().unwrap();
+        h.store.rename_thread(root_id, Some("Other thread"));
+
+        assert_eq!(h.thread_alias_in(other_id, Some(root_id)).as_deref(), Some("Other thread"));
+        assert_eq!(h.thread_alias_in(&cid, Some(root_id)), None);
+        assert_eq!(h.thread_alias_in(&cid, Some(999_999)), None);
+        assert_eq!(h.thread_alias_in(&cid, None), None);
     }
 
     #[test]
