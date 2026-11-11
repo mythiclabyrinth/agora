@@ -40,6 +40,7 @@ import {
 
 import { useAppTheme } from "../../src/lib/useTheme";
 import { StoreReviewHost } from "../../src/components/StoreReviewHost";
+import { SpeakingScreen } from "../../src/components/SpeakingBanner";
 
 /** Ensure cold-start deep links still have Home beneath them in the stack. */
 export const unstable_settings = { initialRouteName: "index" };
@@ -200,7 +201,16 @@ export default function AppLayout() {
           contentStyle: { backgroundColor: colors.bg },
           ...headerBack(),
         }}
-      />
+        // Every screen gets the long-press Speak Stop strip under its header.
+        screenLayout={({ children, options }) => (
+          <SpeakingScreen headerShown={options.headerShown !== false}>{children}</SpeakingScreen>
+        )}
+      >
+        {/* Headerless screens, declared here too so screenLayout knows from
+            the first frame (their own Stack.Screen options land a render later). */}
+        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="live/[channelId]" options={{ headerShown: false }} />
+      </Stack>
     </ApiWrapped>
   );
 }
