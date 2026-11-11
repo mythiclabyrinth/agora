@@ -3,6 +3,7 @@ jest.mock(
   () => ({
     speak: jest.fn(),
     stop: jest.fn(async () => {}),
+    isSpeakingAsync: jest.fn(async () => true),
   }),
   { virtual: true },
 );
@@ -10,11 +11,13 @@ jest.mock("../src/lib/speech", () => ({
   stopSpeech: jest.fn(),
 }));
 
+import { AppState } from "react-native";
 import { speakMessage, stopNativeSpeech, useNativeSpeech } from "../src/lib/nativeSpeech";
 
 const native = jest.requireMock("expo-speech") as {
   speak: jest.Mock;
   stop: jest.Mock;
+  isSpeakingAsync: jest.Mock;
 };
 const server = jest.requireMock("../src/lib/speech") as {
   stopSpeech: jest.Mock;
@@ -23,6 +26,9 @@ const server = jest.requireMock("../src/lib/speech") as {
 beforeEach(() => {
   jest.clearAllMocks();
 });
+
+// Every Speak starts a reconcile poll; never leak one into the next test.
+afterEach(() => stopNativeSpeech());
 
 test("speaks the complete stored message after stopping existing audio", async () => {
   const text = "# Full answer\n\nEvery word, **including** markdown.";
@@ -112,5 +118,81 @@ describe("speaking state for the Stop banner", () => {
     await pending;
     expect(native.speak).not.toHaveBeenCalled();
     expect(useNativeSpeech.getState().speaking).toBe(false);
+  });
+});
+
+describe("reconciling a strip whose callbacks never arrive", () => {
+  let appStateListener: ((state: string) => void) | null;
+  let removeAppState: jest.Mock;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    useNativeSpeech.setState({ speaking: false });
+    native.isSpeakingAsync.mockResolvedValue(true);
+    appStateListener = null;
+    removeAppState = jest.fn();
+    jest.spyOn(AppState, "addEventListener").mockImplementation((_type, listener) => {
+      appStateListener = listener as (state: string) => void;
+      return { remove: removeAppState } as unknown as ReturnType<typeof AppState.addEventListener>;
+    });
+  });
+  afterEach(() => {
+    stopNativeSpeech();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  test("clears the strip once the synthesizer reports it isn't speaking", async () => {
+    await speakMessage({ text: "Hello" });
+    native.isSpeakingAsync.mockResolvedValue(false);
+    await jest.advanceTimersByTimeAsync(2_500);
+    expect(native.isSpeakingAsync).toHaveBeenCalled();
+    expect(useNativeSpeech.getState().speaking).toBe(false);
+    expect(removeAppState).toHaveBeenCalled(); // the watch is torn down
+  });
+
+  test("keeps the strip while the synthesizer is still talking", async () => {
+    await speakMessage({ text: "Hello" });
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(native.isSpeakingAsync).toHaveBeenCalled();
+    expect(useNativeSpeech.getState().speaking).toBe(true);
+  });
+
+  test("never clears during the start-up grace period", async () => {
+    await speakMessage({ text: "Hello" });
+    native.isSpeakingAsync.mockResolvedValue(false);
+    appStateListener?.("active");
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(native.isSpeakingAsync).not.toHaveBeenCalled();
+    expect(useNativeSpeech.getState().speaking).toBe(true);
+  });
+
+  test("re-checks when the app comes back to the foreground", async () => {
+    await speakMessage({ text: "Hello" });
+    await jest.advanceTimersByTimeAsync(2_000); // past the grace, before a poll
+    native.isSpeakingAsync.mockResolvedValue(false);
+    appStateListener?.("active");
+    await jest.advanceTimersByTimeAsync(0);
+    expect(useNativeSpeech.getState().speaking).toBe(false);
+  });
+
+  test("an older utterance's late check can't clear a newer one", async () => {
+    await speakMessage({ text: "first" });
+    let answer!: (talking: boolean) => void;
+    native.isSpeakingAsync.mockImplementationOnce(() => new Promise<boolean>((resolve) => { answer = resolve; }));
+    await jest.advanceTimersByTimeAsync(2_500); // check for "first" now in flight
+    await speakMessage({ text: "second" });
+    answer(false);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(useNativeSpeech.getState().speaking).toBe(true);
+  });
+
+  test("Stop ends the poll", async () => {
+    await speakMessage({ text: "Hello" });
+    stopNativeSpeech();
+    native.isSpeakingAsync.mockClear();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(native.isSpeakingAsync).not.toHaveBeenCalled();
+    expect(removeAppState).toHaveBeenCalled();
   });
 });

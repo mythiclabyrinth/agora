@@ -1,6 +1,6 @@
 import React, { useContext, useEffect } from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { Text } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { SafeAreaInsetsContext } from "react-native-safe-area-context";
 import { SpeakingBanner, SpeakingScreen } from "../src/components/SpeakingBanner";
 import { useNativeSpeech } from "../src/lib/nativeSpeech";
@@ -22,7 +22,15 @@ function render(element: React.ReactElement) { act(() => { tree = TestRenderer.c
 function stopButton() {
   return tree.root.findAll((node) => node.props.accessibilityLabel === "Stop speaking" && typeof node.props.onPress === "function")[0];
 }
-const json = () => JSON.stringify(tree.toJSON());
+/** The strip's own resolved style (its outer View), not anything in the tree. */
+function stripStyle() {
+  const label = tree.root.findAllByType(Text).find((t) => t.props.children === "Speaking message…")!;
+  let node = label.parent;
+  while (node && !(node.type === View && node.props.style && StyleSheet.flatten(node.props.style).borderBottomWidth === 1)) {
+    node = node.parent;
+  }
+  return StyleSheet.flatten(node!.props.style);
+}
 
 test("renders nothing while no message is being spoken", () => {
   render(React.createElement(SpeakingBanner));
@@ -54,8 +62,7 @@ test("under a native header the strip adds no status-bar padding and leaves inse
   mounts = 0;
   render(screen(true));
   act(() => useNativeSpeech.setState({ speaking: true }));
-  expect(json()).toContain("Speaking message…");
-  expect(json()).toContain('"paddingTop":0');
+  expect(stripStyle().paddingTop).toBe(0);
   expect(seenTop).toBe(47);
   expect(mounts).toBe(1); // starting speech never remounts the screen
 });
@@ -65,7 +72,7 @@ test("on a headerless screen the strip takes the status-bar inset from the scree
   render(screen(false));
   expect(seenTop).toBe(47);
   act(() => useNativeSpeech.setState({ speaking: true }));
-  expect(json()).toContain('"paddingTop":47');
+  expect(stripStyle().paddingTop).toBe(47);
   expect(seenTop).toBe(0);
   act(() => stopButton().props.onPress());
   expect(seenTop).toBe(47);
