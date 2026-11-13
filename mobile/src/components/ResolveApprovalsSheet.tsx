@@ -7,7 +7,7 @@ import React from "react";
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Check, CheckCheck, X, type LucideIcon } from "lucide-react-native";
 import {
-  APPROVAL_BULK_LABELS, approvalBulkResultText, approvalRequestText, approvalBulkSummary, useConversationApprovals, useResolveApprovals,
+  APPROVAL_BULK_LABELS, approvalAlwaysScope, approvalBulkResultText, approvalRequestText, approvalBulkSummary, useConversationApprovals, useResolveApprovals,
   type ApprovalBulkAction, type ApprovalItem,
 } from "@agora/core";
 import { previewText } from "../lib/previewText";
@@ -54,8 +54,9 @@ export function ResolveApprovalsSheet({ item, onClose }: { item: ApprovalItem; o
     const n = summary.ids[action].length;
     if (!n) return "None of these offer it";
     const count = `${n} ${n === 1 ? "request" : "requests"}`;
-    if (action !== "always" || !summary.tools.length) return count;
-    return `${count} · stops asking about ${summary.tools.join(", ")} for this agent session`;
+    const scope = approvalAlwaysScope(summary);
+    if (action !== "always" || !scope) return count;
+    return `${count} · stops asking about ${scope} for this agent session`;
   };
   const count = pending.data?.length ?? 0;
   return (

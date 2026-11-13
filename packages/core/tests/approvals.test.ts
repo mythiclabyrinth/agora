@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approvalBulkResultText, approvalBulkSummary, approvalRequestText, type PendingApproval } from "../src";
+import { approvalAlwaysScope, approvalBulkResultText, approvalBulkSummary, approvalRequestText, type PendingApproval } from "../src";
 
 const item = (id: number, actions: PendingApproval["actions"], tool: string | null = null): PendingApproval =>
   ({ id, ts: id, author_name: "Claude", text: "Allow?", actions, tool });
@@ -21,15 +21,25 @@ describe("resolve all", () => {
   it("says what was answered and what is left", () => {
     const r = (status: "resolved" | "skipped" | "failed", detail = "") => ({ id: 0, status, detail });
     expect(approvalBulkResultText({ resolved: 4, skipped: 0, failed: 0, results: [] })).toBe("Resolved 4");
-    expect(approvalBulkResultText({ resolved: 2, skipped: 3, failed: 1, results: [
+    expect(approvalBulkResultText({ resolved: 2, skipped: 4, failed: 1, results: [
       r("resolved"), r("resolved"), r("skipped", "Needs your input"), r("skipped", "This request has expired"),
-      r("skipped", "Options already resolved"), r("failed", "x"),
-    ] })).toBe("Resolved 2 · 1 needs your input · 1 expired · 1 already answered · 1 failed");
+      r("skipped", "Closed without an answer"), r("skipped", "Options already resolved"), r("failed", "x"),
+    ] })).toBe("Resolved 2 · 1 needs your input · 2 expired or withdrawn · 1 already answered · 1 failed");
   });
 
   it("shows a request's command as plain text, not markdown", () => {
     expect(approvalRequestText("Claude wants to use **Bash**:\n```\nrm -rf ./build\n```")).toBe("Claude wants to use Bash: rm -rf ./build");
     expect(approvalRequestText("")).toBe("Interactive request");
     expect(approvalRequestText("Run [cleanup.sh](https://evil.example/x.sh)")).toBe("Run cleanup.sh (https://evil.example/x.sh)");
+  });
+
+  it("counts Always-allow requests whose tool it can't name, so the grant is never under-reported", () => {
+    const named = approvalBulkSummary([item(1, ["approve", "always", "reject"], "Bash")]);
+    expect(approvalAlwaysScope(named)).toBe("Bash");
+    const mixed = approvalBulkSummary([item(1, ["approve", "always", "reject"], "Bash"), item(2, ["approve", "always", "reject"])]);
+    expect(mixed.ids.always).toEqual([1, 2]);
+    expect(approvalAlwaysScope(mixed)).toBe("Bash and the tool of each other request that offers it");
+    expect(approvalAlwaysScope(approvalBulkSummary([item(2, ["always"]), item(3, ["always"])]))).toBe("the tool of each request that offers it");
+    expect(approvalAlwaysScope(approvalBulkSummary([item(4, ["approve", "reject"])]))).toBe("");
   });
 });

@@ -3856,7 +3856,15 @@ async fn resolve_approvals(
             }
             match state.hub.select_option(id, option_id, &user.username) {
                 Ok(_) => outcome("resolved", ""),
-                Err(detail @ ("Options already resolved" | "This request has expired")) => outcome("skipped", detail),
+                Err("This request has expired") => outcome("skipped", "This request has expired"),
+                // A person's answer always records the option chosen. Closed
+                // with none means the server's expiry sweep or the agent itself
+                // (its own timeout, a withdrawn ask): not answered by anyone.
+                Err("Options already resolved") => {
+                    let unanswered = state.hub.store.message(id)
+                        .is_some_and(|m| m["meta"]["resolved"]["option_id"] == "");
+                    outcome("skipped", if unanswered { "Closed without an answer" } else { "Options already resolved" })
+                }
                 Err(detail) => outcome("failed", detail),
             }
         }).collect::<Vec<_>>()
@@ -8170,6 +8178,22 @@ mod tests {
         assert_eq!((eve["resolved"].as_u64(), eve["failed"].as_u64()), (Some(0), Some(1)));
         assert_eq!(eve["results"][0]["detail"], "Unknown message");
         assert!(store.message(late).unwrap()["meta"]["resolved"].is_null());
+        // Timed out or withdrawn, by the server sweep or the agent's own timer:
+        // never reported as answered.
+        let swept = ask(perm("Edit"));
+        store.resolve_options(swept, None, "system", Some("Expired — no decision")).unwrap();
+        let withdrawn = ask(perm("Grep"));
+        store.resolve_options(withdrawn, None, "agent", Some("No decision within 600s — denied.")).unwrap();
+        let lapsed = ask(json!({"approval_inbox": true, "resolved": null, "options_id": "perm-lapsed", "expires_at": 1.0,
+            "options": [{"id": "allow"}, {"id": "allow_always", "label": "Always allow X (this session)"}, {"id": "deny"}]}));
+        let relisted = list_conversation_approvals(State(state.clone()), q(Some(tid)), session_headers(&state, "ana"))
+            .await.unwrap().0;
+        assert!(relisted["items"].as_array().unwrap().iter().all(|i| i["id"] != lapsed && i["id"] != swept),
+            "expired requests are never offered");
+        let expired = resolve("ana", vec![swept, withdrawn, lapsed], "approve").await.unwrap().0;
+        assert_eq!(expired["skipped"].as_u64(), Some(3));
+        let details: Vec<_> = expired["results"].as_array().unwrap().iter().map(|r| r["detail"].as_str().unwrap()).collect();
+        assert_eq!(details, ["Closed without an answer", "Closed without an answer", "This request has expired"]);
         assert!(resolve("ana", vec![late], "maybe").await.is_err());
         assert!(resolve("ana", vec![], "approve").await.is_err());
     }

@@ -97,3 +97,12 @@ test("a double tap sends one request, and a late result never closes a newer she
   expect(toast).toHaveBeenCalledWith("Resolved 3", undefined);
   expect(onClose).not.toHaveBeenCalled();
 });
+
+test("Always allow still names its scope when a request's tool can't be read", () => {
+  (useConversationApprovals as jest.Mock).mockReturnValue({ isLoading: false, isError: false, data: [
+    pending(1, ["approve", "always", "reject"], "Bash"), pending(2, ["approve", "always", "reject"]),
+  ] });
+  const tree = render();
+  expect(choice(tree, "Always allow").props.accessibilityLabel)
+    .toBe("Always allow, 2 requests · stops asking about Bash and the tool of each other request that offers it for this agent session");
+});

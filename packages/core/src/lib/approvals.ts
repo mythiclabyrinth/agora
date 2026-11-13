@@ -19,8 +19,22 @@ export function approvalBulkSummary(items: PendingApproval[]) {
   return {
     ids: { approve: take("approve"), always: take("always"), reject: take("reject") } as Record<ApprovalBulkAction, number[]>,
     tools,
+    // Always-eligible requests whose tool couldn't be named: still granted,
+    // so the sheet must still count them.
+    unnamed: items.filter(item => item.actions.includes("always") && !item.tool).length,
     manual: items.filter(item => item.actions.length === 0).length,
   };
+}
+
+/** The tools "Always allow" grants for the session, e.g. "WebSearch, Bash",
+    or "Bash and the tool of each other request that offers it" when some
+    can't be named (they may share a tool, so they aren't counted); "" when
+    it grants nothing. Plans, forms and other buttons are never included. */
+export function approvalAlwaysScope(summary: ReturnType<typeof approvalBulkSummary>): string {
+  if (!summary.unnamed) return summary.tools.join(", ");
+  return summary.tools.length
+    ? `${summary.tools.join(", ")} and the tool of each other request that offers it`
+    : "the tool of each request that offers it";
 }
 
 function blockText(block: Block): string {
@@ -41,10 +55,11 @@ export function approvalRequestText(text: string): string {
 export function approvalBulkResultText(result: ApprovalResolveResult): string {
   const skipped = result.results.filter(r => r.status === "skipped");
   const manual = skipped.filter(r => r.detail === "Needs your input").length;
-  const expired = skipped.filter(r => r.detail === "This request has expired").length;
+  // Timed out, or closed by the agent or the server with no one answering.
+  const expired = skipped.filter(r => r.detail === "This request has expired" || r.detail === "Closed without an answer").length;
   const parts = [`Resolved ${result.resolved}`];
   if (manual) parts.push(`${manual} ${manual === 1 ? "needs" : "need"} your input`);
-  if (expired) parts.push(`${expired} expired`);
+  if (expired) parts.push(`${expired} expired or withdrawn`);
   if (skipped.length - manual - expired) parts.push(`${skipped.length - manual - expired} already answered`);
   if (result.failed) parts.push(`${result.failed} failed`);
   return parts.join(" · ");

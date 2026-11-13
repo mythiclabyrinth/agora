@@ -4,7 +4,7 @@
 
 import { useEffect, useRef } from "react";
 import {
-  APPROVAL_BULK_LABELS, approvalBulkResultText, approvalRequestText, approvalBulkSummary, useConversationApprovals, useResolveApprovals,
+  APPROVAL_BULK_LABELS, approvalAlwaysScope, approvalBulkResultText, approvalRequestText, approvalBulkSummary, useConversationApprovals, useResolveApprovals,
   type ApprovalBulkAction, type ApprovalItem,
 } from "@agora/core";
 import { useDialogFocus } from "../hooks/useDialogFocus";
@@ -43,8 +43,8 @@ export function ResolveApprovalsDialog({ item, onClose }: { item: ApprovalItem; 
     const n = summary.ids[action].length;
     if (!n) return "None of these offer it";
     const requests = `${n} ${n === 1 ? "request" : "requests"}`;
-    return action === "always" && summary.tools.length
-      ? `${requests} · stops asking about ${summary.tools.join(", ")} for this agent session` : requests;
+    const scope = approvalAlwaysScope(summary);
+    return action === "always" && scope ? `${requests} · stops asking about ${scope} for this agent session` : requests;
   };
   return <div className="conn-overlay" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
     <div ref={ref} className="conn-panel ago-resolve-panel" role="dialog" aria-modal="true" aria-label="Resolve all" tabIndex={-1}>
