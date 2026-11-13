@@ -185,10 +185,14 @@ export function MessageItem({
           <MessageForm message={message} />
           <MessageTable message={message} />
           <MessageOptions message={message} />
-          <Reactions message={message} />
-          <View style={styles.foot}>
-            {flags}
-            <Text maxFontSizeMultiplier={1.3} style={styles.ts} accessibilityLabel={message.meta?.scheduled ? `${scheduledTitle(message.meta)}, ${fmtTs(message.ts)}` : undefined}>{message.meta?.scheduled ? `${scheduledLabel(message.meta).replace(/^Scheduled/, "scheduled")} · ` : ""}{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
+          {/* Reactions and the time share a row: chips wrap on the left, the
+              time stays bottom-right (on its own when there are no reactions). */}
+          <View style={styles.reactFoot} testID="message-react-foot">
+            <View style={styles.reactions}><Reactions message={message} /></View>
+            <View style={styles.foot}>
+              {flags}
+              <Text maxFontSizeMultiplier={1.3} style={styles.ts} accessibilityLabel={message.meta?.scheduled ? `${scheduledTitle(message.meta)}, ${fmtTs(message.ts)}` : undefined}>{message.meta?.scheduled ? `${scheduledLabel(message.meta).replace(/^Scheduled/, "scheduled")} · ` : ""}{message.meta?.edited_at ? "edited · " : ""}{fmtTs(message.ts)}</Text>
+            </View>
           </View>
           {threadFoot}
         </View>
@@ -278,12 +282,16 @@ const useStyles = createThemedStyles(({ colors }) => ({
     flexShrink: 1,
   },
   head: { flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", columnGap: 8, rowGap: 2 },
+  reactFoot: { flexDirection: "row", alignItems: "flex-end", flexWrap: "wrap", columnGap: 8 },
+  // Takes what the time leaves; with no reactions it collapses to nothing.
+  reactions: { flexShrink: 1, flexGrow: 1 },
   foot: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-end",
     gap: 6,
     marginTop: 2,
+    marginLeft: "auto",
   },
   author: {
     color: colors.text,

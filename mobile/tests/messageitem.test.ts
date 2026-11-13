@@ -17,7 +17,7 @@ import { ScrollView, StyleSheet, Text } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MessageItem, threadBubbleMinWidth } from "../src/components/MessageItem";
 import { useSession } from "../src/state/session";
-import { ApiClient, ApiProvider } from "@agora/core";
+import { ApiClient, ApiProvider, fmtTs } from "@agora/core";
 import type { Message } from "@agora/core";
 import type { Session } from "@agora/core";
 
@@ -321,4 +321,25 @@ test("a scheduled post no agent wrote keeps the plain marker", () => {
   expect(tree.root.findAllByType(Text).some((node) =>
     Array.isArray(node.props.children) && node.props.children.includes("scheduled · "),
   )).toBe(true);
+});
+
+test("your own message keeps its reactions and time on one row", () => {
+  act(() => useSession.setState({ username: "alice" }));
+  const reacted = message("so if the token being used is an admin token…");
+  reacted.reactions = [{ emoji: "👍", users: ["bob"] }];
+  const tree = render(reacted);
+  const row = tree.root.find(node => node.props.testID === "message-react-foot");
+  expect(StyleSheet.flatten(row.props.style)).toMatchObject({ flexDirection: "row", alignItems: "flex-end", flexWrap: "wrap" });
+  // Both the chip and the time sit inside that row: chips left, time pushed right.
+  expect(row.find(node => node.props.accessibilityLabel === "bob reacted with 👍")).toBeTruthy();
+  const stamp = fmtTs(reacted.ts);
+  const hasStamp = (node: TestRenderer.ReactTestInstance) => node.type === Text && [node.props.children].flat().join("").includes(stamp);
+  const time = row.findAll(hasStamp);
+  expect(time.length).toBeGreaterThan(0);
+  // No reactions: the same row holds just the time.
+  const plain = render(message("no reactions"));
+  const plainRow = plain.root.find(node => node.props.testID === "message-react-foot");
+  expect(plainRow.findAll(node => typeof node.props.accessibilityLabel === "string"
+    && node.props.accessibilityLabel.includes("reacted with"))).toHaveLength(0);
+  expect(plainRow.findAll(hasStamp).length).toBeGreaterThan(0);
 });
