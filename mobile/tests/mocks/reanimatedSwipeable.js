@@ -9,9 +9,12 @@ exports.__setSwipeProgress = (left, right) => {
 };
 
 module.exports = Object.assign(React.forwardRef((props, ref) => {
-  const methodsRef = React.useRef(null);
-  methodsRef.current ||= { close: jest.fn(), openLeft: jest.fn(), openRight: jest.fn(), reset: jest.fn() };
-  const methods = methodsRef.current;
+  // Like the real library, the handle is rebuilt whenever the callbacks
+  // change (inline handlers: every render), so identity is not stable.
+  const methods = React.useMemo(
+    () => ({ close: jest.fn(), openLeft: jest.fn(), openRight: jest.fn(), reset: jest.fn() }),
+    [props.onSwipeableWillOpen, props.onSwipeableClose],
+  );
   React.useImperativeHandle(ref, () => methods, [methods]);
   // Like the real component: actions get (progress, translation, methods), at rest = 0.
   const leftProgress = { value: leftProgressValue };

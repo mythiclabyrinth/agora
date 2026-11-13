@@ -113,11 +113,11 @@ it("ignores a release press only when the drag opened that same row", () => {
   const controller = createSwipeRowController();
   const openedRow = row();
   controller.opened(openedRow);
-  expect(shouldIgnoreSwipeRelease(true, openedRow as any, controller)).toBe(true);
-  expect(shouldIgnoreSwipeRelease(false, openedRow as any, controller)).toBe(false);
-  expect(shouldIgnoreSwipeRelease(true, row() as any, controller)).toBe(false);
+  expect(shouldIgnoreSwipeRelease(true, openedRow, controller)).toBe(true);
+  expect(shouldIgnoreSwipeRelease(false, openedRow, controller)).toBe(false);
+  expect(shouldIgnoreSwipeRelease(true, row(), controller)).toBe(false);
   controller.close();
-  expect(shouldIgnoreSwipeRelease(true, openedRow as any, controller)).toBe(false);
+  expect(shouldIgnoreSwipeRelease(true, openedRow, controller)).toBe(false);
 });
 
 it("ignores the release after opening, closes on the next tap, then navigates", () => {
@@ -229,5 +229,85 @@ it("still opens the item when a drag springs back closed", () => {
   // No onSwipeableWillOpen: the gesture snapped shut before opening.
   act(() => content.props.onPress());
   expect(open).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+it("forgets a row that unmounts while open, so the next tap elsewhere isn't swallowed", () => {
+  const controller = createSwipeRowController();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    tree = TestRenderer.create(React.createElement(SwipeRow, {
+      controller, onPress: jest.fn(), accessibilityLabel: "Approval card",
+      swipeLeft: { name: "resolveAll", label: "Resolve all", icon: Glyph, color: "purple", onPress: jest.fn() },
+    }, React.createElement(Text, null, "Card")));
+  });
+  act(() => tree.root.findByProps({ testID: "mock-swipe" }).props.onSwipeableWillOpen());
+  // Its card drops to one request (or leaves the list) while open.
+  act(() => tree.unmount());
+  expect(controller.consumeTap()).toBe(false);
+});
+
+it("ignores an open reported after the row unmounted", () => {
+  const controller = createSwipeRowController();
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    tree = TestRenderer.create(React.createElement(SwipeRow, {
+      controller, onPress: jest.fn(), accessibilityLabel: "Card",
+      swipeLeft: { name: "a", label: "A", icon: Glyph, color: "purple", onPress: jest.fn() },
+    }, React.createElement(Text, null, "Card")));
+  });
+  const willOpen = tree.root.findByProps({ testID: "mock-swipe" }).props.onSwipeableWillOpen;
+  act(() => tree.unmount());
+  act(() => willOpen());
+  expect(controller.consumeTap()).toBe(false);
+});
+
+it("tracks a row by a stable identity across re-renders, closing the live handle", () => {
+  const controller = createSwipeRowController();
+  const make = (label: string) => React.createElement(SwipeRow, {
+    controller, onPress: jest.fn(), accessibilityLabel: label,
+    swipeLeft: { name: "a", label: "A", icon: Glyph, color: "purple", onPress: jest.fn() },
+  }, React.createElement(Text, null, label));
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(make("Card")); });
+  const swipe = () => tree.root.findByProps({ testID: "mock-swipe" });
+  act(() => swipe().props.onSwipeableWillOpen());
+  // A re-render (new handlers) must not make the same row look like another.
+  const before = swipe().props.testSwipeMethods;
+  act(() => tree.update(make("Card, refreshed")));
+  expect(swipe().props.testSwipeMethods).not.toBe(before);
+  act(() => swipe().props.onSwipeableWillOpen());
+  expect(before.close).not.toHaveBeenCalled();
+  expect(swipe().props.testSwipeMethods.close).not.toHaveBeenCalled();
+  act(() => swipe().props.onSwipeableClose());
+  expect(controller.consumeTap()).toBe(false);
+  // Opened again, a tap elsewhere closes it through the live handle.
+  act(() => swipe().props.onSwipeableWillOpen());
+  expect(controller.consumeTap()).toBe(true);
+  expect(swipe().props.testSwipeMethods.close).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+});
+
+it("a drag that opened the row isn't undone by its release press after a re-render", () => {
+  const controller = createSwipeRowController();
+  const open = jest.fn();
+  const make = (label: string) => React.createElement(SwipeRow, {
+    controller, onPress: open, accessibilityLabel: "Card",
+    swipeLeft: { name: "a", label: "A", icon: Glyph, color: "purple", onPress: jest.fn() },
+  }, React.createElement(Text, null, label));
+  let tree!: TestRenderer.ReactTestRenderer;
+  act(() => { tree = TestRenderer.create(make("Card")); });
+  const swipe = () => tree.root.findByProps({ testID: "mock-swipe" });
+  const content = () => tree.root.findAll(node => node.props.accessibilityRole === "button"
+    && node.props.accessibilityLabel === "Card" && typeof node.props.onPress === "function")[0]!;
+  act(() => swipe().props.onSwipeableOpenStartDrag("left"));
+  act(() => swipe().props.onSwipeableWillOpen());
+  act(() => tree.update(make("Card, refreshed")));
+  act(() => content().props.onPress());
+  expect(open).not.toHaveBeenCalled();
+  expect(swipe().props.testSwipeMethods.close).not.toHaveBeenCalled();
+  // A second row's tap still just closes the first, then works normally.
+  expect(controller.consumeTap()).toBe(true);
+  expect(controller.consumeTap()).toBe(false);
   act(() => tree.unmount());
 });
