@@ -15,21 +15,24 @@ export interface SwipeAction {
   onPress: () => void;
 }
 
+/** What the controller tracks per row: anything that can close it. */
+export interface SwipeRowHandle { close: () => void }
+
 export interface SwipeRowController {
-  opened: (row: SwipeableMethods) => void;
-  closed: (row: SwipeableMethods) => void;
+  opened: (row: SwipeRowHandle) => void;
+  closed: (row: SwipeRowHandle) => void;
   close: () => void;
-  isOpen: (row: SwipeableMethods) => boolean;
+  isOpen: (row: SwipeRowHandle) => boolean;
   consumeTap: () => boolean;
 }
 
-export function shouldIgnoreSwipeRelease(dragged: boolean, row: SwipeableMethods | null,
+export function shouldIgnoreSwipeRelease(dragged: boolean, row: SwipeRowHandle,
   controller: SwipeRowController): boolean {
-  return !!(dragged && row && controller.isOpen(row));
+  return dragged && controller.isOpen(row);
 }
 
 export function createSwipeRowController(): SwipeRowController {
-  let open: SwipeableMethods | null = null;
+  let open: SwipeRowHandle | null = null;
   return {
     opened(row) {
       if (open && open !== row) open.close();
@@ -74,6 +77,17 @@ export function SwipeRow({
   // would fire onPress, which closes the row it just opened. Drop that press.
   const dragged = React.useRef(false);
   const startDrag = () => { dragged.current = true; };
+  // This row's identity for the controller. The library's handle can change
+  // on every re-render, so a stable token (closing whatever handle is
+  // current) keeps opened / closed / isOpen comparing the same object.
+  const tokenRef = React.useRef<SwipeRowHandle | null>(null);
+  tokenRef.current ??= { close: () => row.current?.close() };
+  const token = tokenRef.current;
+  // A row that unmounts while open (removed by a refresh, or an approvals
+  // card dropping to one request) must not stay the controller's open row,
+  // or the next tap anywhere in the list is swallowed closing it. Layout
+  // cleanup runs in the same commit, leaving no window for that tap.
+  React.useLayoutEffect(() => () => { if (controller.isOpen(token)) controller.closed(token); }, [controller, token]);
   React.useEffect(() => {
     if (!initialOpen) return;
     const timer = setTimeout(() => {
@@ -98,8 +112,10 @@ export function SwipeRow({
     renderLeftActions={swipeRight ? actionButton(swipeRight) : undefined}
     renderRightActions={swipeLeft ? actionButton(swipeLeft) : undefined}
     onSwipeableOpenStartDrag={startDrag} onSwipeableCloseStartDrag={startDrag}
-    onSwipeableWillOpen={() => { if (row.current) controller.opened(row.current); }}
-    onSwipeableClose={() => { if (row.current) controller.closed(row.current); }}>
+    // Opens arrive asynchronously: one landing after unmount (row cleared)
+    // must not register a row that no longer exists.
+    onSwipeableWillOpen={() => { if (row.current) controller.opened(token); }}
+    onSwipeableClose={() => controller.closed(token)}>
     <Pressable style={style} accessibilityRole="button" accessibilityLabel={accessibilityLabel}
       accessibilityActions={[swipeLeft, swipeRight].filter((action): action is SwipeAction => !!action)
         .map(action => ({ name: action.name, label: action.label }))}
@@ -110,7 +126,7 @@ export function SwipeRow({
       onPress={() => {
         const wasDragged = dragged.current;
         dragged.current = false;
-        if (shouldIgnoreSwipeRelease(wasDragged, row.current, controller)) return;
+        if (shouldIgnoreSwipeRelease(wasDragged, token, controller)) return;
         if (!controller.consumeTap()) onPress();
       }}
       onPressIn={() => { dragged.current = false; }}

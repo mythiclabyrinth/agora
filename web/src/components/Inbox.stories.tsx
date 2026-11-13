@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { fixtureGroups, fixtureMe, fixtureSchedules, fixtureThreads } from "@agora/core/testing/fixtures";
 import { useMessageDrafts, type DraftRow, type UnreadItem } from "@agora/core";
 import { Inbox } from "./Inbox";
@@ -71,6 +71,36 @@ export const Mentions: Story = {
 };
 export const Threads: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/threads") } };
 export const Approvals: Story = { parameters: { setup: () => history.replaceState(null, "", "/inbox/approvals") } };
+const resolved = fn(() => ({ resolved: 2, skipped: 0, failed: 0, results: [] }));
+const permission = (id: number, tool: string) => ({ id, ts: now, author_name: "Claude", text: `Claude wants to use ${tool}`,
+  actions: ["approve", "always", "reject"], tool });
+export const ApprovalsResolveAll: Story = {
+  parameters: {
+    apiRoutes: {
+      "GET /api/approvals": { items: [{ kind: "thread", channel_id: "general", channel_name: "general", group_id: "product",
+        group_name: "Product", thread_id: 42, title: "/new ~/Coding", pending_count: 3,
+        message: { ...fixtureThreads[0].root, id: 60, thread_id: 42, author_type: "agent", author_name: "Claude",
+          text: "Claude wants to use WebSearch", meta: { approval_inbox: true, options: [
+            { id: "allow", label: "Approve" }, { id: "allow_always", label: "Always allow WebSearch (this session)" },
+            { id: "deny", label: "Reject" }] } } }], total: 3 },
+      "GET /api/approvals/pending?channel_id=general&thread_id=42": { items: [
+        permission(60, "WebSearch"), permission(61, "Bash"),
+        { id: 62, ts: now, author_name: "Claude", text: "Fill this in", actions: [], tool: null }] },
+      "POST /api/approvals/resolve": resolved,
+    },
+    setup: () => history.replaceState(null, "", "/inbox/approvals"),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Resolve all" }));
+    const dialog = within(await canvas.findByRole("dialog", { name: "Resolve all" }));
+    await expect(dialog.findByText("3 pending requests · 1 needs answering one by one")).resolves.toBeVisible();
+    await expect(dialog.findByText(/stops asking about WebSearch, Bash/)).resolves.toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: /^Always allow/ }));
+    await waitFor(() => expect(resolved).toHaveBeenCalled());
+    await waitFor(() => expect(canvas.queryByRole("dialog", { name: "Resolve all" })).toBeNull());
+  },
+};
 export const Drafts: Story = { parameters: { setup: () => {
   useMessageDrafts.getState().setRows([draft]);
   history.replaceState(null, "", "/inbox/drafts");

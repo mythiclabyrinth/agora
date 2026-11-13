@@ -83,13 +83,15 @@ async function openInBrowser(url: string, browser: LinkBrowser): Promise<void> {
   }
 }
 
-export async function openLinkOrThrow(url: string): Promise<void> {
+/** `nativeApps: false` skips the app handoff: a link's "Open in Browser"
+    always goes to the chosen browser (tapping the link still tries the app). */
+export async function openLinkOrThrow(url: string, { nativeApps = true }: { nativeApps?: boolean } = {}): Promise<void> {
   const { preferNativeApps, linkBrowser } = usePrefs.getState();
   if (!/^https?:\/\//i.test(url)) {
     await Linking.openURL(url);
     return;
   }
-  const nativeUrl = preferNativeApps ? nativeAppUrl(url) : null;
+  const nativeUrl = nativeApps && preferNativeApps ? nativeAppUrl(url) : null;
   if (nativeUrl && (await Linking.canOpenURL(nativeUrl))) {
     try {
       await Linking.openURL(nativeUrl);

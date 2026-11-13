@@ -596,6 +596,28 @@ export interface ApprovalItem {
   message: Message;
 }
 
+/** A bulk choice on one approvals card: Approve, Always allow, Reject. */
+export type ApprovalBulkAction = "approve" | "always" | "reject";
+
+/** One pending request in a card's conversation (GET /api/approvals/pending). */
+export interface PendingApproval {
+  id: number;
+  ts: number;
+  author_name: string;
+  text: string;
+  /** Bulk choices it can take; empty for forms and tables (answer by hand). */
+  actions: ApprovalBulkAction[];
+  /** The tool its "Always allow" grants, when it offers one. */
+  tool: string | null;
+}
+
+export interface ApprovalResolveResult {
+  resolved: number;
+  skipped: number;
+  failed: number;
+  results: { id: number; status: "resolved" | "skipped" | "failed"; detail: string }[];
+}
+
 export interface ApprovalInboxPage {
   items: ApprovalItem[];
   /** Number of pending messages, including additional messages on a card. */

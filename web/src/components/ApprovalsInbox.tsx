@@ -1,14 +1,17 @@
+import { useState } from "react";
 import { fmtRelative, type ApprovalItem, useApprovals } from "@agora/core";
 import { useJump } from "../state/jump";
 import { useUiState } from "../state/ui";
 import { Icon } from "../lib/icons";
 import { MessageOptions } from "./MessageOptions";
+import { ResolveApprovalsDialog } from "./ResolveApprovalsDialog";
 
 type Query = ReturnType<typeof useApprovals>;
 
 export function ApprovalsInbox({ query }: { query: Query }) {
   const ui = useUiState();
   const requestJump = useJump(s => s.request);
+  const [resolving, setResolving] = useState<ApprovalItem | null>(null);
   const open = (item: ApprovalItem) => {
     ui.selectChannel(item.group_id, item.channel_id);
     if (item.thread_id != null) ui.openThread(item.thread_id);
@@ -27,11 +30,15 @@ export function ApprovalsInbox({ query }: { query: Query }) {
             <strong>{item.message.author_name || item.message.author_id}:</strong>{" "}
             {item.message.text.replace(/\s+/g, " ").trim().slice(0, 240) || "Interactive request"}
           </button>
-          {item.pending_count > 1 && <span className="ago-unread-badge">+{item.pending_count - 1} more</span>}
+          {item.pending_count > 1 && <span className="ago-approval-more">
+            <span className="ago-unread-badge">+{item.pending_count - 1} more</span>
+            <button className="btn sm" onClick={() => setResolving(item)}>Resolve all</button>
+          </span>}
           {!!item.message.meta?.options?.length && <div className="ago-approval-actions"><MessageOptions message={item.message} /></div>}
         </div>)}
       {!query.isLoading && !query.isError && !query.data?.length &&
         <div className="empty"><div className="glyph"><Icon name="check" /></div><div>No pending approvals</div></div>}
     </div>
+    {resolving && <ResolveApprovalsDialog item={resolving} onClose={() => setResolving(null)} />}
   </div>;
 }
