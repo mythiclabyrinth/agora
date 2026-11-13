@@ -68,6 +68,15 @@ describe("openLinkOrThrow", () => {
     expect(openBrowser).not.toHaveBeenCalled();
   });
 
+  it("skips the app handoff for Open in Browser, even when the app is installed", async () => {
+    const canOpen = jest.spyOn(Linking, "canOpenURL").mockResolvedValue(true);
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    await openLinkOrThrow("https://www.google.com/maps/search/?api=1&query=Goa", { nativeApps: false });
+    expect(canOpen).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(openBrowser).toHaveBeenCalledWith("https://www.google.com/maps/search/?api=1&query=Goa");
+  });
+
   it("uses the configured in-app browser when no native app is present", async () => {
     jest.spyOn(Linking, "canOpenURL").mockResolvedValue(false);
     await openLinkOrThrow("https://www.google.com/maps/search/?api=1&query=Goa");

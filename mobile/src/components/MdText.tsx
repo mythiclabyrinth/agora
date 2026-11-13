@@ -10,10 +10,16 @@ import { columnWidths } from "../lib/tableLayout";
 import { MermaidBlock } from "./Mermaid";
 import { ChartModal, EChartBlock } from "./EChart";
 import { Icon } from "./Icon";
+import { LinkActionsSheet, type LinkTarget } from "./LinkActionsSheet";
 import { toast, toastErr } from "./Toast";
+
+/** Long-pressing a link opens its sheet instead of the message's actions:
+    links in paragraphs, lists, quotes and table cells all reach it. */
+const LinkMenuContext = React.createContext<(link: LinkTarget) => void>(() => {});
 
 function SpanText({ span }: { span: Span }) {
   const styles = useStyles();
+  const openLinkMenu = React.useContext(LinkMenuContext);
   switch (span.kind) {
     case "bold":
       return <Text style={styles.bold}>{span.text}</Text>;
@@ -26,7 +32,12 @@ function SpanText({ span }: { span: Span }) {
         <Text style={styles.link} onPress={(event) => {
           event.stopPropagation();
           void openLink(span.url);
-        }} suppressHighlighting={false}>
+        }} onLongPress={(event) => {
+          // The innermost Text with a handler takes the gesture, so the
+          // paragraph's message long-press never fires for a link.
+          event.stopPropagation();
+          openLinkMenu({ text: span.text, url: span.url });
+        }} suppressHighlighting={false} accessibilityRole="link">
           {span.text}
         </Text>
       );
@@ -93,6 +104,7 @@ export function MdText({ text, onLongPress, onPress, onPressIn }: {
   // it the bubble's inner width) and cap the table to that — then a wide table
   // overflows the frame and scrolls. Undefined until first layout.
   const [width, setWidth] = React.useState<number>();
+  const [linkMenu, setLinkMenu] = React.useState<LinkTarget | null>(null);
   const para = (spans: Span[], key: React.Key, bold = false) => (
     <Text key={key} style={bold ? [styles.para, styles.bold] : styles.para} selectable={!bold}
       onPress={onPress} onPressIn={onPressIn} onLongPress={onLongPress}>
@@ -186,6 +198,7 @@ export function MdText({ text, onLongPress, onPress, onPressIn }: {
     }
   };
   return (
+    <LinkMenuContext.Provider value={setLinkMenu}>
     <View
       style={styles.root}
       // box-none down the whole container chain (root, quote, list, item):
@@ -202,7 +215,9 @@ export function MdText({ text, onLongPress, onPress, onPressIn }: {
           onNext={() => setActiveChart(current => current === null ? null : Math.min(validCharts.length - 1, current + 1))}
           onClose={() => setActiveChart(null)} />
       ) : null}
+      {linkMenu ? <LinkActionsSheet link={linkMenu} onClose={() => setLinkMenu(null)} /> : null}
     </View>
+    </LinkMenuContext.Provider>
   );
 }
 
