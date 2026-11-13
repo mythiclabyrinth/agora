@@ -479,6 +479,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/threads", get(list_threads))
         .route("/api/unreads", get(list_unreads))
         .route("/api/approvals", get(list_approvals))
+        .route("/api/approvals/pending", get(list_conversation_approvals))
+        .route("/api/approvals/resolve", post(resolve_approvals))
         .route("/api/drafts", get(list_drafts).put(put_draft).delete(delete_draft))
         .route("/api/unreads/read", put(mark_unreads_read))
         .route("/api/threads/{thread_id}", patch(update_thread))
@@ -3732,6 +3734,139 @@ async fn list_approvals(
     .await
     .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Approval query failed"))?;
     Ok(Json(json!({"items": items, "total": total, "next_expiry": next_expiry, "server_now": crate::store::now()})))
+}
+
+/// Whether a request is a routine tool-permission gate: the Claude bridge
+/// posts them with `options_id` "perm-…" and an "Always allow" option. Only
+/// those take a bulk choice, so another agent's buttons that reuse
+/// "allow"/"deny" are never swept in, and nor is a plan approval (no
+/// "always"), which the bridge treats as a decision of its own.
+fn is_permission_gate(meta: &Value) -> bool {
+    meta["options_id"].as_str().is_some_and(|id| id.starts_with("perm-"))
+        && meta["options"].as_array().is_some_and(|o| o.iter().any(|o| o["id"] == "allow_always"))
+}
+
+/// Most requests one "Resolve all" lists and answers.
+const RESOLVE_ALL_MAX: usize = 200;
+
+/// The option a bulk "Resolve all" choice maps to. Only ids an agent is
+/// known to use for a permission gate (the Claude bridge's Approve / Always
+/// allow / Reject): anything else stays for the person to answer by hand,
+/// and "always" never falls back to a one-off approve.
+fn bulk_option_id(action: &str) -> Option<&'static str> {
+    match action {
+        "approve" => Some("allow"),
+        "always" => Some("allow_always"),
+        "reject" => Some("deny"),
+        _ => None,
+    }
+}
+
+/// The tool an "Always allow <tool> (this session)" option grants, for the
+/// confirmation sheet's list. Display only; the option id decides.
+fn always_allow_tool(options: &Value) -> Option<String> {
+    options.as_array()?.iter()
+        .find(|o| o["id"] == "allow_always")
+        .and_then(|o| o["label"].as_str())
+        .and_then(|label| label.strip_prefix("Always allow "))
+        .map(|rest| rest.trim_end_matches(" (this session)").trim().to_string())
+        .filter(|tool| !tool.is_empty())
+}
+
+/// GET /api/approvals/pending?channel_id=&thread_id= — every pending request
+/// in one approvals card's conversation, so "Resolve all" can show what it
+/// will act on and then send exactly those ids (later arrivals stay pending).
+async fn list_conversation_approvals(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let channel_id = q.get("channel_id").map(String::as_str).unwrap_or("").to_string();
+    if channel_id.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "channel_id required"));
+    }
+    let thread_id = match q.get("thread_id").filter(|s| !s.is_empty()) {
+        Some(raw) => Some(raw.parse::<i64>().map_err(|_| err(StatusCode::BAD_REQUEST, "thread_id must be a number"))?),
+        None => None,
+    };
+    require_channel_member(&state, &user, &channel_id)?;
+    let rows = tokio::task::spawn_blocking(move || {
+        let mut rows = state.hub.store.pending_approval_messages(&channel_id, thread_id);
+        rows.truncate(RESOLVE_ALL_MAX);
+        rows
+    })
+        .await
+        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Approval query failed"))?;
+    let items: Vec<Value> = rows.iter().map(|m| {
+        let options = &m["meta"]["options"];
+        let ids: Vec<&str> = if is_permission_gate(&m["meta"]) {
+            options.as_array().map(|o| o.iter().filter_map(|o| o["id"].as_str()).collect()).unwrap_or_default()
+        } else { vec![] };
+        // Which bulk choices this request can take (forms and tables: none).
+        let actions: Vec<&str> = ["approve", "always", "reject"].into_iter()
+            .filter(|a| bulk_option_id(a).is_some_and(|id| ids.contains(&id)))
+            .collect();
+        json!({
+            "id": m["id"], "ts": m["ts"],
+            "author_name": m["author_name"].as_str().filter(|s| !s.is_empty()).unwrap_or_else(|| m["author_id"].as_str().unwrap_or("")),
+            // In full: the person approves exactly what they can read.
+            "text": m["text"],
+            "actions": actions,
+            "tool": always_allow_tool(options),
+        })
+    }).collect();
+    Ok(Json(json!({"items": items})))
+}
+
+/// POST /api/approvals/resolve `{message_ids, action: approve|always|reject}`
+/// — applies one choice to the requests the person saw. Each goes through
+/// the same access check and one-shot resolution as pressing its button, so
+/// one already answered (by someone else, or a repeated submit) is skipped,
+/// never resolved twice; one without the matching option is skipped too.
+async fn resolve_approvals(
+    State(state): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let user = require_user(&state, &headers, &q)?;
+    let action = payload["action"].as_str().unwrap_or("");
+    let option_id = bulk_option_id(action)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "action must be approve, always or reject"))?;
+    let ids: Vec<i64> = payload["message_ids"].as_array()
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "message_ids array required"))?
+        .iter().filter_map(Value::as_i64).collect();
+    if ids.is_empty() || ids.len() > RESOLVE_ALL_MAX {
+        return Err(err(StatusCode::BAD_REQUEST, &format!("message_ids must list 1 to {RESOLVE_ALL_MAX} requests")));
+    }
+    let results = tokio::task::spawn_blocking(move || {
+        let mut seen = std::collections::HashSet::new();
+        ids.into_iter().filter(|id| seen.insert(*id)).map(|id| {
+            let outcome = |status: &str, detail: &str| json!({"id": id, "status": status, "detail": detail});
+            // Same gate as the single-button route; an unknown or hidden
+            // request reads the same so ids can't probe other channels.
+            let Ok(message) = require_message_visible(&state, &user, id) else {
+                return outcome("failed", "Unknown message");
+            };
+            let offered = is_permission_gate(&message["meta"]) && message["meta"]["options"].as_array()
+                .is_some_and(|o| o.iter().any(|o| o["id"].as_str() == Some(option_id)));
+            if !offered {
+                return outcome("skipped", "Needs your input");
+            }
+            match state.hub.select_option(id, option_id, &user.username) {
+                Ok(_) => outcome("resolved", ""),
+                Err(detail @ ("Options already resolved" | "This request has expired")) => outcome("skipped", detail),
+                Err(detail) => outcome("failed", detail),
+            }
+        }).collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "Resolve task failed"))?;
+    let count = |s: &str| results.iter().filter(|r| r["status"] == s).count();
+    Ok(Json(json!({
+        "resolved": count("resolved"), "skipped": count("skipped"), "failed": count("failed"), "results": results,
+    })))
 }
 
 async fn mark_unreads_read(
@@ -7957,6 +8092,86 @@ mod tests {
         .unwrap()
         .0;
         assert_eq!(other["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_all_acts_on_the_listed_requests_only() {
+        let (state, _dir) = test_state();
+        let store = &state.hub.store;
+        store.create_user("ana", "", None, "member").unwrap();
+        store.create_user("eve", "", None, "member").unwrap();
+        let group = store.create_group("Inbox", "", Some("ana"));
+        let channel = store.create_channel(group["id"].as_str().unwrap(), "main", "");
+        let cid = channel["id"].as_str().unwrap().to_string();
+        let tid = store.add_message(&cid, "root", "user", "ana", None, None, &[])["id"].as_i64().unwrap();
+        let ask = |meta: Value| {
+            let row = store.add_message(&cid, "Allow?", "agent", "bot", Some("Claude"), Some(tid), &[]);
+            let id = row["id"].as_i64().unwrap();
+            store.update_message_meta(id, &meta);
+            id
+        };
+        let perm = |tool: &str| json!({"approval_inbox": true, "resolved": null, "options_id": format!("perm-{tool}"), "options": [
+            {"id": "allow", "label": "Approve"},
+            {"id": "allow_always", "label": format!("Always allow {tool} (this session)")},
+            {"id": "deny", "label": "Reject"}]});
+        let search = ask(perm("WebSearch"));
+        let bash = ask(perm("Bash"));
+        let plan = ask(json!({"approval_inbox": true, "resolved": null, "options_id": "perm-plan", "options": [
+            {"id": "allow", "label": "Approve plan"}, {"id": "deny", "label": "Reject"}]}));
+        // Another agent's buttons that merely reuse the ids are not a permission gate.
+        let custom = ask(json!({"approval_inbox": true, "resolved": null, "options_id": "pick", "options": [
+            {"id": "allow", "label": "Delete prod table"}, {"id": "deny", "label": "Keep"}]}));
+        let form = ask(json!({"approval_inbox": true, "form": {"fields": [], "buttons": [{"id": "go"}]}, "form_submitted": null}));
+        // A channel-level request is a different card.
+        let top = store.add_message(&cid, "Allow?", "agent", "bot", None, None, &[])["id"].as_i64().unwrap();
+        store.update_message_meta(top, &perm("Read"));
+
+        let q = |thread: Option<i64>| Query(HashMap::from_iter([("channel_id".to_string(), cid.clone())]
+            .into_iter().chain(thread.map(|t| ("thread_id".to_string(), t.to_string())))));
+        let listed = list_conversation_approvals(State(state.clone()), q(Some(tid)), session_headers(&state, "ana"))
+            .await.unwrap().0;
+        let items = listed["items"].as_array().unwrap();
+        assert_eq!(items.iter().map(|i| i["id"].as_i64().unwrap()).collect::<Vec<_>>(), [search, bash, plan, custom, form]);
+        assert_eq!(items[3]["actions"], json!([]));
+        assert_eq!(items[0]["tool"], "WebSearch");
+        assert_eq!(items[0]["actions"], json!(["approve", "always", "reject"]));
+        assert_eq!(items[2]["actions"], json!([]), "a plan approval is its own decision");
+        assert_eq!(items[4]["actions"], json!([]));
+        let top_card = list_conversation_approvals(State(state.clone()), q(None), session_headers(&state, "ana"))
+            .await.unwrap().0;
+        assert_eq!(top_card["items"].as_array().unwrap().len(), 1);
+        // No access: the card can't be listed.
+        assert!(list_conversation_approvals(State(state.clone()), q(Some(tid)), session_headers(&state, "eve")).await.is_err());
+
+        // Arrives after the sheet opened: not in the ids, so it stays pending.
+        let late = ask(perm("Write"));
+        let resolve = |user: &str, ids: Vec<i64>, action: &str| resolve_approvals(
+            State(state.clone()), Query(HashMap::new()), session_headers(&state, user),
+            Json(json!({"message_ids": ids, "action": action})));
+        let out = resolve("ana", vec![search, bash, plan, form], "always").await.unwrap().0;
+        assert_eq!((out["resolved"].as_u64(), out["skipped"].as_u64(), out["failed"].as_u64()), (Some(2), Some(2), Some(0)));
+        assert_eq!(store.message(search).unwrap()["meta"]["resolved"]["option_id"], "allow_always");
+        assert_eq!(store.message(bash).unwrap()["meta"]["resolved"]["option_id"], "allow_always");
+        // "Always" never falls back to a one-off approve.
+        assert!(store.message(plan).unwrap()["meta"]["resolved"].is_null());
+        assert!(store.message(late).unwrap()["meta"]["resolved"].is_null());
+        let custom_out = resolve("ana", vec![custom], "approve").await.unwrap().0;
+        assert_eq!(custom_out["results"][0]["detail"], "Needs your input");
+        assert!(store.message(custom).unwrap()["meta"]["resolved"].is_null());
+        // A repeated submit (or someone else answering first) never resolves twice.
+        let extra = ask(perm("Glob"));
+        let again = resolve("ana", vec![search, extra, extra, plan], "reject").await.unwrap().0;
+        assert_eq!((again["resolved"].as_u64(), again["skipped"].as_u64()), (Some(1), Some(2)));
+        assert_eq!(store.message(search).unwrap()["meta"]["resolved"]["option_id"], "allow_always");
+        assert_eq!(store.message(extra).unwrap()["meta"]["resolved"]["option_id"], "deny");
+        assert!(store.message(plan).unwrap()["meta"]["resolved"].is_null(), "plans are answered one by one");
+        // Someone without access gets nothing resolved, and no hint of what exists.
+        let eve = resolve("eve", vec![late], "approve").await.unwrap().0;
+        assert_eq!((eve["resolved"].as_u64(), eve["failed"].as_u64()), (Some(0), Some(1)));
+        assert_eq!(eve["results"][0]["detail"], "Unknown message");
+        assert!(store.message(late).unwrap()["meta"]["resolved"].is_null());
+        assert!(resolve("ana", vec![late], "maybe").await.is_err());
+        assert!(resolve("ana", vec![], "approve").await.is_err());
     }
 
     #[tokio::test]

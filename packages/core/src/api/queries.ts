@@ -27,8 +27,11 @@ import {
 import { onlyDone, normalizeSchedulePresets } from "../lib/schedules";
 import type {
   AgentInfo,
+  ApprovalBulkAction,
   ApprovalItem,
   ApprovalInboxPage,
+  ApprovalResolveResult,
+  PendingApproval,
   AgentUsageResponse,
   AgentDmList,
   AgentDmPolicy,
@@ -1070,6 +1073,39 @@ export function useApprovals() {
   }, [query.data, serverClock]);
   const items = query.data?.items.filter(item => approvalPendingAt(item, serverClock));
   return { ...query, data: items, total: Math.max(0, (query.data?.total ?? 0) - ((query.data?.items.length ?? 0) - (items?.length ?? 0))) };
+}
+
+/** Every pending request on one approvals card, for "Resolve all": loaded
+    when the sheet opens, so the choice acts on what was shown. */
+export function useConversationApprovals(channelId: string, threadId: number | null) {
+  const api = useApi();
+  return useQuery({
+    queryKey: keys.conversationApprovals(channelId, threadId),
+    queryFn: async () => (await api.get<{ items: PendingApproval[] }>(
+      `/api/approvals/pending?channel_id=${encodeURIComponent(channelId)}` +
+      (threadId == null ? "" : `&thread_id=${threadId}`))).items,
+    enabled: !!channelId,
+    // A snapshot: loaded once per opening (gcTime 0 drops it on close), never
+    // refreshed underneath the person, so a later request can't slip into
+    // the choice they are about to make.
+    staleTime: Infinity, gcTime: 0,
+    refetchOnWindowFocus: false, refetchOnReconnect: false,
+  });
+}
+
+/** Apply one choice to the listed requests (each checked and resolved like
+    its own button). Refreshes the inbox and the conversation either way. */
+export function useResolveApprovals() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { channelId: string; threadId: number | null; ids: number[]; action: ApprovalBulkAction }) =>
+      api.post<ApprovalResolveResult>("/api/approvals/resolve", { message_ids: v.ids, action: v.action }),
+    onSettled: (_data, _error, v) => {
+      void qc.invalidateQueries({ queryKey: keys.approvals });
+      void qc.invalidateQueries({ queryKey: keys.messages(v.channelId, v.threadId) });
+    },
+  });
 }
 
 export function unreadReadPayload(items: UnreadItem[]) {

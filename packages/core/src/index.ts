@@ -26,6 +26,7 @@ export * from "./lib/unreadInbox";
 export * from "./lib/threads";
 export * from "./lib/schedules";
 export * from "./lib/searchPages";
+export * from "./lib/approvals";
 export * from "./lib/emoji";
 export * from "./lib/artifacts";
 export * from "./lib/echarts";

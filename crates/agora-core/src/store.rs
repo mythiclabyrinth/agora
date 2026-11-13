@@ -3919,6 +3919,26 @@ impl Store {
         (items, total, next_expiry)
     }
 
+    /// Every unexpired pending request in one conversation (a channel's top
+    /// level, or one thread), oldest first: what "Resolve all" on an
+    /// approvals card shows and then acts on. Visibility is the caller's.
+    pub fn pending_approval_messages(&self, channel_id: &str, thread_id: Option<i64>) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT id, seq, channel_id, thread_id, author_type, author_id, author_name, text, ts, meta \
+            FROM messages WHERE {APPROVAL_PREDICATE} AND channel_id = ?1 \
+            AND ((?2 IS NULL AND thread_id IS NULL) OR thread_id = ?2) ORDER BY seq, id"
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let now = now();
+        stmt.query_map(params![channel_id, thread_id], |r| message_row(r, 0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|m| crate::notify_actions::pending(&m["meta"])
+                && !m["meta"]["expires_at"].as_f64().is_some_and(|e| e <= now))
+            .collect()
+    }
+
     pub fn expired_option_ids(&self) -> Vec<i64> {
         let conn = self.conn.lock().unwrap();
         let sql = format!(

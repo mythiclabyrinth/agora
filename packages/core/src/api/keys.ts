@@ -10,6 +10,10 @@ export const keys = {
   threads: ["threads"] as const,
   unreads: ["unreads"] as const,
   approvals: ["approvals"] as const,
+  /* Deliberately outside the "approvals" prefix: inbox refreshes must not
+     change the list a "Resolve all" sheet is showing. */
+  conversationApprovals: (channelId: string, threadId: number | null) =>
+    ["approvalSnapshot", channelId, threadId ?? 0] as const,
   pins: (channelId: string) => ["pins", channelId] as const,
   stars: (channelId: string) => ["stars", channelId] as const,
   attachments: (channelId: string, threadId: number | null) =>

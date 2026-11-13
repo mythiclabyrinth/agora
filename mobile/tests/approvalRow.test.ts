@@ -7,10 +7,11 @@ import { toastErr } from "../src/components/Toast";
 
 jest.mock("@agora/core", () => ({
   ...jest.requireActual("@agora/core"), useSelectOption: jest.fn(),
+  useConversationApprovals: jest.fn(() => ({ isLoading: true })), useResolveApprovals: jest.fn(() => ({ mutate: jest.fn() })),
 }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 jest.mock("lucide-react-native", () => new Proxy({}, { get: () => () => null }));
-jest.mock("../src/components/Toast", () => ({ toastErr: jest.fn() }));
+jest.mock("../src/components/Toast", () => ({ toast: jest.fn(), toastErr: jest.fn() }));
 
 const mutate = jest.fn();
 const approval = {
@@ -74,4 +75,28 @@ test("form-only approval cards have no inline buttons", () => {
   expect(tree.root.findAll(node => typeof node.props.onPress === "function")).toHaveLength(1);
   expect(useSelectOption).not.toHaveBeenCalled();
   act(() => tree.unmount());
+});
+
+describe("resolve all", () => {
+  const { SwipeRow } = jest.requireActual("../src/components/SwipeRow");
+  const controller = { opened: jest.fn(), closed: jest.fn(), close: jest.fn(), isOpen: () => false, consumeTap: () => false };
+  const several = { ...approval, kind: "thread", thread_id: 77, title: "/new ~/Coding", pending_count: 4 } as ApprovalItem;
+
+  test("only a card with several requests swipes to Resolve all", () => {
+    const onResolveAll = jest.fn();
+    let tree!: TestRenderer.ReactTestRenderer;
+    act(() => { tree = TestRenderer.create(React.createElement(ApprovalRow, { item: approval, controller, onResolveAll })); });
+    expect(tree.root.findAllByType(SwipeRow)).toHaveLength(0);
+    act(() => tree.update(React.createElement(ApprovalRow, { item: several, controller, onResolveAll })));
+    const row = tree.root.findByType(SwipeRow);
+    expect(row.props.swipeLeft).toMatchObject({ name: "resolveAll", label: "Resolve all" });
+    // The request's own buttons stay outside the swipe's button (screen readers reach them).
+    const approveButtons = (node: TestRenderer.ReactTestInstance) => node.findAll(n => typeof n.props.onPress === "function"
+      && n.findAll(c => c.children.includes("Approve")).length > 0);
+    expect(approveButtons(row)).toHaveLength(0);
+    expect(approveButtons(tree.root).length).toBeGreaterThan(0);
+    act(() => row.props.swipeLeft.onPress());
+    expect(onResolveAll).toHaveBeenCalledWith(several);
+    act(() => tree.unmount());
+  });
 });

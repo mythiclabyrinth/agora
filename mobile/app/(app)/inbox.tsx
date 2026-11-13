@@ -14,6 +14,7 @@ import { ThreadsScreen } from "./threads";
 import { SchedulesInbox } from "../../src/components/SchedulesInbox";
 import { Icon } from "../../src/components/Icon";
 import { MessageOptions } from "../../src/components/MessageOptions";
+import { ResolveApprovalsSheet } from "../../src/components/ResolveApprovalsSheet";
 import { layout } from "../../src/lib/theme";
 import { useInboxTab, type InboxTab } from "../../src/state/inboxTab";
 
@@ -97,7 +98,17 @@ export function DraftInboxRow({ item, controller }: { item: DraftRow; controller
   </SwipeRow>;
 }
 
-export function ApprovalRow({ item }: { item: ApprovalItem }) {
+/** Swipe left on a card holding several requests to resolve them together. */
+export function resolveAllSwipeAction(onPress: () => void, palette: Palette = colors): SwipeAction {
+  return { name: "resolveAll", label: "Resolve all", icon: CheckCheck, color: palette.a1, onPress };
+}
+
+export function ApprovalRow({ item, controller, onResolveAll }: {
+  item: ApprovalItem; controller?: SwipeRowController;
+  /** Opens "Resolve all" for this card; the screen owns that sheet. */
+  onResolveAll?: (item: ApprovalItem) => void;
+}) {
+  const { colors } = useAppTheme();
   const styles = useStyles();
   const open = () => {
     if (item.thread_id != null) {
@@ -111,9 +122,8 @@ export function ApprovalRow({ item }: { item: ApprovalItem }) {
       } });
     }
   };
-  return <View style={styles.card}>
-    <Pressable style={styles.approvalContent} onPress={open} accessibilityRole="button"
-      accessibilityLabel={`Approval from ${item.message.author_name || item.message.author_id} in ${item.channel_name}`}>
+  const label = `Approval from ${item.message.author_name || item.message.author_id} in ${item.channel_name}`;
+  const summary = <>
       <Text style={styles.source} numberOfLines={1}>
         {item.kind === "thread" ? `↳ ${previewText(item.title || "Thread")} in ` : ""}#{item.channel_name} · {item.group_name}
       </Text>
@@ -123,8 +133,20 @@ export function ApprovalRow({ item }: { item: ApprovalItem }) {
         {previewText(item.message.text) || "Interactive request"}
       </Text>
       {item.pending_count > 1 && <Text style={styles.moreCount}>+{item.pending_count - 1} more</Text>}
-    </Pressable>
-    {!!item.message.meta?.options?.length && <MessageOptions message={item.message} />}
+  </>;
+  const options = !!item.message.meta?.options?.length && <MessageOptions message={item.message} />;
+  // One request: its own buttons are the whole story, so no swipe. With
+  // several, only the summary swipes: the buttons stay outside the swipe's
+  // own button so screen readers still reach each one.
+  return <View style={styles.card}>
+    {item.pending_count > 1 && controller && onResolveAll ? <SwipeRow style={styles.approvalSwipe} onPress={open} controller={controller}
+      accessibilityLabel={`${label}, ${item.pending_count} pending`}
+      swipeLeft={resolveAllSwipeAction(() => onResolveAll(item), colors)}>
+      {summary}
+    </SwipeRow> : <Pressable style={styles.approvalContent} onPress={open} accessibilityRole="button" accessibilityLabel={label}>
+      {summary}
+    </Pressable>}
+    {options}
   </View>;
 }
 
@@ -145,6 +167,9 @@ export default function InboxScreen({ initialSwipe }: {
   const draftsError = useMessageDrafts(s => s.loadError);
   const draftsEnabled = useMe().data?.drafts_sync === true;
   const markRead = useMarkUnreadsRead();
+  // Owned here, not by the card: the sheet (and its result toast) must
+  // outlive the card, which leaves the list as its requests get answered.
+  const [resolving, setResolving] = React.useState<ApprovalItem | null>(null);
   const swipeRows = useSwipeRows();
   const tab = rememberedTab === "drafts" && !draftsEnabled ? "unreads" : rememberedTab;
   React.useEffect(() => { if (tab === "drafts") void draftSync.hydrate().catch(() => {}); }, [tab]);
@@ -182,7 +207,8 @@ export default function InboxScreen({ initialSwipe }: {
       <FlatList style={styles.list} contentContainerStyle={styles.listContent}
         data={approvals.data ?? []}
         keyExtractor={item => `${item.channel_id}:${item.thread_id ?? "channel"}`}
-        renderItem={({ item }) => <ApprovalRow item={item} />}
+        renderItem={({ item }) => <ApprovalRow item={item} controller={swipeRows} onResolveAll={setResolving} />}
+        onScrollBeginDrag={swipeRows.close}
         refreshControl={<RefreshControl refreshing={approvals.isRefetching} onRefresh={() => void approvals.refetch()} tintColor={colors.dim} />}
         ListEmptyComponent={approvals.isLoading ? <ActivityIndicator color={colors.dim} style={styles.empty} /> :
           approvals.isError ? <View style={styles.empty}><Text style={styles.error}>Couldn't load approvals</Text>
@@ -222,6 +248,7 @@ export default function InboxScreen({ initialSwipe }: {
           <EmptyState icon={CheckCheck} title="You're all caught up" description="New messages will appear here." />}
       />
     </>}
+    {resolving ? <ResolveApprovalsSheet item={resolving} onClose={() => setResolving(null)} /> : null}
   </View>;
 }
 
@@ -248,6 +275,7 @@ const useStyles = createThemedStyles(({ colors, surfaces }) => ({
   listContent: { paddingHorizontal: layout.gutter, paddingTop: space.sm, gap: space.md, paddingBottom: layout.contentBottom },
   card: { ...surfaces.card, padding: space.lg, gap: space.xs },
   approvalContent: { gap: space.xs },
+  approvalSwipe: { gap: space.xs, backgroundColor: colors.panel, borderRadius: radii.md },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   sourceIcon: { width: 36, height: 36, borderRadius: radii.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentSoft },
   sourceCopy: { flex: 1, gap: 2, marginBottom: space.sm },
